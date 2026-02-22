@@ -91,6 +91,9 @@ export async function registerRoutes(
     try {
       const validated = insertLocationSchema.parse(req.body);
       const data = await storage.createLocation(validated);
+      if (validated.isPrimary) {
+        await storage.setPrimaryLocation(data.customerId, data.id);
+      }
       res.status(201).json(data);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);

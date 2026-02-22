@@ -23,7 +23,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import {
   ArrowLeft, Mail, Phone, MapPin, Plus, Calendar, FileText, MessageSquare,
   ClipboardList, Building2, User, ChevronDown, Pin, ArrowUpRight, StickyNote,
-  CreditCard, Star, KeyRound, Ruler, ChevronUp, MoreHorizontal,
+  CreditCard, Star, KeyRound, Ruler, ChevronUp, MoreHorizontal, Check,
 } from "lucide-react";
 import type { Customer, Contact, Location, Appointment, Invoice, ServiceRecord, Communication, CustomerNote, BillingProfile } from "@shared/schema";
 
@@ -347,8 +347,9 @@ export default function CustomerDetail() {
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start" className="w-72">
               {allLocations?.map((loc) => (
-                <DropdownMenuItem key={loc.id} onClick={() => selectLocation(loc.id)} className="flex flex-col items-start gap-0.5 py-2" data-testid={`location-option-${loc.id}`}>
+                <DropdownMenuItem key={loc.id} onClick={() => selectLocation(loc.id)} className={`flex flex-col items-start gap-0.5 py-2 ${loc.id === activeLocationId ? "bg-accent" : ""}`} data-testid={`location-option-${loc.id}`}>
                   <div className="flex items-center gap-2 w-full">
+                    {loc.id === activeLocationId ? <Check className="h-3.5 w-3.5 shrink-0 text-primary" /> : <span className="w-3.5 shrink-0" />}
                     <span className="font-medium text-sm">{loc.name}</span>
                     <div className="flex items-center gap-1 ml-auto">
                       {loc.isPrimary && <Badge variant="secondary" className="text-[10px] px-1.5 py-0">Primary</Badge>}
