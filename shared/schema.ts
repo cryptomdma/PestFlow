@@ -15,6 +15,7 @@ export const customers = pgTable("customers", {
   status: text("status").notNull().default("active"),
   notes: text("notes"),
   tags: text("tags").array(),
+  defaultBillingProfileId: varchar("default_billing_profile_id"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
@@ -41,7 +42,29 @@ export const locations = pgTable("locations", {
   propertyType: text("property_type").default("residential"),
   squareFootage: integer("square_footage"),
   lotSize: text("lot_size"),
+  gateCode: text("gate_code"),
   notes: text("notes"),
+  billingProfileId: varchar("billing_profile_id"),
+});
+
+export const billingProfiles = pgTable("billing_profiles", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  customerId: varchar("customer_id").notNull().references(() => customers.id),
+  label: text("label").notNull(),
+  methodType: text("method_type").notNull().default("invoice"),
+  lastFour: text("last_four"),
+  isDefault: boolean("is_default").default(false),
+});
+
+export const customerNotes = pgTable("customer_notes", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  customerId: varchar("customer_id").references(() => customers.id),
+  locationId: varchar("location_id").references(() => locations.id),
+  scope: text("scope").notNull().default("CUSTOMER"),
+  pinned: boolean("pinned").default(false),
+  body: text("body").notNull(),
+  createdBy: text("created_by"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
 export const serviceTypes = pgTable("service_types", {
@@ -98,6 +121,7 @@ export const productApplications = pgTable("product_applications", {
 export const invoices = pgTable("invoices", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   customerId: varchar("customer_id").notNull().references(() => customers.id),
+  locationId: varchar("location_id").references(() => locations.id),
   serviceRecordId: varchar("service_record_id").references(() => serviceRecords.id),
   invoiceNumber: text("invoice_number").notNull(),
   amount: decimal("amount", { precision: 10, scale: 2 }).notNull(),
@@ -113,6 +137,7 @@ export const invoices = pgTable("invoices", {
 export const communications = pgTable("communications", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   customerId: varchar("customer_id").notNull().references(() => customers.id),
+  locationId: varchar("location_id").references(() => locations.id),
   type: text("type").notNull(),
   direction: text("direction").notNull(),
   subject: text("subject"),
@@ -124,6 +149,8 @@ export const communications = pgTable("communications", {
 export const insertCustomerSchema = createInsertSchema(customers).omit({ id: true, createdAt: true });
 export const insertContactSchema = createInsertSchema(contacts).omit({ id: true });
 export const insertLocationSchema = createInsertSchema(locations).omit({ id: true });
+export const insertBillingProfileSchema = createInsertSchema(billingProfiles).omit({ id: true });
+export const insertCustomerNoteSchema = createInsertSchema(customerNotes).omit({ id: true, createdAt: true });
 export const insertServiceTypeSchema = createInsertSchema(serviceTypes).omit({ id: true });
 export const insertAppointmentSchema = createInsertSchema(appointments).omit({ id: true, createdAt: true });
 export const insertServiceRecordSchema = createInsertSchema(serviceRecords).omit({ id: true, createdAt: true });
@@ -137,6 +164,10 @@ export type Contact = typeof contacts.$inferSelect;
 export type InsertContact = z.infer<typeof insertContactSchema>;
 export type Location = typeof locations.$inferSelect;
 export type InsertLocation = z.infer<typeof insertLocationSchema>;
+export type BillingProfile = typeof billingProfiles.$inferSelect;
+export type InsertBillingProfile = z.infer<typeof insertBillingProfileSchema>;
+export type CustomerNote = typeof customerNotes.$inferSelect;
+export type InsertCustomerNote = z.infer<typeof insertCustomerNoteSchema>;
 export type ServiceType = typeof serviceTypes.$inferSelect;
 export type InsertServiceType = z.infer<typeof insertServiceTypeSchema>;
 export type Appointment = typeof appointments.$inferSelect;

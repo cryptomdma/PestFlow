@@ -1,6 +1,7 @@
 import {
   customers, contacts, locations, serviceTypes, appointments,
   serviceRecords, productApplications, invoices, communications,
+  billingProfiles, customerNotes,
   type Customer, type InsertCustomer,
   type Contact, type InsertContact,
   type Location, type InsertLocation,
@@ -10,9 +11,11 @@ import {
   type ProductApplication, type InsertProductApplication,
   type Invoice, type InsertInvoice,
   type Communication, type InsertCommunication,
+  type BillingProfile, type InsertBillingProfile,
+  type CustomerNote, type InsertCustomerNote,
 } from "@shared/schema";
 import { db } from "./db";
-import { eq } from "drizzle-orm";
+import { eq, and, or, isNull } from "drizzle-orm";
 
 export interface IStorage {
   getCustomers(): Promise<Customer[]>;
@@ -25,17 +28,31 @@ export interface IStorage {
 
   getLocations(customerId: string): Promise<Location[]>;
   getAllLocations(): Promise<Location[]>;
+  getLocation(id: string): Promise<Location | undefined>;
   createLocation(data: InsertLocation): Promise<Location>;
+  updateLocation(id: string, data: Partial<InsertLocation>): Promise<Location | undefined>;
+  setPrimaryLocation(customerId: string, locationId: string): Promise<void>;
+
+  getBillingProfiles(customerId: string): Promise<BillingProfile[]>;
+  createBillingProfile(data: InsertBillingProfile): Promise<BillingProfile>;
+
+  getNotesByCustomer(customerId: string): Promise<CustomerNote[]>;
+  getNotesByLocation(locationId: string): Promise<CustomerNote[]>;
+  getSharedNotes(customerId: string): Promise<CustomerNote[]>;
+  createNote(data: InsertCustomerNote): Promise<CustomerNote>;
+  updateNoteScope(id: string, scope: string, customerId: string | null, locationId: string | null): Promise<CustomerNote | undefined>;
 
   getServiceTypes(): Promise<ServiceType[]>;
   createServiceType(data: InsertServiceType): Promise<ServiceType>;
 
   getAppointments(): Promise<Appointment[]>;
+  getAppointmentsByLocation(locationId: string): Promise<Appointment[]>;
   getAppointment(id: string): Promise<Appointment | undefined>;
   createAppointment(data: InsertAppointment): Promise<Appointment>;
   updateAppointment(id: string, data: Partial<InsertAppointment>): Promise<Appointment | undefined>;
 
   getServiceRecords(): Promise<ServiceRecord[]>;
+  getServiceRecordsByLocation(locationId: string): Promise<ServiceRecord[]>;
   getServiceRecord(id: string): Promise<ServiceRecord | undefined>;
   createServiceRecord(data: InsertServiceRecord): Promise<ServiceRecord>;
   updateServiceRecord(id: string, data: Partial<InsertServiceRecord>): Promise<ServiceRecord | undefined>;
@@ -45,13 +62,17 @@ export interface IStorage {
   createProductApplication(data: InsertProductApplication): Promise<ProductApplication>;
 
   getInvoices(): Promise<Invoice[]>;
+  getInvoicesByLocation(locationId: string): Promise<Invoice[]>;
   getInvoice(id: string): Promise<Invoice | undefined>;
   createInvoice(data: InsertInvoice): Promise<Invoice>;
   updateInvoice(id: string, data: Partial<InsertInvoice>): Promise<Invoice | undefined>;
 
   getCommunications(customerId: string): Promise<Communication[]>;
+  getCommunicationsByLocation(locationId: string): Promise<Communication[]>;
   getAllCommunications(): Promise<Communication[]>;
   createCommunication(data: InsertCommunication): Promise<Communication>;
+
+  getLocationScopedCounts(locationId: string): Promise<{ appointments: number; services: number; invoices: number; communications: number }>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -91,9 +112,59 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(locations);
   }
 
+  async getLocation(id: string): Promise<Location | undefined> {
+    const [loc] = await db.select().from(locations).where(eq(locations.id, id));
+    return loc;
+  }
+
   async createLocation(data: InsertLocation): Promise<Location> {
     const [location] = await db.insert(locations).values(data).returning();
     return location;
+  }
+
+  async updateLocation(id: string, data: Partial<InsertLocation>): Promise<Location | undefined> {
+    const [loc] = await db.update(locations).set(data).where(eq(locations.id, id)).returning();
+    return loc;
+  }
+
+  async setPrimaryLocation(customerId: string, locationId: string): Promise<void> {
+    await db.update(locations).set({ isPrimary: false }).where(eq(locations.customerId, customerId));
+    await db.update(locations).set({ isPrimary: true }).where(eq(locations.id, locationId));
+  }
+
+  async getBillingProfiles(customerId: string): Promise<BillingProfile[]> {
+    return db.select().from(billingProfiles).where(eq(billingProfiles.customerId, customerId));
+  }
+
+  async createBillingProfile(data: InsertBillingProfile): Promise<BillingProfile> {
+    const [bp] = await db.insert(billingProfiles).values(data).returning();
+    return bp;
+  }
+
+  async getNotesByCustomer(customerId: string): Promise<CustomerNote[]> {
+    return db.select().from(customerNotes).where(eq(customerNotes.customerId, customerId));
+  }
+
+  async getNotesByLocation(locationId: string): Promise<CustomerNote[]> {
+    return db.select().from(customerNotes).where(
+      and(eq(customerNotes.locationId, locationId), eq(customerNotes.scope, "LOCATION"))
+    );
+  }
+
+  async getSharedNotes(customerId: string): Promise<CustomerNote[]> {
+    return db.select().from(customerNotes).where(
+      and(eq(customerNotes.customerId, customerId), eq(customerNotes.scope, "CUSTOMER"))
+    );
+  }
+
+  async createNote(data: InsertCustomerNote): Promise<CustomerNote> {
+    const [note] = await db.insert(customerNotes).values(data).returning();
+    return note;
+  }
+
+  async updateNoteScope(id: string, scope: string, customerId: string | null, locationId: string | null): Promise<CustomerNote | undefined> {
+    const [note] = await db.update(customerNotes).set({ scope, customerId, locationId }).where(eq(customerNotes.id, id)).returning();
+    return note;
   }
 
   async getServiceTypes(): Promise<ServiceType[]> {
@@ -107,6 +178,10 @@ export class DatabaseStorage implements IStorage {
 
   async getAppointments(): Promise<Appointment[]> {
     return db.select().from(appointments);
+  }
+
+  async getAppointmentsByLocation(locationId: string): Promise<Appointment[]> {
+    return db.select().from(appointments).where(eq(appointments.locationId, locationId));
   }
 
   async getAppointment(id: string): Promise<Appointment | undefined> {
@@ -126,6 +201,10 @@ export class DatabaseStorage implements IStorage {
 
   async getServiceRecords(): Promise<ServiceRecord[]> {
     return db.select().from(serviceRecords);
+  }
+
+  async getServiceRecordsByLocation(locationId: string): Promise<ServiceRecord[]> {
+    return db.select().from(serviceRecords).where(eq(serviceRecords.locationId, locationId));
   }
 
   async getServiceRecord(id: string): Promise<ServiceRecord | undefined> {
@@ -160,6 +239,10 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(invoices);
   }
 
+  async getInvoicesByLocation(locationId: string): Promise<Invoice[]> {
+    return db.select().from(invoices).where(eq(invoices.locationId, locationId));
+  }
+
   async getInvoice(id: string): Promise<Invoice | undefined> {
     const [inv] = await db.select().from(invoices).where(eq(invoices.id, id));
     return inv;
@@ -179,6 +262,10 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(communications).where(eq(communications.customerId, customerId));
   }
 
+  async getCommunicationsByLocation(locationId: string): Promise<Communication[]> {
+    return db.select().from(communications).where(eq(communications.locationId, locationId));
+  }
+
   async getAllCommunications(): Promise<Communication[]> {
     return db.select().from(communications);
   }
@@ -186,6 +273,16 @@ export class DatabaseStorage implements IStorage {
   async createCommunication(data: InsertCommunication): Promise<Communication> {
     const [comm] = await db.insert(communications).values(data).returning();
     return comm;
+  }
+
+  async getLocationScopedCounts(locationId: string): Promise<{ appointments: number; services: number; invoices: number; communications: number }> {
+    const [appts, svcs, invs, comms] = await Promise.all([
+      db.select().from(appointments).where(eq(appointments.locationId, locationId)),
+      db.select().from(serviceRecords).where(eq(serviceRecords.locationId, locationId)),
+      db.select().from(invoices).where(eq(invoices.locationId, locationId)),
+      db.select().from(communications).where(eq(communications.locationId, locationId)),
+    ]);
+    return { appointments: appts.length, services: svcs.length, invoices: invs.length, communications: comms.length };
   }
 }
 

@@ -5,6 +5,7 @@ import {
   insertCustomerSchema, insertContactSchema, insertLocationSchema,
   insertServiceTypeSchema, insertAppointmentSchema, insertServiceRecordSchema,
   insertProductApplicationSchema, insertInvoiceSchema, insertCommunicationSchema,
+  insertBillingProfileSchema, insertCustomerNoteSchema,
 } from "@shared/schema";
 import { ZodError } from "zod";
 
@@ -90,6 +91,109 @@ export async function registerRoutes(
       if (e instanceof ZodError) return handleZodError(res, e);
       res.status(400).json({ message: e.message });
     }
+  });
+
+  app.patch("/api/locations/:id", async (req, res) => {
+    try {
+      const validated = insertLocationSchema.partial().parse(req.body);
+      const data = await storage.updateLocation(req.params.id, validated);
+      if (!data) return res.status(404).json({ message: "Location not found" });
+      res.json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/locations/:id/set-primary", async (req, res) => {
+    try {
+      const loc = await storage.getLocation(req.params.id);
+      if (!loc) return res.status(404).json({ message: "Location not found" });
+      await storage.setPrimaryLocation(loc.customerId, loc.id);
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  // Billing Profiles
+  app.get("/api/billing-profiles/:customerId", async (req, res) => {
+    const data = await storage.getBillingProfiles(req.params.customerId);
+    res.json(data);
+  });
+
+  app.post("/api/billing-profiles", async (req, res) => {
+    try {
+      const validated = insertBillingProfileSchema.parse(req.body);
+      const data = await storage.createBillingProfile(validated);
+      res.status(201).json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  // Customer Notes
+  app.get("/api/notes/shared/:customerId", async (req, res) => {
+    const data = await storage.getSharedNotes(req.params.customerId);
+    res.json(data);
+  });
+
+  app.get("/api/notes/location/:locationId", async (req, res) => {
+    const data = await storage.getNotesByLocation(req.params.locationId);
+    res.json(data);
+  });
+
+  app.post("/api/notes", async (req, res) => {
+    try {
+      const validated = insertCustomerNoteSchema.parse(req.body);
+      const data = await storage.createNote(validated);
+      res.status(201).json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.patch("/api/notes/:id/convert-scope", async (req, res) => {
+    try {
+      const { scope, customerId, locationId } = req.body;
+      if (!scope || (scope !== "CUSTOMER" && scope !== "LOCATION")) {
+        return res.status(400).json({ message: "Invalid scope. Must be CUSTOMER or LOCATION." });
+      }
+      const data = await storage.updateNoteScope(req.params.id, scope, customerId || null, locationId || null);
+      if (!data) return res.status(404).json({ message: "Note not found" });
+      res.json(data);
+    } catch (e: any) {
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  // Location-scoped counts
+  app.get("/api/location-counts/:locationId", async (req, res) => {
+    const data = await storage.getLocationScopedCounts(req.params.locationId);
+    res.json(data);
+  });
+
+  // Location-scoped data endpoints
+  app.get("/api/appointments/by-location/:locationId", async (req, res) => {
+    const data = await storage.getAppointmentsByLocation(req.params.locationId);
+    res.json(data);
+  });
+
+  app.get("/api/service-records/by-location/:locationId", async (req, res) => {
+    const data = await storage.getServiceRecordsByLocation(req.params.locationId);
+    res.json(data);
+  });
+
+  app.get("/api/invoices/by-location/:locationId", async (req, res) => {
+    const data = await storage.getInvoicesByLocation(req.params.locationId);
+    res.json(data);
+  });
+
+  app.get("/api/communications/by-location/:locationId", async (req, res) => {
+    const data = await storage.getCommunicationsByLocation(req.params.locationId);
+    res.json(data);
   });
 
   // Service Types
