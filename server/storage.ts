@@ -24,6 +24,7 @@ export interface IStorage {
   updateCustomer(id: string, data: Partial<InsertCustomer>): Promise<Customer | undefined>;
 
   getContacts(customerId: string): Promise<Contact[]>;
+  getContactsByLocation(locationId: string): Promise<Contact[]>;
   createContact(data: InsertContact): Promise<Contact>;
 
   getLocations(customerId: string): Promise<Location[]>;
@@ -72,7 +73,7 @@ export interface IStorage {
   getAllCommunications(): Promise<Communication[]>;
   createCommunication(data: InsertCommunication): Promise<Communication>;
 
-  getLocationScopedCounts(locationId: string): Promise<{ appointments: number; services: number; invoices: number; communications: number }>;
+  getLocationScopedCounts(locationId: string): Promise<{ contacts: number; appointments: number; services: number; invoices: number; communications: number }>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -97,6 +98,10 @@ export class DatabaseStorage implements IStorage {
 
   async getContacts(customerId: string): Promise<Contact[]> {
     return db.select().from(contacts).where(eq(contacts.customerId, customerId));
+  }
+
+  async getContactsByLocation(locationId: string): Promise<Contact[]> {
+    return db.select().from(contacts).where(eq(contacts.locationId, locationId));
   }
 
   async createContact(data: InsertContact): Promise<Contact> {
@@ -275,14 +280,15 @@ export class DatabaseStorage implements IStorage {
     return comm;
   }
 
-  async getLocationScopedCounts(locationId: string): Promise<{ appointments: number; services: number; invoices: number; communications: number }> {
-    const [appts, svcs, invs, comms] = await Promise.all([
+  async getLocationScopedCounts(locationId: string): Promise<{ contacts: number; appointments: number; services: number; invoices: number; communications: number }> {
+    const [cts, appts, svcs, invs, comms] = await Promise.all([
+      db.select().from(contacts).where(eq(contacts.locationId, locationId)),
       db.select().from(appointments).where(eq(appointments.locationId, locationId)),
       db.select().from(serviceRecords).where(eq(serviceRecords.locationId, locationId)),
       db.select().from(invoices).where(eq(invoices.locationId, locationId)),
       db.select().from(communications).where(eq(communications.locationId, locationId)),
     ]);
-    return { appointments: appts.length, services: svcs.length, invoices: invs.length, communications: comms.length };
+    return { contacts: cts.length, appointments: appts.length, services: svcs.length, invoices: invs.length, communications: comms.length };
   }
 }
 

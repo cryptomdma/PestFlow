@@ -16,11 +16,8 @@ export async function seedDatabase() {
     { firstName: "Tom", lastName: "Baker", companyName: null, email: "tom.baker@email.com", phone: "(555) 678-9012", customerType: "residential", status: "prospect", notes: "Interested in one-time rodent treatment." },
   ]).returning();
 
-  await db.insert(contacts).values([
-    { customerId: c2.id, firstName: "David", lastName: "Chen", email: "david@goldengatefoods.com", phone: "(555) 345-6780", role: "Operations Manager", isPrimary: true },
-    { customerId: c2.id, firstName: "Maria", lastName: "Lopez", email: "maria@goldengatefoods.com", phone: "(555) 345-6781", role: "Kitchen Manager", isPrimary: false },
-    { customerId: c4.id, firstName: "Robert", lastName: "Hayes", email: "robert@sunsetpm.com", phone: "(555) 567-8902", role: "Maintenance Coordinator", isPrimary: true },
-  ]);
+  // Contacts are inserted after locations so they can be scoped to specific locations
+  // They are re-inserted below after locations are created
 
   const [bp1, bp2] = await db.insert(billingProfiles).values([
     { customerId: c2.id, label: "Corporate Card", methodType: "card", lastFour: "4242", isDefault: true },
@@ -37,6 +34,12 @@ export async function seedDatabase() {
     { customerId: c4.id, name: "Sunset Apartments A", address: "100 Sunset Blvd, Building A", city: "Springfield", state: "IL", zip: "62705", isPrimary: true, propertyType: "multi-family", squareFootage: 12000, notes: "6 units, 3 floors" },
     { customerId: c4.id, name: "Sunset Apartments B", address: "100 Sunset Blvd, Building B", city: "Springfield", state: "IL", zip: "62705", isPrimary: false, propertyType: "multi-family", squareFootage: 12000, notes: "6 units, 3 floors" },
   ]).returning();
+
+  await db.insert(contacts).values([
+    { customerId: c2.id, locationId: l2.id, firstName: "David", lastName: "Chen", email: "david@goldengatefoods.com", phone: "(555) 345-6780", role: "Operations Manager", isPrimary: true },
+    { customerId: c2.id, locationId: l3.id, firstName: "Maria", lastName: "Lopez", email: "maria@goldengatefoods.com", phone: "(555) 345-6781", role: "Kitchen Manager", isPrimary: true },
+    { customerId: c4.id, locationId: l5.id, firstName: "Robert", lastName: "Hayes", email: "robert@sunsetpm.com", phone: "(555) 567-8902", role: "Maintenance Coordinator", isPrimary: true },
+  ]);
 
   await db.insert(customerNotes).values([
     { customerId: c2.id, locationId: null, scope: "CUSTOMER", pinned: true, body: "VIP account - always prioritize scheduling. Sarah prefers communication via email. Multi-year contract in place.", createdBy: "Admin" },

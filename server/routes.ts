@@ -60,6 +60,11 @@ export async function registerRoutes(
     res.json(data);
   });
 
+  app.get("/api/contacts/by-location/:locationId", async (req, res) => {
+    const data = await storage.getContactsByLocation(req.params.locationId);
+    res.json(data);
+  });
+
   app.post("/api/contacts", async (req, res) => {
     try {
       const validated = insertContactSchema.parse(req.body);

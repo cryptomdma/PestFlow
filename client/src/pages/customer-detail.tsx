@@ -70,13 +70,14 @@ function AddLocationDialog({ customerId, onClose }: { customerId: string; onClos
   );
 }
 
-function AddContactDialog({ customerId, onClose }: { customerId: string; onClose: () => void }) {
+function AddContactDialog({ customerId, locationId, onClose }: { customerId: string; locationId: string; onClose: () => void }) {
   const { toast } = useToast();
   const [form, setForm] = useState({ firstName: "", lastName: "", email: "", phone: "", role: "", isPrimary: false });
   const mutation = useMutation({
-    mutationFn: (data: typeof form) => apiRequest("POST", "/api/contacts", { ...data, customerId }),
+    mutationFn: (data: typeof form) => apiRequest("POST", "/api/contacts", { ...data, customerId, locationId }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/contacts", customerId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/contacts/by-location", locationId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/location-counts", locationId] });
       toast({ title: "Contact added" });
       onClose();
     },
@@ -242,7 +243,6 @@ export default function CustomerDetail() {
   const [contactDialogOpen, setContactDialogOpen] = useState(false);
 
   const { data: customer, isLoading } = useQuery<Customer>({ queryKey: ["/api/customers", customerId] });
-  const { data: contacts } = useQuery<Contact[]>({ queryKey: ["/api/contacts", customerId] });
   const { data: allLocations } = useQuery<Location[]>({ queryKey: ["/api/locations", customerId] });
 
   const primaryLocation = allLocations?.find((l) => l.isPrimary);
@@ -251,7 +251,9 @@ export default function CustomerDetail() {
 
   const hasBillingOverride = allLocations?.some((l) => l.billingProfileId) || false;
 
-  const { data: locationCounts } = useQuery<{ appointments: number; services: number; invoices: number; communications: number }>({
+  const { data: contacts } = useQuery<Contact[]>({ queryKey: ["/api/contacts/by-location", activeLocationId], enabled: !!activeLocationId });
+
+  const { data: locationCounts } = useQuery<{ contacts: number; appointments: number; services: number; invoices: number; communications: number }>({
     queryKey: ["/api/location-counts", activeLocationId],
     enabled: !!activeLocationId,
   });
@@ -399,7 +401,7 @@ export default function CustomerDetail() {
         {/* D) Location-scoped tabs */}
         <Tabs defaultValue="contacts">
           <TabsList className="flex-wrap">
-            <TabsTrigger value="contacts" data-testid="tab-contacts"><User className="h-3 w-3 mr-1" /> Contacts ({contacts?.length || 0})</TabsTrigger>
+            <TabsTrigger value="contacts" data-testid="tab-contacts"><User className="h-3 w-3 mr-1" /> Contacts ({locationCounts?.contacts ?? contacts?.length ?? 0})</TabsTrigger>
             <TabsTrigger value="schedule" data-testid="tab-schedule"><Calendar className="h-3 w-3 mr-1" /> Schedule ({locationCounts?.appointments ?? 0})</TabsTrigger>
             <TabsTrigger value="services" data-testid="tab-services"><ClipboardList className="h-3 w-3 mr-1" /> Services ({locationCounts?.services ?? 0})</TabsTrigger>
             <TabsTrigger value="invoices" data-testid="tab-invoices"><FileText className="h-3 w-3 mr-1" /> Invoices ({locationCounts?.invoices ?? 0})</TabsTrigger>
@@ -410,7 +412,7 @@ export default function CustomerDetail() {
             <div className="flex justify-end">
               <Dialog open={contactDialogOpen} onOpenChange={setContactDialogOpen}>
                 <DialogTrigger asChild><Button size="sm" data-testid="button-add-contact"><Plus className="h-3 w-3 mr-1" /> Add Contact</Button></DialogTrigger>
-                <DialogContent><DialogHeader><DialogTitle>Add Contact</DialogTitle></DialogHeader><AddContactDialog customerId={customerId} onClose={() => setContactDialogOpen(false)} /></DialogContent>
+                <DialogContent><DialogHeader><DialogTitle>Add Contact</DialogTitle></DialogHeader><AddContactDialog customerId={customerId} locationId={activeLocationId} onClose={() => setContactDialogOpen(false)} /></DialogContent>
               </Dialog>
             </div>
             {!contacts || contacts.length === 0 ? (
