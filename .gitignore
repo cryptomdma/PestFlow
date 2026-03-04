@@ -8,3 +8,9 @@ vite.config.ts.*
 state/
 **/*.bin
 **/log-query.db*
+.env
+.env.local
+.env.*.local
+build
+.next
+.vercel
