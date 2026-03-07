@@ -10,7 +10,8 @@
     "check": "tsc",
     "db:push": "drizzle-kit push",
     "db:reset": "docker compose down -v && docker compose up -d",
-    "clean": "rimraf node_modules dist"
+    "clean": "rimraf node_modules dist",
+    "dev:full": "docker compose up -d && npm run dev"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",
