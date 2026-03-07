@@ -1,0 +1,16 @@
+services:
+  db:
+    image: postgres:16
+    container_name: pestflow-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: pestflow
+      POSTGRES_PASSWORD: pestflow
+      POSTGRES_DB: pestflow
+    ports:
+      - "5432:5432"
+    volumes:
+      - pestflow_pg:/var/lib/postgresql/data
+
+volumes:
+  pestflow_pg:
