@@ -10,6 +10,7 @@
     "check": "tsc",
     "db:push": "drizzle-kit push",
     "db:reset": "docker compose down -v && docker compose up -d",
+    "validate:accounts": "tsx script/validate-account-invariants.ts",
     "clean": "rimraf node_modules dist",
     "dev:full": "docker compose up -d && npm run dev"
   },

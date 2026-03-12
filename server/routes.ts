@@ -18,6 +18,13 @@ export async function registerRoutes(
   httpServer: Server,
   app: Express
 ): Promise<Server> {
+  // Transitional dev-only diagnostics for Phase 1 account/location hardening.
+  // TODO(Phase2): gate behind auth/admin controls once user model exists.
+  app.get("/api/dev/account-invariants", async (_req, res) => {
+    const data = await storage.getAccountInvariantSummary();
+    res.json(data);
+  });
+
   // Transitional compatibility endpoint for Phase 1 account/location bootstrap.
   app.get("/api/customer-detail-compat/:legacyCustomerId", async (req, res) => {
     const data = await storage.getCustomerDetailCompat(

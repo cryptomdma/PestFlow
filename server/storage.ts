@@ -17,7 +17,8 @@ import {
   type CustomerNote, type InsertCustomerNote,
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, and } from "drizzle-orm";
+import { eq, and, sql } from "drizzle-orm";
+import { PLACEHOLDER_LOCATION_NAME, PLACEHOLDER_LOCATION_NOTE } from "./account-bootstrap";
 
 export interface CustomerDetailCompatProjection {
   legacyCustomer: Customer;
@@ -28,12 +29,20 @@ export interface CustomerDetailCompatProjection {
   hasBillingOverride: boolean;
 }
 
+export interface AccountInvariantSummary {
+  orphanedLocations: number;
+  accountsWithMultiplePrimaries: number;
+  accountsMissingPrimary: number;
+  accountPrimaryLocationMismatch: number;
+}
+
 export interface IStorage {
   getCustomers(): Promise<Customer[]>;
   getCustomer(id: string): Promise<Customer | undefined>;
   createCustomer(data: InsertCustomer): Promise<Customer>;
   updateCustomer(id: string, data: Partial<InsertCustomer>): Promise<Customer | undefined>;
   getCustomerDetailCompat(legacyCustomerId: string, selectedLocationId?: string): Promise<CustomerDetailCompatProjection | undefined>;
+  getAccountInvariantSummary(): Promise<AccountInvariantSummary>;
 
   getContacts(customerId: string): Promise<Contact[]>;
   getContactsByLocation(locationId: string): Promise<Contact[]>;
@@ -89,6 +98,10 @@ export interface IStorage {
 }
 
 export class DatabaseStorage implements IStorage {
+  private isPlaceholderLocation(location: { name: string; notes: string | null }) {
+    return location.name === PLACEHOLDER_LOCATION_NAME && location.notes === PLACEHOLDER_LOCATION_NOTE;
+  }
+
   private async ensureAccountForLegacyCustomer(legacyCustomerId: string): Promise<Account> {
     const [existing] = await db
       .select()
@@ -113,6 +126,32 @@ export class DatabaseStorage implements IStorage {
   private async resolveAccountIdForLegacyCustomer(legacyCustomerId: string): Promise<string> {
     const account = await this.ensureAccountForLegacyCustomer(legacyCustomerId);
     return account.id;
+  }
+
+  private async ensurePrimaryLocationInvariant(accountId: string, preferredLocationId?: string): Promise<void> {
+    const relatedLocations = await db.select().from(locations).where(eq(locations.accountId, accountId));
+    if (relatedLocations.length === 0) {
+      await db.update(accounts).set({ primaryLocationId: null, updatedAt: new Date() }).where(eq(accounts.id, accountId));
+      return;
+    }
+
+    let primaryCandidate =
+      (preferredLocationId && relatedLocations.find((location) => location.id === preferredLocationId)) ||
+      relatedLocations.find((location) => location.isPrimary && !this.isPlaceholderLocation(location)) ||
+      relatedLocations.find((location) => location.isPrimary) ||
+      relatedLocations.find((location) => !this.isPlaceholderLocation(location)) ||
+      relatedLocations[0];
+
+    if (!primaryCandidate) {
+      primaryCandidate = relatedLocations[0];
+    }
+
+    await db.update(locations).set({ isPrimary: false }).where(eq(locations.accountId, accountId));
+    await db.update(locations).set({ isPrimary: true }).where(eq(locations.id, primaryCandidate.id));
+    await db
+      .update(accounts)
+      .set({ primaryLocationId: primaryCandidate.id, updatedAt: new Date() })
+      .where(eq(accounts.id, accountId));
   }
 
   async getCustomers(): Promise<Customer[]> {
@@ -176,6 +215,49 @@ export class DatabaseStorage implements IStorage {
     };
   }
 
+  async getAccountInvariantSummary(): Promise<AccountInvariantSummary> {
+    const orphanedLocationsResult = await db.execute(sql`
+      select count(*)::int as c
+      from locations
+      where account_id is null
+    `);
+
+    const multiplePrimariesResult = await db.execute(sql`
+      select count(*)::int as c
+      from (
+        select account_id
+        from locations
+        where account_id is not null and is_primary = true
+        group by account_id
+        having count(*) > 1
+      ) t
+    `);
+
+    const missingPrimaryResult = await db.execute(sql`
+      select count(*)::int as c
+      from accounts a
+      left join locations l on l.account_id = a.id and l.is_primary = true
+      group by a.id
+      having count(l.id) = 0
+    `);
+
+    const accountPrimaryLocationMismatchResult = await db.execute(sql`
+      select count(*)::int as c
+      from accounts a
+      left join locations l on l.id = a.primary_location_id
+      where a.primary_location_id is null
+        or l.id is null
+        or l.account_id <> a.id
+    `);
+
+    return {
+      orphanedLocations: Number(orphanedLocationsResult.rows[0]?.c || 0),
+      accountsWithMultiplePrimaries: Number(multiplePrimariesResult.rows[0]?.c || 0),
+      accountsMissingPrimary: missingPrimaryResult.rows.length,
+      accountPrimaryLocationMismatch: Number(accountPrimaryLocationMismatchResult.rows[0]?.c || 0),
+    };
+  }
+
   async getContacts(customerId: string): Promise<Contact[]> {
     return db.select().from(contacts).where(eq(contacts.customerId, customerId));
   }
@@ -205,11 +287,33 @@ export class DatabaseStorage implements IStorage {
   async createLocation(data: InsertLocation): Promise<Location> {
     const accountId = data.accountId || await this.resolveAccountIdForLegacyCustomer(data.customerId);
     const [location] = await db.insert(locations).values({ ...data, accountId }).returning();
+    if (data.isPrimary) {
+      await this.ensurePrimaryLocationInvariant(accountId, location.id);
+    } else {
+      await this.ensurePrimaryLocationInvariant(accountId);
+    }
     return location;
   }
 
   async updateLocation(id: string, data: Partial<InsertLocation>): Promise<Location | undefined> {
-    const [loc] = await db.update(locations).set(data).where(eq(locations.id, id)).returning();
+    const [existing] = await db.select().from(locations).where(eq(locations.id, id));
+    if (!existing) {
+      return undefined;
+    }
+
+    const customerId = data.customerId || existing.customerId;
+    const accountId = data.accountId || await this.resolveAccountIdForLegacyCustomer(customerId);
+    const payload: Partial<InsertLocation> = { ...data, accountId };
+
+    const [loc] = await db.update(locations).set(payload).where(eq(locations.id, id)).returning();
+    if (!loc?.accountId) {
+      return loc;
+    }
+
+    await this.ensurePrimaryLocationInvariant(loc.accountId, loc.isPrimary ? loc.id : undefined);
+    if (existing.accountId && existing.accountId !== loc.accountId) {
+      await this.ensurePrimaryLocationInvariant(existing.accountId);
+    }
     return loc;
   }
 
@@ -219,13 +323,7 @@ export class DatabaseStorage implements IStorage {
       return;
     }
 
-    await db.update(locations).set({ isPrimary: false }).where(eq(locations.accountId, targetLocation.accountId));
-    await db.update(locations).set({ isPrimary: true }).where(eq(locations.id, locationId));
-
-    await db
-      .update(accounts)
-      .set({ primaryLocationId: locationId, updatedAt: new Date() })
-      .where(eq(accounts.id, targetLocation.accountId));
+    await this.ensurePrimaryLocationInvariant(targetLocation.accountId, locationId);
   }
 
   async getBillingProfiles(customerId: string): Promise<BillingProfile[]> {

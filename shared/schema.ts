@@ -20,6 +20,7 @@ export const customers = pgTable("customers", {
 });
 
 // Transitional canonical grouping table for Phase 1 bootstrap.
+// TODO(Phase2): remove legacyCustomerId after all reads/writes migrate off legacy customers.
 export const accounts = pgTable("accounts", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   primaryLocationId: varchar("primary_location_id"),
@@ -45,6 +46,8 @@ export const contacts = pgTable("contacts", {
 export const locations = pgTable("locations", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   customerId: varchar("customer_id").notNull().references(() => customers.id),
+  // Transitional nullable field for additive rollout. Bootstrap + write paths backfill/populate this.
+  // TODO(Phase2): make accountId non-null once data and writes are fully canonicalized.
   accountId: varchar("account_id").references(() => accounts.id),
   name: text("name").notNull(),
   address: text("address").notNull(),
