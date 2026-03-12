@@ -18,6 +18,15 @@ export async function registerRoutes(
   httpServer: Server,
   app: Express
 ): Promise<Server> {
+  // Transitional compatibility endpoint for Phase 1 account/location bootstrap.
+  app.get("/api/customer-detail-compat/:legacyCustomerId", async (req, res) => {
+    const data = await storage.getCustomerDetailCompat(
+      req.params.legacyCustomerId,
+      typeof req.query.locationId === "string" ? req.query.locationId : undefined,
+    );
+    if (!data) return res.status(404).json({ message: "Customer detail not found" });
+    res.json(data);
+  });
 
   // Customers
   app.get("/api/customers", async (_req, res) => {

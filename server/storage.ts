@@ -1,7 +1,9 @@
 import {
+  accounts,
   customers, contacts, locations, serviceTypes, appointments,
   serviceRecords, productApplications, invoices, communications,
   billingProfiles, customerNotes,
+  type Account,
   type Customer, type InsertCustomer,
   type Contact, type InsertContact,
   type Location, type InsertLocation,
@@ -15,13 +17,23 @@ import {
   type CustomerNote, type InsertCustomerNote,
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, and, or, isNull } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
+
+export interface CustomerDetailCompatProjection {
+  legacyCustomer: Customer;
+  account: Account;
+  primaryLocation: Location;
+  selectedLocation: Location;
+  relatedLocations: Location[];
+  hasBillingOverride: boolean;
+}
 
 export interface IStorage {
   getCustomers(): Promise<Customer[]>;
   getCustomer(id: string): Promise<Customer | undefined>;
   createCustomer(data: InsertCustomer): Promise<Customer>;
   updateCustomer(id: string, data: Partial<InsertCustomer>): Promise<Customer | undefined>;
+  getCustomerDetailCompat(legacyCustomerId: string, selectedLocationId?: string): Promise<CustomerDetailCompatProjection | undefined>;
 
   getContacts(customerId: string): Promise<Contact[]>;
   getContactsByLocation(locationId: string): Promise<Contact[]>;
@@ -77,6 +89,32 @@ export interface IStorage {
 }
 
 export class DatabaseStorage implements IStorage {
+  private async ensureAccountForLegacyCustomer(legacyCustomerId: string): Promise<Account> {
+    const [existing] = await db
+      .select()
+      .from(accounts)
+      .where(eq(accounts.legacyCustomerId, legacyCustomerId));
+
+    if (existing) {
+      return existing;
+    }
+
+    const [customer] = await db.select().from(customers).where(eq(customers.id, legacyCustomerId));
+    const [created] = await db
+      .insert(accounts)
+      .values({
+        legacyCustomerId,
+        status: customer?.status || "active",
+      })
+      .returning();
+    return created;
+  }
+
+  private async resolveAccountIdForLegacyCustomer(legacyCustomerId: string): Promise<string> {
+    const account = await this.ensureAccountForLegacyCustomer(legacyCustomerId);
+    return account.id;
+  }
+
   async getCustomers(): Promise<Customer[]> {
     return db.select().from(customers);
   }
@@ -88,12 +126,54 @@ export class DatabaseStorage implements IStorage {
 
   async createCustomer(data: InsertCustomer): Promise<Customer> {
     const [customer] = await db.insert(customers).values(data).returning();
+    await this.ensureAccountForLegacyCustomer(customer.id);
     return customer;
   }
 
   async updateCustomer(id: string, data: Partial<InsertCustomer>): Promise<Customer | undefined> {
     const [customer] = await db.update(customers).set(data).where(eq(customers.id, id)).returning();
     return customer;
+  }
+
+  // Transitional compatibility read projection for current customer-detail UI.
+  async getCustomerDetailCompat(legacyCustomerId: string, selectedLocationId?: string): Promise<CustomerDetailCompatProjection | undefined> {
+    const [legacyCustomer] = await db
+      .select()
+      .from(customers)
+      .where(eq(customers.id, legacyCustomerId));
+
+    if (!legacyCustomer) {
+      return undefined;
+    }
+
+    const accountId = await this.resolveAccountIdForLegacyCustomer(legacyCustomerId);
+    const [account] = await db.select().from(accounts).where(eq(accounts.id, accountId));
+    if (!account) {
+      return undefined;
+    }
+
+    const relatedLocations = await db.select().from(locations).where(eq(locations.accountId, account.id));
+    if (relatedLocations.length === 0) {
+      return undefined;
+    }
+
+    const primaryLocation =
+      relatedLocations.find((location) => location.id === account.primaryLocationId) ||
+      relatedLocations.find((location) => location.isPrimary) ||
+      relatedLocations[0];
+
+    const selectedLocation =
+      (selectedLocationId && relatedLocations.find((location) => location.id === selectedLocationId)) ||
+      primaryLocation;
+
+    return {
+      legacyCustomer,
+      account,
+      primaryLocation,
+      selectedLocation,
+      relatedLocations,
+      hasBillingOverride: relatedLocations.some((location) => !!location.billingProfileId),
+    };
   }
 
   async getContacts(customerId: string): Promise<Contact[]> {
@@ -123,7 +203,8 @@ export class DatabaseStorage implements IStorage {
   }
 
   async createLocation(data: InsertLocation): Promise<Location> {
-    const [location] = await db.insert(locations).values(data).returning();
+    const accountId = data.accountId || await this.resolveAccountIdForLegacyCustomer(data.customerId);
+    const [location] = await db.insert(locations).values({ ...data, accountId }).returning();
     return location;
   }
 
@@ -132,9 +213,19 @@ export class DatabaseStorage implements IStorage {
     return loc;
   }
 
-  async setPrimaryLocation(customerId: string, locationId: string): Promise<void> {
-    await db.update(locations).set({ isPrimary: false }).where(eq(locations.customerId, customerId));
+  async setPrimaryLocation(_customerId: string, locationId: string): Promise<void> {
+    const [targetLocation] = await db.select().from(locations).where(eq(locations.id, locationId));
+    if (!targetLocation?.accountId) {
+      return;
+    }
+
+    await db.update(locations).set({ isPrimary: false }).where(eq(locations.accountId, targetLocation.accountId));
     await db.update(locations).set({ isPrimary: true }).where(eq(locations.id, locationId));
+
+    await db
+      .update(accounts)
+      .set({ primaryLocationId: locationId, updatedAt: new Date() })
+      .where(eq(accounts.id, targetLocation.accountId));
   }
 
   async getBillingProfiles(customerId: string): Promise<BillingProfile[]> {

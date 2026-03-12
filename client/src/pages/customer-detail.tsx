@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useRoute, Link, useSearch, useLocation } from "wouter";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -27,13 +27,23 @@ import {
 } from "lucide-react";
 import type { Customer, Contact, Location, Appointment, Invoice, ServiceRecord, Communication, CustomerNote, BillingProfile } from "@shared/schema";
 
+interface CustomerDetailCompatResponse {
+  legacyCustomer: Customer;
+  primaryLocation: Location;
+  selectedLocation: Location;
+  relatedLocations: Location[];
+  hasBillingOverride: boolean;
+}
+
 function AddLocationDialog({ customerId, onClose }: { customerId: string; onClose: () => void }) {
   const { toast } = useToast();
   const [form, setForm] = useState({ name: "", address: "", city: "", state: "", zip: "", propertyType: "residential", isPrimary: false, gateCode: "", squareFootage: "", notes: "" });
   const mutation = useMutation({
     mutationFn: (data: any) => apiRequest("POST", "/api/locations", { ...data, customerId, squareFootage: data.squareFootage ? parseInt(data.squareFootage) : null }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/locations", customerId] });
+      queryClient.invalidateQueries({
+        predicate: (query) => typeof query.queryKey[0] === "string" && query.queryKey[0].startsWith(`/api/customer-detail-compat/${customerId}`),
+      });
       toast({ title: "Location added" });
       onClose();
     },
@@ -242,14 +252,16 @@ export default function CustomerDetail() {
   const [locDialogOpen, setLocDialogOpen] = useState(false);
   const [contactDialogOpen, setContactDialogOpen] = useState(false);
 
-  const { data: customer, isLoading } = useQuery<Customer>({ queryKey: ["/api/customers", customerId] });
-  const { data: allLocations } = useQuery<Location[]>({ queryKey: ["/api/locations", customerId] });
+  const { data: compat, isLoading } = useQuery<CustomerDetailCompatResponse>({
+    queryKey: [`/api/customer-detail-compat/${customerId}${urlLocationId ? `?locationId=${urlLocationId}` : ""}`],
+  });
 
-  const primaryLocation = allLocations?.find((l) => l.isPrimary);
-  const activeLocationId = urlLocationId || primaryLocation?.id || allLocations?.[0]?.id || "";
-  const activeLocation = allLocations?.find((l) => l.id === activeLocationId);
-
-  const hasBillingOverride = allLocations?.some((l) => l.billingProfileId) || false;
+  const customer = compat?.legacyCustomer;
+  const allLocations = compat?.relatedLocations;
+  const primaryLocation = compat?.primaryLocation;
+  const activeLocation = compat?.selectedLocation;
+  const activeLocationId = activeLocation?.id || "";
+  const hasBillingOverride = compat?.hasBillingOverride || false;
 
   const { data: contacts } = useQuery<Contact[]>({ queryKey: ["/api/contacts/by-location", activeLocationId], enabled: !!activeLocationId });
 
@@ -266,7 +278,9 @@ export default function CustomerDetail() {
   const setPrimaryMutation = useMutation({
     mutationFn: (locationId: string) => apiRequest("POST", `/api/locations/${locationId}/set-primary`, {}),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/locations", customerId] });
+      queryClient.invalidateQueries({
+        predicate: (query) => typeof query.queryKey[0] === "string" && query.queryKey[0].startsWith(`/api/customer-detail-compat/${customerId}`),
+      });
     },
   });
 
@@ -455,20 +469,18 @@ export default function CustomerDetail() {
             {!locationServices || locationServices.length === 0 ? (
               <Card><CardContent className="text-center py-8"><ClipboardList className="h-8 w-8 mx-auto text-muted-foreground/30 mb-2" /><p className="text-sm text-muted-foreground">No service history for this location</p></CardContent></Card>
             ) : locationServices.map((svc) => (
-              <Link key={svc.id} href={`/services/${svc.id}`}>
-                <Card className="hover-elevate cursor-pointer" data-testid={`card-service-${svc.id}`}>
-                  <CardContent className="p-4">
-                    <div className="flex items-center justify-between gap-3">
-                      <div>
-                        <p className="text-sm font-medium">{new Date(svc.serviceDate).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}</p>
-                        {svc.technicianName && <p className="text-xs text-muted-foreground">Tech: {svc.technicianName}</p>}
-                        {svc.areasServiced && <p className="text-xs text-muted-foreground mt-0.5">Areas: {svc.areasServiced}</p>}
-                      </div>
-                      {svc.confirmed && <Badge variant="secondary" className="text-xs bg-primary/10 text-primary">Confirmed</Badge>}
+              <Card key={svc.id} className="hover-elevate" data-testid={`card-service-${svc.id}`}>
+                <CardContent className="p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-medium">{new Date(svc.serviceDate).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}</p>
+                      {svc.technicianName && <p className="text-xs text-muted-foreground">Tech: {svc.technicianName}</p>}
+                      {svc.areasServiced && <p className="text-xs text-muted-foreground mt-0.5">Areas: {svc.areasServiced}</p>}
                     </div>
-                  </CardContent>
-                </Card>
-              </Link>
+                    {svc.confirmed && <Badge variant="secondary" className="text-xs bg-primary/10 text-primary">Confirmed</Badge>}
+                  </div>
+                </CardContent>
+              </Card>
             ))}
           </TabsContent>
 
