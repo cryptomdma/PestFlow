@@ -33,6 +33,7 @@ import {
   MapPin,
   Building2,
   User,
+  Users,
   MoreHorizontal,
   ChevronRight,
 } from "lucide-react";

@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+﻿import { useMemo, useState } from "react";
 import { Link } from "wouter";
 import {
   Bell,
@@ -14,9 +14,21 @@ import {
 
 type Period = "today" | "week" | "month";
 
+type KpiCard = {
+  title: string;
+  value: string;
+  helper: string;
+  icon: any;
+  iconWrap: string;
+  iconColor: string;
+  trend?: string;
+  trendColor?: string;
+  progress?: number;
+};
+
 const topNavItems = ["Dashboard", "Operations", "Financials", "Team"];
 
-const kpiCards = [
+const kpiCards: KpiCard[] = [
   {
     title: "Revenue",
     value: "$48,320",
@@ -56,7 +68,7 @@ const kpiCards = [
     iconColor: "text-amber-600",
     trendColor: "text-amber-600",
   },
-] as const;
+ ];
 
 const performers = [
   { name: "Elena R.", jobs: 18, score: "98%", rank: 1 },
@@ -70,7 +82,7 @@ const activities = [
     iconWrap: "bg-green-100",
     iconColor: "text-green-600",
     title: "Service complete: 125 Oak Street",
-    detail: "Technician: Marcus T. � 1 hour ago",
+    detail: "Technician: Marcus T. • 1 hour ago",
     rightLabel: "Completed",
     rightColor: "text-green-600",
   },
@@ -92,7 +104,7 @@ const activities = [
     rightLabel: "Action",
     rightColor: "text-blue-600",
   },
-] as const;
+ ];
 
 export default function DesktopDashboard() {
   const [selectedPeriod, setSelectedPeriod] = useState<Period>("today");
@@ -366,4 +378,6 @@ export default function DesktopDashboard() {
     </div>
   );
 }
+
+
 

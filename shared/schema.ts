@@ -19,6 +19,18 @@ export const customers = pgTable("customers", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
+// Transitional canonical grouping table for Phase 1 bootstrap.
+// TODO(Phase2): remove legacyCustomerId after all reads/writes migrate off legacy customers.
+export const accounts = pgTable("accounts", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  primaryLocationId: varchar("primary_location_id"),
+  status: text("status").notNull().default("active"),
+  // Transitional legacy mapping for compatibility reads.
+  legacyCustomerId: varchar("legacy_customer_id").unique(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
 export const contacts = pgTable("contacts", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   customerId: varchar("customer_id").notNull().references(() => customers.id),
@@ -34,6 +46,9 @@ export const contacts = pgTable("contacts", {
 export const locations = pgTable("locations", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   customerId: varchar("customer_id").notNull().references(() => customers.id),
+  // Transitional nullable field for additive rollout. Bootstrap + write paths backfill/populate this.
+  // TODO(Phase2): make accountId non-null once data and writes are fully canonicalized.
+  accountId: varchar("account_id").references(() => accounts.id),
   name: text("name").notNull(),
   address: text("address").notNull(),
   city: text("city").notNull(),
@@ -148,6 +163,7 @@ export const communications = pgTable("communications", {
 });
 
 export const insertCustomerSchema = createInsertSchema(customers).omit({ id: true, createdAt: true });
+export const insertAccountSchema = createInsertSchema(accounts).omit({ id: true, createdAt: true, updatedAt: true });
 export const insertContactSchema = createInsertSchema(contacts).omit({ id: true });
 export const insertLocationSchema = createInsertSchema(locations).omit({ id: true });
 export const insertBillingProfileSchema = createInsertSchema(billingProfiles).omit({ id: true });
@@ -161,6 +177,8 @@ export const insertCommunicationSchema = createInsertSchema(communications).omit
 
 export type Customer = typeof customers.$inferSelect;
 export type InsertCustomer = z.infer<typeof insertCustomerSchema>;
+export type Account = typeof accounts.$inferSelect;
+export type InsertAccount = z.infer<typeof insertAccountSchema>;
 export type Contact = typeof contacts.$inferSelect;
 export type InsertContact = z.infer<typeof insertContactSchema>;
 export type Location = typeof locations.$inferSelect;
