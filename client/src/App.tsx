@@ -39,7 +39,7 @@ function Router() {
 
 function AppLayout() {
   const [location] = useLocation();
-  const isFullscreenDashboard = location === "/" || location === "/mobile-dashboard";
+  const isFullscreenDashboard = location === "/mobile-dashboard";
 
   if (isFullscreenDashboard) {
     return <Router />;

@@ -36,6 +36,12 @@ export interface AccountInvariantSummary {
   accountPrimaryLocationMismatch: number;
 }
 
+export interface CreateCustomerWithPrimaryLocationInput {
+  customer: InsertCustomer;
+  location: Omit<InsertLocation, "customerId" | "accountId" | "isPrimary">;
+  initialContact?: Omit<InsertContact, "customerId" | "locationId">;
+}
+
 export interface IStorage {
   getCustomers(): Promise<Customer[]>;
   getCustomer(id: string): Promise<Customer | undefined>;
@@ -43,6 +49,7 @@ export interface IStorage {
   updateCustomer(id: string, data: Partial<InsertCustomer>): Promise<Customer | undefined>;
   getCustomerDetailCompat(legacyCustomerId: string, selectedLocationId?: string): Promise<CustomerDetailCompatProjection | undefined>;
   getAccountInvariantSummary(): Promise<AccountInvariantSummary>;
+  createCustomerWithPrimaryLocation(input: CreateCustomerWithPrimaryLocationInput): Promise<Customer>;
 
   getContacts(customerId: string): Promise<Contact[]>;
   getContactsByLocation(locationId: string): Promise<Contact[]>;
@@ -172,6 +179,47 @@ export class DatabaseStorage implements IStorage {
   async updateCustomer(id: string, data: Partial<InsertCustomer>): Promise<Customer | undefined> {
     const [customer] = await db.update(customers).set(data).where(eq(customers.id, id)).returning();
     return customer;
+  }
+
+  async createCustomerWithPrimaryLocation(input: CreateCustomerWithPrimaryLocationInput): Promise<Customer> {
+    const createdCustomer = await db.transaction(async (tx) => {
+      const [customer] = await tx.insert(customers).values(input.customer).returning();
+
+      const [account] = await tx
+        .insert(accounts)
+        .values({
+          legacyCustomerId: customer.id,
+          status: customer.status || "active",
+        })
+        .returning();
+
+      const [location] = await tx
+        .insert(locations)
+        .values({
+          ...input.location,
+          customerId: customer.id,
+          accountId: account.id,
+          isPrimary: true,
+        })
+        .returning();
+
+      await tx
+        .update(accounts)
+        .set({ primaryLocationId: location.id, updatedAt: new Date() })
+        .where(eq(accounts.id, account.id));
+
+      if (input.initialContact) {
+        await tx.insert(contacts).values({
+          ...input.initialContact,
+          customerId: customer.id,
+          locationId: location.id,
+        });
+      }
+
+      return customer;
+    });
+
+    return createdCustomer;
   }
 
   // Transitional compatibility read projection for current customer-detail UI.

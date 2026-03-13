@@ -7,7 +7,7 @@ import {
   insertProductApplicationSchema, insertInvoiceSchema, insertCommunicationSchema,
   insertBillingProfileSchema, insertCustomerNoteSchema,
 } from "@shared/schema";
-import { ZodError } from "zod";
+import { ZodError, z } from "zod";
 
 function handleZodError(res: any, error: ZodError) {
   const messages = error.errors.map((e) => `${e.path.join(".")}: ${e.message}`).join(", ");
@@ -18,6 +18,14 @@ export async function registerRoutes(
   httpServer: Server,
   app: Express
 ): Promise<Server> {
+  const createCustomerWithLocationSchema = z.object({
+    customer: insertCustomerSchema,
+    location: insertLocationSchema.omit({ customerId: true, accountId: true, isPrimary: true }),
+    initialContact: insertContactSchema
+      .omit({ customerId: true, locationId: true })
+      .optional(),
+  });
+
   // Transitional dev-only diagnostics for Phase 1 account/location hardening.
   // TODO(Phase2): gate behind auth/admin controls once user model exists.
   app.get("/api/dev/account-invariants", async (_req, res) => {
@@ -51,6 +59,58 @@ export async function registerRoutes(
     try {
       const validated = insertCustomerSchema.parse(req.body);
       const data = await storage.createCustomer(validated);
+      res.status(201).json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/customers/create-with-primary-location", async (req, res) => {
+    try {
+      const validated = createCustomerWithLocationSchema.parse(req.body);
+      const isCommercial = validated.customer.customerType === "commercial";
+      const isResidential = validated.customer.customerType === "residential";
+
+      if (isCommercial && !validated.customer.companyName?.trim()) {
+        return res.status(400).json({ message: "Commercial customers require companyName." });
+      }
+
+      if (isResidential && (!validated.customer.firstName?.trim() || !validated.customer.lastName?.trim())) {
+        return res.status(400).json({ message: "Residential customers require firstName and lastName." });
+      }
+
+      const locationMissing =
+        !validated.location.address?.trim() ||
+        !validated.location.city?.trim() ||
+        !validated.location.state?.trim() ||
+        !validated.location.zip?.trim();
+
+      if (locationMissing) {
+        return res.status(400).json({ message: "Primary location address, city, state, and zip are required." });
+      }
+
+      const contact = validated.initialContact;
+      const hasAnyContactValue =
+        !!contact?.firstName?.trim() ||
+        !!contact?.lastName?.trim() ||
+        !!contact?.email?.trim() ||
+        !!contact?.phone?.trim();
+
+      const initialContact = hasAnyContactValue
+        ? {
+            ...contact!,
+            firstName: contact?.firstName?.trim() || "Primary",
+            lastName: contact?.lastName?.trim() || "Contact",
+            isPrimary: true,
+          }
+        : undefined;
+
+      const data = await storage.createCustomerWithPrimaryLocation({
+        customer: validated.customer,
+        location: validated.location,
+        initialContact,
+      });
       res.status(201).json(data);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
