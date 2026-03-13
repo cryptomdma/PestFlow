@@ -150,7 +150,6 @@ export default function Schedule() {
   const [currentDate, setCurrentDate] = useState(new Date());
   const [dialogOpen, setDialogOpen] = useState(false);
   const [selectedDate, setSelectedDate] = useState<Date | undefined>();
-  const [viewMode, setViewMode] = useState<"month" | "week" | "day">("month");
 
   const year = currentDate.getFullYear();
   const month = currentDate.getMonth();
@@ -179,9 +178,12 @@ export default function Schedule() {
   const statusColor = (status: string) => {
     switch (status) {
       case "scheduled": return "bg-chart-2";
-      case "in-progress": return "bg-chart-4";
+      case "confirmed": return "bg-chart-4";
+      case "in_progress": return "bg-chart-4";
       case "completed": return "bg-primary";
-      case "cancelled": return "bg-destructive";
+      case "canceled": return "bg-destructive";
+      case "rescheduled": return "bg-chart-5";
+      case "issue": return "bg-destructive";
       default: return "bg-muted-foreground";
     }
   };
@@ -301,7 +303,7 @@ export default function Schedule() {
           ) : (
             <div className="space-y-2">
               {appointments
-                ?.filter((a) => new Date(a.scheduledDate) >= new Date() && a.status !== "cancelled")
+                ?.filter((a) => new Date(a.scheduledDate) >= new Date() && a.status !== "canceled")
                 .sort((a, b) => new Date(a.scheduledDate).getTime() - new Date(b.scheduledDate).getTime())
                 .slice(0, 10)
                 .map((appt) => {
@@ -332,9 +334,9 @@ export default function Schedule() {
 
       <div className="flex items-center gap-4 flex-wrap">
         <div className="flex items-center gap-1.5"><div className="h-2.5 w-2.5 rounded-full bg-chart-2" /><span className="text-xs text-muted-foreground">Scheduled</span></div>
-        <div className="flex items-center gap-1.5"><div className="h-2.5 w-2.5 rounded-full bg-chart-4" /><span className="text-xs text-muted-foreground">In Progress</span></div>
+        <div className="flex items-center gap-1.5"><div className="h-2.5 w-2.5 rounded-full bg-chart-4" /><span className="text-xs text-muted-foreground">Confirmed / In Progress</span></div>
         <div className="flex items-center gap-1.5"><div className="h-2.5 w-2.5 rounded-full bg-primary" /><span className="text-xs text-muted-foreground">Completed</span></div>
-        <div className="flex items-center gap-1.5"><div className="h-2.5 w-2.5 rounded-full bg-destructive" /><span className="text-xs text-muted-foreground">Cancelled</span></div>
+        <div className="flex items-center gap-1.5"><div className="h-2.5 w-2.5 rounded-full bg-destructive" /><span className="text-xs text-muted-foreground">Canceled / Issue</span></div>
       </div>
     </div>
   );

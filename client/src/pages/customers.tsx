@@ -37,7 +37,7 @@ import {
   MoreHorizontal,
   ChevronRight,
 } from "lucide-react";
-import type { Customer, Contact, Location } from "@shared/schema";
+import type { Customer } from "@shared/schema";
 
 function CustomerForm({ onSuccess, onClose }: { onSuccess: () => void; onClose: () => void }) {
   const { toast } = useToast();
@@ -65,44 +65,44 @@ function CustomerForm({ onSuccess, onClose }: { onSuccess: () => void; onClose: 
 
   const createMutation = useMutation({
     mutationFn: async (data: typeof formData) => {
-      const customerRes = await apiRequest("POST", "/api/customers", {
-        firstName: data.firstName,
-        lastName: data.lastName,
-        companyName: data.companyName || null,
-        email: data.email || null,
-        phone: data.phone || null,
-        customerType: data.customerType,
-        status: data.status,
-        notes: data.notes || null,
-      });
-      const customer = await customerRes.json();
+      const initialContactProvided =
+        !!data.contactFirstName.trim() ||
+        !!data.contactLastName.trim() ||
+        !!data.contactEmail.trim() ||
+        !!data.contactPhone.trim();
 
-      if (data.address) {
-        await apiRequest("POST", "/api/locations", {
-          customerId: customer.id,
-          name: data.locationName || "Primary",
-          address: data.address,
-          city: data.city,
-          state: data.state,
-          zip: data.zip,
-          isPrimary: true,
+      const customerRes = await apiRequest("POST", "/api/customers/create-with-primary-location", {
+        customer: {
+          firstName: data.firstName.trim(),
+          lastName: data.lastName.trim(),
+          companyName: data.companyName.trim() || null,
+          email: data.email.trim() || null,
+          phone: data.phone.trim() || null,
+          customerType: data.customerType,
+          status: data.status,
+          notes: data.notes.trim() || null,
+        },
+        location: {
+          name: data.locationName.trim() || "Primary",
+          address: data.address.trim(),
+          city: data.city.trim(),
+          state: data.state.trim(),
+          zip: data.zip.trim(),
           propertyType: data.propertyType,
-        });
-      }
+        },
+        initialContact: initialContactProvided
+          ? {
+              firstName: data.contactFirstName.trim() || "Primary",
+              lastName: data.contactLastName.trim() || "Contact",
+              email: data.contactEmail.trim() || null,
+              phone: data.contactPhone.trim() || null,
+              role: data.contactRole.trim() || null,
+              isPrimary: true,
+            }
+          : undefined,
+      });
 
-      if (data.contactFirstName) {
-        await apiRequest("POST", "/api/contacts", {
-          customerId: customer.id,
-          firstName: data.contactFirstName,
-          lastName: data.contactLastName,
-          email: data.contactEmail || null,
-          phone: data.contactPhone || null,
-          role: data.contactRole || null,
-          isPrimary: true,
-        });
-      }
-
-      return customer;
+      return customerRes.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/customers"] });
@@ -117,8 +117,20 @@ function CustomerForm({ onSuccess, onClose }: { onSuccess: () => void; onClose: 
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!formData.firstName || !formData.lastName) {
-      toast({ title: "First name and last name are required", variant: "destructive" });
+    const isCommercial = formData.customerType === "commercial";
+
+    if (!formData.address.trim() || !formData.city.trim() || !formData.state.trim() || !formData.zip.trim()) {
+      toast({ title: "Primary location address, city, state, and ZIP are required", variant: "destructive" });
+      return;
+    }
+
+    if (isCommercial && !formData.companyName.trim()) {
+      toast({ title: "Company name is required for commercial customers", variant: "destructive" });
+      return;
+    }
+
+    if (!isCommercial && (!formData.firstName.trim() || !formData.lastName.trim())) {
+      toast({ title: "First name and last name are required for residential customers", variant: "destructive" });
       return;
     }
     createMutation.mutate(formData);
@@ -139,16 +151,16 @@ function CustomerForm({ onSuccess, onClose }: { onSuccess: () => void; onClose: 
         <TabsContent value="info" className="space-y-4 mt-4">
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
-              <Label htmlFor="firstName">First Name *</Label>
+              <Label htmlFor="firstName">First Name {formData.customerType === "residential" ? "*" : ""}</Label>
               <Input id="firstName" data-testid="input-first-name" value={formData.firstName} onChange={(e) => updateField("firstName", e.target.value)} />
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="lastName">Last Name *</Label>
+              <Label htmlFor="lastName">Last Name {formData.customerType === "residential" ? "*" : ""}</Label>
               <Input id="lastName" data-testid="input-last-name" value={formData.lastName} onChange={(e) => updateField("lastName", e.target.value)} />
             </div>
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="companyName">Company Name</Label>
+            <Label htmlFor="companyName">Company Name {formData.customerType === "commercial" ? "*" : ""}</Label>
             <Input id="companyName" data-testid="input-company-name" value={formData.companyName} onChange={(e) => updateField("companyName", e.target.value)} />
           </div>
           <div className="grid grid-cols-2 gap-3">
@@ -196,20 +208,20 @@ function CustomerForm({ onSuccess, onClose }: { onSuccess: () => void; onClose: 
             <Input id="locationName" data-testid="input-location-name" placeholder="e.g., Main Office, Home" value={formData.locationName} onChange={(e) => updateField("locationName", e.target.value)} />
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="address">Address</Label>
+            <Label htmlFor="address">Address *</Label>
             <Input id="address" data-testid="input-address" value={formData.address} onChange={(e) => updateField("address", e.target.value)} />
           </div>
           <div className="grid grid-cols-3 gap-3">
             <div className="space-y-1.5">
-              <Label htmlFor="city">City</Label>
+              <Label htmlFor="city">City *</Label>
               <Input id="city" data-testid="input-city" value={formData.city} onChange={(e) => updateField("city", e.target.value)} />
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="state">State</Label>
+              <Label htmlFor="state">State *</Label>
               <Input id="state" data-testid="input-state" value={formData.state} onChange={(e) => updateField("state", e.target.value)} />
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="zip">ZIP</Label>
+              <Label htmlFor="zip">ZIP *</Label>
               <Input id="zip" data-testid="input-zip" value={formData.zip} onChange={(e) => updateField("zip", e.target.value)} />
             </div>
           </div>
