@@ -39,6 +39,7 @@ import type { Customer } from "@shared/schema";
 
 function CustomerForm({ onSuccess, onClose }: { onSuccess: () => void; onClose: () => void }) {
   const { toast } = useToast();
+  const sourceOptions = ["Google", "Youtube", "Referal", "Facebook"] as const;
   const [formData, setFormData] = useState({
     firstName: "",
     lastName: "",
@@ -162,13 +163,18 @@ function CustomerForm({ onSuccess, onClose }: { onSuccess: () => void; onClose: 
         </div>
         <div className="space-y-1.5">
           <Label htmlFor="source">Source *</Label>
-          <Input
-            id="source"
-            data-testid="input-source"
-            placeholder="Referral, Google, postcard, etc."
-            value={formData.source}
-            onChange={(e) => updateField("source", e.target.value)}
-          />
+          <Select value={formData.source} onValueChange={(v) => updateField("source", v)}>
+            <SelectTrigger id="source" data-testid="select-source">
+              <SelectValue placeholder="Select source" />
+            </SelectTrigger>
+            <SelectContent>
+              {sourceOptions.map((option) => (
+                <SelectItem key={option} value={option}>
+                  {option}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
       </div>
       {formData.customerType === "commercial" && (
