@@ -20,8 +20,6 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Link } from "wouter";
@@ -48,58 +46,54 @@ function CustomerForm({ onSuccess, onClose }: { onSuccess: () => void; onClose: 
     email: "",
     phone: "",
     customerType: "residential",
-    status: "active",
-    notes: "",
-    locationName: "",
+    source: "",
     address: "",
     city: "",
     state: "",
     zip: "",
-    propertyType: "residential",
-    contactFirstName: "",
-    contactLastName: "",
-    contactEmail: "",
-    contactPhone: "",
-    contactRole: "",
   });
 
   const createMutation = useMutation({
     mutationFn: async (data: typeof formData) => {
-      const initialContactProvided =
-        !!data.contactFirstName.trim() ||
-        !!data.contactLastName.trim() ||
-        !!data.contactEmail.trim() ||
-        !!data.contactPhone.trim();
+      const trimmedFirstName = data.firstName.trim();
+      const trimmedLastName = data.lastName.trim();
+      const trimmedCompanyName = data.customerType === "commercial" ? data.companyName.trim() : "";
+      const trimmedEmail = data.email.trim();
+      const trimmedPhone = data.phone.trim();
+      const trimmedSource = data.source.trim();
+      const trimmedAddress = data.address.trim();
+      const trimmedCity = data.city.trim();
+      const trimmedState = data.state.trim();
+      const trimmedZip = data.zip.trim();
 
       const customerRes = await apiRequest("POST", "/api/customers/create-with-primary-location", {
         customer: {
-          firstName: data.firstName.trim(),
-          lastName: data.lastName.trim(),
-          companyName: data.companyName.trim() || null,
-          email: data.email.trim() || null,
-          phone: data.phone.trim() || null,
+          firstName: trimmedFirstName,
+          lastName: trimmedLastName,
+          companyName: trimmedCompanyName || null,
+          email: trimmedEmail,
+          phone: trimmedPhone,
           customerType: data.customerType,
-          status: data.status,
-          notes: data.notes.trim() || null,
+          status: "active",
+          notes: null,
         },
         location: {
-          name: data.locationName.trim() || "Primary",
-          address: data.address.trim(),
-          city: data.city.trim(),
-          state: data.state.trim(),
-          zip: data.zip.trim(),
-          propertyType: data.propertyType,
+          name: "Primary Location",
+          address: trimmedAddress,
+          city: trimmedCity,
+          state: trimmedState,
+          zip: trimmedZip,
+          propertyType: data.customerType,
+          source: trimmedSource,
         },
-        initialContact: initialContactProvided
-          ? {
-              firstName: data.contactFirstName.trim() || "Primary",
-              lastName: data.contactLastName.trim() || "Contact",
-              email: data.contactEmail.trim() || null,
-              phone: data.contactPhone.trim() || null,
-              role: data.contactRole.trim() || null,
-              isPrimary: true,
-            }
-          : undefined,
+        initialContact: {
+          firstName: trimmedFirstName,
+          lastName: trimmedLastName,
+          email: trimmedEmail,
+          phone: trimmedPhone,
+          role: "primary",
+          isPrimary: true,
+        },
       });
 
       return customerRes.json();
@@ -119,8 +113,19 @@ function CustomerForm({ onSuccess, onClose }: { onSuccess: () => void; onClose: 
     e.preventDefault();
     const isCommercial = formData.customerType === "commercial";
 
+    if (
+      !formData.firstName.trim() ||
+      !formData.lastName.trim() ||
+      !formData.email.trim() ||
+      !formData.phone.trim() ||
+      !formData.source.trim()
+    ) {
+      toast({ title: "First name, last name, email, phone, and source are required", variant: "destructive" });
+      return;
+    }
+
     if (!formData.address.trim() || !formData.city.trim() || !formData.state.trim() || !formData.zip.trim()) {
-      toast({ title: "Primary location address, city, state, and ZIP are required", variant: "destructive" });
+      toast({ title: "Address, city, state, and ZIP are required", variant: "destructive" });
       return;
     }
 
@@ -129,10 +134,6 @@ function CustomerForm({ onSuccess, onClose }: { onSuccess: () => void; onClose: 
       return;
     }
 
-    if (!isCommercial && (!formData.firstName.trim() || !formData.lastName.trim())) {
-      toast({ title: "First name and last name are required for residential customers", variant: "destructive" });
-      return;
-    }
     createMutation.mutate(formData);
   };
 
@@ -142,130 +143,90 @@ function CustomerForm({ onSuccess, onClose }: { onSuccess: () => void; onClose: 
 
   return (
     <form onSubmit={handleSubmit} className="space-y-6 max-h-[70vh] overflow-y-auto pr-1">
-      <Tabs defaultValue="info">
-        <TabsList className="w-full">
-          <TabsTrigger value="info" className="flex-1" data-testid="tab-customer-info">Customer Info</TabsTrigger>
-          <TabsTrigger value="location" className="flex-1" data-testid="tab-location">Location</TabsTrigger>
-          <TabsTrigger value="contact" className="flex-1" data-testid="tab-contact">Contact</TabsTrigger>
-        </TabsList>
-        <TabsContent value="info" className="space-y-4 mt-4">
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1.5">
-              <Label htmlFor="firstName">First Name {formData.customerType === "residential" ? "*" : ""}</Label>
-              <Input id="firstName" data-testid="input-first-name" value={formData.firstName} onChange={(e) => updateField("firstName", e.target.value)} />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="lastName">Last Name {formData.customerType === "residential" ? "*" : ""}</Label>
-              <Input id="lastName" data-testid="input-last-name" value={formData.lastName} onChange={(e) => updateField("lastName", e.target.value)} />
-            </div>
-          </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="companyName">Company Name {formData.customerType === "commercial" ? "*" : ""}</Label>
-            <Input id="companyName" data-testid="input-company-name" value={formData.companyName} onChange={(e) => updateField("companyName", e.target.value)} />
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1.5">
-              <Label htmlFor="email">Email</Label>
-              <Input id="email" type="email" data-testid="input-email" value={formData.email} onChange={(e) => updateField("email", e.target.value)} />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="phone">Phone</Label>
-              <Input id="phone" data-testid="input-phone" value={formData.phone} onChange={(e) => updateField("phone", e.target.value)} />
-            </div>
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1.5">
-              <Label>Customer Type</Label>
-              <Select value={formData.customerType} onValueChange={(v) => updateField("customerType", v)}>
-                <SelectTrigger data-testid="select-customer-type"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="residential">Residential</SelectItem>
-                  <SelectItem value="commercial">Commercial</SelectItem>
-                  <SelectItem value="industrial">Industrial</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-1.5">
-              <Label>Status</Label>
-              <Select value={formData.status} onValueChange={(v) => updateField("status", v)}>
-                <SelectTrigger data-testid="select-status"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="active">Active</SelectItem>
-                  <SelectItem value="inactive">Inactive</SelectItem>
-                  <SelectItem value="prospect">Prospect</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="notes">Notes</Label>
-            <Textarea id="notes" data-testid="input-notes" value={formData.notes} onChange={(e) => updateField("notes", e.target.value)} className="resize-none" />
-          </div>
-        </TabsContent>
-        <TabsContent value="location" className="space-y-4 mt-4">
-          <div className="space-y-1.5">
-            <Label htmlFor="locationName">Location Name</Label>
-            <Input id="locationName" data-testid="input-location-name" placeholder="e.g., Main Office, Home" value={formData.locationName} onChange={(e) => updateField("locationName", e.target.value)} />
-          </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="address">Address *</Label>
-            <Input id="address" data-testid="input-address" value={formData.address} onChange={(e) => updateField("address", e.target.value)} />
-          </div>
-          <div className="grid grid-cols-3 gap-3">
-            <div className="space-y-1.5">
-              <Label htmlFor="city">City *</Label>
-              <Input id="city" data-testid="input-city" value={formData.city} onChange={(e) => updateField("city", e.target.value)} />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="state">State *</Label>
-              <Input id="state" data-testid="input-state" value={formData.state} onChange={(e) => updateField("state", e.target.value)} />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="zip">ZIP *</Label>
-              <Input id="zip" data-testid="input-zip" value={formData.zip} onChange={(e) => updateField("zip", e.target.value)} />
-            </div>
-          </div>
-          <div className="space-y-1.5">
-            <Label>Property Type</Label>
-            <Select value={formData.propertyType} onValueChange={(v) => updateField("propertyType", v)}>
-              <SelectTrigger data-testid="select-property-type"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="residential">Residential</SelectItem>
-                <SelectItem value="commercial">Commercial</SelectItem>
-                <SelectItem value="industrial">Industrial</SelectItem>
-                <SelectItem value="multi-family">Multi-Family</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-        </TabsContent>
-        <TabsContent value="contact" className="space-y-4 mt-4">
-          <p className="text-sm text-muted-foreground">Add a primary contact for this customer (optional)</p>
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1.5">
-              <Label htmlFor="contactFirstName">First Name</Label>
-              <Input id="contactFirstName" data-testid="input-contact-first-name" value={formData.contactFirstName} onChange={(e) => updateField("contactFirstName", e.target.value)} />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="contactLastName">Last Name</Label>
-              <Input id="contactLastName" data-testid="input-contact-last-name" value={formData.contactLastName} onChange={(e) => updateField("contactLastName", e.target.value)} />
-            </div>
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1.5">
-              <Label htmlFor="contactEmail">Email</Label>
-              <Input id="contactEmail" type="email" data-testid="input-contact-email" value={formData.contactEmail} onChange={(e) => updateField("contactEmail", e.target.value)} />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="contactPhone">Phone</Label>
-              <Input id="contactPhone" data-testid="input-contact-phone" value={formData.contactPhone} onChange={(e) => updateField("contactPhone", e.target.value)} />
-            </div>
-          </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="contactRole">Role</Label>
-            <Input id="contactRole" data-testid="input-contact-role" placeholder="e.g., Property Manager, Owner" value={formData.contactRole} onChange={(e) => updateField("contactRole", e.target.value)} />
-          </div>
-        </TabsContent>
-      </Tabs>
+      <div className="space-y-1">
+        <h3 className="text-sm font-semibold">Primary location</h3>
+        <p className="text-sm text-muted-foreground">
+          Create one primary location and use the same core contact details for the customer identity.
+        </p>
+      </div>
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <div className="space-y-1.5">
+          <Label>Customer Type</Label>
+          <Select value={formData.customerType} onValueChange={(v) => updateField("customerType", v)}>
+            <SelectTrigger data-testid="select-customer-type"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="residential">Residential</SelectItem>
+              <SelectItem value="commercial">Commercial</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="source">Source *</Label>
+          <Input
+            id="source"
+            data-testid="input-source"
+            placeholder="Referral, Google, postcard, etc."
+            value={formData.source}
+            onChange={(e) => updateField("source", e.target.value)}
+          />
+        </div>
+      </div>
+      {formData.customerType === "commercial" && (
+        <div className="space-y-1.5">
+          <Label htmlFor="companyName">Company Name *</Label>
+          <Input
+            id="companyName"
+            data-testid="input-company-name"
+            value={formData.companyName}
+            onChange={(e) => updateField("companyName", e.target.value)}
+          />
+        </div>
+      )}
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <div className="space-y-1.5">
+          <Label htmlFor="firstName">First Name *</Label>
+          <Input id="firstName" data-testid="input-first-name" value={formData.firstName} onChange={(e) => updateField("firstName", e.target.value)} />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="lastName">Last Name *</Label>
+          <Input id="lastName" data-testid="input-last-name" value={formData.lastName} onChange={(e) => updateField("lastName", e.target.value)} />
+        </div>
+      </div>
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <div className="space-y-1.5">
+          <Label htmlFor="email">Email *</Label>
+          <Input id="email" type="email" data-testid="input-email" value={formData.email} onChange={(e) => updateField("email", e.target.value)} />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="phone">Phone *</Label>
+          <Input id="phone" data-testid="input-phone" value={formData.phone} onChange={(e) => updateField("phone", e.target.value)} />
+        </div>
+      </div>
+      <div className="space-y-1.5">
+        <Label htmlFor="address">Address *</Label>
+        <Input
+          id="address"
+          data-testid="input-address"
+          placeholder="Street address"
+          autoComplete="street-address"
+          value={formData.address}
+          onChange={(e) => updateField("address", e.target.value)}
+        />
+      </div>
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-[minmax(0,1fr)_120px_120px]">
+        <div className="space-y-1.5">
+          <Label htmlFor="city">City *</Label>
+          <Input id="city" data-testid="input-city" autoComplete="address-level2" value={formData.city} onChange={(e) => updateField("city", e.target.value)} />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="state">State *</Label>
+          <Input id="state" data-testid="input-state" autoComplete="address-level1" value={formData.state} onChange={(e) => updateField("state", e.target.value)} />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="zip">ZIP *</Label>
+          <Input id="zip" data-testid="input-zip" autoComplete="postal-code" value={formData.zip} onChange={(e) => updateField("zip", e.target.value)} />
+        </div>
+      </div>
       <div className="flex justify-end gap-2 pt-2">
         <Button type="button" variant="outline" onClick={onClose} data-testid="button-cancel">Cancel</Button>
         <Button type="submit" disabled={createMutation.isPending} data-testid="button-save-customer">
