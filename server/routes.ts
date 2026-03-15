@@ -86,22 +86,38 @@ export async function registerRoutes(
         !validated.location.state?.trim() ||
         !validated.location.zip?.trim();
 
+      const customerMissing =
+        !validated.customer.firstName?.trim() ||
+        !validated.customer.lastName?.trim() ||
+        !validated.customer.email?.trim() ||
+        !validated.customer.phone?.trim();
+
       if (locationMissing) {
         return res.status(400).json({ message: "Primary location address, city, state, and zip are required." });
       }
 
+      if (customerMissing) {
+        return res.status(400).json({ message: "First name, last name, email, and phone are required." });
+      }
+
+      if (!validated.location.source?.trim()) {
+        return res.status(400).json({ message: "Primary location source is required." });
+      }
+
       const contact = validated.initialContact;
       const hasAnyContactValue =
-        !!contact?.firstName?.trim() ||
-        !!contact?.lastName?.trim() ||
-        !!contact?.email?.trim() ||
+        !!contact?.firstName?.trim() &&
+        !!contact?.lastName?.trim() &&
+        !!contact?.email?.trim() &&
         !!contact?.phone?.trim();
 
       const initialContact = hasAnyContactValue
         ? {
             ...contact!,
-            firstName: contact?.firstName?.trim() || "Primary",
-            lastName: contact?.lastName?.trim() || "Contact",
+            firstName: contact!.firstName.trim(),
+            lastName: contact!.lastName.trim(),
+            email: contact!.email!.trim(),
+            phone: contact!.phone!.trim(),
             isPrimary: true,
           }
         : undefined;

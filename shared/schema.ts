@@ -61,6 +61,7 @@ export const locations = pgTable("locations", {
   gateCode: text("gate_code"),
   notes: text("notes"),
   billingProfileId: varchar("billing_profile_id"),
+  source: text("source"),
 });
 
 export const billingProfiles = pgTable("billing_profiles", {
