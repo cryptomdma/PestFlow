@@ -13,6 +13,17 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger,
 } from "@/components/ui/dialog";
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
+import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import {
@@ -510,6 +521,7 @@ export default function CustomerDetail() {
   const [locDialogOpen, setLocDialogOpen] = useState(false);
   const [editLocDialogOpen, setEditLocDialogOpen] = useState(false);
   const [contactDialogOpen, setContactDialogOpen] = useState(false);
+  const [confirmPrimaryOpen, setConfirmPrimaryOpen] = useState(false);
 
   const { data: compat, isLoading } = useQuery<CustomerDetailCompatResponse>({
     queryKey: [`/api/customer-detail-compat/${customerId}${urlLocationId ? `?locationId=${urlLocationId}` : ""}`],
@@ -664,9 +676,30 @@ export default function CustomerDetail() {
                     </DialogContent>
                   </Dialog>
                   {!activeLocation.isPrimary && (
-                    <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => setPrimaryMutation.mutate(activeLocation.id)} data-testid="button-set-primary">
-                      <Star className="h-3 w-3 mr-1" /> Set Primary
-                    </Button>
+                    <AlertDialog open={confirmPrimaryOpen} onOpenChange={setConfirmPrimaryOpen}>
+                      <AlertDialogTrigger asChild>
+                        <Button variant="ghost" size="sm" className="h-7 text-xs" data-testid="button-set-primary">
+                          <Star className="h-3 w-3 mr-1" /> Set Primary
+                        </Button>
+                      </AlertDialogTrigger>
+                      <AlertDialogContent>
+                        <AlertDialogHeader>
+                          <AlertDialogTitle>Set this as the primary location?</AlertDialogTitle>
+                          <AlertDialogDescription>
+                            This will make {activeLocation.name} the customer identity shown in the UI for this account. Account-level data will stay with the account.
+                          </AlertDialogDescription>
+                        </AlertDialogHeader>
+                        <AlertDialogFooter>
+                          <AlertDialogCancel>Cancel</AlertDialogCancel>
+                          <AlertDialogAction
+                            onClick={() => setPrimaryMutation.mutate(activeLocation.id)}
+                            data-testid="button-confirm-set-primary"
+                          >
+                            Confirm
+                          </AlertDialogAction>
+                        </AlertDialogFooter>
+                      </AlertDialogContent>
+                    </AlertDialog>
                   )}
                 </div>
               </CardHeader>
