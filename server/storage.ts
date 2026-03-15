@@ -1,4 +1,5 @@
 import {
+  auditLogs,
   accounts,
   customers, contacts, locations, serviceTypes, appointments,
   serviceRecords, productApplications, invoices, communications,
@@ -36,10 +37,23 @@ export interface AccountInvariantSummary {
   accountPrimaryLocationMismatch: number;
 }
 
+export interface AuditActor {
+  userId?: string | null;
+  actorLabel?: string | null;
+}
+
 export interface CreateCustomerWithPrimaryLocationInput {
   customer: InsertCustomer;
   location: Omit<InsertLocation, "customerId" | "accountId" | "isPrimary">;
   initialContact?: Omit<InsertContact, "customerId" | "locationId">;
+}
+
+export interface UpdateLocationProfileInput {
+  customerId: string;
+  locationId: string;
+  location: Partial<Omit<InsertLocation, "customerId" | "accountId" | "isPrimary">>;
+  customer?: Partial<InsertCustomer>;
+  actor?: AuditActor;
 }
 
 export interface IStorage {
@@ -50,6 +64,7 @@ export interface IStorage {
   getCustomerDetailCompat(legacyCustomerId: string, selectedLocationId?: string): Promise<CustomerDetailCompatProjection | undefined>;
   getAccountInvariantSummary(): Promise<AccountInvariantSummary>;
   createCustomerWithPrimaryLocation(input: CreateCustomerWithPrimaryLocationInput): Promise<Customer>;
+  updateLocationProfile(input: UpdateLocationProfileInput): Promise<{ customer?: Customer; location: Location } | undefined>;
 
   getContacts(customerId: string): Promise<Contact[]>;
   getContactsByLocation(locationId: string): Promise<Contact[]>;
@@ -220,6 +235,60 @@ export class DatabaseStorage implements IStorage {
     });
 
     return createdCustomer;
+  }
+
+  async updateLocationProfile(input: UpdateLocationProfileInput): Promise<{ customer?: Customer; location: Location } | undefined> {
+    const result = await db.transaction(async (tx) => {
+      const [existingLocation] = await tx.select().from(locations).where(eq(locations.id, input.locationId));
+      if (!existingLocation || existingLocation.customerId !== input.customerId) {
+        return undefined;
+      }
+
+      const [existingCustomer] = await tx.select().from(customers).where(eq(customers.id, input.customerId));
+      if (!existingCustomer) {
+        return undefined;
+      }
+
+      const [updatedLocation] = await tx
+        .update(locations)
+        .set(input.location)
+        .where(eq(locations.id, input.locationId))
+        .returning();
+
+      await tx.insert(auditLogs).values({
+        entityType: "location",
+        entityId: updatedLocation.id,
+        action: "update",
+        userId: input.actor?.userId || null,
+        actorLabel: input.actor?.actorLabel || null,
+        beforeJson: existingLocation,
+        afterJson: updatedLocation,
+      });
+
+      let updatedCustomer: Customer | undefined;
+      if (input.customer) {
+        const [customer] = await tx
+          .update(customers)
+          .set(input.customer)
+          .where(eq(customers.id, input.customerId))
+          .returning();
+        updatedCustomer = customer;
+
+        await tx.insert(auditLogs).values({
+          entityType: "customer",
+          entityId: customer.id,
+          action: "update",
+          userId: input.actor?.userId || null,
+          actorLabel: input.actor?.actorLabel || null,
+          beforeJson: existingCustomer,
+          afterJson: customer,
+        });
+      }
+
+      return { customer: updatedCustomer, location: updatedLocation };
+    });
+
+    return result;
   }
 
   // Transitional compatibility read projection for current customer-detail UI.

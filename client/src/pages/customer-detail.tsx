@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useRoute, Link, useSearch, useLocation } from "wouter";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -12,6 +12,17 @@ import { Skeleton } from "@/components/ui/skeleton";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger,
 } from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
@@ -33,6 +44,29 @@ interface CustomerDetailCompatResponse {
   selectedLocation: Location;
   relatedLocations: Location[];
   hasBillingOverride: boolean;
+}
+
+interface UpdateLocationProfileResponse {
+  customer?: Customer;
+  location: Location;
+}
+
+const BASE_LOCATION_TYPE_OPTIONS = ["residential", "commercial"] as const;
+const BASE_SOURCE_OPTIONS = ["Google", "Youtube", "Referal", "Facebook"] as const;
+
+function buildOptions(currentValue: string | null | undefined, baseOptions: readonly string[]) {
+  if (!currentValue || baseOptions.includes(currentValue)) {
+    return [...baseOptions];
+  }
+
+  return [currentValue, ...baseOptions];
+}
+
+function formatOptionLabel(value: string) {
+  return value
+    .split("-")
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
 }
 
 function AddLocationDialog({ customerId, onClose }: { customerId: string; onClose: () => void }) {
@@ -76,6 +110,241 @@ function AddLocationDialog({ customerId, onClose }: { customerId: string; onClos
       <div className="space-y-1.5"><Label>Notes</Label><Textarea value={form.notes} onChange={(e) => setForm(p => ({ ...p, notes: e.target.value }))} className="resize-none" rows={2} /></div>
       <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.isPrimary} onChange={(e) => setForm(p => ({ ...p, isPrimary: e.target.checked }))} /> Set as primary location</label>
       <div className="flex justify-end gap-2"><Button type="button" variant="outline" onClick={onClose}>Cancel</Button><Button type="submit" disabled={mutation.isPending} data-testid="button-save-location">{mutation.isPending ? "Saving..." : "Add Location"}</Button></div>
+    </form>
+  );
+}
+
+function EditLocationDialog({
+  customer,
+  location,
+  onClose,
+}: {
+  customer: Customer;
+  location: Location;
+  onClose: () => void;
+}) {
+  const { toast } = useToast();
+  const isPrimaryLocation = location.isPrimary;
+  const [form, setForm] = useState({
+    firstName: customer.firstName || "",
+    lastName: customer.lastName || "",
+    companyName: customer.companyName || "",
+    email: customer.email || "",
+    phone: customer.phone || "",
+    customerType: customer.customerType || "residential",
+    name: location.name || "",
+    address: location.address || "",
+    city: location.city || "",
+    state: location.state || "",
+    zip: location.zip || "",
+    propertyType: location.propertyType || "residential",
+    source: location.source || "",
+    squareFootage: location.squareFootage ? String(location.squareFootage) : "",
+    gateCode: location.gateCode || "",
+    notes: location.notes || "",
+  });
+
+  useEffect(() => {
+    setForm({
+      firstName: customer.firstName || "",
+      lastName: customer.lastName || "",
+      companyName: customer.companyName || "",
+      email: customer.email || "",
+      phone: customer.phone || "",
+      customerType: customer.customerType || "residential",
+      name: location.name || "",
+      address: location.address || "",
+      city: location.city || "",
+      state: location.state || "",
+      zip: location.zip || "",
+      propertyType: location.propertyType || "residential",
+      source: location.source || "",
+      squareFootage: location.squareFootage ? String(location.squareFootage) : "",
+      gateCode: location.gateCode || "",
+      notes: location.notes || "",
+    });
+  }, [customer, location]);
+
+  const locationTypeOptions = buildOptions(form.propertyType, BASE_LOCATION_TYPE_OPTIONS);
+  const customerTypeOptions = buildOptions(form.customerType, BASE_LOCATION_TYPE_OPTIONS);
+  const sourceOptions = buildOptions(form.source, BASE_SOURCE_OPTIONS);
+
+  const mutation = useMutation({
+    mutationFn: async (data: typeof form) => {
+      const locationPayload = {
+        name: data.name.trim(),
+        address: data.address.trim(),
+        city: data.city.trim(),
+        state: data.state.trim(),
+        zip: data.zip.trim(),
+        propertyType: isPrimaryLocation ? data.customerType : data.propertyType,
+        source: data.source.trim() || null,
+        squareFootage: data.squareFootage.trim() ? parseInt(data.squareFootage, 10) : null,
+        gateCode: data.gateCode.trim() || null,
+        notes: data.notes.trim() || null,
+      };
+
+      const customerPayload = isPrimaryLocation
+        ? {
+            firstName: data.firstName.trim(),
+            lastName: data.lastName.trim(),
+            companyName: data.customerType === "commercial" ? data.companyName.trim() || null : null,
+            email: data.email.trim(),
+            phone: data.phone.trim(),
+            customerType: data.customerType,
+          }
+        : undefined;
+
+      const res = await apiRequest("PATCH", `/api/customers/${customer.id}/locations/${location.id}/profile`, {
+        location: locationPayload,
+        customer: customerPayload,
+      });
+
+      return res.json() as Promise<UpdateLocationProfileResponse>;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        predicate: (query) => typeof query.queryKey[0] === "string" && query.queryKey[0].startsWith(`/api/customer-detail-compat/${customer.id}`),
+      });
+      toast({ title: "Location updated" });
+      onClose();
+    },
+    onError: (err: Error) => {
+      toast({ title: "Error updating location", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+
+    if (!form.name.trim() || !form.address.trim() || !form.city.trim() || !form.state.trim() || !form.zip.trim()) {
+      toast({ title: "Location name, address, city, state, and ZIP are required", variant: "destructive" });
+      return;
+    }
+
+    if (isPrimaryLocation) {
+      if (!form.firstName.trim() || !form.lastName.trim() || !form.email.trim() || !form.phone.trim()) {
+        toast({ title: "First name, last name, email, and phone are required for the primary location", variant: "destructive" });
+        return;
+      }
+
+      if (form.customerType === "commercial" && !form.companyName.trim()) {
+        toast({ title: "Company name is required for commercial customers", variant: "destructive" });
+        return;
+      }
+    }
+
+    mutation.mutate(form);
+  };
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-4">
+      {isPrimaryLocation ? (
+        <>
+          <div className="space-y-1">
+            <h3 className="text-sm font-semibold">Customer identity</h3>
+            <p className="text-sm text-muted-foreground">
+              These fields power the current primary-location identity shown at the top of this screen.
+            </p>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="space-y-1.5">
+              <Label>Customer Type</Label>
+              <Select value={form.customerType} onValueChange={(value) => setForm((prev) => ({ ...prev, customerType: value, propertyType: value }))}>
+                <SelectTrigger data-testid="select-edit-customer-type"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {customerTypeOptions.map((option) => (
+                    <SelectItem key={option} value={option}>{formatOptionLabel(option)}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Source</Label>
+              <Select value={form.source} onValueChange={(value) => setForm((prev) => ({ ...prev, source: value }))}>
+                <SelectTrigger data-testid="select-edit-source"><SelectValue placeholder="Select source" /></SelectTrigger>
+                <SelectContent>
+                  {sourceOptions.map((option) => (
+                    <SelectItem key={option} value={option}>{option}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          {form.customerType === "commercial" && (
+            <div className="space-y-1.5">
+              <Label>Company Name</Label>
+              <Input data-testid="input-edit-company-name" value={form.companyName} onChange={(e) => setForm((prev) => ({ ...prev, companyName: e.target.value }))} />
+            </div>
+          )}
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="space-y-1.5"><Label>First Name</Label><Input data-testid="input-edit-first-name" value={form.firstName} onChange={(e) => setForm((prev) => ({ ...prev, firstName: e.target.value }))} /></div>
+            <div className="space-y-1.5"><Label>Last Name</Label><Input data-testid="input-edit-last-name" value={form.lastName} onChange={(e) => setForm((prev) => ({ ...prev, lastName: e.target.value }))} /></div>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="space-y-1.5"><Label>Email</Label><Input type="email" data-testid="input-edit-email" value={form.email} onChange={(e) => setForm((prev) => ({ ...prev, email: e.target.value }))} /></div>
+            <div className="space-y-1.5"><Label>Phone</Label><Input data-testid="input-edit-phone" value={form.phone} onChange={(e) => setForm((prev) => ({ ...prev, phone: e.target.value }))} /></div>
+          </div>
+        </>
+      ) : (
+        <div className="rounded-md border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
+          Customer identity fields remain tied to the primary location in the current compatibility model. This edit updates the selected location record only.
+        </div>
+      )}
+
+      <div className="space-y-1">
+        <h3 className="text-sm font-semibold">Location details</h3>
+        <p className="text-sm text-muted-foreground">
+          Update the operational details for this service location.
+        </p>
+      </div>
+      <div className="space-y-1.5">
+        <Label>Location Name</Label>
+        <Input data-testid="input-edit-location-name" value={form.name} onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))} />
+      </div>
+      {!isPrimaryLocation && (
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div className="space-y-1.5">
+            <Label>Location Type</Label>
+            <Select value={form.propertyType} onValueChange={(value) => setForm((prev) => ({ ...prev, propertyType: value }))}>
+              <SelectTrigger data-testid="select-edit-location-type"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {locationTypeOptions.map((option) => (
+                  <SelectItem key={option} value={option}>{formatOptionLabel(option)}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-1.5">
+            <Label>Source</Label>
+            <Select value={form.source} onValueChange={(value) => setForm((prev) => ({ ...prev, source: value }))}>
+              <SelectTrigger data-testid="select-edit-secondary-source"><SelectValue placeholder="Select source" /></SelectTrigger>
+              <SelectContent>
+                {sourceOptions.map((option) => (
+                  <SelectItem key={option} value={option}>{option}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+      )}
+      <div className="space-y-1.5"><Label>Address</Label><Input data-testid="input-edit-address" value={form.address} onChange={(e) => setForm((prev) => ({ ...prev, address: e.target.value }))} /></div>
+      <div className="grid grid-cols-3 gap-3">
+        <div className="space-y-1.5"><Label>City</Label><Input data-testid="input-edit-city" value={form.city} onChange={(e) => setForm((prev) => ({ ...prev, city: e.target.value }))} /></div>
+        <div className="space-y-1.5"><Label>State</Label><Input data-testid="input-edit-state" value={form.state} onChange={(e) => setForm((prev) => ({ ...prev, state: e.target.value }))} /></div>
+        <div className="space-y-1.5"><Label>ZIP</Label><Input data-testid="input-edit-zip" value={form.zip} onChange={(e) => setForm((prev) => ({ ...prev, zip: e.target.value }))} /></div>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="space-y-1.5"><Label>Sq Ft</Label><Input type="number" data-testid="input-edit-square-footage" value={form.squareFootage} onChange={(e) => setForm((prev) => ({ ...prev, squareFootage: e.target.value }))} /></div>
+        <div className="space-y-1.5"><Label>Gate Code</Label><Input data-testid="input-edit-gate-code" value={form.gateCode} onChange={(e) => setForm((prev) => ({ ...prev, gateCode: e.target.value }))} /></div>
+      </div>
+      <div className="space-y-1.5"><Label>Notes</Label><Textarea data-testid="input-edit-location-notes" value={form.notes} onChange={(e) => setForm((prev) => ({ ...prev, notes: e.target.value }))} className="resize-none" rows={3} /></div>
+      <div className="flex justify-end gap-2">
+        <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
+        <Button type="submit" disabled={mutation.isPending} data-testid="button-save-edited-location">
+          {mutation.isPending ? "Saving..." : "Save Changes"}
+        </Button>
+      </div>
     </form>
   );
 }
@@ -250,7 +519,9 @@ export default function CustomerDetail() {
   const urlLocationId = searchParams.get("locationId");
 
   const [locDialogOpen, setLocDialogOpen] = useState(false);
+  const [editLocDialogOpen, setEditLocDialogOpen] = useState(false);
   const [contactDialogOpen, setContactDialogOpen] = useState(false);
+  const [confirmPrimaryOpen, setConfirmPrimaryOpen] = useState(false);
 
   const { data: compat, isLoading } = useQuery<CustomerDetailCompatResponse>({
     queryKey: [`/api/customer-detail-compat/${customerId}${urlLocationId ? `?locationId=${urlLocationId}` : ""}`],
@@ -391,10 +662,44 @@ export default function CustomerDetail() {
                 <div className="flex items-center gap-1">
                   {activeLocation.isPrimary && <Badge variant="secondary" className="text-xs">Primary</Badge>}
                   {activeLocation.billingProfileId && <Badge variant="outline" className="text-xs text-chart-3" data-testid="badge-billing-override">Billing Override</Badge>}
+                  <Dialog open={editLocDialogOpen} onOpenChange={setEditLocDialogOpen}>
+                    <DialogTrigger asChild>
+                      <Button variant="outline" size="sm" className="h-7 text-xs" data-testid="button-edit-location">
+                        Edit Location
+                      </Button>
+                    </DialogTrigger>
+                    <DialogContent className="max-w-2xl">
+                      <DialogHeader>
+                        <DialogTitle>Edit Location</DialogTitle>
+                      </DialogHeader>
+                      <EditLocationDialog customer={customer} location={activeLocation} onClose={() => setEditLocDialogOpen(false)} />
+                    </DialogContent>
+                  </Dialog>
                   {!activeLocation.isPrimary && (
-                    <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => setPrimaryMutation.mutate(activeLocation.id)} data-testid="button-set-primary">
-                      <Star className="h-3 w-3 mr-1" /> Set Primary
-                    </Button>
+                    <AlertDialog open={confirmPrimaryOpen} onOpenChange={setConfirmPrimaryOpen}>
+                      <AlertDialogTrigger asChild>
+                        <Button variant="ghost" size="sm" className="h-7 text-xs" data-testid="button-set-primary">
+                          <Star className="h-3 w-3 mr-1" /> Set Primary
+                        </Button>
+                      </AlertDialogTrigger>
+                      <AlertDialogContent>
+                        <AlertDialogHeader>
+                          <AlertDialogTitle>Set this as the primary location?</AlertDialogTitle>
+                          <AlertDialogDescription>
+                            This will make {activeLocation.name} the customer identity shown in the UI for this account. Account-level data will stay with the account.
+                          </AlertDialogDescription>
+                        </AlertDialogHeader>
+                        <AlertDialogFooter>
+                          <AlertDialogCancel>Cancel</AlertDialogCancel>
+                          <AlertDialogAction
+                            onClick={() => setPrimaryMutation.mutate(activeLocation.id)}
+                            data-testid="button-confirm-set-primary"
+                          >
+                            Confirm
+                          </AlertDialogAction>
+                        </AlertDialogFooter>
+                      </AlertDialogContent>
+                    </AlertDialog>
                   )}
                 </div>
               </CardHeader>
@@ -402,6 +707,7 @@ export default function CustomerDetail() {
                 <div className="flex items-start gap-2"><MapPin className="h-3.5 w-3.5 mt-0.5 text-muted-foreground shrink-0" /><span>{activeLocation.address}, {activeLocation.city}, {activeLocation.state} {activeLocation.zip}</span></div>
                 <div className="flex items-center gap-4 flex-wrap text-xs text-muted-foreground">
                   <span className="capitalize flex items-center gap-1"><Building2 className="h-3 w-3" /> {activeLocation.propertyType}</span>
+                  {activeLocation.source && <span>Source: {activeLocation.source}</span>}
                   {activeLocation.squareFootage && <span className="flex items-center gap-1"><Ruler className="h-3 w-3" /> {activeLocation.squareFootage.toLocaleString()} sq ft</span>}
                   {activeLocation.gateCode && <span className="flex items-center gap-1"><KeyRound className="h-3 w-3" /> Gate: {activeLocation.gateCode}</span>}
                 </div>
