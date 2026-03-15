@@ -8,10 +8,18 @@ import {
   insertBillingProfileSchema, insertCustomerNoteSchema,
 } from "@shared/schema";
 import { ZodError, z } from "zod";
+import type { Request } from "express";
 
 function handleZodError(res: any, error: ZodError) {
   const messages = error.errors.map((e) => `${e.path.join(".")}: ${e.message}`).join(", ");
   return res.status(400).json({ message: `Validation error: ${messages}` });
+}
+
+function getAuditActor(req: Request) {
+  return {
+    userId: req.header("x-pestflow-user-id") || null,
+    actorLabel: req.header("x-pestflow-user-name") || null,
+  };
 }
 
 export async function registerRoutes(
@@ -23,6 +31,22 @@ export async function registerRoutes(
     location: insertLocationSchema.omit({ customerId: true, accountId: true, isPrimary: true }),
     initialContact: insertContactSchema
       .omit({ customerId: true, locationId: true })
+      .optional(),
+  });
+  const updateLocationProfileSchema = z.object({
+    location: insertLocationSchema
+      .omit({ customerId: true, accountId: true, isPrimary: true })
+      .partial(),
+    customer: insertCustomerSchema
+      .pick({
+        firstName: true,
+        lastName: true,
+        companyName: true,
+        email: true,
+        phone: true,
+        customerType: true,
+      })
+      .partial()
       .optional(),
   });
 
@@ -199,6 +223,91 @@ export async function registerRoutes(
       const data = await storage.updateLocation(req.params.id, validated);
       if (!data) return res.status(404).json({ message: "Location not found" });
       res.json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.patch("/api/customers/:customerId/locations/:locationId/profile", async (req, res) => {
+    try {
+      const validated = updateLocationProfileSchema.parse(req.body);
+      const existingLocation = await storage.getLocation(req.params.locationId);
+      if (!existingLocation || existingLocation.customerId !== req.params.customerId) {
+        return res.status(404).json({ message: "Location not found" });
+      }
+
+      if (validated.customer && !existingLocation.isPrimary) {
+        return res.status(400).json({ message: "Customer identity fields can only be edited from the primary location." });
+      }
+
+      const nextCustomerType = validated.customer?.customerType;
+      if (
+        nextCustomerType &&
+        nextCustomerType !== existingLocation.propertyType &&
+        nextCustomerType !== "commercial" &&
+        nextCustomerType !== "residential"
+      ) {
+        return res.status(400).json({ message: "Customer type must be residential or commercial." });
+      }
+
+      if (nextCustomerType === "commercial" && !validated.customer?.companyName?.trim()) {
+        return res.status(400).json({ message: "Commercial customers require companyName." });
+      }
+
+      const nextLocationType = validated.location.propertyType;
+      if (
+        nextLocationType &&
+        nextLocationType !== existingLocation.propertyType &&
+        nextLocationType !== "commercial" &&
+        nextLocationType !== "residential"
+      ) {
+        return res.status(400).json({ message: "Location type must be residential or commercial." });
+      }
+
+      if (existingLocation.isPrimary && validated.customer) {
+        const customerMissing =
+          !validated.customer.firstName?.trim() ||
+          !validated.customer.lastName?.trim() ||
+          !validated.customer.email?.trim() ||
+          !validated.customer.phone?.trim();
+
+        if (customerMissing) {
+          return res.status(400).json({ message: "Primary location edits require first name, last name, email, and phone." });
+        }
+      }
+
+      const result = await storage.updateLocationProfile({
+        customerId: req.params.customerId,
+        locationId: req.params.locationId,
+        actor: getAuditActor(req),
+        customer: validated.customer
+          ? {
+              ...validated.customer,
+              firstName: validated.customer.firstName?.trim(),
+              lastName: validated.customer.lastName?.trim(),
+              companyName: validated.customer.companyName?.trim() || null,
+              email: validated.customer.email?.trim() || null,
+              phone: validated.customer.phone?.trim() || null,
+            }
+          : undefined,
+        location: {
+          ...validated.location,
+          name: validated.location.name?.trim(),
+          address: validated.location.address?.trim(),
+          city: validated.location.city?.trim(),
+          state: validated.location.state?.trim(),
+          zip: validated.location.zip?.trim(),
+          propertyType: validated.location.propertyType,
+          source: validated.location.source?.trim(),
+          gateCode: validated.location.gateCode?.trim() || null,
+          notes: validated.location.notes?.trim() || null,
+          lotSize: validated.location.lotSize?.trim() || null,
+        },
+      });
+
+      if (!result) return res.status(404).json({ message: "Location not found" });
+      res.json(result);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
       res.status(400).json({ message: e.message });
