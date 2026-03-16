@@ -36,9 +36,9 @@ export async function seedDatabase() {
   ]).returning();
 
   await db.insert(contacts).values([
-    { customerId: c2.id, locationId: l2.id, firstName: "David", lastName: "Chen", email: "david@goldengatefoods.com", phone: "(555) 345-6780", role: "Operations Manager", isPrimary: true },
-    { customerId: c2.id, locationId: l3.id, firstName: "Maria", lastName: "Lopez", email: "maria@goldengatefoods.com", phone: "(555) 345-6781", role: "Kitchen Manager", isPrimary: true },
-    { customerId: c4.id, locationId: l5.id, firstName: "Robert", lastName: "Hayes", email: "robert@sunsetpm.com", phone: "(555) 567-8902", role: "Maintenance Coordinator", isPrimary: true },
+    { customerId: c2.id, locationId: l2.id, firstName: "David", lastName: "Chen", email: "david@goldengatefoods.com", phone: "(555) 345-6780", phoneType: "work", role: "Operations Manager", isPrimary: true },
+    { customerId: c2.id, locationId: l3.id, firstName: "Maria", lastName: "Lopez", email: "maria@goldengatefoods.com", phone: "(555) 345-6781", phoneType: "mobile", role: "Kitchen Manager", isPrimary: true },
+    { customerId: c4.id, locationId: l5.id, firstName: "Robert", lastName: "Hayes", email: "robert@sunsetpm.com", phone: "(555) 567-8902", phoneType: "work", role: "Maintenance Coordinator", isPrimary: true },
   ]);
 
   await db.insert(customerNotes).values([

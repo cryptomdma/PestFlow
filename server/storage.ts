@@ -69,6 +69,7 @@ export interface IStorage {
   getContacts(customerId: string): Promise<Contact[]>;
   getContactsByLocation(locationId: string): Promise<Contact[]>;
   createContact(data: InsertContact): Promise<Contact>;
+  setPrimaryContact(contactId: string): Promise<Contact | undefined>;
 
   getLocations(customerId: string): Promise<Location[]>;
   getAllLocations(): Promise<Location[]>;
@@ -384,8 +385,37 @@ export class DatabaseStorage implements IStorage {
   }
 
   async createContact(data: InsertContact): Promise<Contact> {
-    const [contact] = await db.insert(contacts).values(data).returning();
-    return contact;
+    const createdContact = await db.transaction(async (tx) => {
+      const existingLocationContacts = data.locationId
+        ? await tx.select().from(contacts).where(eq(contacts.locationId, data.locationId))
+        : [];
+
+      const shouldBePrimary = !!data.isPrimary || existingLocationContacts.length === 0;
+
+      if (data.locationId && shouldBePrimary) {
+        await tx.update(contacts).set({ isPrimary: false }).where(eq(contacts.locationId, data.locationId));
+      }
+
+      const [contact] = await tx.insert(contacts).values({ ...data, isPrimary: shouldBePrimary }).returning();
+      return contact;
+    });
+
+    return createdContact;
+  }
+
+  async setPrimaryContact(contactId: string): Promise<Contact | undefined> {
+    const [existing] = await db.select().from(contacts).where(eq(contacts.id, contactId));
+    if (!existing?.locationId) {
+      return existing;
+    }
+
+    const updatedContact = await db.transaction(async (tx) => {
+      await tx.update(contacts).set({ isPrimary: false }).where(eq(contacts.locationId, existing.locationId!));
+      const [contact] = await tx.update(contacts).set({ isPrimary: true }).where(eq(contacts.id, contactId)).returning();
+      return contact;
+    });
+
+    return updatedContact;
   }
 
   async getLocations(customerId: string): Promise<Location[]> {

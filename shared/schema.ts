@@ -39,6 +39,7 @@ export const contacts = pgTable("contacts", {
   lastName: text("last_name").notNull(),
   email: text("email"),
   phone: text("phone"),
+  phoneType: text("phone_type"),
   role: text("role"),
   isPrimary: boolean("is_primary").default(false),
 });
