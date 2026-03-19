@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
+import { useSearch } from "wouter";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -36,18 +37,44 @@ import {
 } from "lucide-react";
 import type { Customer, Communication } from "@shared/schema";
 
-function CommunicationForm({ onClose }: { onClose: () => void }) {
+function CommunicationForm({
+  onClose,
+  initialValues,
+}: {
+  onClose: () => void;
+  initialValues?: Partial<{
+    customerId: string;
+    locationId: string;
+    type: string;
+    direction: string;
+    subject: string;
+    body: string;
+  }>;
+}) {
   const { toast } = useToast();
   const { data: customers } = useQuery<Customer[]>({ queryKey: ["/api/customers"] });
 
   const [form, setForm] = useState({
-    customerId: "",
-    type: "email",
-    direction: "outbound",
-    subject: "",
-    body: "",
+    customerId: initialValues?.customerId || "",
+    locationId: initialValues?.locationId || "",
+    type: initialValues?.type || "email",
+    direction: initialValues?.direction || "outbound",
+    subject: initialValues?.subject || "",
+    body: initialValues?.body || "",
     status: "sent",
   });
+
+  useEffect(() => {
+    setForm((prev) => ({
+      ...prev,
+      customerId: initialValues?.customerId || "",
+      locationId: initialValues?.locationId || "",
+      type: initialValues?.type || "email",
+      direction: initialValues?.direction || "outbound",
+      subject: initialValues?.subject || "",
+      body: initialValues?.body || "",
+    }));
+  }, [initialValues]);
 
   const mutation = useMutation({
     mutationFn: (data: typeof form) =>
@@ -117,9 +144,25 @@ function CommunicationForm({ onClose }: { onClose: () => void }) {
 }
 
 export default function Communications() {
+  const routeSearch = useSearch();
+  const searchParams = new URLSearchParams(routeSearch);
+  const initialValues = {
+    customerId: searchParams.get("customerId") || "",
+    locationId: searchParams.get("locationId") || "",
+    type: searchParams.get("type") || "email",
+    direction: searchParams.get("direction") || "outbound",
+    subject: searchParams.get("subject") || "",
+    body: searchParams.get("recipient") ? `Recipient: ${searchParams.get("recipient")}` : "",
+  };
   const [search, setSearch] = useState("");
   const [filterType, setFilterType] = useState("all");
-  const [dialogOpen, setDialogOpen] = useState(false);
+  const [dialogOpen, setDialogOpen] = useState(!!initialValues.customerId);
+
+  useEffect(() => {
+    if (initialValues.customerId) {
+      setDialogOpen(true);
+    }
+  }, [initialValues.customerId, initialValues.locationId, initialValues.type, initialValues.direction, initialValues.subject, initialValues.body]);
 
   const { data: comms, isLoading } = useQuery<Communication[]>({ queryKey: ["/api/all-communications"] });
   const { data: customers } = useQuery<Customer[]>({ queryKey: ["/api/customers"] });
@@ -163,7 +206,7 @@ export default function Communications() {
           </DialogTrigger>
           <DialogContent className="max-w-lg">
             <DialogHeader><DialogTitle>Log Communication</DialogTitle></DialogHeader>
-            <CommunicationForm onClose={() => setDialogOpen(false)} />
+            <CommunicationForm onClose={() => setDialogOpen(false)} initialValues={initialValues} />
           </DialogContent>
         </Dialog>
       </div>

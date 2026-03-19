@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useRoute, Link, useSearch, useLocation } from "wouter";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -31,6 +31,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { formatPhoneDisplay } from "@shared/phone";
 import {
   ArrowLeft, Mail, Phone, MapPin, Plus, Calendar, FileText, MessageSquare,
   ClipboardList, Building2, User, ChevronDown, Pin, ArrowUpRight, StickyNote,
@@ -53,6 +54,7 @@ interface UpdateLocationProfileResponse {
 
 const BASE_LOCATION_TYPE_OPTIONS = ["residential", "commercial"] as const;
 const BASE_SOURCE_OPTIONS = ["Google", "Youtube", "Referal", "Facebook"] as const;
+const CONTACT_PHONE_TYPE_OPTIONS = ["mobile", "home", "work", "fax"] as const;
 
 function buildOptions(currentValue: string | null | undefined, baseOptions: readonly string[]) {
   if (!currentValue || baseOptions.includes(currentValue)) {
@@ -67,6 +69,55 @@ function formatOptionLabel(value: string) {
     .split("-")
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(" ");
+}
+
+function buildCommunicationHref({
+  customerId,
+  locationId,
+  type,
+  value,
+}: {
+  customerId: string;
+  locationId?: string;
+  type: "email" | "phone";
+  value: string;
+}) {
+  const params = new URLSearchParams({
+    customerId,
+    type,
+    direction: "outbound",
+    recipient: value,
+  });
+
+  if (locationId) {
+    params.set("locationId", locationId);
+  }
+
+  return `/communications?${params.toString()}`;
+}
+
+function CommunicationActionLink({
+  href,
+  icon,
+  text,
+  testId,
+}: {
+  href: string;
+  icon: ReactNode;
+  text: string;
+  testId?: string;
+}) {
+  return (
+    <a
+      href={href}
+      className="inline-flex items-center gap-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground hover:underline"
+      data-testid={testId}
+    >
+      {icon}
+      <span>{text}</span>
+      <ArrowUpRight className="h-3 w-3" />
+    </a>
+  );
 }
 
 function AddLocationDialog({ customerId, onClose }: { customerId: string; onClose: () => void }) {
@@ -351,7 +402,7 @@ function EditLocationDialog({
 
 function AddContactDialog({ customerId, locationId, onClose }: { customerId: string; locationId: string; onClose: () => void }) {
   const { toast } = useToast();
-  const [form, setForm] = useState({ firstName: "", lastName: "", email: "", phone: "", role: "", isPrimary: false });
+  const [form, setForm] = useState({ firstName: "", lastName: "", email: "", phone: "", phoneType: "mobile", role: "", isPrimary: false });
   const mutation = useMutation({
     mutationFn: (data: typeof form) => apiRequest("POST", "/api/contacts", { ...data, customerId, locationId }),
     onSuccess: () => {
@@ -371,7 +422,24 @@ function AddContactDialog({ customerId, locationId, onClose }: { customerId: str
         <div className="space-y-1.5"><Label>Email</Label><Input type="email" value={form.email} onChange={(e) => setForm(p => ({ ...p, email: e.target.value }))} /></div>
         <div className="space-y-1.5"><Label>Phone</Label><Input value={form.phone} onChange={(e) => setForm(p => ({ ...p, phone: e.target.value }))} /></div>
       </div>
-      <div className="space-y-1.5"><Label>Role</Label><Input placeholder="e.g., Property Manager" value={form.role} onChange={(e) => setForm(p => ({ ...p, role: e.target.value }))} /></div>
+      <div className="grid grid-cols-2 gap-3">
+        <div className="space-y-1.5">
+          <Label>Phone Type</Label>
+          <Select value={form.phoneType} onValueChange={(value) => setForm((p) => ({ ...p, phoneType: value }))}>
+            <SelectTrigger data-testid="select-contact-phone-type"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {CONTACT_PHONE_TYPE_OPTIONS.map((option) => (
+                <SelectItem key={option} value={option}>{formatOptionLabel(option)}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="space-y-1.5"><Label>Role</Label><Input placeholder="e.g., Property Manager" value={form.role} onChange={(e) => setForm(p => ({ ...p, role: e.target.value }))} /></div>
+      </div>
+      <label className="flex items-center gap-2 text-sm">
+        <input type="checkbox" checked={form.isPrimary} onChange={(e) => setForm((p) => ({ ...p, isPrimary: e.target.checked }))} />
+        Make primary contact
+      </label>
       <div className="flex justify-end gap-2"><Button type="button" variant="outline" onClick={onClose}>Cancel</Button><Button type="submit" disabled={mutation.isPending} data-testid="button-save-contact">{mutation.isPending ? "Saving..." : "Add Contact"}</Button></div>
     </form>
   );
@@ -435,7 +503,15 @@ function NoteCard({ note, customerId, activeLocationId, showConvertAction }: { n
   );
 }
 
-function CustomerNotesPanel({ customerId, activeLocationId }: { customerId: string; activeLocationId?: string }) {
+function CustomerNotesPanel({
+  customerId,
+  activeLocationId,
+  embedded = false,
+}: {
+  customerId: string;
+  activeLocationId?: string;
+  embedded?: boolean;
+}) {
   const [expanded, setExpanded] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
   const { data: sharedNotes } = useQuery<CustomerNote[]>({ queryKey: ["/api/notes/shared", customerId] });
@@ -448,41 +524,66 @@ function CustomerNotesPanel({ customerId, activeLocationId }: { customerId: stri
     });
   }, [sharedNotes]);
   const preview = sortedNotes.slice(0, expanded ? sortedNotes.length : 1);
+  const notesHeader = (
+    <div className="pb-2 flex flex-row items-center justify-between">
+      <CardTitle className="text-sm font-medium flex items-center gap-1.5">
+        <StickyNote className="h-4 w-4" /> Customer Notes
+        {sharedNotes && sharedNotes.length > 0 && <Badge variant="secondary" className="text-xs ml-1">{sharedNotes.length}</Badge>}
+      </CardTitle>
+      <div className="flex items-center gap-2">
+        <Dialog open={addOpen} onOpenChange={setAddOpen}>
+          <DialogTrigger asChild><Button variant="outline" size="sm" className="h-7 text-xs" data-testid="button-add-shared-note"><Plus className="h-3 w-3 mr-1" /> Add Shared Note</Button></DialogTrigger>
+          <DialogContent><DialogHeader><DialogTitle>Add Shared Note</DialogTitle></DialogHeader><AddNoteDialog customerId={customerId} scope="CUSTOMER" onClose={() => setAddOpen(false)} /></DialogContent>
+        </Dialog>
+        {sharedNotes && sharedNotes.length > 1 && (
+          <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => setExpanded(!expanded)} data-testid="button-expand-notes">
+            {expanded ? <><ChevronUp className="h-3 w-3 mr-1" /> Collapse</> : <><ChevronDown className="h-3 w-3 mr-1" /> Show All</>}
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+
   if (!sharedNotes || sharedNotes.length === 0) {
+    const emptyContent = <p className="text-sm text-muted-foreground text-center py-2">No shared notes</p>;
+    if (embedded) {
+      return (
+        <div className="space-y-3">
+          {notesHeader}
+          <div>{emptyContent}</div>
+        </div>
+      );
+    }
+
     return (
       <Card>
-        <CardHeader className="pb-2 flex-row items-center justify-between">
-          <CardTitle className="text-sm font-medium flex items-center gap-1.5"><StickyNote className="h-4 w-4" /> Customer Notes</CardTitle>
-          <Dialog open={addOpen} onOpenChange={setAddOpen}>
-            <DialogTrigger asChild><Button variant="outline" size="sm" className="h-7 text-xs" data-testid="button-add-shared-note"><Plus className="h-3 w-3 mr-1" /> Add Shared Note</Button></DialogTrigger>
-            <DialogContent><DialogHeader><DialogTitle>Add Shared Note</DialogTitle></DialogHeader><AddNoteDialog customerId={customerId} scope="CUSTOMER" onClose={() => setAddOpen(false)} /></DialogContent>
-          </Dialog>
-        </CardHeader>
-        <CardContent><p className="text-sm text-muted-foreground text-center py-2">No shared notes</p></CardContent>
+        <CardHeader>{notesHeader}</CardHeader>
+        <CardContent>{emptyContent}</CardContent>
       </Card>
     );
   }
+
+  const notesBody = (
+    <div className="space-y-2">
+      {preview.map((note) => (
+        <NoteCard key={note.id} note={note} customerId={customerId} activeLocationId={activeLocationId} showConvertAction={activeLocationId ? "makeLocation" : undefined} />
+      ))}
+    </div>
+  );
+
+  if (embedded) {
+    return (
+      <div className="space-y-3">
+        {notesHeader}
+        {notesBody}
+      </div>
+    );
+  }
+
   return (
     <Card>
-      <CardHeader className="pb-2 flex-row items-center justify-between">
-        <CardTitle className="text-sm font-medium flex items-center gap-1.5"><StickyNote className="h-4 w-4" /> Customer Notes <Badge variant="secondary" className="text-xs ml-1">{sharedNotes.length}</Badge></CardTitle>
-        <div className="flex items-center gap-2">
-          <Dialog open={addOpen} onOpenChange={setAddOpen}>
-            <DialogTrigger asChild><Button variant="outline" size="sm" className="h-7 text-xs" data-testid="button-add-shared-note"><Plus className="h-3 w-3 mr-1" /> Add Shared Note</Button></DialogTrigger>
-            <DialogContent><DialogHeader><DialogTitle>Add Shared Note</DialogTitle></DialogHeader><AddNoteDialog customerId={customerId} scope="CUSTOMER" onClose={() => setAddOpen(false)} /></DialogContent>
-          </Dialog>
-          {sharedNotes.length > 1 && (
-            <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => setExpanded(!expanded)} data-testid="button-expand-notes">
-              {expanded ? <><ChevronUp className="h-3 w-3 mr-1" /> Collapse</> : <><ChevronDown className="h-3 w-3 mr-1" /> Show All</>}
-            </Button>
-          )}
-        </div>
-      </CardHeader>
-      <CardContent className="space-y-2">
-        {preview.map((note) => (
-          <NoteCard key={note.id} note={note} customerId={customerId} activeLocationId={activeLocationId} showConvertAction={activeLocationId ? "makeLocation" : undefined} />
-        ))}
-      </CardContent>
+      <CardHeader>{notesHeader}</CardHeader>
+      <CardContent>{notesBody}</CardContent>
     </Card>
   );
 }
@@ -511,6 +612,7 @@ function LocationNotesPanel({ customerId, locationId }: { customerId: string; lo
 }
 
 export default function CustomerDetail() {
+  const { toast } = useToast();
   const [, params] = useRoute("/customers/:id");
   const customerId = params?.id || "";
   const searchString = useSearch();
@@ -546,12 +648,69 @@ export default function CustomerDetail() {
   const { data: locationInvoices } = useQuery<Invoice[]>({ queryKey: ["/api/invoices/by-location", activeLocationId], enabled: !!activeLocationId });
   const { data: locationComms } = useQuery<Communication[]>({ queryKey: ["/api/communications/by-location", activeLocationId], enabled: !!activeLocationId });
 
+  const sortedContacts = useMemo(() => {
+    if (!contacts) return [];
+    return [...contacts].sort((a, b) => {
+      if (a.isPrimary && !b.isPrimary) return -1;
+      if (!a.isPrimary && b.isPrimary) return 1;
+      return `${a.firstName} ${a.lastName}`.localeCompare(`${b.firstName} ${b.lastName}`);
+    });
+  }, [contacts]);
+
+  const primaryContact = useMemo(() => {
+    const explicitPrimary = sortedContacts.find((contact) => contact.isPrimary);
+    if (explicitPrimary) {
+      return {
+        contact: explicitPrimary,
+        isFallback: false,
+      };
+    }
+
+    if (sortedContacts.length > 0) {
+      return {
+        contact: sortedContacts[0],
+        isFallback: true,
+      };
+    }
+
+    if (activeLocation?.isPrimary && customer && (customer.firstName || customer.lastName || customer.email || customer.phone)) {
+      return {
+        contact: {
+          id: "customer-fallback",
+          customerId: customer.id,
+          locationId: activeLocation.id,
+          firstName: customer.firstName,
+          lastName: customer.lastName,
+          email: customer.email,
+          phone: customer.phone,
+          phoneType: null,
+          role: "Primary location identity",
+          isPrimary: true,
+        } as Contact,
+        isFallback: true,
+      };
+    }
+
+    return null;
+  }, [activeLocation, customer, sortedContacts]);
+
   const setPrimaryMutation = useMutation({
     mutationFn: (locationId: string) => apiRequest("POST", `/api/locations/${locationId}/set-primary`, {}),
     onSuccess: () => {
       queryClient.invalidateQueries({
         predicate: (query) => typeof query.queryKey[0] === "string" && query.queryKey[0].startsWith(`/api/customer-detail-compat/${customerId}`),
       });
+    },
+  });
+
+  const setPrimaryContactMutation = useMutation({
+    mutationFn: (contactId: string) => apiRequest("POST", `/api/contacts/${contactId}/set-primary`, {}),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/contacts/by-location", activeLocationId] });
+      toast({ title: "Primary contact updated" });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Error updating primary contact", description: err.message, variant: "destructive" });
     },
   });
 
@@ -579,46 +738,76 @@ export default function CustomerDetail() {
   }
 
   return (
-    <div className="p-6 space-y-5 max-w-5xl mx-auto">
-      {/* A) Brief Customer Header */}
-      <div className="flex items-start gap-3">
-        <Link href="/customers">
-          <Button variant="ghost" size="icon" data-testid="button-back" className="mt-0.5">
-            <ArrowLeft className="h-4 w-4" />
-          </Button>
-        </Link>
+    <div className="p-6 space-y-5 max-w-5xl mx-auto relative">
+      <Link href="/customers">
+        <Button
+          variant="ghost"
+          size="icon"
+          data-testid="button-back"
+          className="absolute left-0 top-0 -translate-x-full mr-3"
+        >
+          <ArrowLeft className="h-4 w-4" />
+        </Button>
+      </Link>
+      <div>
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 flex-wrap">
-            <h1 className="text-xl font-bold tracking-tight" data-testid="text-customer-name">
-              {customer.firstName} {customer.lastName}
-            </h1>
-            <Badge variant="secondary" className={customer.status === "active" ? "bg-primary/10 text-primary" : ""} data-testid="badge-customer-status">
-              {customer.status}
-            </Badge>
-          </div>
-          {customer.companyName && <p className="text-sm text-muted-foreground">{customer.companyName}</p>}
-          <div className="flex items-center gap-3 mt-2 flex-wrap">
-            <div className="flex items-center gap-1.5 text-xs text-muted-foreground"><Mail className="h-3.5 w-3.5" /> <span data-testid="text-customer-email">{customer.email || "No email"}</span></div>
-            <div className="flex items-center gap-1.5 text-xs text-muted-foreground"><Phone className="h-3.5 w-3.5" /> <span data-testid="text-customer-phone">{customer.phone || "No phone"}</span></div>
-            <Badge variant="outline" className="text-xs capitalize" data-testid="badge-customer-type">{customer.customerType}</Badge>
-          </div>
-          <div className="flex items-center gap-2 mt-2 flex-wrap">
-            {primaryLocation && (
-              <Badge variant="secondary" className="text-xs" data-testid="chip-primary-location">
-                <MapPin className="h-3 w-3 mr-1" /> Primary: {primaryLocation.name}
-              </Badge>
-            )}
-            <Badge variant="secondary" className="text-xs" data-testid="chip-billing">
-              <CreditCard className="h-3 w-3 mr-1" /> Billing: {hasBillingOverride ? "Per-location" : "Default"}
-            </Badge>
-          </div>
+          <Card>
+            <CardContent className="p-5">
+              <div className="space-y-5">
+                <div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h1 className="text-xl font-bold tracking-tight" data-testid="text-customer-name">
+                      {customer.firstName} {customer.lastName}
+                    </h1>
+                    <Badge variant="secondary" className={customer.status === "active" ? "bg-primary/10 text-primary" : ""} data-testid="badge-customer-status">
+                      {customer.status}
+                    </Badge>
+                  </div>
+                  {customer.companyName && <p className="text-sm text-muted-foreground mt-1">{customer.companyName}</p>}
+                  <div className="flex items-center gap-3 mt-3 flex-wrap">
+                    {customer.email ? (
+                      <CommunicationActionLink
+                        href={buildCommunicationHref({ customerId, locationId: activeLocationId, type: "email", value: customer.email })}
+                        icon={<Mail className="h-3.5 w-3.5" />}
+                        text={customer.email}
+                        testId="link-customer-email"
+                      />
+                    ) : (
+                      <div className="flex items-center gap-1.5 text-xs text-muted-foreground"><Mail className="h-3.5 w-3.5" /> <span data-testid="text-customer-email">No email</span></div>
+                    )}
+                    {customer.phone ? (
+                      <CommunicationActionLink
+                        href={buildCommunicationHref({ customerId, locationId: activeLocationId, type: "phone", value: customer.phone })}
+                        icon={<Phone className="h-3.5 w-3.5" />}
+                        text={formatPhoneDisplay(customer.phone)}
+                        testId="link-customer-phone"
+                      />
+                    ) : (
+                      <div className="flex items-center gap-1.5 text-xs text-muted-foreground"><Phone className="h-3.5 w-3.5" /> <span data-testid="text-customer-phone">No phone</span></div>
+                    )}
+                    <Badge variant="outline" className="text-xs capitalize" data-testid="badge-customer-type">{customer.customerType}</Badge>
+                  </div>
+                  <div className="flex items-center gap-2 mt-3 flex-wrap">
+                    {primaryLocation && (
+                      <Badge variant="secondary" className="text-xs" data-testid="chip-primary-location">
+                        <MapPin className="h-3 w-3 mr-1" /> Primary: {primaryLocation.name}
+                      </Badge>
+                    )}
+                    <Badge variant="secondary" className="text-xs" data-testid="chip-billing">
+                      <CreditCard className="h-3 w-3 mr-1" /> Billing: {hasBillingOverride ? "Per-location" : "Default"}
+                    </Badge>
+                  </div>
+                </div>
+
+                <div className="border-t pt-5">
+                  <CustomerNotesPanel customerId={customerId} activeLocationId={activeLocationId} embedded />
+                </div>
+              </div>
+            </CardContent>
+          </Card>
         </div>
       </div>
 
-      {/* B) Customer Notes Panel (collapsible) */}
-      <CustomerNotesPanel customerId={customerId} activeLocationId={activeLocationId} />
-
-      {/* C) Location Selector + Tabs */}
       <div className="space-y-4">
         <div className="flex items-center gap-3 flex-wrap">
           <DropdownMenu>
@@ -703,7 +892,53 @@ export default function CustomerDetail() {
                   )}
                 </div>
               </CardHeader>
-              <CardContent className="space-y-2 text-sm">
+              <CardContent className="space-y-3 text-sm">
+                <div className="rounded-lg border bg-muted/20 p-3">
+                  <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Primary Contact</p>
+                  {primaryContact ? (
+                    <div className="mt-2 space-y-2">
+                      <div>
+                        <p className="font-medium text-foreground" data-testid="text-location-primary-contact-name">
+                          {primaryContact.contact.firstName} {primaryContact.contact.lastName}
+                        </p>
+                        {primaryContact.contact.role && (
+                          <p className="text-xs text-muted-foreground">{primaryContact.contact.role}</p>
+                        )}
+                      </div>
+                      <div className="flex flex-col gap-2">
+                        {primaryContact.contact.phone ? (
+                          <CommunicationActionLink
+                            href={buildCommunicationHref({ customerId, locationId: activeLocationId, type: "phone", value: primaryContact.contact.phone })}
+                            icon={<Phone className="h-3.5 w-3.5" />}
+                            text={`${formatPhoneDisplay(primaryContact.contact.phone)}${primaryContact.contact.phoneType ? ` (${formatOptionLabel(primaryContact.contact.phoneType)})` : ""}`}
+                            testId="link-location-primary-contact-phone"
+                          />
+                        ) : (
+                          <p className="text-xs text-muted-foreground">No phone on file</p>
+                        )}
+                        {primaryContact.contact.email ? (
+                          <CommunicationActionLink
+                            href={buildCommunicationHref({ customerId, locationId: activeLocationId, type: "email", value: primaryContact.contact.email })}
+                            icon={<Mail className="h-3.5 w-3.5" />}
+                            text={primaryContact.contact.email}
+                            testId="link-location-primary-contact-email"
+                          />
+                        ) : (
+                          <p className="text-xs text-muted-foreground">No email on file</p>
+                        )}
+                      </div>
+                      {primaryContact.isFallback && (
+                        <p className="text-xs text-muted-foreground">
+                          {sortedContacts.length > 0
+                            ? "Using the first available contact until a primary contact is selected."
+                            : "Using the primary location identity until a location-scoped primary contact is added."}
+                        </p>
+                      )}
+                    </div>
+                  ) : (
+                    <p className="mt-2 text-xs text-muted-foreground">No contact on file for this location yet.</p>
+                  )}
+                </div>
                 <div className="flex items-start gap-2"><MapPin className="h-3.5 w-3.5 mt-0.5 text-muted-foreground shrink-0" /><span>{activeLocation.address}, {activeLocation.city}, {activeLocation.state} {activeLocation.zip}</span></div>
                 <div className="flex items-center gap-4 flex-wrap text-xs text-muted-foreground">
                   <span className="capitalize flex items-center gap-1"><Building2 className="h-3 w-3" /> {activeLocation.propertyType}</span>
@@ -736,19 +971,49 @@ export default function CustomerDetail() {
                 <DialogContent><DialogHeader><DialogTitle>Add Contact</DialogTitle></DialogHeader><AddContactDialog customerId={customerId} locationId={activeLocationId} onClose={() => setContactDialogOpen(false)} /></DialogContent>
               </Dialog>
             </div>
-            {!contacts || contacts.length === 0 ? (
+            {sortedContacts.length === 0 ? (
               <Card><CardContent className="text-center py-8"><User className="h-8 w-8 mx-auto text-muted-foreground/30 mb-2" /><p className="text-sm text-muted-foreground">No contacts added yet</p></CardContent></Card>
-            ) : contacts.map((ct) => (
+            ) : sortedContacts.map((ct) => (
               <Card key={ct.id} data-testid={`card-contact-${ct.id}`}>
                 <CardContent className="p-4 flex items-center gap-4">
                   <div className="h-9 w-9 rounded-md bg-primary/10 flex items-center justify-center shrink-0"><User className="h-4 w-4 text-primary" /></div>
                   <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap"><span className="font-semibold text-sm">{ct.firstName} {ct.lastName}</span>{ct.isPrimary && <Badge variant="secondary" className="text-xs">Primary</Badge>}{ct.role && <span className="text-xs text-muted-foreground">{ct.role}</span>}</div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-semibold text-sm">{ct.firstName} {ct.lastName}</span>
+                      {ct.isPrimary && <Badge variant="secondary" className="text-xs">Primary</Badge>}
+                      {ct.role && <span className="text-xs text-muted-foreground">{ct.role}</span>}
+                    </div>
                     <div className="flex items-center gap-3 mt-1 text-xs text-muted-foreground flex-wrap">
-                      {ct.email && <span className="flex items-center gap-1"><Mail className="h-3 w-3" />{ct.email}</span>}
-                      {ct.phone && <span className="flex items-center gap-1"><Phone className="h-3 w-3" />{ct.phone}</span>}
+                      {ct.email && (
+                        <CommunicationActionLink
+                          href={buildCommunicationHref({ customerId, locationId: activeLocationId, type: "email", value: ct.email })}
+                          icon={<Mail className="h-3 w-3" />}
+                          text={ct.email}
+                          testId={`link-contact-email-${ct.id}`}
+                        />
+                      )}
+                      {ct.phone && (
+                        <CommunicationActionLink
+                          href={buildCommunicationHref({ customerId, locationId: activeLocationId, type: "phone", value: ct.phone })}
+                          icon={<Phone className="h-3 w-3" />}
+                          text={`${formatPhoneDisplay(ct.phone)}${ct.phoneType ? ` (${formatOptionLabel(ct.phoneType)})` : ""}`}
+                          testId={`link-contact-phone-${ct.id}`}
+                        />
+                      )}
                     </div>
                   </div>
+                  {!ct.isPrimary && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="shrink-0"
+                      onClick={() => setPrimaryContactMutation.mutate(ct.id)}
+                      disabled={setPrimaryContactMutation.isPending}
+                      data-testid={`button-make-primary-contact-${ct.id}`}
+                    >
+                      Make Primary
+                    </Button>
+                  )}
                 </CardContent>
               </Card>
             ))}

@@ -7,6 +7,7 @@ import {
   insertProductApplicationSchema, insertInvoiceSchema, insertCommunicationSchema,
   insertBillingProfileSchema, insertCustomerNoteSchema,
 } from "@shared/schema";
+import { normalizePhone } from "@shared/phone";
 import { ZodError, z } from "zod";
 import type { Request } from "express";
 
@@ -141,13 +142,17 @@ export async function registerRoutes(
             firstName: contact!.firstName.trim(),
             lastName: contact!.lastName.trim(),
             email: contact!.email!.trim(),
-            phone: contact!.phone!.trim(),
+            phone: normalizePhone(contact!.phone) || null,
             isPrimary: true,
           }
         : undefined;
 
       const data = await storage.createCustomerWithPrimaryLocation({
-        customer: validated.customer,
+        customer: {
+          ...validated.customer,
+          email: validated.customer.email?.trim() || null,
+          phone: normalizePhone(validated.customer.phone) || null,
+        },
         location: validated.location,
         initialContact,
       });
@@ -184,10 +189,31 @@ export async function registerRoutes(
   app.post("/api/contacts", async (req, res) => {
     try {
       const validated = insertContactSchema.parse(req.body);
-      const data = await storage.createContact(validated);
+      const phoneType = validated.phoneType?.trim().toLowerCase();
+      if (phoneType && !["mobile", "home", "work", "fax"].includes(phoneType)) {
+        return res.status(400).json({ message: "Phone type must be mobile, home, work, or fax." });
+      }
+
+      const data = await storage.createContact({
+        ...validated,
+        email: validated.email?.trim() || null,
+        phone: normalizePhone(validated.phone) || null,
+        phoneType: phoneType || null,
+        role: validated.role?.trim() || null,
+      });
       res.status(201).json(data);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/contacts/:id/set-primary", async (req, res) => {
+    try {
+      const data = await storage.setPrimaryContact(req.params.id);
+      if (!data) return res.status(404).json({ message: "Contact not found" });
+      res.json(data);
+    } catch (e: any) {
       res.status(400).json({ message: e.message });
     }
   });
@@ -288,7 +314,7 @@ export async function registerRoutes(
               lastName: validated.customer.lastName?.trim(),
               companyName: validated.customer.companyName?.trim() || null,
               email: validated.customer.email?.trim() || null,
-              phone: validated.customer.phone?.trim() || null,
+              phone: normalizePhone(validated.customer.phone) || null,
             }
           : undefined,
         location: {
