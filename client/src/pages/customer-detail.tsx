@@ -503,7 +503,15 @@ function NoteCard({ note, customerId, activeLocationId, showConvertAction }: { n
   );
 }
 
-function CustomerNotesPanel({ customerId, activeLocationId }: { customerId: string; activeLocationId?: string }) {
+function CustomerNotesPanel({
+  customerId,
+  activeLocationId,
+  embedded = false,
+}: {
+  customerId: string;
+  activeLocationId?: string;
+  embedded?: boolean;
+}) {
   const [expanded, setExpanded] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
   const { data: sharedNotes } = useQuery<CustomerNote[]>({ queryKey: ["/api/notes/shared", customerId] });
@@ -516,41 +524,66 @@ function CustomerNotesPanel({ customerId, activeLocationId }: { customerId: stri
     });
   }, [sharedNotes]);
   const preview = sortedNotes.slice(0, expanded ? sortedNotes.length : 1);
+  const notesHeader = (
+    <div className="pb-2 flex flex-row items-center justify-between">
+      <CardTitle className="text-sm font-medium flex items-center gap-1.5">
+        <StickyNote className="h-4 w-4" /> Customer Notes
+        {sharedNotes && sharedNotes.length > 0 && <Badge variant="secondary" className="text-xs ml-1">{sharedNotes.length}</Badge>}
+      </CardTitle>
+      <div className="flex items-center gap-2">
+        <Dialog open={addOpen} onOpenChange={setAddOpen}>
+          <DialogTrigger asChild><Button variant="outline" size="sm" className="h-7 text-xs" data-testid="button-add-shared-note"><Plus className="h-3 w-3 mr-1" /> Add Shared Note</Button></DialogTrigger>
+          <DialogContent><DialogHeader><DialogTitle>Add Shared Note</DialogTitle></DialogHeader><AddNoteDialog customerId={customerId} scope="CUSTOMER" onClose={() => setAddOpen(false)} /></DialogContent>
+        </Dialog>
+        {sharedNotes && sharedNotes.length > 1 && (
+          <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => setExpanded(!expanded)} data-testid="button-expand-notes">
+            {expanded ? <><ChevronUp className="h-3 w-3 mr-1" /> Collapse</> : <><ChevronDown className="h-3 w-3 mr-1" /> Show All</>}
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+
   if (!sharedNotes || sharedNotes.length === 0) {
+    const emptyContent = <p className="text-sm text-muted-foreground text-center py-2">No shared notes</p>;
+    if (embedded) {
+      return (
+        <div className="space-y-3">
+          {notesHeader}
+          <div>{emptyContent}</div>
+        </div>
+      );
+    }
+
     return (
       <Card>
-        <CardHeader className="pb-2 flex-row items-center justify-between">
-          <CardTitle className="text-sm font-medium flex items-center gap-1.5"><StickyNote className="h-4 w-4" /> Customer Notes</CardTitle>
-          <Dialog open={addOpen} onOpenChange={setAddOpen}>
-            <DialogTrigger asChild><Button variant="outline" size="sm" className="h-7 text-xs" data-testid="button-add-shared-note"><Plus className="h-3 w-3 mr-1" /> Add Shared Note</Button></DialogTrigger>
-            <DialogContent><DialogHeader><DialogTitle>Add Shared Note</DialogTitle></DialogHeader><AddNoteDialog customerId={customerId} scope="CUSTOMER" onClose={() => setAddOpen(false)} /></DialogContent>
-          </Dialog>
-        </CardHeader>
-        <CardContent><p className="text-sm text-muted-foreground text-center py-2">No shared notes</p></CardContent>
+        <CardHeader>{notesHeader}</CardHeader>
+        <CardContent>{emptyContent}</CardContent>
       </Card>
     );
   }
+
+  const notesBody = (
+    <div className="space-y-2">
+      {preview.map((note) => (
+        <NoteCard key={note.id} note={note} customerId={customerId} activeLocationId={activeLocationId} showConvertAction={activeLocationId ? "makeLocation" : undefined} />
+      ))}
+    </div>
+  );
+
+  if (embedded) {
+    return (
+      <div className="space-y-3">
+        {notesHeader}
+        {notesBody}
+      </div>
+    );
+  }
+
   return (
     <Card>
-      <CardHeader className="pb-2 flex-row items-center justify-between">
-        <CardTitle className="text-sm font-medium flex items-center gap-1.5"><StickyNote className="h-4 w-4" /> Customer Notes <Badge variant="secondary" className="text-xs ml-1">{sharedNotes.length}</Badge></CardTitle>
-        <div className="flex items-center gap-2">
-          <Dialog open={addOpen} onOpenChange={setAddOpen}>
-            <DialogTrigger asChild><Button variant="outline" size="sm" className="h-7 text-xs" data-testid="button-add-shared-note"><Plus className="h-3 w-3 mr-1" /> Add Shared Note</Button></DialogTrigger>
-            <DialogContent><DialogHeader><DialogTitle>Add Shared Note</DialogTitle></DialogHeader><AddNoteDialog customerId={customerId} scope="CUSTOMER" onClose={() => setAddOpen(false)} /></DialogContent>
-          </Dialog>
-          {sharedNotes.length > 1 && (
-            <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => setExpanded(!expanded)} data-testid="button-expand-notes">
-              {expanded ? <><ChevronUp className="h-3 w-3 mr-1" /> Collapse</> : <><ChevronDown className="h-3 w-3 mr-1" /> Show All</>}
-            </Button>
-          )}
-        </div>
-      </CardHeader>
-      <CardContent className="space-y-2">
-        {preview.map((note) => (
-          <NoteCard key={note.id} note={note} customerId={customerId} activeLocationId={activeLocationId} showConvertAction={activeLocationId ? "makeLocation" : undefined} />
-        ))}
-      </CardContent>
+      <CardHeader>{notesHeader}</CardHeader>
+      <CardContent>{notesBody}</CardContent>
     </Card>
   );
 }
@@ -705,64 +738,73 @@ export default function CustomerDetail() {
   }
 
   return (
-    <div className="p-6 space-y-5 max-w-5xl mx-auto">
-      <div className="flex items-start gap-3">
-        <Link href="/customers">
-          <Button variant="ghost" size="icon" data-testid="button-back" className="mt-0.5">
-            <ArrowLeft className="h-4 w-4" />
-          </Button>
-        </Link>
-        <div className="flex-1 min-w-0 space-y-4">
-          <div className="grid gap-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)]">
-            <Card>
-              <CardContent className="p-5">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <h1 className="text-xl font-bold tracking-tight" data-testid="text-customer-name">
-                    {customer.firstName} {customer.lastName}
-                  </h1>
-                  <Badge variant="secondary" className={customer.status === "active" ? "bg-primary/10 text-primary" : ""} data-testid="badge-customer-status">
-                    {customer.status}
-                  </Badge>
-                </div>
-                {customer.companyName && <p className="text-sm text-muted-foreground mt-1">{customer.companyName}</p>}
-                <div className="flex items-center gap-3 mt-3 flex-wrap">
-                  {customer.email ? (
-                    <CommunicationActionLink
-                      href={buildCommunicationHref({ customerId, locationId: activeLocationId, type: "email", value: customer.email })}
-                      icon={<Mail className="h-3.5 w-3.5" />}
-                      text={customer.email}
-                      testId="link-customer-email"
-                    />
-                  ) : (
-                    <div className="flex items-center gap-1.5 text-xs text-muted-foreground"><Mail className="h-3.5 w-3.5" /> <span data-testid="text-customer-email">No email</span></div>
-                  )}
-                  {customer.phone ? (
-                    <CommunicationActionLink
-                      href={buildCommunicationHref({ customerId, locationId: activeLocationId, type: "phone", value: customer.phone })}
-                      icon={<Phone className="h-3.5 w-3.5" />}
-                      text={formatPhoneDisplay(customer.phone)}
-                      testId="link-customer-phone"
-                    />
-                  ) : (
-                    <div className="flex items-center gap-1.5 text-xs text-muted-foreground"><Phone className="h-3.5 w-3.5" /> <span data-testid="text-customer-phone">No phone</span></div>
-                  )}
-                  <Badge variant="outline" className="text-xs capitalize" data-testid="badge-customer-type">{customer.customerType}</Badge>
-                </div>
-                <div className="flex items-center gap-2 mt-3 flex-wrap">
-                  {primaryLocation && (
-                    <Badge variant="secondary" className="text-xs" data-testid="chip-primary-location">
-                      <MapPin className="h-3 w-3 mr-1" /> Primary: {primaryLocation.name}
+    <div className="p-6 space-y-5 max-w-5xl mx-auto relative">
+      <Link href="/customers">
+        <Button
+          variant="ghost"
+          size="icon"
+          data-testid="button-back"
+          className="absolute left-0 top-0 -translate-x-full mr-3"
+        >
+          <ArrowLeft className="h-4 w-4" />
+        </Button>
+      </Link>
+      <div>
+        <div className="flex-1 min-w-0">
+          <Card>
+            <CardContent className="p-5">
+              <div className="space-y-5">
+                <div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h1 className="text-xl font-bold tracking-tight" data-testid="text-customer-name">
+                      {customer.firstName} {customer.lastName}
+                    </h1>
+                    <Badge variant="secondary" className={customer.status === "active" ? "bg-primary/10 text-primary" : ""} data-testid="badge-customer-status">
+                      {customer.status}
                     </Badge>
-                  )}
-                  <Badge variant="secondary" className="text-xs" data-testid="chip-billing">
-                    <CreditCard className="h-3 w-3 mr-1" /> Billing: {hasBillingOverride ? "Per-location" : "Default"}
-                  </Badge>
+                  </div>
+                  {customer.companyName && <p className="text-sm text-muted-foreground mt-1">{customer.companyName}</p>}
+                  <div className="flex items-center gap-3 mt-3 flex-wrap">
+                    {customer.email ? (
+                      <CommunicationActionLink
+                        href={buildCommunicationHref({ customerId, locationId: activeLocationId, type: "email", value: customer.email })}
+                        icon={<Mail className="h-3.5 w-3.5" />}
+                        text={customer.email}
+                        testId="link-customer-email"
+                      />
+                    ) : (
+                      <div className="flex items-center gap-1.5 text-xs text-muted-foreground"><Mail className="h-3.5 w-3.5" /> <span data-testid="text-customer-email">No email</span></div>
+                    )}
+                    {customer.phone ? (
+                      <CommunicationActionLink
+                        href={buildCommunicationHref({ customerId, locationId: activeLocationId, type: "phone", value: customer.phone })}
+                        icon={<Phone className="h-3.5 w-3.5" />}
+                        text={formatPhoneDisplay(customer.phone)}
+                        testId="link-customer-phone"
+                      />
+                    ) : (
+                      <div className="flex items-center gap-1.5 text-xs text-muted-foreground"><Phone className="h-3.5 w-3.5" /> <span data-testid="text-customer-phone">No phone</span></div>
+                    )}
+                    <Badge variant="outline" className="text-xs capitalize" data-testid="badge-customer-type">{customer.customerType}</Badge>
+                  </div>
+                  <div className="flex items-center gap-2 mt-3 flex-wrap">
+                    {primaryLocation && (
+                      <Badge variant="secondary" className="text-xs" data-testid="chip-primary-location">
+                        <MapPin className="h-3 w-3 mr-1" /> Primary: {primaryLocation.name}
+                      </Badge>
+                    )}
+                    <Badge variant="secondary" className="text-xs" data-testid="chip-billing">
+                      <CreditCard className="h-3 w-3 mr-1" /> Billing: {hasBillingOverride ? "Per-location" : "Default"}
+                    </Badge>
+                  </div>
                 </div>
-              </CardContent>
-            </Card>
 
-            <CustomerNotesPanel customerId={customerId} activeLocationId={activeLocationId} />
-          </div>
+                <div className="border-t pt-5">
+                  <CustomerNotesPanel customerId={customerId} activeLocationId={activeLocationId} embedded />
+                </div>
+              </div>
+            </CardContent>
+          </Card>
         </div>
       </div>
 
