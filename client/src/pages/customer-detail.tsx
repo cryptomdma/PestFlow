@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useRoute, Link, useSearch, useLocation } from "wouter";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -89,10 +89,6 @@ function buildSingleNoteState(notes: CustomerNote[] | undefined, legacyBody?: st
     primaryNote,
     noteCount: nonEmptyNotes.length,
   };
-}
-
-function noteNeedsExpandedView(body: string) {
-  return body.length > 360 || body.split(/\r?\n/).length > 7;
 }
 
 function buildCommunicationHref({
@@ -494,7 +490,9 @@ function SingleNoteSection({
   const [isExpanded, setIsExpanded] = useState(false);
   const singleNote = useMemo(() => buildSingleNoteState(notes, legacyBody), [notes, legacyBody]);
   const [draft, setDraft] = useState(singleNote.body);
-  const canExpand = noteNeedsExpandedView(singleNote.body);
+  const previewBodyRef = useRef<HTMLDivElement | null>(null);
+  const [hasCollapsedOverflow, setHasCollapsedOverflow] = useState(false);
+  const canExpand = hasCollapsedOverflow;
 
   useEffect(() => {
     if (!isEditing) {
@@ -503,10 +501,36 @@ function SingleNoteSection({
   }, [isEditing, singleNote.body]);
 
   useEffect(() => {
-    if (!canExpand) {
+    if (!hasCollapsedOverflow) {
       setIsExpanded(false);
     }
-  }, [canExpand]);
+  }, [hasCollapsedOverflow]);
+
+  useEffect(() => {
+    if (isEditing) {
+      setHasCollapsedOverflow(false);
+      return;
+    }
+
+    const measureOverflow = () => {
+      const element = previewBodyRef.current;
+      if (!element) {
+        setHasCollapsedOverflow(false);
+        return;
+      }
+
+      const hasVerticalOverflow = element.scrollHeight - element.clientHeight > 1;
+      const hasHorizontalOverflow = element.scrollWidth - element.clientWidth > 1;
+      setHasCollapsedOverflow(hasVerticalOverflow || hasHorizontalOverflow);
+    };
+
+    measureOverflow();
+    window.addEventListener("resize", measureOverflow);
+
+    return () => {
+      window.removeEventListener("resize", measureOverflow);
+    };
+  }, [isEditing, singleNote.body, collapsedBodyClassName]);
 
   const saveMutation = useMutation({
     mutationFn: (body: string) =>
@@ -556,7 +580,7 @@ function SingleNoteSection({
     }
 
     return (
-      <div className={cn("overflow-hidden", collapsedBodyClassName)}>
+      <div ref={previewBodyRef} className={cn("overflow-hidden", collapsedBodyClassName)}>
         <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-sm leading-6 text-foreground">
           {singleNote.body}
         </p>
@@ -575,7 +599,7 @@ function SingleNoteSection({
         )}
       </div>
       <div className="flex items-center gap-2">
-        {!isEditing && canExpand && (
+        {!isEditing && hasCollapsedOverflow && (
           <Button
             variant="ghost"
             size="sm"
