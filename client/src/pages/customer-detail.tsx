@@ -472,6 +472,8 @@ function SingleNoteSection({
   testIdPrefix,
   surfaceClassName,
   collapsedBodyClassName,
+  expandedBodyClassName,
+  footerReserveClassName,
 }: {
   title: string;
   scope: "CUSTOMER" | "LOCATION";
@@ -484,6 +486,8 @@ function SingleNoteSection({
   testIdPrefix: string;
   surfaceClassName?: string;
   collapsedBodyClassName?: string;
+  expandedBodyClassName?: string;
+  footerReserveClassName?: string;
 }) {
   const { toast } = useToast();
   const [isEditing, setIsEditing] = useState(false);
@@ -573,7 +577,7 @@ function SingleNoteSection({
 
     if (isExpanded && canExpand) {
       return (
-        <ScrollArea className="h-56 pr-4">
+        <ScrollArea className={cn("pr-4", expandedBodyClassName ?? "h-56")}>
           <p className="whitespace-pre-wrap text-sm leading-6 text-foreground">{singleNote.body}</p>
         </ScrollArea>
       );
@@ -654,8 +658,11 @@ function SingleNoteSection({
       </div>
     </form>
   ) : (
-    <div className={cn("rounded-lg border bg-muted/20 p-3", surfaceClassName)}>
-      {renderBody()}
+    <div className="space-y-3">
+      <div className={cn("rounded-lg border bg-muted/20 p-3", surfaceClassName)}>
+        <div className="flex-1">{renderBody()}</div>
+      </div>
+      {footerReserveClassName && <div className={cn("shrink-0", footerReserveClassName)} aria-hidden="true" />}
     </div>
   );
 
@@ -725,7 +732,10 @@ function LocationNotesPanel({
         legacyBody={legacyBody}
         emptyMessage="No location notes yet."
         testIdPrefix="location"
-        surfaceClassName="min-h-[188px]"
+        surfaceClassName="h-[9rem] flex flex-col"
+        collapsedBodyClassName="min-h-[7.5rem] max-h-[7.5rem]"
+        expandedBodyClassName="h-[7.5rem]"
+        footerReserveClassName="min-h-[3.5rem]"
       />
     </Card>
   );
