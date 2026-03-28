@@ -475,6 +475,7 @@ function SingleNoteSection({
   embedded = false,
   testIdPrefix,
   surfaceClassName,
+  collapsedBodyClassName,
 }: {
   title: string;
   scope: "CUSTOMER" | "LOCATION";
@@ -486,6 +487,7 @@ function SingleNoteSection({
   embedded?: boolean;
   testIdPrefix: string;
   surfaceClassName?: string;
+  collapsedBodyClassName?: string;
 }) {
   const { toast } = useToast();
   const [isEditing, setIsEditing] = useState(false);
@@ -554,8 +556,10 @@ function SingleNoteSection({
     }
 
     return (
-      <div className={cn(canExpand && "max-h-40 overflow-hidden")}>
-        <p className="whitespace-pre-wrap text-sm leading-6 text-foreground">{singleNote.body}</p>
+      <div className={cn("overflow-hidden", collapsedBodyClassName)}>
+        <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-sm leading-6 text-foreground">
+          {singleNote.body}
+        </p>
       </div>
     );
   };
@@ -669,6 +673,8 @@ function CustomerNotesPanel({
       emptyMessage="No customer notes yet."
       embedded={embedded}
       testIdPrefix="customer"
+      surfaceClassName="min-h-[4.5rem]"
+      collapsedBodyClassName="min-h-[4.5rem] max-h-[4.5rem]"
     />
   );
 }
