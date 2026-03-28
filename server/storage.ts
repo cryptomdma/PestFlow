@@ -18,7 +18,7 @@ import {
   type CustomerNote, type InsertCustomerNote,
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, and, sql } from "drizzle-orm";
+import { eq, and, inArray, sql } from "drizzle-orm";
 import { PLACEHOLDER_LOCATION_NAME, PLACEHOLDER_LOCATION_NOTE } from "./account-bootstrap";
 
 export interface CustomerDetailCompatProjection {
@@ -56,6 +56,14 @@ export interface UpdateLocationProfileInput {
   actor?: AuditActor;
 }
 
+export interface SaveScopedNoteInput {
+  scope: "CUSTOMER" | "LOCATION";
+  customerId?: string | null;
+  locationId?: string | null;
+  body: string;
+  createdBy?: string | null;
+}
+
 export interface IStorage {
   getCustomers(): Promise<Customer[]>;
   getCustomer(id: string): Promise<Customer | undefined>;
@@ -85,6 +93,7 @@ export interface IStorage {
   getNotesByLocation(locationId: string): Promise<CustomerNote[]>;
   getSharedNotes(customerId: string): Promise<CustomerNote[]>;
   createNote(data: InsertCustomerNote): Promise<CustomerNote>;
+  saveScopedNote(data: SaveScopedNoteInput): Promise<CustomerNote | null>;
   updateNoteScope(id: string, scope: string, customerId: string | null, locationId: string | null): Promise<CustomerNote | undefined>;
 
   getServiceTypes(): Promise<ServiceType[]>;
@@ -501,6 +510,54 @@ export class DatabaseStorage implements IStorage {
   async createNote(data: InsertCustomerNote): Promise<CustomerNote> {
     const [note] = await db.insert(customerNotes).values(data).returning();
     return note;
+  }
+
+  async saveScopedNote(data: SaveScopedNoteInput): Promise<CustomerNote | null> {
+    const scopeFilter =
+      data.scope === "CUSTOMER"
+        ? and(eq(customerNotes.customerId, data.customerId ?? ""), eq(customerNotes.scope, "CUSTOMER"))
+        : and(eq(customerNotes.locationId, data.locationId ?? ""), eq(customerNotes.scope, "LOCATION"));
+
+    return db.transaction(async (tx) => {
+      const existingNotes = await tx.select().from(customerNotes).where(scopeFilter);
+      const [primaryNote, ...legacyNotes] = [...existingNotes].sort(
+        (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+      );
+
+      if (primaryNote) {
+        const [updated] = await tx
+          .update(customerNotes)
+          .set({ body: data.body })
+          .where(eq(customerNotes.id, primaryNote.id))
+          .returning();
+
+        if (legacyNotes.length > 0) {
+          await tx
+            .update(customerNotes)
+            .set({ body: "" })
+            .where(inArray(customerNotes.id, legacyNotes.map((note) => note.id)));
+        }
+
+        return updated;
+      }
+
+      if (!data.body.trim()) {
+        return null;
+      }
+
+      const [created] = await tx
+        .insert(customerNotes)
+        .values({
+          scope: data.scope,
+          customerId: data.scope === "CUSTOMER" ? data.customerId ?? null : null,
+          locationId: data.scope === "LOCATION" ? data.locationId ?? null : null,
+          body: data.body,
+          createdBy: data.createdBy ?? null,
+        })
+        .returning();
+
+      return created;
+    });
   }
 
   async updateNoteScope(id: string, scope: string, customerId: string | null, locationId: string | null): Promise<CustomerNote | undefined> {

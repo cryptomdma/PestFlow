@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useRoute, Link, useSearch, useLocation } from "wouter";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -9,6 +9,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Skeleton } from "@/components/ui/skeleton";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger,
 } from "@/components/ui/dialog";
@@ -31,11 +32,12 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { cn } from "@/lib/utils";
 import { formatPhoneDisplay } from "@shared/phone";
 import {
   ArrowLeft, Mail, Phone, MapPin, Plus, Calendar, FileText, MessageSquare,
-  ClipboardList, Building2, User, ChevronDown, Pin, ArrowUpRight, StickyNote,
-  CreditCard, Star, KeyRound, Ruler, ChevronUp, MoreHorizontal, Check,
+  ClipboardList, Building2, User, ChevronDown, ArrowUpRight, StickyNote,
+  CreditCard, Star, KeyRound, Ruler, ChevronUp, Check,
 } from "lucide-react";
 import type { Customer, Contact, Location, Appointment, Invoice, ServiceRecord, Communication, CustomerNote, BillingProfile } from "@shared/schema";
 
@@ -69,6 +71,24 @@ function formatOptionLabel(value: string) {
     .split("-")
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(" ");
+}
+
+function sortNotesByCreatedAt(notes: CustomerNote[]) {
+  return [...notes].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+}
+
+function buildSingleNoteState(notes: CustomerNote[] | undefined, legacyBody?: string | null) {
+  const hasPersistedScopedNotes = (notes?.length ?? 0) > 0;
+  const nonEmptyNotes = sortNotesByCreatedAt((notes ?? []).filter((note) => note.body.trim().length > 0));
+  const dedupedBodies = Array.from(new Set(nonEmptyNotes.map((note) => note.body.trim())));
+  const body = dedupedBodies.length > 0 ? dedupedBodies.join("\n\n") : hasPersistedScopedNotes ? "" : legacyBody?.trim() || "";
+  const primaryNote = nonEmptyNotes.length > 0 ? nonEmptyNotes[nonEmptyNotes.length - 1] : null;
+
+  return {
+    body,
+    primaryNote,
+    noteCount: nonEmptyNotes.length,
+  };
 }
 
 function buildCommunicationHref({
@@ -122,7 +142,7 @@ function CommunicationActionLink({
 
 function AddLocationDialog({ customerId, onClose }: { customerId: string; onClose: () => void }) {
   const { toast } = useToast();
-  const [form, setForm] = useState({ name: "", address: "", city: "", state: "", zip: "", propertyType: "residential", isPrimary: false, gateCode: "", squareFootage: "", notes: "" });
+  const [form, setForm] = useState({ name: "", address: "", city: "", state: "", zip: "", propertyType: "residential", isPrimary: false, gateCode: "", squareFootage: "" });
   const mutation = useMutation({
     mutationFn: (data: any) => apiRequest("POST", "/api/locations", { ...data, customerId, squareFootage: data.squareFootage ? parseInt(data.squareFootage) : null }),
     onSuccess: () => {
@@ -158,7 +178,6 @@ function AddLocationDialog({ customerId, onClose }: { customerId: string; onClos
         <div className="space-y-1.5"><Label>Sq Ft</Label><Input type="number" value={form.squareFootage} onChange={(e) => setForm(p => ({ ...p, squareFootage: e.target.value }))} /></div>
       </div>
       <div className="space-y-1.5"><Label>Gate Code</Label><Input value={form.gateCode} onChange={(e) => setForm(p => ({ ...p, gateCode: e.target.value }))} /></div>
-      <div className="space-y-1.5"><Label>Notes</Label><Textarea value={form.notes} onChange={(e) => setForm(p => ({ ...p, notes: e.target.value }))} className="resize-none" rows={2} /></div>
       <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.isPrimary} onChange={(e) => setForm(p => ({ ...p, isPrimary: e.target.checked }))} /> Set as primary location</label>
       <div className="flex justify-end gap-2"><Button type="button" variant="outline" onClick={onClose}>Cancel</Button><Button type="submit" disabled={mutation.isPending} data-testid="button-save-location">{mutation.isPending ? "Saving..." : "Add Location"}</Button></div>
     </form>
@@ -192,7 +211,6 @@ function EditLocationDialog({
     source: location.source || "",
     squareFootage: location.squareFootage ? String(location.squareFootage) : "",
     gateCode: location.gateCode || "",
-    notes: location.notes || "",
   });
 
   useEffect(() => {
@@ -212,7 +230,6 @@ function EditLocationDialog({
       source: location.source || "",
       squareFootage: location.squareFootage ? String(location.squareFootage) : "",
       gateCode: location.gateCode || "",
-      notes: location.notes || "",
     });
   }, [customer, location]);
 
@@ -232,7 +249,6 @@ function EditLocationDialog({
         source: data.source.trim() || null,
         squareFootage: data.squareFootage.trim() ? parseInt(data.squareFootage, 10) : null,
         gateCode: data.gateCode.trim() || null,
-        notes: data.notes.trim() || null,
       };
 
       const customerPayload = isPrimaryLocation
@@ -389,7 +405,6 @@ function EditLocationDialog({
         <div className="space-y-1.5"><Label>Sq Ft</Label><Input type="number" data-testid="input-edit-square-footage" value={form.squareFootage} onChange={(e) => setForm((prev) => ({ ...prev, squareFootage: e.target.value }))} /></div>
         <div className="space-y-1.5"><Label>Gate Code</Label><Input data-testid="input-edit-gate-code" value={form.gateCode} onChange={(e) => setForm((prev) => ({ ...prev, gateCode: e.target.value }))} /></div>
       </div>
-      <div className="space-y-1.5"><Label>Notes</Label><Textarea data-testid="input-edit-location-notes" value={form.notes} onChange={(e) => setForm((prev) => ({ ...prev, notes: e.target.value }))} className="resize-none" rows={3} /></div>
       <div className="flex justify-end gap-2">
         <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
         <Button type="submit" disabled={mutation.isPending} data-testid="button-save-edited-location">
@@ -445,168 +460,273 @@ function AddContactDialog({ customerId, locationId, onClose }: { customerId: str
   );
 }
 
-function AddNoteDialog({ customerId, locationId, scope, onClose }: { customerId: string; locationId?: string; scope: "CUSTOMER" | "LOCATION"; onClose: () => void }) {
+function SingleNoteSection({
+  title,
+  scope,
+  customerId,
+  locationId,
+  notes,
+  legacyBody,
+  emptyMessage,
+  embedded = false,
+  testIdPrefix,
+  surfaceClassName,
+  collapsedBodyClassName,
+}: {
+  title: string;
+  scope: "CUSTOMER" | "LOCATION";
+  customerId: string;
+  locationId?: string;
+  notes?: CustomerNote[];
+  legacyBody?: string | null;
+  emptyMessage: string;
+  embedded?: boolean;
+  testIdPrefix: string;
+  surfaceClassName?: string;
+  collapsedBodyClassName?: string;
+}) {
   const { toast } = useToast();
-  const [body, setBody] = useState("");
-  const mutation = useMutation({
-    mutationFn: (data: any) => apiRequest("POST", "/api/notes", data),
+  const [isEditing, setIsEditing] = useState(false);
+  const [isExpanded, setIsExpanded] = useState(false);
+  const singleNote = useMemo(() => buildSingleNoteState(notes, legacyBody), [notes, legacyBody]);
+  const [draft, setDraft] = useState(singleNote.body);
+  const previewBodyRef = useRef<HTMLDivElement | null>(null);
+  const [hasCollapsedOverflow, setHasCollapsedOverflow] = useState(false);
+  const canExpand = hasCollapsedOverflow;
+
+  useEffect(() => {
+    if (!isEditing) {
+      setDraft(singleNote.body);
+    }
+  }, [isEditing, singleNote.body]);
+
+  useEffect(() => {
+    if (!hasCollapsedOverflow) {
+      setIsExpanded(false);
+    }
+  }, [hasCollapsedOverflow]);
+
+  useEffect(() => {
+    if (isEditing) {
+      setHasCollapsedOverflow(false);
+      return;
+    }
+
+    const measureOverflow = () => {
+      const element = previewBodyRef.current;
+      if (!element) {
+        setHasCollapsedOverflow(false);
+        return;
+      }
+
+      const hasVerticalOverflow = element.scrollHeight - element.clientHeight > 1;
+      const hasHorizontalOverflow = element.scrollWidth - element.clientWidth > 1;
+      setHasCollapsedOverflow(hasVerticalOverflow || hasHorizontalOverflow);
+    };
+
+    measureOverflow();
+    window.addEventListener("resize", measureOverflow);
+
+    return () => {
+      window.removeEventListener("resize", measureOverflow);
+    };
+  }, [isEditing, singleNote.body, collapsedBodyClassName]);
+
+  const saveMutation = useMutation({
+    mutationFn: (body: string) =>
+      apiRequest("PUT", "/api/notes/scoped", {
+        scope,
+        customerId: scope === "CUSTOMER" ? customerId : null,
+        locationId: scope === "LOCATION" ? locationId ?? null : null,
+        body,
+        createdBy: singleNote.primaryNote?.createdBy ?? "Admin",
+      }),
     onSuccess: () => {
       if (scope === "CUSTOMER") {
         queryClient.invalidateQueries({ queryKey: ["/api/notes/shared", customerId] });
-      } else {
+      } else if (locationId) {
         queryClient.invalidateQueries({ queryKey: ["/api/notes/location", locationId] });
       }
-      toast({ title: "Note added" });
-      onClose();
-    },
-  });
-  return (
-    <form onSubmit={(e) => { e.preventDefault(); mutation.mutate({ body, scope, customerId: scope === "CUSTOMER" ? customerId : null, locationId: scope === "LOCATION" ? locationId : null, createdBy: "Admin" }); }} className="space-y-4">
-      <Textarea data-testid="input-note-body" value={body} onChange={(e) => setBody(e.target.value)} placeholder="Write a note..." className="resize-none" rows={4} />
-      <div className="flex justify-end gap-2"><Button type="button" variant="outline" onClick={onClose}>Cancel</Button><Button type="submit" disabled={mutation.isPending || !body.trim()} data-testid="button-save-note">{mutation.isPending ? "Saving..." : scope === "CUSTOMER" ? "Add Shared Note" : "Add Location Note"}</Button></div>
-    </form>
-  );
-}
 
-function NoteCard({ note, customerId, activeLocationId, showConvertAction }: { note: CustomerNote; customerId: string; activeLocationId?: string; showConvertAction?: "makeShared" | "makeLocation" }) {
-  const { toast } = useToast();
-  const convertMutation = useMutation({
-    mutationFn: () => {
-      if (showConvertAction === "makeShared") {
-        return apiRequest("PATCH", `/api/notes/${note.id}/convert-scope`, { scope: "CUSTOMER", customerId, locationId: null });
-      } else {
-        return apiRequest("PATCH", `/api/notes/${note.id}/convert-scope`, { scope: "LOCATION", customerId: null, locationId: activeLocationId });
-      }
+      setIsEditing(false);
+      toast({ title: `${title} updated` });
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/notes/shared", customerId] });
-      if (activeLocationId) queryClient.invalidateQueries({ queryKey: ["/api/notes/location", activeLocationId] });
-      toast({ title: showConvertAction === "makeShared" ? "Note moved to shared" : "Note moved to location" });
+    onError: (error: Error) => {
+      toast({ title: `Error updating ${title.toLowerCase()}`, description: error.message, variant: "destructive" });
     },
   });
-  return (
-    <div className="flex items-start gap-3 p-3 rounded-lg border bg-card" data-testid={`note-${note.id}`}>
-      {note.pinned && <Pin className="h-3.5 w-3.5 text-primary mt-0.5 shrink-0" />}
-      <div className="flex-1 min-w-0">
-        <p className="text-sm leading-relaxed">{note.body}</p>
-        <div className="flex items-center gap-2 mt-1.5 text-xs text-muted-foreground">
-          {note.createdBy && <span>{note.createdBy}</span>}
-          <span>{new Date(note.createdAt).toLocaleDateString()}</span>
-        </div>
+
+  const openEditor = () => {
+    setDraft(singleNote.body);
+    setIsEditing(true);
+  };
+
+  const cancelEdit = () => {
+    setDraft(singleNote.body);
+    setIsEditing(false);
+  };
+
+  const renderBody = () => {
+    if (!singleNote.body) {
+      return <p className="text-sm text-muted-foreground">{emptyMessage}</p>;
+    }
+
+    if (isExpanded && canExpand) {
+      return (
+        <ScrollArea className="h-56 pr-4">
+          <p className="whitespace-pre-wrap text-sm leading-6 text-foreground">{singleNote.body}</p>
+        </ScrollArea>
+      );
+    }
+
+    return (
+      <div ref={previewBodyRef} className={cn("overflow-hidden", collapsedBodyClassName)}>
+        <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-sm leading-6 text-foreground">
+          {singleNote.body}
+        </p>
       </div>
-      {showConvertAction && (
-        <Button variant="ghost" size="sm" className="shrink-0 text-xs h-7" onClick={() => convertMutation.mutate()} disabled={convertMutation.isPending} data-testid={`button-convert-note-${note.id}`}>
-          {showConvertAction === "makeShared" ? "Make Shared" : "Make Location"}
-        </Button>
-      )}
-    </div>
-  );
-}
+    );
+  };
 
-function CustomerNotesPanel({
-  customerId,
-  activeLocationId,
-  embedded = false,
-}: {
-  customerId: string;
-  activeLocationId?: string;
-  embedded?: boolean;
-}) {
-  const [expanded, setExpanded] = useState(false);
-  const [addOpen, setAddOpen] = useState(false);
-  const { data: sharedNotes } = useQuery<CustomerNote[]>({ queryKey: ["/api/notes/shared", customerId] });
-  const sortedNotes = useMemo(() => {
-    if (!sharedNotes) return [];
-    return [...sharedNotes].sort((a, b) => {
-      if (a.pinned && !b.pinned) return -1;
-      if (!a.pinned && b.pinned) return 1;
-      return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
-    });
-  }, [sharedNotes]);
-  const preview = sortedNotes.slice(0, expanded ? sortedNotes.length : 1);
-  const notesHeader = (
-    <div className="pb-2 flex flex-row items-center justify-between">
-      <CardTitle className="text-sm font-medium flex items-center gap-1.5">
-        <StickyNote className="h-4 w-4" /> Customer Notes
-        {sharedNotes && sharedNotes.length > 0 && <Badge variant="secondary" className="text-xs ml-1">{sharedNotes.length}</Badge>}
-      </CardTitle>
+  const header = (
+    <div className="flex items-start justify-between gap-3">
+      <div>
+        <CardTitle className="text-sm font-medium flex items-center gap-1.5">
+          <StickyNote className="h-4 w-4" /> {title}
+        </CardTitle>
+        {singleNote.noteCount > 1 && (
+          <p className="mt-1 text-xs text-muted-foreground">Legacy note entries are collapsed into this single section.</p>
+        )}
+      </div>
       <div className="flex items-center gap-2">
-        <Dialog open={addOpen} onOpenChange={setAddOpen}>
-          <DialogTrigger asChild><Button variant="outline" size="sm" className="h-7 text-xs" data-testid="button-add-shared-note"><Plus className="h-3 w-3 mr-1" /> Add Shared Note</Button></DialogTrigger>
-          <DialogContent><DialogHeader><DialogTitle>Add Shared Note</DialogTitle></DialogHeader><AddNoteDialog customerId={customerId} scope="CUSTOMER" onClose={() => setAddOpen(false)} /></DialogContent>
-        </Dialog>
-        {sharedNotes && sharedNotes.length > 1 && (
-          <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => setExpanded(!expanded)} data-testid="button-expand-notes">
-            {expanded ? <><ChevronUp className="h-3 w-3 mr-1" /> Collapse</> : <><ChevronDown className="h-3 w-3 mr-1" /> Show All</>}
+        {!isEditing && hasCollapsedOverflow && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 text-xs"
+            onClick={() => setIsExpanded((current) => !current)}
+            data-testid={`button-toggle-${testIdPrefix}-notes`}
+          >
+            {isExpanded ? <><ChevronUp className="mr-1 h-3 w-3" /> Collapse</> : <><ChevronDown className="mr-1 h-3 w-3" /> Expand</>}
+          </Button>
+        )}
+        {!isEditing && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 text-xs"
+            onClick={openEditor}
+            data-testid={`button-edit-${testIdPrefix}-notes`}
+          >
+            Edit
           </Button>
         )}
       </div>
     </div>
   );
 
-  if (!sharedNotes || sharedNotes.length === 0) {
-    const emptyContent = <p className="text-sm text-muted-foreground text-center py-2">No shared notes</p>;
-    if (embedded) {
-      return (
-        <div className="space-y-3">
-          {notesHeader}
-          <div>{emptyContent}</div>
-        </div>
-      );
-    }
-
-    return (
-      <Card>
-        <CardHeader>{notesHeader}</CardHeader>
-        <CardContent>{emptyContent}</CardContent>
-      </Card>
-    );
-  }
-
-  const notesBody = (
-    <div className="space-y-2">
-      {preview.map((note) => (
-        <NoteCard key={note.id} note={note} customerId={customerId} activeLocationId={activeLocationId} showConvertAction={activeLocationId ? "makeLocation" : undefined} />
-      ))}
+  const body = isEditing ? (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        saveMutation.mutate(draft);
+      }}
+      className="space-y-3"
+    >
+      <Textarea
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        placeholder="Add notes..."
+        className="min-h-[180px] resize-y"
+        data-testid={`input-${testIdPrefix}-notes`}
+      />
+      <div className="flex justify-end gap-2">
+        <Button type="button" variant="outline" onClick={cancelEdit}>
+          Cancel
+        </Button>
+        <Button
+          type="submit"
+          disabled={saveMutation.isPending || draft === singleNote.body}
+          data-testid={`button-save-${testIdPrefix}-notes`}
+        >
+          {saveMutation.isPending ? "Saving..." : "Save"}
+        </Button>
+      </div>
+    </form>
+  ) : (
+    <div className={cn("rounded-lg border bg-muted/20 p-3", surfaceClassName)}>
+      {renderBody()}
     </div>
   );
 
   if (embedded) {
     return (
       <div className="space-y-3">
-        {notesHeader}
-        {notesBody}
+        {header}
+        {body}
       </div>
     );
   }
 
   return (
-    <Card>
-      <CardHeader>{notesHeader}</CardHeader>
-      <CardContent>{notesBody}</CardContent>
-    </Card>
+    <>
+      <CardHeader className="pb-2">{header}</CardHeader>
+      <CardContent className="pt-0">{body}</CardContent>
+    </>
   );
 }
 
-function LocationNotesPanel({ customerId, locationId }: { customerId: string; locationId: string }) {
-  const [addOpen, setAddOpen] = useState(false);
-  const { data: locationNotes } = useQuery<CustomerNote[]>({ queryKey: ["/api/notes/location", locationId] });
+function CustomerNotesPanel({
+  customerId,
+  legacyBody,
+  embedded = false,
+}: {
+  customerId: string;
+  legacyBody?: string | null;
+  embedded?: boolean;
+}) {
+  const { data: sharedNotes } = useQuery<CustomerNote[]>({ queryKey: ["/api/notes/shared", customerId] });
+
   return (
-    <Card>
-      <CardHeader className="pb-2 flex-row items-center justify-between">
-        <CardTitle className="text-sm font-medium flex items-center gap-1.5"><StickyNote className="h-4 w-4" /> Location Notes {locationNotes && locationNotes.length > 0 && <Badge variant="secondary" className="text-xs ml-1">{locationNotes.length}</Badge>}</CardTitle>
-        <Dialog open={addOpen} onOpenChange={setAddOpen}>
-          <DialogTrigger asChild><Button variant="outline" size="sm" className="h-7 text-xs" data-testid="button-add-location-note"><Plus className="h-3 w-3 mr-1" /> Add Location Note</Button></DialogTrigger>
-          <DialogContent><DialogHeader><DialogTitle>Add Location Note</DialogTitle></DialogHeader><AddNoteDialog customerId={customerId} locationId={locationId} scope="LOCATION" onClose={() => setAddOpen(false)} /></DialogContent>
-        </Dialog>
-      </CardHeader>
-      <CardContent className="space-y-2">
-        {!locationNotes || locationNotes.length === 0 ? (
-          <p className="text-sm text-muted-foreground text-center py-2">No location-specific notes</p>
-        ) : locationNotes.map((note) => (
-          <NoteCard key={note.id} note={note} customerId={customerId} activeLocationId={locationId} showConvertAction="makeShared" />
-        ))}
-      </CardContent>
+    <SingleNoteSection
+      title="Customer Notes"
+      scope="CUSTOMER"
+      customerId={customerId}
+      notes={sharedNotes}
+      legacyBody={legacyBody}
+      emptyMessage="No customer notes yet."
+      embedded={embedded}
+      testIdPrefix="customer"
+      surfaceClassName="min-h-[4.5rem]"
+      collapsedBodyClassName="min-h-[4.5rem] max-h-[4.5rem]"
+    />
+  );
+}
+
+function LocationNotesPanel({
+  customerId,
+  locationId,
+  legacyBody,
+}: {
+  customerId: string;
+  locationId: string;
+  legacyBody?: string | null;
+}) {
+  const { data: locationNotes } = useQuery<CustomerNote[]>({ queryKey: ["/api/notes/location", locationId] });
+
+  return (
+    <Card className="h-full">
+      <SingleNoteSection
+        title="Location Notes"
+        scope="LOCATION"
+        customerId={customerId}
+        locationId={locationId}
+        notes={locationNotes}
+        legacyBody={legacyBody}
+        emptyMessage="No location notes yet."
+        testIdPrefix="location"
+        surfaceClassName="min-h-[188px]"
+      />
     </Card>
   );
 }
@@ -800,7 +920,7 @@ export default function CustomerDetail() {
                 </div>
 
                 <div className="border-t pt-5">
-                  <CustomerNotesPanel customerId={customerId} activeLocationId={activeLocationId} embedded />
+                  <CustomerNotesPanel customerId={customerId} legacyBody={customer.notes} embedded />
                 </div>
               </div>
             </CardContent>
@@ -946,11 +1066,10 @@ export default function CustomerDetail() {
                   {activeLocation.squareFootage && <span className="flex items-center gap-1"><Ruler className="h-3 w-3" /> {activeLocation.squareFootage.toLocaleString()} sq ft</span>}
                   {activeLocation.gateCode && <span className="flex items-center gap-1"><KeyRound className="h-3 w-3" /> Gate: {activeLocation.gateCode}</span>}
                 </div>
-                {activeLocation.notes && <p className="text-xs text-muted-foreground italic border-t pt-2 mt-2">{activeLocation.notes}</p>}
               </CardContent>
             </Card>
 
-            <LocationNotesPanel customerId={customerId} locationId={activeLocationId} />
+            <LocationNotesPanel customerId={customerId} locationId={activeLocationId} legacyBody={activeLocation.notes} />
           </div>
         )}
 

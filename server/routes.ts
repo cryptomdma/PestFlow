@@ -50,6 +50,29 @@ export async function registerRoutes(
       .partial()
       .optional(),
   });
+  const saveScopedNoteSchema = z.object({
+    scope: z.enum(["CUSTOMER", "LOCATION"]),
+    customerId: z.string().nullable().optional(),
+    locationId: z.string().nullable().optional(),
+    body: z.string(),
+    createdBy: z.string().nullable().optional(),
+  }).superRefine((value, ctx) => {
+    if (value.scope === "CUSTOMER" && !value.customerId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["customerId"],
+        message: "customerId is required for customer-scoped notes",
+      });
+    }
+
+    if (value.scope === "LOCATION" && !value.locationId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["locationId"],
+        message: "locationId is required for location-scoped notes",
+      });
+    }
+  });
 
   // Transitional dev-only diagnostics for Phase 1 account/location hardening.
   // TODO(Phase2): gate behind auth/admin controls once user model exists.
@@ -384,6 +407,17 @@ export async function registerRoutes(
       const validated = insertCustomerNoteSchema.parse(req.body);
       const data = await storage.createNote(validated);
       res.status(201).json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.put("/api/notes/scoped", async (req, res) => {
+    try {
+      const validated = saveScopedNoteSchema.parse(req.body);
+      const data = await storage.saveScopedNote(validated);
+      res.json(data);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
       res.status(400).json({ message: e.message });
