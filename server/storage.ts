@@ -15,7 +15,7 @@ import {
   type Invoice, type InsertInvoice,
   type Communication, type InsertCommunication,
   type BillingProfile, type InsertBillingProfile,
-  type CustomerNote, type InsertCustomerNote,
+  type CustomerNote,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, inArray, sql } from "drizzle-orm";
@@ -57,7 +57,8 @@ export interface UpdateLocationProfileInput {
 }
 
 export interface SaveScopedNoteInput {
-  scope: "CUSTOMER" | "LOCATION";
+  scope: "ACCOUNT" | "LOCATION";
+  accountId?: string | null;
   customerId?: string | null;
   locationId?: string | null;
   body: string;
@@ -89,12 +90,9 @@ export interface IStorage {
   getBillingProfiles(customerId: string): Promise<BillingProfile[]>;
   createBillingProfile(data: InsertBillingProfile): Promise<BillingProfile>;
 
-  getNotesByCustomer(customerId: string): Promise<CustomerNote[]>;
   getNotesByLocation(locationId: string): Promise<CustomerNote[]>;
   getSharedNotes(customerId: string): Promise<CustomerNote[]>;
-  createNote(data: InsertCustomerNote): Promise<CustomerNote>;
   saveScopedNote(data: SaveScopedNoteInput): Promise<CustomerNote | null>;
-  updateNoteScope(id: string, scope: string, customerId: string | null, locationId: string | null): Promise<CustomerNote | undefined>;
 
   getServiceTypes(): Promise<ServiceType[]>;
   createServiceType(data: InsertServiceType): Promise<ServiceType>;
@@ -158,6 +156,11 @@ export class DatabaseStorage implements IStorage {
   private async resolveAccountIdForLegacyCustomer(legacyCustomerId: string): Promise<string> {
     const account = await this.ensureAccountForLegacyCustomer(legacyCustomerId);
     return account.id;
+  }
+
+  private async resolveAccountIdForLocation(locationId: string): Promise<string | null> {
+    const [location] = await db.select({ accountId: locations.accountId }).from(locations).where(eq(locations.id, locationId));
+    return location?.accountId ?? null;
   }
 
   private async ensurePrimaryLocationInvariant(accountId: string, preferredLocationId?: string): Promise<void> {
@@ -491,10 +494,6 @@ export class DatabaseStorage implements IStorage {
     return bp;
   }
 
-  async getNotesByCustomer(customerId: string): Promise<CustomerNote[]> {
-    return db.select().from(customerNotes).where(eq(customerNotes.customerId, customerId));
-  }
-
   async getNotesByLocation(locationId: string): Promise<CustomerNote[]> {
     return db.select().from(customerNotes).where(
       and(eq(customerNotes.locationId, locationId), eq(customerNotes.scope, "LOCATION"))
@@ -502,21 +501,30 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getSharedNotes(customerId: string): Promise<CustomerNote[]> {
+    const accountId = await this.resolveAccountIdForLegacyCustomer(customerId);
     return db.select().from(customerNotes).where(
-      and(eq(customerNotes.customerId, customerId), eq(customerNotes.scope, "CUSTOMER"))
+      and(eq(customerNotes.accountId, accountId), eq(customerNotes.scope, "ACCOUNT"))
     );
   }
 
-  async createNote(data: InsertCustomerNote): Promise<CustomerNote> {
-    const [note] = await db.insert(customerNotes).values(data).returning();
-    return note;
-  }
-
   async saveScopedNote(data: SaveScopedNoteInput): Promise<CustomerNote | null> {
+    const accountId =
+      data.scope === "ACCOUNT"
+        ? data.accountId ?? (data.customerId ? await this.resolveAccountIdForLegacyCustomer(data.customerId) : null)
+        : data.locationId
+          ? await this.resolveAccountIdForLocation(data.locationId)
+          : null;
+
+    const locationId = data.scope === "LOCATION" ? data.locationId ?? null : null;
+
+    if (!accountId) {
+      return null;
+    }
+
     const scopeFilter =
-      data.scope === "CUSTOMER"
-        ? and(eq(customerNotes.customerId, data.customerId ?? ""), eq(customerNotes.scope, "CUSTOMER"))
-        : and(eq(customerNotes.locationId, data.locationId ?? ""), eq(customerNotes.scope, "LOCATION"));
+      data.scope === "ACCOUNT"
+        ? and(eq(customerNotes.accountId, accountId), eq(customerNotes.scope, "ACCOUNT"))
+        : and(eq(customerNotes.locationId, locationId ?? ""), eq(customerNotes.scope, "LOCATION"));
 
     return db.transaction(async (tx) => {
       const existingNotes = await tx.select().from(customerNotes).where(scopeFilter);
@@ -524,45 +532,51 @@ export class DatabaseStorage implements IStorage {
         (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
       );
 
+      const nextBody = data.body.trim();
+
+      if (!nextBody) {
+        if (existingNotes.length > 0) {
+          await tx.delete(customerNotes).where(inArray(customerNotes.id, existingNotes.map((note) => note.id)));
+        }
+        return null;
+      }
+
       if (primaryNote) {
         const [updated] = await tx
           .update(customerNotes)
-          .set({ body: data.body })
+          .set({
+            accountId,
+            customerId: null,
+            locationId,
+            scope: data.scope,
+            body: nextBody,
+            updatedAt: new Date(),
+          })
           .where(eq(customerNotes.id, primaryNote.id))
           .returning();
 
         if (legacyNotes.length > 0) {
-          await tx
-            .update(customerNotes)
-            .set({ body: "" })
-            .where(inArray(customerNotes.id, legacyNotes.map((note) => note.id)));
+          await tx.delete(customerNotes).where(inArray(customerNotes.id, legacyNotes.map((note) => note.id)));
         }
 
         return updated;
-      }
-
-      if (!data.body.trim()) {
-        return null;
       }
 
       const [created] = await tx
         .insert(customerNotes)
         .values({
           scope: data.scope,
-          customerId: data.scope === "CUSTOMER" ? data.customerId ?? null : null,
-          locationId: data.scope === "LOCATION" ? data.locationId ?? null : null,
-          body: data.body,
+          accountId,
+          customerId: null,
+          locationId,
+          body: nextBody,
           createdBy: data.createdBy ?? null,
+          updatedAt: new Date(),
         })
         .returning();
 
       return created;
     });
-  }
-
-  async updateNoteScope(id: string, scope: string, customerId: string | null, locationId: string | null): Promise<CustomerNote | undefined> {
-    const [note] = await db.update(customerNotes).set({ scope, customerId, locationId }).where(eq(customerNotes.id, id)).returning();
-    return note;
   }
 
   async getServiceTypes(): Promise<ServiceType[]> {
