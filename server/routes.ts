@@ -5,7 +5,7 @@ import {
   insertCustomerSchema, insertContactSchema, insertLocationSchema,
   insertServiceTypeSchema, insertAppointmentSchema, insertServiceRecordSchema,
   insertProductApplicationSchema, insertInvoiceSchema, insertCommunicationSchema,
-  insertBillingProfileSchema, insertCustomerNoteSchema,
+  insertBillingProfileSchema,
 } from "@shared/schema";
 import { normalizePhone } from "@shared/phone";
 import { ZodError, z } from "zod";
@@ -51,17 +51,17 @@ export async function registerRoutes(
       .optional(),
   });
   const saveScopedNoteSchema = z.object({
-    scope: z.enum(["CUSTOMER", "LOCATION"]),
+    scope: z.enum(["ACCOUNT", "LOCATION"]),
     customerId: z.string().nullable().optional(),
     locationId: z.string().nullable().optional(),
     body: z.string(),
     createdBy: z.string().nullable().optional(),
   }).superRefine((value, ctx) => {
-    if (value.scope === "CUSTOMER" && !value.customerId) {
+    if (value.scope === "ACCOUNT" && !value.customerId) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["customerId"],
-        message: "customerId is required for customer-scoped notes",
+        message: "customerId is required for account-scoped notes",
       });
     }
 
@@ -106,7 +106,19 @@ export async function registerRoutes(
   app.post("/api/customers", async (req, res) => {
     try {
       const validated = insertCustomerSchema.parse(req.body);
-      const data = await storage.createCustomer(validated);
+      const customerNotesBody = validated.notes?.trim() || "";
+      const data = await storage.createCustomer({
+        ...validated,
+        notes: null,
+      });
+      if (customerNotesBody) {
+        await storage.saveScopedNote({
+          scope: "ACCOUNT",
+          customerId: data.id,
+          body: customerNotesBody,
+          createdBy: getAuditActor(req).actorLabel,
+        });
+      }
       res.status(201).json(data);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
@@ -117,6 +129,8 @@ export async function registerRoutes(
   app.post("/api/customers/create-with-primary-location", async (req, res) => {
     try {
       const validated = createCustomerWithLocationSchema.parse(req.body);
+      const customerNotesBody = validated.customer.notes?.trim() || "";
+      const locationNotesBody = validated.location.notes?.trim() || "";
       const isCommercial = validated.customer.customerType === "commercial";
       const isResidential = validated.customer.customerType === "residential";
 
@@ -175,10 +189,37 @@ export async function registerRoutes(
           ...validated.customer,
           email: validated.customer.email?.trim() || null,
           phone: normalizePhone(validated.customer.phone) || null,
+          notes: null,
         },
-        location: validated.location,
+        location: {
+          ...validated.location,
+          notes: null,
+        },
         initialContact,
       });
+
+      if (customerNotesBody) {
+        await storage.saveScopedNote({
+          scope: "ACCOUNT",
+          customerId: data.id,
+          body: customerNotesBody,
+          createdBy: getAuditActor(req).actorLabel,
+        });
+      }
+
+      if (locationNotesBody) {
+        const createdLocations = await storage.getLocations(data.id);
+        const primaryLocation = createdLocations.find((location) => location.isPrimary) ?? createdLocations[0];
+        if (primaryLocation) {
+          await storage.saveScopedNote({
+            scope: "LOCATION",
+            locationId: primaryLocation.id,
+            body: locationNotesBody,
+            createdBy: getAuditActor(req).actorLabel,
+          });
+        }
+      }
+
       res.status(201).json(data);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
@@ -189,8 +230,20 @@ export async function registerRoutes(
   app.patch("/api/customers/:id", async (req, res) => {
     try {
       const validated = insertCustomerSchema.partial().parse(req.body);
-      const data = await storage.updateCustomer(req.params.id, validated);
+      const customerNotesBody = validated.notes !== undefined ? (validated.notes?.trim() || "") : undefined;
+      const data = await storage.updateCustomer(req.params.id, {
+        ...validated,
+        notes: validated.notes !== undefined ? null : validated.notes,
+      });
       if (!data) return res.status(404).json({ message: "Customer not found" });
+      if (customerNotesBody !== undefined) {
+        await storage.saveScopedNote({
+          scope: "ACCOUNT",
+          customerId: req.params.id,
+          body: customerNotesBody,
+          createdBy: getAuditActor(req).actorLabel,
+        });
+      }
       res.json(data);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
@@ -255,7 +308,19 @@ export async function registerRoutes(
   app.post("/api/locations", async (req, res) => {
     try {
       const validated = insertLocationSchema.parse(req.body);
-      const data = await storage.createLocation(validated);
+      const locationNotesBody = validated.notes?.trim() || "";
+      const data = await storage.createLocation({
+        ...validated,
+        notes: null,
+      });
+      if (locationNotesBody) {
+        await storage.saveScopedNote({
+          scope: "LOCATION",
+          locationId: data.id,
+          body: locationNotesBody,
+          createdBy: getAuditActor(req).actorLabel,
+        });
+      }
       if (validated.isPrimary) {
         await storage.setPrimaryLocation(data.customerId, data.id);
       }
@@ -350,12 +415,20 @@ export async function registerRoutes(
           propertyType: validated.location.propertyType,
           source: validated.location.source?.trim(),
           gateCode: validated.location.gateCode?.trim() || null,
-          notes: validated.location.notes?.trim() || null,
+          notes: null,
           lotSize: validated.location.lotSize?.trim() || null,
         },
       });
 
       if (!result) return res.status(404).json({ message: "Location not found" });
+      if (validated.location.notes !== undefined) {
+        await storage.saveScopedNote({
+          scope: "LOCATION",
+          locationId: req.params.locationId,
+          body: validated.location.notes?.trim() || "",
+          createdBy: getAuditActor(req).actorLabel,
+        });
+      }
       res.json(result);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
@@ -391,7 +464,7 @@ export async function registerRoutes(
     }
   });
 
-  // Customer Notes
+  // Canonical Notes
   app.get("/api/notes/shared/:customerId", async (req, res) => {
     const data = await storage.getSharedNotes(req.params.customerId);
     res.json(data);
@@ -402,17 +475,6 @@ export async function registerRoutes(
     res.json(data);
   });
 
-  app.post("/api/notes", async (req, res) => {
-    try {
-      const validated = insertCustomerNoteSchema.parse(req.body);
-      const data = await storage.createNote(validated);
-      res.status(201).json(data);
-    } catch (e: any) {
-      if (e instanceof ZodError) return handleZodError(res, e);
-      res.status(400).json({ message: e.message });
-    }
-  });
-
   app.put("/api/notes/scoped", async (req, res) => {
     try {
       const validated = saveScopedNoteSchema.parse(req.body);
@@ -420,20 +482,6 @@ export async function registerRoutes(
       res.json(data);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
-      res.status(400).json({ message: e.message });
-    }
-  });
-
-  app.patch("/api/notes/:id/convert-scope", async (req, res) => {
-    try {
-      const { scope, customerId, locationId } = req.body;
-      if (!scope || (scope !== "CUSTOMER" && scope !== "LOCATION")) {
-        return res.status(400).json({ message: "Invalid scope. Must be CUSTOMER or LOCATION." });
-      }
-      const data = await storage.updateNoteScope(req.params.id, scope, customerId || null, locationId || null);
-      if (!data) return res.status(404).json({ message: "Note not found" });
-      res.json(data);
-    } catch (e: any) {
       res.status(400).json({ message: e.message });
     }
   });

@@ -77,11 +77,10 @@ function sortNotesByCreatedAt(notes: CustomerNote[]) {
   return [...notes].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
 }
 
-function buildSingleNoteState(notes: CustomerNote[] | undefined, legacyBody?: string | null) {
-  const hasPersistedScopedNotes = (notes?.length ?? 0) > 0;
+function buildSingleNoteState(notes: CustomerNote[] | undefined) {
   const nonEmptyNotes = sortNotesByCreatedAt((notes ?? []).filter((note) => note.body.trim().length > 0));
   const dedupedBodies = Array.from(new Set(nonEmptyNotes.map((note) => note.body.trim())));
-  const body = dedupedBodies.length > 0 ? dedupedBodies.join("\n\n") : hasPersistedScopedNotes ? "" : legacyBody?.trim() || "";
+  const body = dedupedBodies.join("\n\n");
   const primaryNote = nonEmptyNotes.length > 0 ? nonEmptyNotes[nonEmptyNotes.length - 1] : null;
 
   return {
@@ -466,7 +465,6 @@ function SingleNoteSection({
   customerId,
   locationId,
   notes,
-  legacyBody,
   emptyMessage,
   embedded = false,
   testIdPrefix,
@@ -476,11 +474,10 @@ function SingleNoteSection({
   footerReserveClassName,
 }: {
   title: string;
-  scope: "CUSTOMER" | "LOCATION";
+  scope: "ACCOUNT" | "LOCATION";
   customerId: string;
   locationId?: string;
   notes?: CustomerNote[];
-  legacyBody?: string | null;
   emptyMessage: string;
   embedded?: boolean;
   testIdPrefix: string;
@@ -492,7 +489,7 @@ function SingleNoteSection({
   const { toast } = useToast();
   const [isEditing, setIsEditing] = useState(false);
   const [isExpanded, setIsExpanded] = useState(false);
-  const singleNote = useMemo(() => buildSingleNoteState(notes, legacyBody), [notes, legacyBody]);
+  const singleNote = useMemo(() => buildSingleNoteState(notes), [notes]);
   const [draft, setDraft] = useState(singleNote.body);
   const previewBodyRef = useRef<HTMLDivElement | null>(null);
   const [hasCollapsedOverflow, setHasCollapsedOverflow] = useState(false);
@@ -540,13 +537,13 @@ function SingleNoteSection({
     mutationFn: (body: string) =>
       apiRequest("PUT", "/api/notes/scoped", {
         scope,
-        customerId: scope === "CUSTOMER" ? customerId : null,
+        customerId: scope === "ACCOUNT" ? customerId : null,
         locationId: scope === "LOCATION" ? locationId ?? null : null,
         body,
         createdBy: singleNote.primaryNote?.createdBy ?? "Admin",
       }),
     onSuccess: () => {
-      if (scope === "CUSTOMER") {
+      if (scope === "ACCOUNT") {
         queryClient.invalidateQueries({ queryKey: ["/api/notes/shared", customerId] });
       } else if (locationId) {
         queryClient.invalidateQueries({ queryKey: ["/api/notes/location", locationId] });
@@ -598,9 +595,6 @@ function SingleNoteSection({
         <CardTitle className="text-sm font-medium flex items-center gap-1.5">
           <StickyNote className="h-4 w-4" /> {title}
         </CardTitle>
-        {singleNote.noteCount > 1 && (
-          <p className="mt-1 text-xs text-muted-foreground">Legacy note entries are collapsed into this single section.</p>
-        )}
       </div>
       <div className="flex items-center gap-2">
         {!isEditing && hasCollapsedOverflow && (
@@ -685,11 +679,9 @@ function SingleNoteSection({
 
 function CustomerNotesPanel({
   customerId,
-  legacyBody,
   embedded = false,
 }: {
   customerId: string;
-  legacyBody?: string | null;
   embedded?: boolean;
 }) {
   const { data: sharedNotes } = useQuery<CustomerNote[]>({ queryKey: ["/api/notes/shared", customerId] });
@@ -697,10 +689,9 @@ function CustomerNotesPanel({
   return (
     <SingleNoteSection
       title="Customer Notes"
-      scope="CUSTOMER"
+      scope="ACCOUNT"
       customerId={customerId}
       notes={sharedNotes}
-      legacyBody={legacyBody}
       emptyMessage="No customer notes yet."
       embedded={embedded}
       testIdPrefix="customer"
@@ -713,11 +704,9 @@ function CustomerNotesPanel({
 function LocationNotesPanel({
   customerId,
   locationId,
-  legacyBody,
 }: {
   customerId: string;
   locationId: string;
-  legacyBody?: string | null;
 }) {
   const { data: locationNotes } = useQuery<CustomerNote[]>({ queryKey: ["/api/notes/location", locationId] });
 
@@ -729,7 +718,6 @@ function LocationNotesPanel({
         customerId={customerId}
         locationId={locationId}
         notes={locationNotes}
-        legacyBody={legacyBody}
         emptyMessage="No location notes yet."
         testIdPrefix="location"
         surfaceClassName="h-[9rem] flex flex-col"
@@ -930,7 +918,7 @@ export default function CustomerDetail() {
                 </div>
 
                 <div className="border-t pt-5">
-                  <CustomerNotesPanel customerId={customerId} legacyBody={customer.notes} embedded />
+                  <CustomerNotesPanel customerId={customerId} embedded />
                 </div>
               </div>
             </CardContent>
@@ -1079,7 +1067,7 @@ export default function CustomerDetail() {
               </CardContent>
             </Card>
 
-            <LocationNotesPanel customerId={customerId} locationId={activeLocationId} legacyBody={activeLocation.notes} />
+            <LocationNotesPanel customerId={customerId} locationId={activeLocationId} />
           </div>
         )}
 

@@ -13,6 +13,7 @@ export const customers = pgTable("customers", {
   phone: text("phone"),
   customerType: text("customer_type").notNull().default("residential"),
   status: text("status").notNull().default("active"),
+  // Transitional legacy note field. Canonical notes now live in customer_notes at account scope.
   notes: text("notes"),
   tags: text("tags").array(),
   defaultBillingProfileId: varchar("default_billing_profile_id"),
@@ -60,6 +61,7 @@ export const locations = pgTable("locations", {
   squareFootage: integer("square_footage"),
   lotSize: text("lot_size"),
   gateCode: text("gate_code"),
+  // Transitional legacy note field. Canonical notes now live in customer_notes at location scope.
   notes: text("notes"),
   billingProfileId: varchar("billing_profile_id"),
   source: text("source"),
@@ -76,13 +78,16 @@ export const billingProfiles = pgTable("billing_profiles", {
 
 export const customerNotes = pgTable("customer_notes", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  accountId: varchar("account_id").references(() => accounts.id),
+  // Transitional legacy ownership field kept only for migration safety.
   customerId: varchar("customer_id").references(() => customers.id),
   locationId: varchar("location_id").references(() => locations.id),
-  scope: text("scope").notNull().default("CUSTOMER"),
+  scope: text("scope").notNull().default("ACCOUNT"),
   pinned: boolean("pinned").default(false),
   body: text("body").notNull(),
   createdBy: text("created_by"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
 export const serviceTypes = pgTable("service_types", {
@@ -181,7 +186,7 @@ export const insertAccountSchema = createInsertSchema(accounts).omit({ id: true,
 export const insertContactSchema = createInsertSchema(contacts).omit({ id: true });
 export const insertLocationSchema = createInsertSchema(locations).omit({ id: true });
 export const insertBillingProfileSchema = createInsertSchema(billingProfiles).omit({ id: true });
-export const insertCustomerNoteSchema = createInsertSchema(customerNotes).omit({ id: true, createdAt: true });
+export const insertCustomerNoteSchema = createInsertSchema(customerNotes).omit({ id: true, createdAt: true, updatedAt: true });
 export const insertServiceTypeSchema = createInsertSchema(serviceTypes).omit({ id: true });
 export const insertAppointmentSchema = createInsertSchema(appointments).omit({ id: true, createdAt: true });
 export const insertServiceRecordSchema = createInsertSchema(serviceRecords).omit({ id: true, createdAt: true });
