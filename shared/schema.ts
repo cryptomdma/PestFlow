@@ -85,9 +85,26 @@ export const customerNotes = pgTable("customer_notes", {
   scope: text("scope").notNull().default("ACCOUNT"),
   pinned: boolean("pinned").default(false),
   body: text("body").notNull(),
+  // Legacy/freeform label snapshot retained for historical attribution compatibility.
   createdBy: text("created_by"),
+  createdByUserId: varchar("created_by_user_id"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedByUserId: varchar("updated_by_user_id"),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const noteRevisions = pgTable("note_revisions", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  noteId: varchar("note_id").notNull().references(() => customerNotes.id),
+  revisionNumber: integer("revision_number").notNull(),
+  scope: text("scope").notNull(),
+  accountId: varchar("account_id").references(() => accounts.id),
+  locationId: varchar("location_id").references(() => locations.id),
+  body: text("body").notNull(),
+  changeType: text("change_type").notNull(),
+  actorUserId: varchar("actor_user_id"),
+  actorLabel: text("actor_label"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
 export const serviceTypes = pgTable("service_types", {
@@ -187,6 +204,7 @@ export const insertContactSchema = createInsertSchema(contacts).omit({ id: true 
 export const insertLocationSchema = createInsertSchema(locations).omit({ id: true });
 export const insertBillingProfileSchema = createInsertSchema(billingProfiles).omit({ id: true });
 export const insertCustomerNoteSchema = createInsertSchema(customerNotes).omit({ id: true, createdAt: true, updatedAt: true });
+export const insertNoteRevisionSchema = createInsertSchema(noteRevisions).omit({ id: true, createdAt: true });
 export const insertServiceTypeSchema = createInsertSchema(serviceTypes).omit({ id: true });
 export const insertAppointmentSchema = createInsertSchema(appointments).omit({ id: true, createdAt: true });
 export const insertServiceRecordSchema = createInsertSchema(serviceRecords).omit({ id: true, createdAt: true });
@@ -207,6 +225,8 @@ export type BillingProfile = typeof billingProfiles.$inferSelect;
 export type InsertBillingProfile = z.infer<typeof insertBillingProfileSchema>;
 export type CustomerNote = typeof customerNotes.$inferSelect;
 export type InsertCustomerNote = z.infer<typeof insertCustomerNoteSchema>;
+export type NoteRevision = typeof noteRevisions.$inferSelect;
+export type InsertNoteRevision = z.infer<typeof insertNoteRevisionSchema>;
 export type ServiceType = typeof serviceTypes.$inferSelect;
 export type InsertServiceType = z.infer<typeof insertServiceTypeSchema>;
 export type Appointment = typeof appointments.$inferSelect;

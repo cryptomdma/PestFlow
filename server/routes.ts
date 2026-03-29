@@ -55,7 +55,6 @@ export async function registerRoutes(
     customerId: z.string().nullable().optional(),
     locationId: z.string().nullable().optional(),
     body: z.string(),
-    createdBy: z.string().nullable().optional(),
   }).superRefine((value, ctx) => {
     if (value.scope === "ACCOUNT" && !value.customerId) {
       ctx.addIssue({
@@ -116,7 +115,7 @@ export async function registerRoutes(
           scope: "ACCOUNT",
           customerId: data.id,
           body: customerNotesBody,
-          createdBy: getAuditActor(req).actorLabel,
+          actor: getAuditActor(req),
         });
       }
       res.status(201).json(data);
@@ -203,7 +202,7 @@ export async function registerRoutes(
           scope: "ACCOUNT",
           customerId: data.id,
           body: customerNotesBody,
-          createdBy: getAuditActor(req).actorLabel,
+          actor: getAuditActor(req),
         });
       }
 
@@ -215,7 +214,7 @@ export async function registerRoutes(
             scope: "LOCATION",
             locationId: primaryLocation.id,
             body: locationNotesBody,
-            createdBy: getAuditActor(req).actorLabel,
+            actor: getAuditActor(req),
           });
         }
       }
@@ -241,7 +240,7 @@ export async function registerRoutes(
           scope: "ACCOUNT",
           customerId: req.params.id,
           body: customerNotesBody,
-          createdBy: getAuditActor(req).actorLabel,
+          actor: getAuditActor(req),
         });
       }
       res.json(data);
@@ -318,7 +317,7 @@ export async function registerRoutes(
           scope: "LOCATION",
           locationId: data.id,
           body: locationNotesBody,
-          createdBy: getAuditActor(req).actorLabel,
+          actor: getAuditActor(req),
         });
       }
       if (validated.isPrimary) {
@@ -426,7 +425,7 @@ export async function registerRoutes(
           scope: "LOCATION",
           locationId: req.params.locationId,
           body: validated.location.notes?.trim() || "",
-          createdBy: getAuditActor(req).actorLabel,
+          actor: getAuditActor(req),
         });
       }
       res.json(result);
@@ -475,10 +474,18 @@ export async function registerRoutes(
     res.json(data);
   });
 
+  app.get("/api/notes/:noteId/revisions", async (req, res) => {
+    const data = await storage.getNoteRevisions(req.params.noteId);
+    res.json(data);
+  });
+
   app.put("/api/notes/scoped", async (req, res) => {
     try {
       const validated = saveScopedNoteSchema.parse(req.body);
-      const data = await storage.saveScopedNote(validated);
+      const data = await storage.saveScopedNote({
+        ...validated,
+        actor: getAuditActor(req),
+      });
       res.json(data);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);

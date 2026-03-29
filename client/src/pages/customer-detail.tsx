@@ -540,7 +540,6 @@ function SingleNoteSection({
         customerId: scope === "ACCOUNT" ? customerId : null,
         locationId: scope === "LOCATION" ? locationId ?? null : null,
         body,
-        createdBy: singleNote.primaryNote?.createdBy ?? "Admin",
       }),
     onSuccess: () => {
       if (scope === "ACCOUNT") {
