@@ -4,6 +4,7 @@ import {
   customers, contacts, locations, serviceTypes, appointments,
   serviceRecords, productApplications, invoices, communications,
   billingProfiles, customerNotes,
+  noteRevisions,
   type Account,
   type Customer, type InsertCustomer,
   type Contact, type InsertContact,
@@ -16,6 +17,7 @@ import {
   type Communication, type InsertCommunication,
   type BillingProfile, type InsertBillingProfile,
   type CustomerNote,
+  type NoteRevision,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, inArray, sql } from "drizzle-orm";
@@ -62,7 +64,7 @@ export interface SaveScopedNoteInput {
   customerId?: string | null;
   locationId?: string | null;
   body: string;
-  createdBy?: string | null;
+  actor?: AuditActor;
 }
 
 export interface IStorage {
@@ -93,6 +95,7 @@ export interface IStorage {
   getNotesByLocation(locationId: string): Promise<CustomerNote[]>;
   getSharedNotes(customerId: string): Promise<CustomerNote[]>;
   saveScopedNote(data: SaveScopedNoteInput): Promise<CustomerNote | null>;
+  getNoteRevisions(noteId: string): Promise<NoteRevision[]>;
 
   getServiceTypes(): Promise<ServiceType[]>;
   createServiceType(data: InsertServiceType): Promise<ServiceType>;
@@ -161,6 +164,15 @@ export class DatabaseStorage implements IStorage {
   private async resolveAccountIdForLocation(locationId: string): Promise<string | null> {
     const [location] = await db.select({ accountId: locations.accountId }).from(locations).where(eq(locations.id, locationId));
     return location?.accountId ?? null;
+  }
+
+  private async getNextNoteRevisionNumber(
+    tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+    noteId: string,
+  ): Promise<number> {
+    const existing = await tx.select({ revisionNumber: noteRevisions.revisionNumber }).from(noteRevisions).where(eq(noteRevisions.noteId, noteId));
+    const currentMax = existing.reduce((max, revision) => Math.max(max, revision.revisionNumber), 0);
+    return currentMax + 1;
   }
 
   private async ensurePrimaryLocationInvariant(accountId: string, preferredLocationId?: string): Promise<void> {
@@ -507,6 +519,11 @@ export class DatabaseStorage implements IStorage {
     );
   }
 
+  async getNoteRevisions(noteId: string): Promise<NoteRevision[]> {
+    const revisions = await db.select().from(noteRevisions).where(eq(noteRevisions.noteId, noteId));
+    return revisions.sort((a, b) => b.revisionNumber - a.revisionNumber);
+  }
+
   async saveScopedNote(data: SaveScopedNoteInput): Promise<CustomerNote | null> {
     const accountId =
       data.scope === "ACCOUNT"
@@ -533,11 +550,10 @@ export class DatabaseStorage implements IStorage {
       );
 
       const nextBody = data.body.trim();
+      const actorUserId = data.actor?.userId || null;
+      const actorLabel = data.actor?.actorLabel || null;
 
-      if (!nextBody) {
-        if (existingNotes.length > 0) {
-          await tx.delete(customerNotes).where(inArray(customerNotes.id, existingNotes.map((note) => note.id)));
-        }
+      if (!nextBody && !primaryNote) {
         return null;
       }
 
@@ -550,6 +566,7 @@ export class DatabaseStorage implements IStorage {
             locationId,
             scope: data.scope,
             body: nextBody,
+            updatedByUserId: actorUserId,
             updatedAt: new Date(),
           })
           .where(eq(customerNotes.id, primaryNote.id))
@@ -557,6 +574,22 @@ export class DatabaseStorage implements IStorage {
 
         if (legacyNotes.length > 0) {
           await tx.delete(customerNotes).where(inArray(customerNotes.id, legacyNotes.map((note) => note.id)));
+        }
+
+        if (primaryNote.body !== nextBody) {
+          const revisionNumber = await this.getNextNoteRevisionNumber(tx, primaryNote.id);
+          await tx.insert(noteRevisions).values({
+            noteId: primaryNote.id,
+            revisionNumber,
+            scope: data.scope,
+            accountId,
+            locationId,
+            body: nextBody,
+            changeType: nextBody ? "UPDATED" : "CLEARED",
+            actorUserId,
+            actorLabel,
+            createdAt: new Date(),
+          });
         }
 
         return updated;
@@ -570,10 +603,25 @@ export class DatabaseStorage implements IStorage {
           customerId: null,
           locationId,
           body: nextBody,
-          createdBy: data.createdBy ?? null,
+          createdBy: actorLabel,
+          createdByUserId: actorUserId,
+          updatedByUserId: actorUserId,
           updatedAt: new Date(),
         })
         .returning();
+
+      await tx.insert(noteRevisions).values({
+        noteId: created.id,
+        revisionNumber: 1,
+        scope: data.scope,
+        accountId,
+        locationId,
+        body: nextBody,
+        changeType: "CREATED",
+        actorUserId,
+        actorLabel,
+        createdAt: new Date(),
+      });
 
       return created;
     });

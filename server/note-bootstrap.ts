@@ -1,5 +1,5 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
-import { accounts, customerNotes, customers, locations, type CustomerNote } from "@shared/schema";
+import { accounts, customerNotes, customers, locations, noteRevisions, type CustomerNote } from "@shared/schema";
 import { db } from "./db";
 import { PLACEHOLDER_LOCATION_NAME, PLACEHOLDER_LOCATION_NOTE } from "./account-bootstrap";
 
@@ -26,8 +26,32 @@ function mergeNoteBodies(bodies: Array<string | null | undefined>) {
 
 async function ensureCanonicalNoteColumns() {
   await db.execute(sql`ALTER TABLE customer_notes ADD COLUMN IF NOT EXISTS account_id varchar`);
+  await db.execute(sql`ALTER TABLE customer_notes ADD COLUMN IF NOT EXISTS created_by_user_id varchar`);
+  await db.execute(sql`ALTER TABLE customer_notes ADD COLUMN IF NOT EXISTS updated_by_user_id varchar`);
   await db.execute(sql`ALTER TABLE customer_notes ADD COLUMN IF NOT EXISTS updated_at timestamp DEFAULT now()`);
   await db.execute(sql`UPDATE customer_notes SET updated_at = created_at WHERE updated_at IS NULL`);
+}
+
+async function ensureNoteRevisionTable() {
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS note_revisions (
+      id varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+      note_id varchar NOT NULL REFERENCES customer_notes(id) ON DELETE CASCADE,
+      revision_number integer NOT NULL,
+      scope text NOT NULL,
+      account_id varchar,
+      location_id varchar,
+      body text NOT NULL,
+      change_type text NOT NULL,
+      actor_user_id varchar,
+      actor_label text,
+      created_at timestamp DEFAULT now() NOT NULL
+    )
+  `);
+  await db.execute(sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS note_revisions_note_revision_number_idx
+    ON note_revisions (note_id, revision_number)
+  `);
 }
 
 async function upsertCanonicalScopeNote(
@@ -89,12 +113,42 @@ async function upsertCanonicalScopeNote(
     scope,
     body: mergedBody,
     createdBy: "System Migration",
+    createdByUserId: null,
+    updatedByUserId: null,
     updatedAt: new Date(),
   });
 }
 
+async function backfillInitialNoteRevisions() {
+  const [notes, existingRevisions] = await Promise.all([
+    db.select().from(customerNotes),
+    db.select().from(noteRevisions),
+  ]);
+
+  const noteIdsWithRevisions = new Set(existingRevisions.map((revision) => revision.noteId));
+  const baselineRows = notes
+    .filter((note) => !noteIdsWithRevisions.has(note.id))
+    .map((note) => ({
+      noteId: note.id,
+      revisionNumber: 1,
+      scope: note.scope,
+      accountId: note.accountId,
+      locationId: note.locationId,
+      body: note.body,
+      changeType: "BASELINE",
+      actorUserId: note.createdByUserId ?? null,
+      actorLabel: note.createdBy ?? null,
+      createdAt: note.createdAt,
+    }));
+
+  if (baselineRows.length > 0) {
+    await db.insert(noteRevisions).values(baselineRows);
+  }
+}
+
 export async function bootstrapCanonicalNotes(): Promise<void> {
   await ensureCanonicalNoteColumns();
+  await ensureNoteRevisionTable();
 
   const [allAccounts, allCustomers, allLocations, allNotes] = await Promise.all([
     db.select().from(accounts),
@@ -223,4 +277,5 @@ export async function bootstrapCanonicalNotes(): Promise<void> {
     sql`UPDATE customer_notes SET scope = 'ACCOUNT', customer_id = NULL, updated_at = COALESCE(updated_at, created_at, now()) WHERE account_id IS NOT NULL AND location_id IS NULL`,
   );
   await db.execute(sql`DELETE FROM customer_notes WHERE body IS NULL OR BTRIM(body) = ''`);
+  await backfillInitialNoteRevisions();
 }

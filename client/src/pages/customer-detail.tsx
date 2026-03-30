@@ -11,6 +11,13 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
+import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger,
 } from "@/components/ui/dialog";
 import {
@@ -37,9 +44,10 @@ import { formatPhoneDisplay } from "@shared/phone";
 import {
   ArrowLeft, Mail, Phone, MapPin, Plus, Calendar, FileText, MessageSquare,
   ClipboardList, Building2, User, ChevronDown, ArrowUpRight, StickyNote,
+  History,
   CreditCard, Star, KeyRound, Ruler, ChevronUp, Check,
 } from "lucide-react";
-import type { Customer, Contact, Location, Appointment, Invoice, ServiceRecord, Communication, CustomerNote, BillingProfile } from "@shared/schema";
+import type { Customer, Contact, Location, Appointment, Invoice, ServiceRecord, Communication, CustomerNote, BillingProfile, NoteRevision } from "@shared/schema";
 
 interface CustomerDetailCompatResponse {
   legacyCustomer: Customer;
@@ -78,16 +86,142 @@ function sortNotesByCreatedAt(notes: CustomerNote[]) {
 }
 
 function buildSingleNoteState(notes: CustomerNote[] | undefined) {
-  const nonEmptyNotes = sortNotesByCreatedAt((notes ?? []).filter((note) => note.body.trim().length > 0));
-  const dedupedBodies = Array.from(new Set(nonEmptyNotes.map((note) => note.body.trim())));
-  const body = dedupedBodies.join("\n\n");
-  const primaryNote = nonEmptyNotes.length > 0 ? nonEmptyNotes[nonEmptyNotes.length - 1] : null;
+  const sortedNotes = sortNotesByCreatedAt(notes ?? []);
+  const currentNote = sortedNotes.length > 0 ? sortedNotes[sortedNotes.length - 1] : null;
+  const body = currentNote?.body.trim() || "";
 
   return {
     body,
-    primaryNote,
-    noteCount: nonEmptyNotes.length,
+    currentNote,
   };
+}
+
+function formatRevisionTimestamp(value: string | Date) {
+  return new Date(value).toLocaleString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function formatRevisionActor(revision: NoteRevision) {
+  return revision.actorLabel?.trim() || revision.actorUserId?.trim() || "Unknown user";
+}
+
+function formatRevisionChangeType(changeType: string) {
+  switch (changeType) {
+    case "CREATED":
+      return "Created";
+    case "UPDATED":
+      return "Edited";
+    case "CLEARED":
+      return "Cleared";
+    case "BASELINE":
+      return "Baseline";
+    default:
+      return changeType;
+  }
+}
+
+function NoteHistorySheet({
+  open,
+  onOpenChange,
+  noteId,
+  title,
+  currentBody,
+  testIdPrefix,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  noteId?: string;
+  title: string;
+  currentBody: string;
+  testIdPrefix: string;
+}) {
+  const {
+    data: revisions,
+    isLoading,
+    error,
+  } = useQuery<NoteRevision[]>({
+    queryKey: ["/api/notes", noteId ?? "", "revisions"],
+    enabled: open && !!noteId,
+  });
+
+  return (
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent side="right" className="w-full sm:max-w-lg">
+        <SheetHeader className="pr-8">
+          <SheetTitle>{title} History</SheetTitle>
+          <SheetDescription>
+            {currentBody
+              ? "Review prior saved note revisions."
+              : "The current note is blank. Prior revisions remain available below when history exists."}
+          </SheetDescription>
+        </SheetHeader>
+        <div className="mt-6">
+          {!noteId ? (
+            <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground" data-testid={`empty-${testIdPrefix}-history`}>
+              No note history yet.
+            </div>
+          ) : isLoading ? (
+            <div className="space-y-3" data-testid={`loading-${testIdPrefix}-history`}>
+              <Skeleton className="h-24 w-full" />
+              <Skeleton className="h-24 w-full" />
+              <Skeleton className="h-24 w-full" />
+            </div>
+          ) : error ? (
+            <div className="rounded-lg border border-dashed p-4 text-sm text-destructive" data-testid={`error-${testIdPrefix}-history`}>
+              Unable to load note history.
+            </div>
+          ) : !revisions || revisions.length === 0 ? (
+            <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground" data-testid={`empty-${testIdPrefix}-history`}>
+              No revisions available.
+            </div>
+          ) : (
+            <ScrollArea className="h-[70vh] pr-4">
+              <div className="space-y-3">
+                {revisions.map((revision, index) => (
+                  <div
+                    key={revision.id}
+                    className="rounded-lg border bg-card p-3"
+                    data-testid={`history-${testIdPrefix}-revision-${revision.id}`}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2">
+                          <Badge variant="secondary" className="text-[10px] uppercase tracking-wide">
+                            Rev {revision.revisionNumber}
+                          </Badge>
+                          <Badge variant="outline" className="text-[10px] uppercase tracking-wide">
+                            {formatRevisionChangeType(revision.changeType)}
+                          </Badge>
+                          {index === 0 && <Badge className="text-[10px]">Latest</Badge>}
+                        </div>
+                        <p className="text-xs text-muted-foreground">
+                          {formatRevisionActor(revision)} • {formatRevisionTimestamp(revision.createdAt)}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="mt-3 rounded-md border bg-muted/20 p-3">
+                      {revision.body.trim() ? (
+                        <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere] text-sm leading-6 text-foreground">
+                          {revision.body}
+                        </p>
+                      ) : (
+                        <p className="text-sm italic text-muted-foreground">Note cleared</p>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </ScrollArea>
+          )}
+        </div>
+      </SheetContent>
+    </Sheet>
+  );
 }
 
 function buildCommunicationHref({
@@ -489,6 +623,7 @@ function SingleNoteSection({
   const { toast } = useToast();
   const [isEditing, setIsEditing] = useState(false);
   const [isExpanded, setIsExpanded] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const singleNote = useMemo(() => buildSingleNoteState(notes), [notes]);
   const [draft, setDraft] = useState(singleNote.body);
   const previewBodyRef = useRef<HTMLDivElement | null>(null);
@@ -540,13 +675,15 @@ function SingleNoteSection({
         customerId: scope === "ACCOUNT" ? customerId : null,
         locationId: scope === "LOCATION" ? locationId ?? null : null,
         body,
-        createdBy: singleNote.primaryNote?.createdBy ?? "Admin",
       }),
     onSuccess: () => {
       if (scope === "ACCOUNT") {
         queryClient.invalidateQueries({ queryKey: ["/api/notes/shared", customerId] });
       } else if (locationId) {
         queryClient.invalidateQueries({ queryKey: ["/api/notes/location", locationId] });
+      }
+      if (singleNote.currentNote?.id) {
+        queryClient.invalidateQueries({ queryKey: ["/api/notes", singleNote.currentNote.id, "revisions"] });
       }
 
       setIsEditing(false);
@@ -597,6 +734,18 @@ function SingleNoteSection({
         </CardTitle>
       </div>
       <div className="flex items-center gap-2">
+        {!isEditing && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 text-xs"
+            onClick={() => setHistoryOpen(true)}
+            disabled={!singleNote.currentNote?.id}
+            data-testid={`button-history-${testIdPrefix}-notes`}
+          >
+            <History className="mr-1 h-3 w-3" /> History
+          </Button>
+        )}
         {!isEditing && hasCollapsedOverflow && (
           <Button
             variant="ghost"
@@ -663,6 +812,14 @@ function SingleNoteSection({
   if (embedded) {
     return (
       <div className="space-y-3">
+        <NoteHistorySheet
+          open={historyOpen}
+          onOpenChange={setHistoryOpen}
+          noteId={singleNote.currentNote?.id}
+          title={title}
+          currentBody={singleNote.body}
+          testIdPrefix={testIdPrefix}
+        />
         {header}
         {body}
       </div>
@@ -671,6 +828,14 @@ function SingleNoteSection({
 
   return (
     <>
+      <NoteHistorySheet
+        open={historyOpen}
+        onOpenChange={setHistoryOpen}
+        noteId={singleNote.currentNote?.id}
+        title={title}
+        currentBody={singleNote.body}
+        testIdPrefix={testIdPrefix}
+      />
       <CardHeader className="pb-2">{header}</CardHeader>
       <CardContent className="pt-0">{body}</CardContent>
     </>
