@@ -80,6 +80,7 @@ export interface IStorage {
   getContacts(customerId: string): Promise<Contact[]>;
   getContactsByLocation(locationId: string): Promise<Contact[]>;
   createContact(data: InsertContact): Promise<Contact>;
+  updateContact(id: string, data: Partial<InsertContact>): Promise<Contact | undefined>;
   setPrimaryContact(contactId: string): Promise<Contact | undefined>;
 
   getLocations(customerId: string): Promise<Location[]>;
@@ -425,6 +426,30 @@ export class DatabaseStorage implements IStorage {
     });
 
     return createdContact;
+  }
+
+  async updateContact(id: string, data: Partial<InsertContact>): Promise<Contact | undefined> {
+    const [existing] = await db.select().from(contacts).where(eq(contacts.id, id));
+    if (!existing) {
+      return undefined;
+    }
+
+    const nextLocationId = data.locationId ?? existing.locationId;
+    const requestedPrimary = data.isPrimary ?? existing.isPrimary ?? false;
+
+    return db.transaction(async (tx) => {
+      if (nextLocationId && requestedPrimary) {
+        await tx.update(contacts).set({ isPrimary: false }).where(eq(contacts.locationId, nextLocationId));
+      }
+
+      const [updatedContact] = await tx
+        .update(contacts)
+        .set({ ...data, isPrimary: requestedPrimary })
+        .where(eq(contacts.id, id))
+        .returning();
+
+      return updatedContact;
+    });
   }
 
   async setPrimaryContact(contactId: string): Promise<Contact | undefined> {
