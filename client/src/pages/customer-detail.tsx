@@ -81,6 +81,18 @@ function formatOptionLabel(value: string) {
     .join(" ");
 }
 
+function buildContactFormState(contact?: Contact | null) {
+  return {
+    firstName: contact?.firstName ?? "",
+    lastName: contact?.lastName ?? "",
+    email: contact?.email ?? "",
+    phone: contact?.phone ?? "",
+    phoneType: contact?.phoneType ?? "mobile",
+    role: contact?.role ?? "",
+    isPrimary: contact?.isPrimary ?? false,
+  };
+}
+
 function sortNotesByCreatedAt(notes: CustomerNote[]) {
   return [...notes].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
 }
@@ -548,16 +560,55 @@ function EditLocationDialog({
   );
 }
 
-function AddContactDialog({ customerId, locationId, onClose }: { customerId: string; locationId: string; onClose: () => void }) {
+function ContactDialogForm({
+  customerId,
+  locationId,
+  contact,
+  onClose,
+}: {
+  customerId: string;
+  locationId: string;
+  contact?: Contact | null;
+  onClose: () => void;
+}) {
   const { toast } = useToast();
-  const [form, setForm] = useState({ firstName: "", lastName: "", email: "", phone: "", phoneType: "mobile", role: "", isPrimary: false });
+  const isEditMode = !!contact;
+  const [form, setForm] = useState(() => buildContactFormState(contact));
+
+  useEffect(() => {
+    setForm(buildContactFormState(contact));
+  }, [contact]);
+
   const mutation = useMutation({
-    mutationFn: (data: typeof form) => apiRequest("POST", "/api/contacts", { ...data, customerId, locationId }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/contacts/by-location", locationId] });
-      queryClient.invalidateQueries({ queryKey: ["/api/location-counts", locationId] });
-      toast({ title: "Contact added" });
+    mutationFn: (data: typeof form) =>
+      isEditMode
+        ? apiRequest("PATCH", `/api/contacts/${contact.id}`, data).then((res) => res.json() as Promise<Contact>)
+        : apiRequest("POST", "/api/contacts", { ...data, customerId, locationId }).then((res) => res.json() as Promise<Contact>),
+    onSuccess: async (savedContact) => {
+      queryClient.setQueryData<Contact[]>(["/api/contacts/by-location", locationId], (existing) => {
+        if (!existing) {
+          return [savedContact];
+        }
+
+        const existingIndex = existing.findIndex((item) => item.id === savedContact.id);
+        if (existingIndex === -1) {
+          return [...existing, savedContact];
+        }
+
+        return existing.map((item) => item.id === savedContact.id ? savedContact : item);
+      });
+
+      await queryClient.invalidateQueries({ queryKey: ["/api/contacts/by-location", locationId] });
+      await queryClient.invalidateQueries({ queryKey: ["/api/location-counts", locationId] });
+      toast({ title: isEditMode ? "Contact updated" : "Contact added" });
       onClose();
+    },
+    onError: (error: Error) => {
+      toast({
+        title: isEditMode ? "Error updating contact" : "Error adding contact",
+        description: error.message,
+        variant: "destructive",
+      });
     },
   });
   return (
@@ -588,7 +639,7 @@ function AddContactDialog({ customerId, locationId, onClose }: { customerId: str
         <input type="checkbox" checked={form.isPrimary} onChange={(e) => setForm((p) => ({ ...p, isPrimary: e.target.checked }))} />
         Make primary contact
       </label>
-      <div className="flex justify-end gap-2"><Button type="button" variant="outline" onClick={onClose}>Cancel</Button><Button type="submit" disabled={mutation.isPending} data-testid="button-save-contact">{mutation.isPending ? "Saving..." : "Add Contact"}</Button></div>
+      <div className="flex justify-end gap-2"><Button type="button" variant="outline" onClick={onClose}>Cancel</Button><Button type="submit" disabled={mutation.isPending} data-testid="button-save-contact">{mutation.isPending ? "Saving..." : isEditMode ? "Save Changes" : "Add Contact"}</Button></div>
     </form>
   );
 }
@@ -906,6 +957,7 @@ export default function CustomerDetail() {
   const [locDialogOpen, setLocDialogOpen] = useState(false);
   const [editLocDialogOpen, setEditLocDialogOpen] = useState(false);
   const [contactDialogOpen, setContactDialogOpen] = useState(false);
+  const [editingContact, setEditingContact] = useState<Contact | null>(null);
   const [confirmPrimaryOpen, setConfirmPrimaryOpen] = useState(false);
 
   const { data: compat, isLoading } = useQuery<CustomerDetailCompatResponse>({
@@ -999,6 +1051,23 @@ export default function CustomerDetail() {
 
   function selectLocation(locId: string) {
     setLocation(`/customers/${customerId}?locationId=${locId}`);
+  }
+
+  function openCreateContactDialog() {
+    setEditingContact(null);
+    setContactDialogOpen(true);
+  }
+
+  function openEditContactDialog(contact: Contact) {
+    setEditingContact(contact);
+    setContactDialogOpen(true);
+  }
+
+  function handleContactDialogChange(open: boolean) {
+    setContactDialogOpen(open);
+    if (!open) {
+      setEditingContact(null);
+    }
   }
 
   if (isLoading) {
@@ -1248,9 +1317,19 @@ export default function CustomerDetail() {
 
           <TabsContent value="contacts" className="mt-4 space-y-3">
             <div className="flex justify-end">
-              <Dialog open={contactDialogOpen} onOpenChange={setContactDialogOpen}>
-                <DialogTrigger asChild><Button size="sm" data-testid="button-add-contact"><Plus className="h-3 w-3 mr-1" /> Add Contact</Button></DialogTrigger>
-                <DialogContent><DialogHeader><DialogTitle>Add Contact</DialogTitle></DialogHeader><AddContactDialog customerId={customerId} locationId={activeLocationId} onClose={() => setContactDialogOpen(false)} /></DialogContent>
+              <Dialog open={contactDialogOpen} onOpenChange={handleContactDialogChange}>
+                <DialogTrigger asChild><Button size="sm" data-testid="button-add-contact" onClick={openCreateContactDialog}><Plus className="h-3 w-3 mr-1" /> Add Contact</Button></DialogTrigger>
+                <DialogContent>
+                  <DialogHeader>
+                    <DialogTitle>{editingContact ? "Edit Contact" : "Add Contact"}</DialogTitle>
+                  </DialogHeader>
+                  <ContactDialogForm
+                    customerId={customerId}
+                    locationId={activeLocationId}
+                    contact={editingContact}
+                    onClose={() => handleContactDialogChange(false)}
+                  />
+                </DialogContent>
               </Dialog>
             </div>
             {sortedContacts.length === 0 ? (
@@ -1258,10 +1337,25 @@ export default function CustomerDetail() {
             ) : sortedContacts.map((ct) => (
               <Card key={ct.id} data-testid={`card-contact-${ct.id}`}>
                 <CardContent className="p-4 flex items-center gap-4">
-                  <div className="h-9 w-9 rounded-md bg-primary/10 flex items-center justify-center shrink-0"><User className="h-4 w-4 text-primary" /></div>
+                  <button
+                    type="button"
+                    className="h-9 w-9 rounded-md bg-primary/10 flex items-center justify-center shrink-0 transition-colors hover:bg-primary/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring cursor-pointer"
+                    onClick={() => openEditContactDialog(ct)}
+                    data-testid={`button-edit-contact-icon-${ct.id}`}
+                    aria-label={`Edit ${ct.firstName} ${ct.lastName}`}
+                  >
+                    <User className="h-4 w-4 text-primary" />
+                  </button>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
-                      <span className="font-semibold text-sm">{ct.firstName} {ct.lastName}</span>
+                      <button
+                        type="button"
+                        className="font-semibold text-sm text-left transition-colors hover:text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-sm cursor-pointer"
+                        onClick={() => openEditContactDialog(ct)}
+                        data-testid={`button-edit-contact-name-${ct.id}`}
+                      >
+                        {ct.firstName} {ct.lastName}
+                      </button>
                       {ct.isPrimary && <Badge variant="secondary" className="text-xs">Primary</Badge>}
                       {ct.role && <span className="text-xs text-muted-foreground">{ct.role}</span>}
                     </div>

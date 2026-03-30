@@ -72,6 +72,17 @@ export async function registerRoutes(
       });
     }
   });
+  const updateContactSchema = insertContactSchema
+    .pick({
+      firstName: true,
+      lastName: true,
+      email: true,
+      phone: true,
+      phoneType: true,
+      role: true,
+      isPrimary: true,
+    })
+    .partial();
 
   // Transitional dev-only diagnostics for Phase 1 account/location hardening.
   // TODO(Phase2): gate behind auth/admin controls once user model exists.
@@ -277,6 +288,29 @@ export async function registerRoutes(
         role: validated.role?.trim() || null,
       });
       res.status(201).json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.patch("/api/contacts/:id", async (req, res) => {
+    try {
+      const validated = updateContactSchema.parse(req.body);
+      const phoneType = validated.phoneType?.trim().toLowerCase();
+      if (phoneType && !["mobile", "home", "work", "fax"].includes(phoneType)) {
+        return res.status(400).json({ message: "Phone type must be mobile, home, work, or fax." });
+      }
+
+      const data = await storage.updateContact(req.params.id, {
+        ...validated,
+        email: validated.email === undefined ? undefined : validated.email?.trim() || null,
+        phone: validated.phone === undefined ? undefined : normalizePhone(validated.phone) || null,
+        phoneType: validated.phoneType === undefined ? undefined : phoneType || null,
+        role: validated.role === undefined ? undefined : validated.role?.trim() || null,
+      });
+      if (!data) return res.status(404).json({ message: "Contact not found" });
+      res.json(data);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
       res.status(400).json({ message: e.message });
