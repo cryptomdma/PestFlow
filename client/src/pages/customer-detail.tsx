@@ -21,17 +21,6 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger,
 } from "@/components/ui/dialog";
 import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from "@/components/ui/alert-dialog";
-import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import {
@@ -45,7 +34,7 @@ import {
   ArrowLeft, Mail, Phone, MapPin, Plus, Calendar, FileText, MessageSquare,
   ClipboardList, Building2, User, ChevronDown, ArrowUpRight, StickyNote,
   History,
-  CreditCard, Star, KeyRound, Ruler, ChevronUp, Check,
+  CreditCard, KeyRound, Ruler, ChevronUp, Check,
 } from "lucide-react";
 import type { Customer, Contact, Location, Appointment, Invoice, ServiceRecord, Communication, CustomerNote, BillingProfile, NoteRevision } from "@shared/schema";
 
@@ -492,14 +481,17 @@ function AddLocationDialog({
 function EditLocationDialog({
   customer,
   location,
+  totalLocations,
   onClose,
 }: {
   customer: Customer;
   location: Location;
+  totalLocations: number;
   onClose: () => void;
 }) {
   const { toast } = useToast();
-  const isPrimaryLocation = location.isPrimary;
+  const isPrimaryLocation = !!location.isPrimary;
+  const canPromoteToPrimary = !isPrimaryLocation;
   const [form, setForm] = useState({
     firstName: customer.firstName || "",
     lastName: customer.lastName || "",
@@ -516,6 +508,7 @@ function EditLocationDialog({
     source: location.source || "",
     squareFootage: location.squareFootage ? String(location.squareFootage) : "",
     gateCode: location.gateCode || "",
+    setAsPrimary: !!location.isPrimary,
   });
 
   useEffect(() => {
@@ -535,6 +528,7 @@ function EditLocationDialog({
       source: location.source || "",
       squareFootage: location.squareFootage ? String(location.squareFootage) : "",
       gateCode: location.gateCode || "",
+      setAsPrimary: !!location.isPrimary,
     });
   }, [customer, location]);
 
@@ -571,6 +565,10 @@ function EditLocationDialog({
         location: locationPayload,
         customer: customerPayload,
       });
+
+      if (data.setAsPrimary && !isPrimaryLocation) {
+        await apiRequest("POST", `/api/locations/${location.id}/set-primary`, {});
+      }
 
       return res.json() as Promise<UpdateLocationProfileResponse>;
     },
@@ -709,6 +707,27 @@ function EditLocationDialog({
       <div className="grid gap-3 sm:grid-cols-2">
         <div className="space-y-1.5"><Label>Sq Ft</Label><Input type="number" data-testid="input-edit-square-footage" value={form.squareFootage} onChange={(e) => setForm((prev) => ({ ...prev, squareFootage: e.target.value }))} /></div>
         <div className="space-y-1.5"><Label>Gate Code</Label><Input data-testid="input-edit-gate-code" value={form.gateCode} onChange={(e) => setForm((prev) => ({ ...prev, gateCode: e.target.value }))} /></div>
+      </div>
+      <div className="rounded-md border bg-muted/20 px-3 py-2">
+        <label className="flex items-start gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={form.setAsPrimary}
+            disabled={!canPromoteToPrimary}
+            onChange={(e) => setForm((prev) => ({ ...prev, setAsPrimary: e.target.checked }))}
+            data-testid="checkbox-edit-location-primary"
+          />
+          <span className="space-y-1">
+            <span className="block font-medium text-foreground">Set as Primary Location</span>
+            <span className="block text-muted-foreground">
+              {isPrimaryLocation
+                ? totalLocations > 1
+                  ? "This location is already primary. To switch the primary location, open a different location and save it as primary."
+                  : "This account only has one location, so it remains the primary location."
+                : "Saving will make this the primary location for the account and update the customer identity shown in the UI."}
+            </span>
+          </span>
+        </label>
       </div>
       <div className="flex justify-end gap-2">
         <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
@@ -1118,7 +1137,6 @@ export default function CustomerDetail() {
   const [editLocDialogOpen, setEditLocDialogOpen] = useState(false);
   const [contactDialogOpen, setContactDialogOpen] = useState(false);
   const [editingContact, setEditingContact] = useState<Contact | null>(null);
-  const [confirmPrimaryOpen, setConfirmPrimaryOpen] = useState(false);
 
   const { data: compat, isLoading } = useQuery<CustomerDetailCompatResponse>({
     queryKey: [`/api/customer-detail-compat/${customerId}${urlLocationId ? `?locationId=${urlLocationId}` : ""}`],
@@ -1240,15 +1258,6 @@ export default function CustomerDetail() {
 
     return nickname || contactName || activeLocation.name || "Select Location";
   }, [activeLocation, primaryContactNameByLocationId]);
-
-  const setPrimaryMutation = useMutation({
-    mutationFn: (locationId: string) => apiRequest("POST", `/api/locations/${locationId}/set-primary`, {}),
-    onSuccess: () => {
-      queryClient.invalidateQueries({
-        predicate: (query) => typeof query.queryKey[0] === "string" && query.queryKey[0].startsWith(`/api/customer-detail-compat/${customerId}`),
-      });
-    },
-  });
 
   const setPrimaryContactMutation = useMutation({
     mutationFn: (contactId: string) => apiRequest("POST", `/api/contacts/${contactId}/set-primary`, {}),
@@ -1442,35 +1451,9 @@ export default function CustomerDetail() {
                       <DialogHeader>
                         <DialogTitle>Edit Location</DialogTitle>
                       </DialogHeader>
-                      <EditLocationDialog customer={customer} location={activeLocation} onClose={() => setEditLocDialogOpen(false)} />
+                      <EditLocationDialog customer={customer} location={activeLocation} totalLocations={allLocations?.length ?? 0} onClose={() => setEditLocDialogOpen(false)} />
                     </DialogContent>
                   </Dialog>
-                  {!activeLocation.isPrimary && (
-                    <AlertDialog open={confirmPrimaryOpen} onOpenChange={setConfirmPrimaryOpen}>
-                      <AlertDialogTrigger asChild>
-                        <Button variant="ghost" size="sm" className="h-7 text-xs" data-testid="button-set-primary">
-                          <Star className="h-3 w-3 mr-1" /> Set Primary
-                        </Button>
-                      </AlertDialogTrigger>
-                      <AlertDialogContent>
-                        <AlertDialogHeader>
-                          <AlertDialogTitle>Set this as the primary location?</AlertDialogTitle>
-                          <AlertDialogDescription>
-                            This will make {activeLocation.name} the customer identity shown in the UI for this account. Account-level data will stay with the account.
-                          </AlertDialogDescription>
-                        </AlertDialogHeader>
-                        <AlertDialogFooter>
-                          <AlertDialogCancel>Cancel</AlertDialogCancel>
-                          <AlertDialogAction
-                            onClick={() => setPrimaryMutation.mutate(activeLocation.id)}
-                            data-testid="button-confirm-set-primary"
-                          >
-                            Confirm
-                          </AlertDialogAction>
-                        </AlertDialogFooter>
-                      </AlertDialogContent>
-                    </AlertDialog>
-                  )}
                 </div>
               </CardHeader>
               <CardContent className="space-y-3 text-sm">
