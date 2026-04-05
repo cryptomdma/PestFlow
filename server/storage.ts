@@ -573,6 +573,14 @@ export class DatabaseStorage implements IStorage {
       const [primaryNote, ...legacyNotes] = [...existingNotes].sort(
         (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
       );
+      const legacyNoteIds = legacyNotes.map((note) => note.id);
+      const referencedLegacyNoteIds = legacyNoteIds.length > 0
+        ? new Set(
+            (await tx.select({ noteId: noteRevisions.noteId }).from(noteRevisions).where(inArray(noteRevisions.noteId, legacyNoteIds)))
+              .map((revision) => revision.noteId),
+          )
+        : new Set<string>();
+      const deletableLegacyNotes = legacyNotes.filter((note) => !referencedLegacyNoteIds.has(note.id));
 
       const nextBody = data.body.trim();
       const actorUserId = data.actor?.userId || null;
@@ -597,8 +605,8 @@ export class DatabaseStorage implements IStorage {
           .where(eq(customerNotes.id, primaryNote.id))
           .returning();
 
-        if (legacyNotes.length > 0) {
-          await tx.delete(customerNotes).where(inArray(customerNotes.id, legacyNotes.map((note) => note.id)));
+        if (deletableLegacyNotes.length > 0) {
+          await tx.delete(customerNotes).where(inArray(customerNotes.id, deletableLegacyNotes.map((note) => note.id)));
         }
 
         if (primaryNote.body !== nextBody) {

@@ -62,12 +62,14 @@ async function upsertCanonicalScopeNote(
     locationId,
     legacyBodies,
     scopedRows,
+    noteIdsWithRevisions,
   }: {
     scope: "ACCOUNT" | "LOCATION";
     accountId: string;
     locationId: string | null;
     legacyBodies: string[];
     scopedRows: CustomerNote[];
+    noteIdsWithRevisions: Set<string>;
   },
 ) {
   const mergedBody = mergeNoteBodies([
@@ -79,10 +81,11 @@ async function upsertCanonicalScopeNote(
 
   const sortedRows = [...scopedRows].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   const [primaryRow, ...redundantRows] = sortedRows;
+  const redundantUnreferencedRows = redundantRows.filter((row) => !noteIdsWithRevisions.has(row.id));
 
   if (!mergedBody) {
-    if (sortedRows.length > 0) {
-      await tx.delete(customerNotes).where(inArray(customerNotes.id, sortedRows.map((row) => row.id)));
+    if (redundantUnreferencedRows.length > 0) {
+      await tx.delete(customerNotes).where(inArray(customerNotes.id, redundantUnreferencedRows.map((row) => row.id)));
     }
     return;
   }
@@ -100,8 +103,8 @@ async function upsertCanonicalScopeNote(
       })
       .where(eq(customerNotes.id, primaryRow.id));
 
-    if (redundantRows.length > 0) {
-      await tx.delete(customerNotes).where(inArray(customerNotes.id, redundantRows.map((row) => row.id)));
+    if (redundantUnreferencedRows.length > 0) {
+      await tx.delete(customerNotes).where(inArray(customerNotes.id, redundantUnreferencedRows.map((row) => row.id)));
     }
     return;
   }
@@ -150,12 +153,14 @@ export async function bootstrapCanonicalNotes(): Promise<void> {
   await ensureCanonicalNoteColumns();
   await ensureNoteRevisionTable();
 
-  const [allAccounts, allCustomers, allLocations, allNotes] = await Promise.all([
+  const [allAccounts, allCustomers, allLocations, allNotes, allRevisions] = await Promise.all([
     db.select().from(accounts),
     db.select().from(customers),
     db.select().from(locations),
     db.select().from(customerNotes),
+    db.select().from(noteRevisions),
   ]);
+  const noteIdsWithRevisions = new Set(allRevisions.map((revision) => revision.noteId));
 
   const accountIdByLegacyCustomerId = new Map(
     allAccounts
@@ -229,8 +234,8 @@ export async function bootstrapCanonicalNotes(): Promise<void> {
   const legacyLocationIdsToClear = allLocations
     .filter((location) => !isPlaceholderLocation(location) && !!normalizeNoteBody(location.notes))
     .map((location) => location.id);
-  const blankNoteIds = allNotes
-    .filter((note) => !normalizeNoteBody(note.body))
+  const blankUnreferencedNoteIds = allNotes
+    .filter((note) => !normalizeNoteBody(note.body) && !noteIdsWithRevisions.has(note.id))
     .map((note) => note.id);
 
   await db.transaction(async (tx) => {
@@ -241,6 +246,7 @@ export async function bootstrapCanonicalNotes(): Promise<void> {
         locationId: null,
         legacyBodies: group.legacyBodies,
         scopedRows: group.scopedRows,
+        noteIdsWithRevisions,
       });
     }
 
@@ -251,11 +257,12 @@ export async function bootstrapCanonicalNotes(): Promise<void> {
         locationId,
         legacyBodies: group.legacyBodies,
         scopedRows: group.scopedRows,
+        noteIdsWithRevisions,
       });
     }
 
-    if (blankNoteIds.length > 0) {
-      await tx.delete(customerNotes).where(inArray(customerNotes.id, blankNoteIds));
+    if (blankUnreferencedNoteIds.length > 0) {
+      await tx.delete(customerNotes).where(inArray(customerNotes.id, blankUnreferencedNoteIds));
     }
 
     if (legacyCustomerIdsToClear.length > 0) {
@@ -276,6 +283,14 @@ export async function bootstrapCanonicalNotes(): Promise<void> {
   await db.execute(
     sql`UPDATE customer_notes SET scope = 'ACCOUNT', customer_id = NULL, updated_at = COALESCE(updated_at, created_at, now()) WHERE account_id IS NOT NULL AND location_id IS NULL`,
   );
-  await db.execute(sql`DELETE FROM customer_notes WHERE body IS NULL OR BTRIM(body) = ''`);
+  await db.execute(sql`
+    DELETE FROM customer_notes
+    WHERE (body IS NULL OR BTRIM(body) = '')
+      AND NOT EXISTS (
+        SELECT 1
+        FROM note_revisions
+        WHERE note_revisions.note_id = customer_notes.id
+      )
+  `);
   await backfillInitialNoteRevisions();
 }
