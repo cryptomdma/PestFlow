@@ -34,6 +34,12 @@ export async function registerRoutes(
       .omit({ customerId: true, locationId: true })
       .optional(),
   });
+  const createLocationWithContactSchema = z.object({
+    location: insertLocationSchema,
+    initialContact: insertContactSchema
+      .omit({ customerId: true, locationId: true })
+      .optional(),
+  });
   const updateLocationProfileSchema = z.object({
     location: insertLocationSchema
       .omit({ customerId: true, accountId: true, isPrimary: true })
@@ -340,12 +346,40 @@ export async function registerRoutes(
 
   app.post("/api/locations", async (req, res) => {
     try {
-      const validated = insertLocationSchema.parse(req.body);
-      const locationNotesBody = validated.notes?.trim() || "";
-      const data = await storage.createLocation({
-        ...validated,
-        notes: null,
-      });
+      const validated = createLocationWithContactSchema.safeParse(req.body);
+      const locationPayload = validated.success ? validated.data.location : insertLocationSchema.parse(req.body);
+      const rawInitialContact = validated.success ? validated.data.initialContact : undefined;
+      const locationNotesBody = locationPayload.notes?.trim() || "";
+      const initialContact =
+        rawInitialContact && (
+          rawInitialContact.firstName?.trim() ||
+          rawInitialContact.lastName?.trim() ||
+          rawInitialContact.email?.trim() ||
+          rawInitialContact.phone?.trim()
+        )
+          ? {
+              ...rawInitialContact,
+              firstName: rawInitialContact.firstName.trim(),
+              lastName: rawInitialContact.lastName.trim(),
+              email: rawInitialContact.email?.trim() || null,
+              phone: normalizePhone(rawInitialContact.phone) || null,
+              role: rawInitialContact.role?.trim() || "primary",
+              isPrimary: true,
+            }
+          : undefined;
+
+      const data = initialContact
+        ? await storage.createLocationWithPrimaryContact({
+            location: {
+              ...locationPayload,
+              notes: null,
+            },
+            initialContact,
+          })
+        : await storage.createLocation({
+            ...locationPayload,
+            notes: null,
+          });
       if (locationNotesBody) {
         await storage.saveScopedNote({
           scope: "LOCATION",
@@ -354,7 +388,7 @@ export async function registerRoutes(
           actor: getAuditActor(req),
         });
       }
-      if (validated.isPrimary) {
+      if (locationPayload.isPrimary) {
         await storage.setPrimaryLocation(data.customerId, data.id);
       }
       res.status(201).json(data);

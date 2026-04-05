@@ -50,6 +50,11 @@ export interface CreateCustomerWithPrimaryLocationInput {
   initialContact?: Omit<InsertContact, "customerId" | "locationId">;
 }
 
+export interface CreateLocationWithPrimaryContactInput {
+  location: InsertLocation;
+  initialContact?: Omit<InsertContact, "customerId" | "locationId">;
+}
+
 export interface UpdateLocationProfileInput {
   customerId: string;
   locationId: string;
@@ -87,6 +92,7 @@ export interface IStorage {
   getAllLocations(): Promise<Location[]>;
   getLocation(id: string): Promise<Location | undefined>;
   createLocation(data: InsertLocation): Promise<Location>;
+  createLocationWithPrimaryContact(input: CreateLocationWithPrimaryContactInput): Promise<Location>;
   updateLocation(id: string, data: Partial<InsertLocation>): Promise<Location | undefined>;
   setPrimaryLocation(customerId: string, locationId: string): Promise<void>;
 
@@ -489,6 +495,39 @@ export class DatabaseStorage implements IStorage {
       await this.ensurePrimaryLocationInvariant(accountId);
     }
     return location;
+  }
+
+  async createLocationWithPrimaryContact(input: CreateLocationWithPrimaryContactInput): Promise<Location> {
+    const accountId = input.location.accountId || await this.resolveAccountIdForLegacyCustomer(input.location.customerId);
+
+    const createdLocation = await db.transaction(async (tx) => {
+      const [location] = await tx
+        .insert(locations)
+        .values({
+          ...input.location,
+          accountId,
+        })
+        .returning();
+
+      if (input.initialContact) {
+        await tx.insert(contacts).values({
+          ...input.initialContact,
+          customerId: location.customerId,
+          locationId: location.id,
+          isPrimary: true,
+        });
+      }
+
+      return location;
+    });
+
+    if (createdLocation.isPrimary) {
+      await this.ensurePrimaryLocationInvariant(accountId, createdLocation.id);
+    } else {
+      await this.ensurePrimaryLocationInvariant(accountId);
+    }
+
+    return createdLocation;
   }
 
   async updateLocation(id: string, data: Partial<InsertLocation>): Promise<Location | undefined> {
