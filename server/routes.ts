@@ -583,6 +583,11 @@ export async function registerRoutes(
     res.json(data);
   });
 
+  app.get("/api/location-balances/:customerId", async (req, res) => {
+    const data = await storage.getLocationBalancesByCustomer(req.params.customerId);
+    res.json(data);
+  });
+
   app.get("/api/communications/by-location/:locationId", async (req, res) => {
     const data = await storage.getCommunicationsByLocation(req.params.locationId);
     res.json(data);

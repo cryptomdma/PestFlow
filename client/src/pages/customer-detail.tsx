@@ -62,6 +62,13 @@ interface UpdateLocationProfileResponse {
   location: Location;
 }
 
+interface LocationBalanceSummary {
+  locationId: string;
+  openBalance: number;
+  totalInvoiced: number;
+  invoiceCount: number;
+}
+
 const BASE_LOCATION_TYPE_OPTIONS = ["residential", "commercial"] as const;
 const BASE_SOURCE_OPTIONS = ["Google", "Youtube", "Referal", "Facebook"] as const;
 const CONTACT_PHONE_TYPE_OPTIONS = ["mobile", "home", "work", "fax"] as const;
@@ -79,6 +86,20 @@ function formatOptionLabel(value: string) {
     .split("-")
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(" ");
+}
+
+function formatCurrency(value: number) {
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(value);
+}
+
+function isUsefulLocationNickname(name: string | null | undefined) {
+  const trimmed = name?.trim();
+  return !!trimmed && trimmed.toLowerCase() !== "primary location";
 }
 
 function buildContactFormState(contact?: Contact | null) {
@@ -1111,6 +1132,8 @@ export default function CustomerDetail() {
   const hasBillingOverride = compat?.hasBillingOverride || false;
 
   const { data: contacts } = useQuery<Contact[]>({ queryKey: ["/api/contacts/by-location", activeLocationId], enabled: !!activeLocationId });
+  const { data: accountContacts } = useQuery<Contact[]>({ queryKey: ["/api/contacts", customerId], enabled: !!customerId });
+  const { data: locationBalances } = useQuery<LocationBalanceSummary[]>({ queryKey: ["/api/location-balances", customerId], enabled: !!customerId });
 
   const { data: locationCounts } = useQuery<{ contacts: number; appointments: number; services: number; invoices: number; communications: number }>({
     queryKey: ["/api/location-counts", activeLocationId],
@@ -1167,6 +1190,56 @@ export default function CustomerDetail() {
 
     return null;
   }, [activeLocation, customer, sortedContacts]);
+
+  const primaryContactNameByLocationId = useMemo(() => {
+    const allScopedContacts = accountContacts ?? [];
+    const grouped = new Map<string, Contact[]>();
+
+    for (const contact of allScopedContacts) {
+      if (!contact.locationId) {
+        continue;
+      }
+
+      const locationContacts = grouped.get(contact.locationId) ?? [];
+      locationContacts.push(contact);
+      grouped.set(contact.locationId, locationContacts);
+    }
+
+    const labels = new Map<string, string>();
+    for (const [locationId, locationContacts] of Array.from(grouped.entries())) {
+      const [displayContact] = [...locationContacts].sort((a, b) => {
+        if (a.isPrimary && !b.isPrimary) return -1;
+        if (!a.isPrimary && b.isPrimary) return 1;
+        return `${a.firstName} ${a.lastName}`.localeCompare(`${b.firstName} ${b.lastName}`);
+      });
+
+      const fullName = `${displayContact?.firstName ?? ""} ${displayContact?.lastName ?? ""}`.trim();
+      if (fullName) {
+        labels.set(locationId, fullName);
+      }
+    }
+
+    return labels;
+  }, [accountContacts]);
+
+  const locationBalanceByLocationId = useMemo(() => {
+    return new Map((locationBalances ?? []).map((balance) => [balance.locationId, balance]));
+  }, [locationBalances]);
+
+  const activeLocationLabel = useMemo(() => {
+    if (!activeLocation) {
+      return "Select Location";
+    }
+
+    const nickname = isUsefulLocationNickname(activeLocation.name) ? activeLocation.name.trim() : "";
+    const contactName = primaryContactNameByLocationId.get(activeLocation.id) ?? "";
+
+    if (nickname && contactName) {
+      return `${nickname} · ${contactName}`;
+    }
+
+    return nickname || contactName || activeLocation.name || "Select Location";
+  }, [activeLocation, primaryContactNameByLocationId]);
 
   const setPrimaryMutation = useMutation({
     mutationFn: (locationId: string) => apiRequest("POST", `/api/locations/${locationId}/set-primary`, {}),
@@ -1305,25 +1378,42 @@ export default function CustomerDetail() {
             <DropdownMenuTrigger asChild>
               <Button variant="outline" className="gap-2" data-testid="button-location-selector">
                 <MapPin className="h-4 w-4" />
-                <span className="truncate max-w-[200px]">{activeLocation?.name || "Select Location"}</span>
+                <span className="truncate max-w-[240px]">{activeLocationLabel}</span>
                 <Badge variant="secondary" className="text-xs ml-1">{allLocations?.length || 0}</Badge>
                 <ChevronDown className="h-3.5 w-3.5 ml-1" />
               </Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="start" className="w-72">
-              {allLocations?.map((loc) => (
-                <DropdownMenuItem key={loc.id} onClick={() => selectLocation(loc.id)} className={`flex flex-col items-start gap-0.5 py-2 ${loc.id === activeLocationId ? "bg-accent" : ""}`} data-testid={`location-option-${loc.id}`}>
+            <DropdownMenuContent align="start" className="w-80">
+              {allLocations?.map((loc) => {
+                const nickname = isUsefulLocationNickname(loc.name) ? loc.name.trim() : "";
+                const contactName = primaryContactNameByLocationId.get(loc.id) ?? "";
+                const locationBalance = locationBalanceByLocationId.get(loc.id);
+                const primaryText = nickname && contactName
+                  ? `${nickname} · ${contactName}`
+                  : nickname || contactName || loc.name;
+                const secondaryText = `${loc.address}, ${loc.city}, ${loc.state} ${loc.zip}`;
+                const balanceText = locationBalance && locationBalance.openBalance > 0
+                  ? `Open ${formatCurrency(locationBalance.openBalance)}`
+                  : locationBalance?.invoiceCount
+                    ? "Paid up"
+                    : "No balance";
+
+                return (
+                <DropdownMenuItem key={loc.id} onClick={() => selectLocation(loc.id)} className={`flex flex-col items-start gap-1 py-2 ${loc.id === activeLocationId ? "bg-accent" : ""}`} data-testid={`location-option-${loc.id}`}>
                   <div className="flex items-center gap-2 w-full">
                     {loc.id === activeLocationId ? <Check className="h-3.5 w-3.5 shrink-0 text-primary" /> : <span className="w-3.5 shrink-0" />}
-                    <span className="font-medium text-sm">{loc.name}</span>
+                    <span className="font-medium text-sm truncate">{primaryText}</span>
                     <div className="flex items-center gap-1 ml-auto">
                       {loc.isPrimary && <Badge variant="secondary" className="text-[10px] px-1.5 py-0">Primary</Badge>}
                       {loc.billingProfileId && <Badge variant="outline" className="text-[10px] px-1.5 py-0">Billing Override</Badge>}
                     </div>
                   </div>
-                  <span className="text-xs text-muted-foreground">{loc.city}, {loc.state}</span>
+                  <div className="pl-5 w-full space-y-0.5">
+                    <p className="text-xs text-muted-foreground leading-4">{secondaryText}</p>
+                    <p className="text-[11px] font-medium text-muted-foreground">{balanceText}</p>
+                  </div>
                 </DropdownMenuItem>
-              ))}
+              )})}
             </DropdownMenuContent>
           </DropdownMenu>
 

@@ -39,6 +39,13 @@ export interface AccountInvariantSummary {
   accountPrimaryLocationMismatch: number;
 }
 
+export interface LocationBalanceSummary {
+  locationId: string;
+  openBalance: number;
+  totalInvoiced: number;
+  invoiceCount: number;
+}
+
 export interface AuditActor {
   userId?: string | null;
   actorLabel?: string | null;
@@ -125,6 +132,7 @@ export interface IStorage {
 
   getInvoices(): Promise<Invoice[]>;
   getInvoicesByLocation(locationId: string): Promise<Invoice[]>;
+  getLocationBalancesByCustomer(customerId: string): Promise<LocationBalanceSummary[]>;
   getInvoice(id: string): Promise<Invoice | undefined>;
   createInvoice(data: InsertInvoice): Promise<Invoice>;
   updateInvoice(id: string, data: Partial<InsertInvoice>): Promise<Invoice | undefined>;
@@ -773,6 +781,36 @@ export class DatabaseStorage implements IStorage {
 
   async getInvoicesByLocation(locationId: string): Promise<Invoice[]> {
     return db.select().from(invoices).where(eq(invoices.locationId, locationId));
+  }
+
+  async getLocationBalancesByCustomer(customerId: string): Promise<LocationBalanceSummary[]> {
+    const customerInvoices = await db.select().from(invoices).where(eq(invoices.customerId, customerId));
+    const balances = new Map<string, LocationBalanceSummary>();
+
+    for (const invoice of customerInvoices) {
+      if (!invoice.locationId) {
+        continue;
+      }
+
+      const current = balances.get(invoice.locationId) ?? {
+        locationId: invoice.locationId,
+        openBalance: 0,
+        totalInvoiced: 0,
+        invoiceCount: 0,
+      };
+
+      const invoiceTotal = parseFloat(invoice.totalAmount || "0");
+      current.totalInvoiced += invoiceTotal;
+      current.invoiceCount += 1;
+
+      if (invoice.status !== "paid") {
+        current.openBalance += invoiceTotal;
+      }
+
+      balances.set(invoice.locationId, current);
+    }
+
+    return Array.from(balances.values());
   }
 
   async getInvoice(id: string): Promise<Invoice | undefined> {
