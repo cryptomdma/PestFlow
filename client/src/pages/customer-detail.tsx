@@ -285,46 +285,185 @@ function CommunicationActionLink({
   );
 }
 
-function AddLocationDialog({ customerId, onClose }: { customerId: string; onClose: () => void }) {
+function AddLocationDialog({
+  customerId,
+  customerType,
+  onClose,
+}: {
+  customerId: string;
+  customerType: string;
+  onClose: () => void;
+}) {
   const { toast } = useToast();
-  const [form, setForm] = useState({ name: "", address: "", city: "", state: "", zip: "", propertyType: "residential", isPrimary: false, gateCode: "", squareFootage: "" });
+  const locationTypeOptions = buildOptions(customerType, BASE_LOCATION_TYPE_OPTIONS);
+  const [form, setForm] = useState({
+    nickname: "",
+    firstName: "",
+    lastName: "",
+    email: "",
+    phone: "",
+    source: "",
+    address: "",
+    city: "",
+    state: "",
+    zip: "",
+    propertyType: customerType,
+    isPrimary: false,
+    gateCode: "",
+    squareFootage: "",
+  });
   const mutation = useMutation({
-    mutationFn: (data: any) => apiRequest("POST", "/api/locations", { ...data, customerId, squareFootage: data.squareFootage ? parseInt(data.squareFootage) : null }),
+    mutationFn: async (data: typeof form) => {
+      const trimmedAddress = data.address.trim();
+      const trimmedNickname = data.nickname.trim();
+
+      return apiRequest("POST", "/api/locations", {
+        location: {
+          customerId,
+          name: trimmedNickname || trimmedAddress,
+          address: trimmedAddress,
+          city: data.city.trim(),
+          state: data.state.trim(),
+          zip: data.zip.trim(),
+          propertyType: data.propertyType,
+          isPrimary: data.isPrimary,
+          gateCode: data.gateCode.trim() || null,
+          squareFootage: data.squareFootage.trim() ? parseInt(data.squareFootage, 10) : null,
+          source: data.source.trim() || null,
+          notes: null,
+        },
+        initialContact: {
+          firstName: data.firstName.trim(),
+          lastName: data.lastName.trim(),
+          email: data.email.trim(),
+          phone: data.phone.trim(),
+          role: "primary",
+          isPrimary: true,
+        },
+      });
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({
         predicate: (query) => typeof query.queryKey[0] === "string" && query.queryKey[0].startsWith(`/api/customer-detail-compat/${customerId}`),
       });
+      queryClient.invalidateQueries({ queryKey: ["/api/contacts/by-location"] });
       toast({ title: "Location added" });
       onClose();
     },
+    onError: (err: Error) => {
+      toast({ title: "Error adding location", description: err.message, variant: "destructive" });
+    },
   });
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+
+    if (
+      !form.firstName.trim() ||
+      !form.lastName.trim() ||
+      !form.email.trim() ||
+      !form.phone.trim()
+    ) {
+      toast({ title: "First name, last name, email, and phone are required for the primary contact", variant: "destructive" });
+      return;
+    }
+
+    if (!form.address.trim() || !form.city.trim() || !form.state.trim() || !form.zip.trim()) {
+      toast({ title: "Address, city, state, and ZIP are required", variant: "destructive" });
+      return;
+    }
+
+    mutation.mutate(form);
+  };
+
   return (
-    <form onSubmit={(e) => { e.preventDefault(); mutation.mutate(form); }} className="space-y-4">
-      <div className="space-y-1.5"><Label>Location Name</Label><Input data-testid="input-loc-name" value={form.name} onChange={(e) => setForm(p => ({ ...p, name: e.target.value }))} placeholder="e.g., Main Office, Home" /></div>
-      <div className="space-y-1.5"><Label>Address</Label><Input data-testid="input-loc-address" value={form.address} onChange={(e) => setForm(p => ({ ...p, address: e.target.value }))} /></div>
-      <div className="grid grid-cols-3 gap-3">
-        <div className="space-y-1.5"><Label>City</Label><Input value={form.city} onChange={(e) => setForm(p => ({ ...p, city: e.target.value }))} /></div>
-        <div className="space-y-1.5"><Label>State</Label><Input value={form.state} onChange={(e) => setForm(p => ({ ...p, state: e.target.value }))} /></div>
-        <div className="space-y-1.5"><Label>ZIP</Label><Input value={form.zip} onChange={(e) => setForm(p => ({ ...p, zip: e.target.value }))} /></div>
+    <form onSubmit={handleSubmit} className="space-y-6 max-h-[70vh] overflow-y-auto pr-1">
+      <div className="space-y-1">
+        <h3 className="text-sm font-semibold">Location details</h3>
+        <p className="text-sm text-muted-foreground">
+          Add another service location under this account and create its primary contact in the same step.
+        </p>
       </div>
-      <div className="grid grid-cols-2 gap-3">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <div className="space-y-1.5">
-          <Label>Property Type</Label>
-          <Select value={form.propertyType} onValueChange={(v) => setForm(p => ({ ...p, propertyType: v }))}>
-            <SelectTrigger><SelectValue /></SelectTrigger>
+          <Label htmlFor="add-location-type">Location Type</Label>
+          <Select value={form.propertyType} onValueChange={(v) => setForm((p) => ({ ...p, propertyType: v }))}>
+            <SelectTrigger id="add-location-type" data-testid="select-add-location-type"><SelectValue /></SelectTrigger>
             <SelectContent>
-              <SelectItem value="residential">Residential</SelectItem>
-              <SelectItem value="commercial">Commercial</SelectItem>
-              <SelectItem value="industrial">Industrial</SelectItem>
-              <SelectItem value="multi-family">Multi-Family</SelectItem>
+              {locationTypeOptions.map((option) => (
+                <SelectItem key={option} value={option}>{formatOptionLabel(option)}</SelectItem>
+              ))}
             </SelectContent>
           </Select>
         </div>
-        <div className="space-y-1.5"><Label>Sq Ft</Label><Input type="number" value={form.squareFootage} onChange={(e) => setForm(p => ({ ...p, squareFootage: e.target.value }))} /></div>
+        <div className="space-y-1.5">
+          <Label htmlFor="add-location-source">Source</Label>
+          <Select value={form.source} onValueChange={(v) => setForm((p) => ({ ...p, source: v }))}>
+            <SelectTrigger id="add-location-source" data-testid="select-add-location-source">
+              <SelectValue placeholder="Select source" />
+            </SelectTrigger>
+            <SelectContent>
+              {BASE_SOURCE_OPTIONS.map((option) => (
+                <SelectItem key={option} value={option}>{option}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
       </div>
-      <div className="space-y-1.5"><Label>Gate Code</Label><Input value={form.gateCode} onChange={(e) => setForm(p => ({ ...p, gateCode: e.target.value }))} /></div>
-      <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.isPrimary} onChange={(e) => setForm(p => ({ ...p, isPrimary: e.target.checked }))} /> Set as primary location</label>
-      <div className="flex justify-end gap-2"><Button type="button" variant="outline" onClick={onClose}>Cancel</Button><Button type="submit" disabled={mutation.isPending} data-testid="button-save-location">{mutation.isPending ? "Saving..." : "Add Location"}</Button></div>
+      <div className="space-y-1.5">
+        <Label htmlFor="add-location-nickname">Nickname</Label>
+        <Input
+          id="add-location-nickname"
+          data-testid="input-add-location-nickname"
+          placeholder="Optional, e.g. Lake House or Warehouse"
+          value={form.nickname}
+          onChange={(e) => setForm((p) => ({ ...p, nickname: e.target.value }))}
+        />
+      </div>
+      <div className="space-y-1.5">
+        <Label htmlFor="add-location-address">Address *</Label>
+        <Input
+          id="add-location-address"
+          data-testid="input-loc-address"
+          placeholder="Street address"
+          autoComplete="street-address"
+          value={form.address}
+          onChange={(e) => setForm((p) => ({ ...p, address: e.target.value }))}
+        />
+      </div>
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-[minmax(0,1fr)_120px_120px]">
+        <div className="space-y-1.5"><Label htmlFor="add-location-city">City *</Label><Input id="add-location-city" data-testid="input-add-location-city" autoComplete="address-level2" value={form.city} onChange={(e) => setForm((p) => ({ ...p, city: e.target.value }))} /></div>
+        <div className="space-y-1.5"><Label htmlFor="add-location-state">State *</Label><Input id="add-location-state" data-testid="input-add-location-state" autoComplete="address-level1" value={form.state} onChange={(e) => setForm((p) => ({ ...p, state: e.target.value }))} /></div>
+        <div className="space-y-1.5"><Label htmlFor="add-location-zip">ZIP *</Label><Input id="add-location-zip" data-testid="input-add-location-zip" autoComplete="postal-code" value={form.zip} onChange={(e) => setForm((p) => ({ ...p, zip: e.target.value }))} /></div>
+      </div>
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <div className="space-y-1.5"><Label htmlFor="add-location-square-footage">Sq Ft</Label><Input id="add-location-square-footage" type="number" data-testid="input-add-location-square-footage" value={form.squareFootage} onChange={(e) => setForm((p) => ({ ...p, squareFootage: e.target.value }))} /></div>
+        <div className="space-y-1.5"><Label htmlFor="add-location-gate-code">Gate Code</Label><Input id="add-location-gate-code" data-testid="input-add-location-gate-code" value={form.gateCode} onChange={(e) => setForm((p) => ({ ...p, gateCode: e.target.value }))} /></div>
+      </div>
+      <div className="space-y-1">
+        <h3 className="text-sm font-semibold">Primary contact</h3>
+        <p className="text-sm text-muted-foreground">
+          These details create the primary contact for the new location.
+        </p>
+      </div>
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <div className="space-y-1.5"><Label htmlFor="add-location-contact-first-name">First Name *</Label><Input id="add-location-contact-first-name" data-testid="input-add-location-contact-first-name" value={form.firstName} onChange={(e) => setForm((p) => ({ ...p, firstName: e.target.value }))} /></div>
+        <div className="space-y-1.5"><Label htmlFor="add-location-contact-last-name">Last Name *</Label><Input id="add-location-contact-last-name" data-testid="input-add-location-contact-last-name" value={form.lastName} onChange={(e) => setForm((p) => ({ ...p, lastName: e.target.value }))} /></div>
+      </div>
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <div className="space-y-1.5"><Label htmlFor="add-location-contact-email">Email *</Label><Input id="add-location-contact-email" type="email" data-testid="input-add-location-contact-email" value={form.email} onChange={(e) => setForm((p) => ({ ...p, email: e.target.value }))} /></div>
+        <div className="space-y-1.5"><Label htmlFor="add-location-contact-phone">Phone *</Label><Input id="add-location-contact-phone" data-testid="input-add-location-contact-phone" value={form.phone} onChange={(e) => setForm((p) => ({ ...p, phone: e.target.value }))} /></div>
+      </div>
+      <label className="flex items-center gap-2 text-sm">
+        <input type="checkbox" checked={form.isPrimary} onChange={(e) => setForm((p) => ({ ...p, isPrimary: e.target.checked }))} />
+        Set as primary location
+      </label>
+      <div className="flex justify-end gap-2 pt-2">
+        <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
+        <Button type="submit" disabled={mutation.isPending} data-testid="button-save-location">
+          {mutation.isPending ? "Saving..." : "Add Location"}
+        </Button>
+      </div>
     </form>
   );
 }
@@ -1190,7 +1329,7 @@ export default function CustomerDetail() {
 
           <Dialog open={locDialogOpen} onOpenChange={setLocDialogOpen}>
             <DialogTrigger asChild><Button variant="outline" size="sm" data-testid="button-add-location"><Plus className="h-3 w-3 mr-1" /> Add Location</Button></DialogTrigger>
-            <DialogContent className="max-w-lg"><DialogHeader><DialogTitle>Add Location</DialogTitle></DialogHeader><AddLocationDialog customerId={customerId} onClose={() => setLocDialogOpen(false)} /></DialogContent>
+            <DialogContent className="max-w-xl"><DialogHeader><DialogTitle>Add Location</DialogTitle></DialogHeader><AddLocationDialog customerId={customerId} customerType={customer?.customerType ?? "residential"} onClose={() => setLocDialogOpen(false)} /></DialogContent>
           </Dialog>
         </div>
 
