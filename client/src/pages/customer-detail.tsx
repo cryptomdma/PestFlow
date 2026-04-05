@@ -379,6 +379,20 @@ function AddLocationDialog({
   return (
     <form onSubmit={handleSubmit} className="space-y-6 max-h-[70vh] overflow-y-auto pr-1">
       <div className="space-y-1">
+        <h3 className="text-sm font-semibold">Primary contact</h3>
+        <p className="text-sm text-muted-foreground">
+          These details create the primary contact for the new location.
+        </p>
+      </div>
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <div className="space-y-1.5"><Label htmlFor="add-location-contact-first-name">First Name *</Label><Input id="add-location-contact-first-name" data-testid="input-add-location-contact-first-name" value={form.firstName} onChange={(e) => setForm((p) => ({ ...p, firstName: e.target.value }))} /></div>
+        <div className="space-y-1.5"><Label htmlFor="add-location-contact-last-name">Last Name *</Label><Input id="add-location-contact-last-name" data-testid="input-add-location-contact-last-name" value={form.lastName} onChange={(e) => setForm((p) => ({ ...p, lastName: e.target.value }))} /></div>
+      </div>
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <div className="space-y-1.5"><Label htmlFor="add-location-contact-email">Email *</Label><Input id="add-location-contact-email" type="email" data-testid="input-add-location-contact-email" value={form.email} onChange={(e) => setForm((p) => ({ ...p, email: e.target.value }))} /></div>
+        <div className="space-y-1.5"><Label htmlFor="add-location-contact-phone">Phone *</Label><Input id="add-location-contact-phone" data-testid="input-add-location-contact-phone" value={form.phone} onChange={(e) => setForm((p) => ({ ...p, phone: e.target.value }))} /></div>
+      </div>
+      <div className="space-y-1">
         <h3 className="text-sm font-semibold">Location details</h3>
         <p className="text-sm text-muted-foreground">
           Add another service location under this account and create its primary contact in the same step.
@@ -411,16 +425,6 @@ function AddLocationDialog({
         </div>
       </div>
       <div className="space-y-1.5">
-        <Label htmlFor="add-location-nickname">Nickname</Label>
-        <Input
-          id="add-location-nickname"
-          data-testid="input-add-location-nickname"
-          placeholder="Optional, e.g. Lake House or Warehouse"
-          value={form.nickname}
-          onChange={(e) => setForm((p) => ({ ...p, nickname: e.target.value }))}
-        />
-      </div>
-      <div className="space-y-1.5">
         <Label htmlFor="add-location-address">Address *</Label>
         <Input
           id="add-location-address"
@@ -440,19 +444,15 @@ function AddLocationDialog({
         <div className="space-y-1.5"><Label htmlFor="add-location-square-footage">Sq Ft</Label><Input id="add-location-square-footage" type="number" data-testid="input-add-location-square-footage" value={form.squareFootage} onChange={(e) => setForm((p) => ({ ...p, squareFootage: e.target.value }))} /></div>
         <div className="space-y-1.5"><Label htmlFor="add-location-gate-code">Gate Code</Label><Input id="add-location-gate-code" data-testid="input-add-location-gate-code" value={form.gateCode} onChange={(e) => setForm((p) => ({ ...p, gateCode: e.target.value }))} /></div>
       </div>
-      <div className="space-y-1">
-        <h3 className="text-sm font-semibold">Primary contact</h3>
-        <p className="text-sm text-muted-foreground">
-          These details create the primary contact for the new location.
-        </p>
-      </div>
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        <div className="space-y-1.5"><Label htmlFor="add-location-contact-first-name">First Name *</Label><Input id="add-location-contact-first-name" data-testid="input-add-location-contact-first-name" value={form.firstName} onChange={(e) => setForm((p) => ({ ...p, firstName: e.target.value }))} /></div>
-        <div className="space-y-1.5"><Label htmlFor="add-location-contact-last-name">Last Name *</Label><Input id="add-location-contact-last-name" data-testid="input-add-location-contact-last-name" value={form.lastName} onChange={(e) => setForm((p) => ({ ...p, lastName: e.target.value }))} /></div>
-      </div>
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        <div className="space-y-1.5"><Label htmlFor="add-location-contact-email">Email *</Label><Input id="add-location-contact-email" type="email" data-testid="input-add-location-contact-email" value={form.email} onChange={(e) => setForm((p) => ({ ...p, email: e.target.value }))} /></div>
-        <div className="space-y-1.5"><Label htmlFor="add-location-contact-phone">Phone *</Label><Input id="add-location-contact-phone" data-testid="input-add-location-contact-phone" value={form.phone} onChange={(e) => setForm((p) => ({ ...p, phone: e.target.value }))} /></div>
+      <div className="space-y-1.5">
+        <Label htmlFor="add-location-nickname">Nickname</Label>
+        <Input
+          id="add-location-nickname"
+          data-testid="input-add-location-nickname"
+          placeholder="Optional, e.g. Lake House or Warehouse"
+          value={form.nickname}
+          onChange={(e) => setForm((p) => ({ ...p, nickname: e.target.value }))}
+        />
       </div>
       <label className="flex items-center gap-2 text-sm">
         <input type="checkbox" checked={form.isPrimary} onChange={(e) => setForm((p) => ({ ...p, isPrimary: e.target.checked }))} />
