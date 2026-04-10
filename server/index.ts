@@ -6,6 +6,7 @@ import { createServer } from "http";
 import { seedDatabase } from "./seed";
 import { bootstrapCanonicalAccounts } from "./account-bootstrap";
 import { bootstrapCanonicalNotes } from "./note-bootstrap";
+import { bootstrapAgreements } from "./agreement-bootstrap";
 
 const app = express();
 const httpServer = createServer(app);
@@ -67,6 +68,7 @@ app.use((req, res, next) => {
   await seedDatabase().catch((e) => console.error("Seed error:", e));
   await bootstrapCanonicalAccounts().catch((e) => console.error("Account bootstrap error:", e));
   await bootstrapCanonicalNotes().catch((e) => console.error("Note bootstrap error:", e));
+  await bootstrapAgreements().catch((e) => console.error("Agreement bootstrap error:", e));
   await registerRoutes(httpServer, app);
 
   app.use((err: any, _req: Request, res: Response, next: NextFunction) => {

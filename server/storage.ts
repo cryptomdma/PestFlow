@@ -2,6 +2,7 @@ import {
   auditLogs,
   accounts,
   customers, contacts, locations, serviceTypes, appointments,
+  agreements,
   serviceRecords, productApplications, invoices, communications,
   billingProfiles, customerNotes,
   noteRevisions,
@@ -11,6 +12,7 @@ import {
   type Location, type InsertLocation,
   type ServiceType, type InsertServiceType,
   type Appointment, type InsertAppointment,
+  type Agreement, type InsertAgreement,
   type ServiceRecord, type InsertServiceRecord,
   type ProductApplication, type InsertProductApplication,
   type Invoice, type InsertInvoice,
@@ -70,6 +72,10 @@ export interface UpdateLocationProfileInput {
   actor?: AuditActor;
 }
 
+export interface GenerateAgreementAppointmentsResult {
+  createdAppointments: Appointment[];
+}
+
 export interface SaveScopedNoteInput {
   scope: "ACCOUNT" | "LOCATION";
   accountId?: string | null;
@@ -114,6 +120,12 @@ export interface IStorage {
   getServiceTypes(): Promise<ServiceType[]>;
   createServiceType(data: InsertServiceType): Promise<ServiceType>;
 
+  getAgreementsByLocation(locationId: string): Promise<Agreement[]>;
+  getAgreement(id: string): Promise<Agreement | undefined>;
+  createAgreement(data: InsertAgreement, actor?: AuditActor): Promise<Agreement>;
+  updateAgreement(id: string, data: Partial<InsertAgreement>, actor?: AuditActor): Promise<Agreement | undefined>;
+  generateAgreementAppointmentsForLocation(locationId: string): Promise<GenerateAgreementAppointmentsResult>;
+
   getAppointments(): Promise<Appointment[]>;
   getAppointmentsByLocation(locationId: string): Promise<Appointment[]>;
   getAppointment(id: string): Promise<Appointment | undefined>;
@@ -142,7 +154,65 @@ export interface IStorage {
   getAllCommunications(): Promise<Communication[]>;
   createCommunication(data: InsertCommunication): Promise<Communication>;
 
-  getLocationScopedCounts(locationId: string): Promise<{ contacts: number; appointments: number; services: number; invoices: number; communications: number }>;
+  getLocationScopedCounts(locationId: string): Promise<{ contacts: number; appointments: number; agreements: number; services: number; invoices: number; communications: number }>;
+}
+
+function normalizeDateOnly(value: string | Date | null | undefined): string | null {
+  if (!value) {
+    return null;
+  }
+
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return null;
+    }
+
+    return trimmed.slice(0, 10);
+  }
+
+  return value.toISOString().slice(0, 10);
+}
+
+function addDays(dateOnly: string, days: number) {
+  const next = new Date(`${dateOnly}T00:00:00.000Z`);
+  next.setUTCDate(next.getUTCDate() + days);
+  return next.toISOString().slice(0, 10);
+}
+
+function addMonths(dateOnly: string, months: number) {
+  const next = new Date(`${dateOnly}T00:00:00.000Z`);
+  next.setUTCMonth(next.getUTCMonth() + months);
+  return next.toISOString().slice(0, 10);
+}
+
+function advanceAgreementDate(dateOnly: string, recurrenceUnit: string, recurrenceInterval: number) {
+  const step = Math.max(recurrenceInterval || 1, 1);
+
+  switch (recurrenceUnit) {
+    case "QUARTER":
+      return addMonths(dateOnly, step * 3);
+    case "YEAR":
+      return addMonths(dateOnly, step * 12);
+    case "CUSTOM":
+      return addDays(dateOnly, step);
+    case "MONTH":
+    default:
+      return addMonths(dateOnly, step);
+  }
+}
+
+function buildAppointmentSchedule(dateOnly: string, defaultDurationMinutes?: number | null) {
+  const scheduledDate = new Date(`${dateOnly}T14:00:00.000Z`);
+  const durationMinutes = defaultDurationMinutes && defaultDurationMinutes > 0 ? defaultDurationMinutes : null;
+  const scheduledEndDate = durationMinutes
+    ? new Date(scheduledDate.getTime() + durationMinutes * 60 * 1000)
+    : null;
+
+  return {
+    scheduledDate,
+    scheduledEndDate,
+  };
 }
 
 export class DatabaseStorage implements IStorage {
@@ -214,6 +284,142 @@ export class DatabaseStorage implements IStorage {
       .update(accounts)
       .set({ primaryLocationId: primaryCandidate.id, updatedAt: new Date() })
       .where(eq(accounts.id, accountId));
+  }
+
+  private normalizeAgreementInsert(data: InsertAgreement, actor?: AuditActor): InsertAgreement {
+    const contractUrl = data.contractUrl?.trim() || null;
+
+    return {
+      ...data,
+      agreementName: data.agreementName.trim(),
+      agreementType: data.agreementType?.trim() || null,
+      startDate: normalizeDateOnly(data.startDate)!,
+      renewalDate: normalizeDateOnly(data.renewalDate),
+      nextServiceDate: normalizeDateOnly(data.nextServiceDate)!,
+      billingFrequency: data.billingFrequency?.trim() || null,
+      price: data.price || null,
+      recurrenceUnit: data.recurrenceUnit,
+      recurrenceInterval: Math.max(data.recurrenceInterval || 1, 1),
+      generationLeadDays: Math.max(data.generationLeadDays || 0, 0),
+      serviceWindowDays: data.serviceWindowDays ?? null,
+      serviceTypeId: data.serviceTypeId || null,
+      serviceTemplateName: data.serviceTemplateName?.trim() || null,
+      defaultDurationMinutes: data.defaultDurationMinutes ?? null,
+      serviceInstructions: data.serviceInstructions?.trim() || null,
+      contractUrl,
+      contractUploadedAt: contractUrl ? data.contractUploadedAt ?? new Date() : null,
+      contractSignedAt: data.contractSignedAt ?? null,
+      notes: data.notes?.trim() || null,
+      createdByUserId: actor?.userId || data.createdByUserId || null,
+      updatedByUserId: actor?.userId || data.updatedByUserId || null,
+    };
+  }
+
+  private normalizeAgreementUpdate(data: Partial<InsertAgreement>, actor?: AuditActor): Partial<InsertAgreement> {
+    const payload: Partial<InsertAgreement> = {
+      ...data,
+      updatedByUserId: actor?.userId || data.updatedByUserId || null,
+    };
+
+    if (data.agreementName !== undefined) payload.agreementName = data.agreementName.trim();
+    if (data.agreementType !== undefined) payload.agreementType = data.agreementType?.trim() || null;
+    if (data.startDate !== undefined) payload.startDate = normalizeDateOnly(data.startDate as any) as any;
+    if (data.renewalDate !== undefined) payload.renewalDate = normalizeDateOnly(data.renewalDate as any) as any;
+    if (data.nextServiceDate !== undefined) payload.nextServiceDate = normalizeDateOnly(data.nextServiceDate as any) as any;
+    if (data.billingFrequency !== undefined) payload.billingFrequency = data.billingFrequency?.trim() || null;
+    if (data.recurrenceInterval !== undefined) payload.recurrenceInterval = Math.max(data.recurrenceInterval || 1, 1);
+    if (data.generationLeadDays !== undefined) payload.generationLeadDays = Math.max(data.generationLeadDays || 0, 0);
+    if (data.serviceTemplateName !== undefined) payload.serviceTemplateName = data.serviceTemplateName?.trim() || null;
+    if (data.serviceInstructions !== undefined) payload.serviceInstructions = data.serviceInstructions?.trim() || null;
+    if (data.notes !== undefined) payload.notes = data.notes?.trim() || null;
+    if (data.contractUrl !== undefined) {
+      const contractUrl = data.contractUrl?.trim() || null;
+      payload.contractUrl = contractUrl;
+      payload.contractUploadedAt = contractUrl ? data.contractUploadedAt ?? new Date() : null;
+    }
+
+    return payload;
+  }
+
+  private async generateAppointmentForAgreement(
+    tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+    agreement: Agreement,
+  ): Promise<Appointment | null> {
+    if (agreement.status !== "ACTIVE") {
+      return null;
+    }
+
+    const nextServiceDate = normalizeDateOnly(agreement.nextServiceDate);
+    if (!nextServiceDate) {
+      return null;
+    }
+
+    const generationThreshold = addDays(nextServiceDate, -Math.max(agreement.generationLeadDays || 0, 0));
+    const today = new Date().toISOString().slice(0, 10);
+    if (today < generationThreshold) {
+      return null;
+    }
+
+    const existingAppointments = await tx.select().from(appointments).where(eq(appointments.agreementId, agreement.id));
+    const existingForCycle = existingAppointments.find((appointment) => {
+      return appointment.generatedForDate === nextServiceDate && appointment.status !== "canceled";
+    });
+
+    if (existingForCycle) {
+      return null;
+    }
+
+    const { scheduledDate, scheduledEndDate } = buildAppointmentSchedule(nextServiceDate, agreement.defaultDurationMinutes);
+    const notes = [agreement.serviceInstructions, agreement.notes]
+      .filter((value): value is string => !!value?.trim())
+      .join("\n\n");
+
+    const [createdAppointment] = await tx.insert(appointments).values({
+      customerId: agreement.customerId,
+      locationId: agreement.locationId,
+      agreementId: agreement.id,
+      serviceTypeId: agreement.serviceTypeId,
+      source: "AGREEMENT_GENERATED",
+      generatedForDate: nextServiceDate as any,
+      scheduledDate,
+      scheduledEndDate,
+      status: "scheduled",
+      assignedTo: null,
+      notes: notes || null,
+    }).returning();
+
+    return createdAppointment;
+  }
+
+  private async advanceAgreementForCompletedAppointment(
+    tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+    appointment: Appointment,
+  ) {
+    if (!appointment.agreementId || appointment.source !== "AGREEMENT_GENERATED") {
+      return;
+    }
+
+    const [agreement] = await tx.select().from(agreements).where(eq(agreements.id, appointment.agreementId));
+    if (!agreement) {
+      return;
+    }
+
+    const cycleDate = normalizeDateOnly(appointment.generatedForDate) || normalizeDateOnly(agreement.nextServiceDate);
+    if (!cycleDate) {
+      return;
+    }
+
+    const nextServiceDate = advanceAgreementDate(cycleDate, agreement.recurrenceUnit, agreement.recurrenceInterval);
+
+    await tx.update(agreements).set({
+      nextServiceDate: nextServiceDate as any,
+      updatedAt: new Date(),
+    }).where(eq(agreements.id, agreement.id));
+
+    const [updatedAgreement] = await tx.select().from(agreements).where(eq(agreements.id, agreement.id));
+    if (updatedAgreement) {
+      await this.generateAppointmentForAgreement(tx, updatedAgreement);
+    }
   }
 
   async getCustomers(): Promise<Customer[]> {
@@ -716,6 +922,50 @@ export class DatabaseStorage implements IStorage {
     return st;
   }
 
+  async getAgreementsByLocation(locationId: string): Promise<Agreement[]> {
+    return db.select().from(agreements).where(eq(agreements.locationId, locationId));
+  }
+
+  async getAgreement(id: string): Promise<Agreement | undefined> {
+    const [agreement] = await db.select().from(agreements).where(eq(agreements.id, id));
+    return agreement;
+  }
+
+  async createAgreement(data: InsertAgreement, actor?: AuditActor): Promise<Agreement> {
+    const payload = this.normalizeAgreementInsert(data, actor);
+
+    const [agreement] = await db.insert(agreements).values(payload).returning();
+    await this.generateAgreementAppointmentsForLocation(agreement.locationId);
+    return agreement;
+  }
+
+  async updateAgreement(id: string, data: Partial<InsertAgreement>, actor?: AuditActor): Promise<Agreement | undefined> {
+    const payload = this.normalizeAgreementUpdate(data, actor);
+    const [agreement] = await db.update(agreements).set({ ...payload, updatedAt: new Date() }).where(eq(agreements.id, id)).returning();
+    if (!agreement) {
+      return undefined;
+    }
+
+    await this.generateAgreementAppointmentsForLocation(agreement.locationId);
+    return agreement;
+  }
+
+  async generateAgreementAppointmentsForLocation(locationId: string): Promise<GenerateAgreementAppointmentsResult> {
+    return db.transaction(async (tx) => {
+      const locationAgreements = await tx.select().from(agreements).where(eq(agreements.locationId, locationId));
+      const createdAppointments: Appointment[] = [];
+
+      for (const agreement of locationAgreements) {
+        const createdAppointment = await this.generateAppointmentForAgreement(tx, agreement);
+        if (createdAppointment) {
+          createdAppointments.push(createdAppointment);
+        }
+      }
+
+      return { createdAppointments };
+    });
+  }
+
   async getAppointments(): Promise<Appointment[]> {
     return db.select().from(appointments);
   }
@@ -730,13 +980,34 @@ export class DatabaseStorage implements IStorage {
   }
 
   async createAppointment(data: InsertAppointment): Promise<Appointment> {
-    const [appt] = await db.insert(appointments).values(data).returning();
+    const [appt] = await db.insert(appointments).values({
+      ...data,
+      source: data.source || "MANUAL",
+      agreementId: data.agreementId || null,
+      generatedForDate: data.generatedForDate || null,
+    }).returning();
     return appt;
   }
 
   async updateAppointment(id: string, data: Partial<InsertAppointment>): Promise<Appointment | undefined> {
-    const [appt] = await db.update(appointments).set(data).where(eq(appointments.id, id)).returning();
-    return appt;
+    return db.transaction(async (tx) => {
+      const [existingAppointment] = await tx.select().from(appointments).where(eq(appointments.id, id));
+      if (!existingAppointment) {
+        return undefined;
+      }
+
+      const [updatedAppointment] = await tx
+        .update(appointments)
+        .set(data)
+        .where(eq(appointments.id, id))
+        .returning();
+
+      if (existingAppointment.status !== "completed" && updatedAppointment.status === "completed") {
+        await this.advanceAgreementForCompletedAppointment(tx, updatedAppointment);
+      }
+
+      return updatedAppointment;
+    });
   }
 
   async getServiceRecords(): Promise<ServiceRecord[]> {
@@ -845,15 +1116,16 @@ export class DatabaseStorage implements IStorage {
     return comm;
   }
 
-  async getLocationScopedCounts(locationId: string): Promise<{ contacts: number; appointments: number; services: number; invoices: number; communications: number }> {
-    const [cts, appts, svcs, invs, comms] = await Promise.all([
+  async getLocationScopedCounts(locationId: string): Promise<{ contacts: number; appointments: number; agreements: number; services: number; invoices: number; communications: number }> {
+    const [cts, appts, agrs, svcs, invs, comms] = await Promise.all([
       db.select().from(contacts).where(eq(contacts.locationId, locationId)),
       db.select().from(appointments).where(eq(appointments.locationId, locationId)),
+      db.select().from(agreements).where(eq(agreements.locationId, locationId)),
       db.select().from(serviceRecords).where(eq(serviceRecords.locationId, locationId)),
       db.select().from(invoices).where(eq(invoices.locationId, locationId)),
       db.select().from(communications).where(eq(communications.locationId, locationId)),
     ]);
-    return { contacts: cts.length, appointments: appts.length, services: svcs.length, invoices: invs.length, communications: comms.length };
+    return { contacts: cts.length, appointments: appts.length, agreements: agrs.length, services: svcs.length, invoices: invs.length, communications: comms.length };
   }
 }
 
