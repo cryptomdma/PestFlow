@@ -120,13 +120,46 @@ export const appointments = pgTable("appointments", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   customerId: varchar("customer_id").notNull().references(() => customers.id),
   locationId: varchar("location_id").references(() => locations.id),
+  agreementId: varchar("agreement_id"),
   serviceTypeId: varchar("service_type_id").references(() => serviceTypes.id),
+  source: text("source").notNull().default("MANUAL"),
+  generatedForDate: date("generated_for_date"),
   scheduledDate: timestamp("scheduled_date").notNull(),
   scheduledEndDate: timestamp("scheduled_end_date"),
   status: text("status").notNull().default("scheduled"),
   assignedTo: text("assigned_to"),
   notes: text("notes"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const agreements = pgTable("agreements", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  customerId: varchar("customer_id").notNull().references(() => customers.id),
+  locationId: varchar("location_id").notNull().references(() => locations.id),
+  agreementName: text("agreement_name").notNull(),
+  status: text("status").notNull().default("ACTIVE"),
+  agreementType: text("agreement_type"),
+  startDate: date("start_date").notNull(),
+  renewalDate: date("renewal_date"),
+  nextServiceDate: date("next_service_date").notNull(),
+  billingFrequency: text("billing_frequency"),
+  price: decimal("price", { precision: 10, scale: 2 }),
+  recurrenceUnit: text("recurrence_unit").notNull().default("MONTH"),
+  recurrenceInterval: integer("recurrence_interval").notNull().default(1),
+  generationLeadDays: integer("generation_lead_days").notNull().default(14),
+  serviceWindowDays: integer("service_window_days"),
+  serviceTypeId: varchar("service_type_id").references(() => serviceTypes.id),
+  serviceTemplateName: text("service_template_name"),
+  defaultDurationMinutes: integer("default_duration_minutes"),
+  serviceInstructions: text("service_instructions"),
+  contractUrl: text("contract_url"),
+  contractUploadedAt: timestamp("contract_uploaded_at"),
+  contractSignedAt: timestamp("contract_signed_at"),
+  notes: text("notes"),
+  createdByUserId: varchar("created_by_user_id"),
+  updatedByUserId: varchar("updated_by_user_id"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
 export const serviceRecords = pgTable("service_records", {
@@ -207,6 +240,7 @@ export const insertCustomerNoteSchema = createInsertSchema(customerNotes).omit({
 export const insertNoteRevisionSchema = createInsertSchema(noteRevisions).omit({ id: true, createdAt: true });
 export const insertServiceTypeSchema = createInsertSchema(serviceTypes).omit({ id: true });
 export const insertAppointmentSchema = createInsertSchema(appointments).omit({ id: true, createdAt: true });
+export const insertAgreementSchema = createInsertSchema(agreements).omit({ id: true, createdAt: true, updatedAt: true });
 export const insertServiceRecordSchema = createInsertSchema(serviceRecords).omit({ id: true, createdAt: true });
 export const insertProductApplicationSchema = createInsertSchema(productApplications).omit({ id: true });
 export const insertInvoiceSchema = createInsertSchema(invoices).omit({ id: true, createdAt: true });
@@ -231,6 +265,8 @@ export type ServiceType = typeof serviceTypes.$inferSelect;
 export type InsertServiceType = z.infer<typeof insertServiceTypeSchema>;
 export type Appointment = typeof appointments.$inferSelect;
 export type InsertAppointment = z.infer<typeof insertAppointmentSchema>;
+export type Agreement = typeof agreements.$inferSelect;
+export type InsertAgreement = z.infer<typeof insertAgreementSchema>;
 export type ServiceRecord = typeof serviceRecords.$inferSelect;
 export type InsertServiceRecord = z.infer<typeof insertServiceRecordSchema>;
 export type ProductApplication = typeof productApplications.$inferSelect;

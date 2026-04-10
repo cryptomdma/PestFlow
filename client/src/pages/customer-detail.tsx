@@ -34,9 +34,9 @@ import {
   ArrowLeft, Mail, Phone, MapPin, Plus, Calendar, FileText, MessageSquare,
   ClipboardList, Building2, User, ChevronDown, ArrowUpRight, StickyNote,
   History,
-  CreditCard, KeyRound, Ruler, ChevronUp, Check,
+  CreditCard, KeyRound, Ruler, ChevronUp, Check, Link2,
 } from "lucide-react";
-import type { Customer, Contact, Location, Appointment, Invoice, ServiceRecord, Communication, CustomerNote, BillingProfile, NoteRevision } from "@shared/schema";
+import type { Customer, Contact, Location, Appointment, Invoice, ServiceRecord, Communication, CustomerNote, BillingProfile, NoteRevision, Agreement, ServiceType } from "@shared/schema";
 
 interface CustomerDetailCompatResponse {
   legacyCustomer: Customer;
@@ -84,6 +84,46 @@ function formatCurrency(value: number) {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   }).format(value);
+}
+
+function formatDateOnly(value: string | null | undefined) {
+  if (!value) {
+    return "Not set";
+  }
+
+  return new Date(`${value}T00:00:00`).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
+function formatAgreementRecurrence(agreement: Agreement) {
+  const interval = agreement.recurrenceInterval || 1;
+  const labelByUnit: Record<string, string> = {
+    MONTH: "Month",
+    QUARTER: "Quarter",
+    YEAR: "Year",
+    CUSTOM: "Day",
+  };
+  const unitLabel = labelByUnit[agreement.recurrenceUnit] || agreement.recurrenceUnit;
+  const suffix = interval === 1 ? unitLabel : `${unitLabel}s`;
+  return agreement.recurrenceUnit === "QUARTER" && interval === 1
+    ? "Quarterly"
+    : `Every ${interval} ${suffix}`;
+}
+
+function agreementStatusBadgeClass(status: string) {
+  switch (status) {
+    case "ACTIVE":
+      return "bg-primary/10 text-primary";
+    case "PAUSED":
+      return "bg-chart-3/10 text-chart-3";
+    case "CANCELLED":
+      return "bg-destructive/10 text-destructive";
+    default:
+      return "";
+  }
 }
 
 function isUsefulLocationNickname(name: string | null | undefined) {
@@ -1124,6 +1164,364 @@ function LocationNotesPanel({
   );
 }
 
+function AgreementForm({
+  customerId,
+  locationId,
+  agreement,
+  onClose,
+}: {
+  customerId: string;
+  locationId: string;
+  agreement?: Agreement | null;
+  onClose: () => void;
+}) {
+  const { toast } = useToast();
+  const isEditMode = !!agreement;
+  const { data: serviceTypes } = useQuery<ServiceType[]>({ queryKey: ["/api/service-types"] });
+  const [form, setForm] = useState({
+    agreementName: agreement?.agreementName ?? "",
+    status: agreement?.status ?? "ACTIVE",
+    agreementType: agreement?.agreementType ?? "",
+    startDate: agreement?.startDate ?? "",
+    renewalDate: agreement?.renewalDate ?? "",
+    nextServiceDate: agreement?.nextServiceDate ?? "",
+    billingFrequency: agreement?.billingFrequency ?? "",
+    price: agreement?.price ?? "",
+    recurrenceUnit: agreement?.recurrenceUnit ?? "MONTH",
+    recurrenceInterval: agreement?.recurrenceInterval ? String(agreement.recurrenceInterval) : "1",
+    generationLeadDays: agreement?.generationLeadDays ? String(agreement.generationLeadDays) : "14",
+    serviceWindowDays: agreement?.serviceWindowDays ? String(agreement.serviceWindowDays) : "",
+    serviceTypeId: agreement?.serviceTypeId ?? "",
+    serviceTemplateName: agreement?.serviceTemplateName ?? "",
+    defaultDurationMinutes: agreement?.defaultDurationMinutes ? String(agreement.defaultDurationMinutes) : "",
+    serviceInstructions: agreement?.serviceInstructions ?? "",
+    contractUrl: agreement?.contractUrl ?? "",
+    contractSignedAt: agreement?.contractSignedAt ? new Date(agreement.contractSignedAt).toISOString().slice(0, 10) : "",
+    notes: agreement?.notes ?? "",
+  });
+
+  useEffect(() => {
+    setForm({
+      agreementName: agreement?.agreementName ?? "",
+      status: agreement?.status ?? "ACTIVE",
+      agreementType: agreement?.agreementType ?? "",
+      startDate: agreement?.startDate ?? "",
+      renewalDate: agreement?.renewalDate ?? "",
+      nextServiceDate: agreement?.nextServiceDate ?? "",
+      billingFrequency: agreement?.billingFrequency ?? "",
+      price: agreement?.price ?? "",
+      recurrenceUnit: agreement?.recurrenceUnit ?? "MONTH",
+      recurrenceInterval: agreement?.recurrenceInterval ? String(agreement.recurrenceInterval) : "1",
+      generationLeadDays: agreement?.generationLeadDays ? String(agreement.generationLeadDays) : "14",
+      serviceWindowDays: agreement?.serviceWindowDays ? String(agreement.serviceWindowDays) : "",
+      serviceTypeId: agreement?.serviceTypeId ?? "",
+      serviceTemplateName: agreement?.serviceTemplateName ?? "",
+      defaultDurationMinutes: agreement?.defaultDurationMinutes ? String(agreement.defaultDurationMinutes) : "",
+      serviceInstructions: agreement?.serviceInstructions ?? "",
+      contractUrl: agreement?.contractUrl ?? "",
+      contractSignedAt: agreement?.contractSignedAt ? new Date(agreement.contractSignedAt).toISOString().slice(0, 10) : "",
+      notes: agreement?.notes ?? "",
+    });
+  }, [agreement]);
+
+  const mutation = useMutation({
+    mutationFn: async (data: typeof form) => {
+      const payload = {
+        customerId,
+        locationId,
+        agreementName: data.agreementName.trim(),
+        status: data.status,
+        agreementType: data.agreementType.trim() || null,
+        startDate: data.startDate,
+        renewalDate: data.renewalDate || null,
+        nextServiceDate: data.nextServiceDate,
+        billingFrequency: data.billingFrequency.trim() || null,
+        price: data.price.trim() || null,
+        recurrenceUnit: data.recurrenceUnit,
+        recurrenceInterval: parseInt(data.recurrenceInterval, 10),
+        generationLeadDays: parseInt(data.generationLeadDays, 10),
+        serviceWindowDays: data.serviceWindowDays.trim() ? parseInt(data.serviceWindowDays, 10) : null,
+        serviceTypeId: data.serviceTypeId || null,
+        serviceTemplateName: data.serviceTemplateName.trim() || null,
+        defaultDurationMinutes: data.defaultDurationMinutes.trim() ? parseInt(data.defaultDurationMinutes, 10) : null,
+        serviceInstructions: data.serviceInstructions.trim() || null,
+        contractUrl: data.contractUrl.trim() || null,
+        contractSignedAt: data.contractSignedAt ? new Date(`${data.contractSignedAt}T00:00:00.000Z`).toISOString() : null,
+        notes: data.notes.trim() || null,
+      };
+
+      const response = isEditMode
+        ? await apiRequest("PATCH", `/api/agreements/${agreement.id}`, payload)
+        : await apiRequest("POST", "/api/agreements", payload);
+
+      return response.json() as Promise<Agreement>;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/agreements/location", locationId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/appointments/by-location", locationId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/location-counts", locationId] });
+      toast({ title: isEditMode ? "Agreement updated" : "Agreement created" });
+      onClose();
+    },
+    onError: (error: Error) => {
+      toast({ title: isEditMode ? "Error updating agreement" : "Error creating agreement", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+
+    if (!form.agreementName.trim() || !form.startDate || !form.nextServiceDate || !form.serviceTypeId) {
+      toast({ title: "Agreement name, start date, next service date, and service type are required", variant: "destructive" });
+      return;
+    }
+
+    if (parseInt(form.recurrenceInterval, 10) < 1 || parseInt(form.generationLeadDays, 10) < 0) {
+      toast({ title: "Recurrence interval must be at least 1 and lead days cannot be negative", variant: "destructive" });
+      return;
+    }
+
+    mutation.mutate(form);
+  };
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-5 max-h-[75vh] overflow-y-auto pr-1">
+      <div className="space-y-1">
+        <h3 className="text-sm font-semibold">Agreement Details</h3>
+        <p className="text-sm text-muted-foreground">Define the recurring agreement that drives service generation for this location.</p>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="space-y-1.5"><Label>Agreement Name</Label><Input data-testid="input-agreement-name" value={form.agreementName} onChange={(e) => setForm((prev) => ({ ...prev, agreementName: e.target.value }))} /></div>
+        <div className="space-y-1.5">
+          <Label>Status</Label>
+          <Select value={form.status} onValueChange={(value) => setForm((prev) => ({ ...prev, status: value }))}>
+            <SelectTrigger data-testid="select-agreement-status"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="ACTIVE">Active</SelectItem>
+              <SelectItem value="PAUSED">Paused</SelectItem>
+              <SelectItem value="CANCELLED">Cancelled</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="space-y-1.5"><Label>Agreement Type</Label><Input value={form.agreementType} onChange={(e) => setForm((prev) => ({ ...prev, agreementType: e.target.value }))} placeholder="e.g., Quarterly pest prevention" /></div>
+        <div className="space-y-1.5"><Label>Billing Frequency</Label><Input value={form.billingFrequency} onChange={(e) => setForm((prev) => ({ ...prev, billingFrequency: e.target.value }))} placeholder="e.g., Monthly, Per service" /></div>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-3">
+        <div className="space-y-1.5"><Label>Start Date</Label><Input type="date" value={form.startDate} onChange={(e) => setForm((prev) => ({ ...prev, startDate: e.target.value }))} /></div>
+        <div className="space-y-1.5"><Label>Renewal Date</Label><Input type="date" value={form.renewalDate} onChange={(e) => setForm((prev) => ({ ...prev, renewalDate: e.target.value }))} /></div>
+        <div className="space-y-1.5"><Label>Next Service Date</Label><Input type="date" value={form.nextServiceDate} onChange={(e) => setForm((prev) => ({ ...prev, nextServiceDate: e.target.value }))} /></div>
+      </div>
+      <div className="space-y-1">
+        <h3 className="text-sm font-semibold">Recurrence / Scheduling Rules</h3>
+        <p className="text-sm text-muted-foreground">Tell PestFlow when recurring work should be created.</p>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="space-y-1.5">
+          <Label>Recurrence Unit</Label>
+          <Select value={form.recurrenceUnit} onValueChange={(value) => setForm((prev) => ({ ...prev, recurrenceUnit: value }))}>
+            <SelectTrigger data-testid="select-agreement-recurrence-unit"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="MONTH">Month</SelectItem>
+              <SelectItem value="QUARTER">Quarter</SelectItem>
+              <SelectItem value="YEAR">Year</SelectItem>
+              <SelectItem value="CUSTOM">Custom</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="space-y-1.5"><Label>Recurrence Interval</Label><Input type="number" min="1" value={form.recurrenceInterval} onChange={(e) => setForm((prev) => ({ ...prev, recurrenceInterval: e.target.value }))} /></div>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="space-y-1.5"><Label>Generation Lead Days</Label><Input type="number" min="0" value={form.generationLeadDays} onChange={(e) => setForm((prev) => ({ ...prev, generationLeadDays: e.target.value }))} /></div>
+        <div className="space-y-1.5"><Label>Service Window Days</Label><Input type="number" min="0" value={form.serviceWindowDays} onChange={(e) => setForm((prev) => ({ ...prev, serviceWindowDays: e.target.value }))} /></div>
+      </div>
+      <div className="space-y-1">
+        <h3 className="text-sm font-semibold">Service Template</h3>
+        <p className="text-sm text-muted-foreground">Choose the service type and default execution details for generated work.</p>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="space-y-1.5">
+          <Label>Service Type</Label>
+          <Select value={form.serviceTypeId} onValueChange={(value) => setForm((prev) => ({ ...prev, serviceTypeId: value }))}>
+            <SelectTrigger data-testid="select-agreement-service-type"><SelectValue placeholder="Select service type" /></SelectTrigger>
+            <SelectContent>
+              {serviceTypes?.map((serviceType) => (
+                <SelectItem key={serviceType.id} value={serviceType.id}>{serviceType.name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="space-y-1.5"><Label>Service Template Name</Label><Input value={form.serviceTemplateName} onChange={(e) => setForm((prev) => ({ ...prev, serviceTemplateName: e.target.value }))} placeholder="Optional override label" /></div>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="space-y-1.5"><Label>Default Duration Minutes</Label><Input type="number" min="0" value={form.defaultDurationMinutes} onChange={(e) => setForm((prev) => ({ ...prev, defaultDurationMinutes: e.target.value }))} /></div>
+        <div className="space-y-1.5"><Label>Price</Label><Input type="number" min="0" step="0.01" value={form.price} onChange={(e) => setForm((prev) => ({ ...prev, price: e.target.value }))} placeholder="Optional" /></div>
+      </div>
+      <div className="space-y-1.5"><Label>Service Instructions</Label><Textarea value={form.serviceInstructions} onChange={(e) => setForm((prev) => ({ ...prev, serviceInstructions: e.target.value }))} className="resize-none" /></div>
+      <div className="space-y-1">
+        <h3 className="text-sm font-semibold">Contract / Document</h3>
+        <p className="text-sm text-muted-foreground">This MVP stores a contract link because the app does not yet have a dedicated file upload pipeline.</p>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="space-y-1.5"><Label>Contract Link</Label><Input type="url" value={form.contractUrl} onChange={(e) => setForm((prev) => ({ ...prev, contractUrl: e.target.value }))} placeholder="https://..." /></div>
+        <div className="space-y-1.5"><Label>Contract Signed Date</Label><Input type="date" value={form.contractSignedAt} onChange={(e) => setForm((prev) => ({ ...prev, contractSignedAt: e.target.value }))} /></div>
+      </div>
+      <div className="space-y-1">
+        <h3 className="text-sm font-semibold">Notes</h3>
+      </div>
+      <div className="space-y-1.5"><Label>Internal Notes</Label><Textarea value={form.notes} onChange={(e) => setForm((prev) => ({ ...prev, notes: e.target.value }))} className="resize-none" /></div>
+      <div className="flex justify-end gap-2 pt-2">
+        <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
+        <Button type="submit" disabled={mutation.isPending} data-testid="button-save-agreement">
+          {mutation.isPending ? "Saving..." : isEditMode ? "Save Agreement" : "Create Agreement"}
+        </Button>
+      </div>
+    </form>
+  );
+}
+
+function AgreementsTab({
+  customerId,
+  locationId,
+  appointments,
+}: {
+  customerId: string;
+  locationId: string;
+  appointments?: Appointment[];
+}) {
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [editingAgreement, setEditingAgreement] = useState<Agreement | null>(null);
+  const { data: agreements } = useQuery<Agreement[]>({ queryKey: ["/api/agreements/location", locationId], enabled: !!locationId });
+  const { data: serviceTypes } = useQuery<ServiceType[]>({ queryKey: ["/api/service-types"] });
+
+  const agreementAppointments = useMemo(() => {
+    return (appointments ?? []).filter((appointment) => appointment.source === "AGREEMENT_GENERATED" && !!appointment.agreementId);
+  }, [appointments]);
+
+  const serviceTypeNameById = useMemo(() => {
+    return new Map((serviceTypes ?? []).map((serviceType) => [serviceType.id, serviceType.name]));
+  }, [serviceTypes]);
+
+  const appointmentsByAgreementId = useMemo(() => {
+    const grouped = new Map<string, Appointment[]>();
+    for (const appointment of agreementAppointments) {
+      if (!appointment.agreementId) {
+        continue;
+      }
+      const items = grouped.get(appointment.agreementId) ?? [];
+      items.push(appointment);
+      grouped.set(appointment.agreementId, items);
+    }
+    return grouped;
+  }, [agreementAppointments]);
+
+  const openCreate = () => {
+    setEditingAgreement(null);
+    setDialogOpen(true);
+  };
+
+  const openEdit = (agreement: Agreement) => {
+    setEditingAgreement(agreement);
+    setDialogOpen(true);
+  };
+
+  const closeDialog = (open: boolean) => {
+    setDialogOpen(open);
+    if (!open) {
+      setEditingAgreement(null);
+    }
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="flex justify-end">
+        <Dialog open={dialogOpen} onOpenChange={closeDialog}>
+          <DialogTrigger asChild>
+            <Button size="sm" onClick={openCreate} data-testid="button-add-agreement">
+              <Plus className="h-3 w-3 mr-1" /> Create Agreement
+            </Button>
+          </DialogTrigger>
+          <DialogContent className="max-w-2xl">
+            <DialogHeader>
+              <DialogTitle>{editingAgreement ? "Edit Agreement" : "Create Agreement"}</DialogTitle>
+            </DialogHeader>
+            <AgreementForm customerId={customerId} locationId={locationId} agreement={editingAgreement} onClose={() => closeDialog(false)} />
+          </DialogContent>
+        </Dialog>
+      </div>
+      {!agreements || agreements.length === 0 ? (
+        <Card>
+          <CardContent className="text-center py-10">
+            <ClipboardList className="h-10 w-10 mx-auto text-muted-foreground/30 mb-3" />
+            <h3 className="text-base font-semibold">No agreements yet</h3>
+            <p className="text-sm text-muted-foreground mt-1">Create an agreement to manage recurring service scheduling and contract details.</p>
+          </CardContent>
+        </Card>
+      ) : (
+        agreements
+          .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
+          .map((agreement) => {
+            const linkedAppointments = (appointmentsByAgreementId.get(agreement.id) ?? [])
+              .sort((a, b) => new Date(a.scheduledDate).getTime() - new Date(b.scheduledDate).getTime());
+            const nextGeneratedAppointment = linkedAppointments.find((appointment) => appointment.status !== "completed" && appointment.status !== "canceled");
+            const serviceTypeLabel = serviceTypeNameById.get(agreement.serviceTypeId || "") || agreement.serviceTemplateName || "Service not set";
+
+            return (
+              <Card key={agreement.id} data-testid={`card-agreement-${agreement.id}`}>
+                <CardContent className="p-4 space-y-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <p className="text-sm font-semibold">{agreement.agreementName}</p>
+                        <Badge variant="secondary" className={`text-xs ${agreementStatusBadgeClass(agreement.status)}`}>{agreement.status}</Badge>
+                        {agreement.contractUrl && <Badge variant="outline" className="text-xs"><Link2 className="h-3 w-3 mr-1" /> Contract</Badge>}
+                      </div>
+                      <p className="text-xs text-muted-foreground">{formatAgreementRecurrence(agreement)} • Next due {formatDateOnly(agreement.nextServiceDate)}</p>
+                    </div>
+                    <Button variant="outline" size="sm" onClick={() => openEdit(agreement)} data-testid={`button-edit-agreement-${agreement.id}`}>
+                      Edit
+                    </Button>
+                  </div>
+                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 text-sm">
+                    <div>
+                      <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Service Type</p>
+                      <p className="mt-1">{serviceTypeLabel}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Price</p>
+                      <p className="mt-1">{agreement.price ? formatCurrency(parseFloat(agreement.price)) : "Not set"}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Lead Time</p>
+                      <p className="mt-1">{agreement.generationLeadDays} day{agreement.generationLeadDays === 1 ? "" : "s"}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Generated Orders</p>
+                      <p className="mt-1">{linkedAppointments.length} total</p>
+                    </div>
+                  </div>
+                  {nextGeneratedAppointment ? (
+                    <div className="rounded-md border bg-muted/20 px-3 py-2 text-sm">
+                      <p className="font-medium">Upcoming generated service order</p>
+                      <p className="text-muted-foreground mt-1">
+                        {new Date(nextGeneratedAppointment.scheduledDate).toLocaleString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" })} • {nextGeneratedAppointment.status}
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="rounded-md border border-dashed px-3 py-2 text-sm text-muted-foreground">
+                      No upcoming generated service order yet.
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            );
+          })
+      )}
+    </div>
+  );
+}
+
 export default function CustomerDetail() {
   const { toast } = useToast();
   const [, params] = useRoute("/customers/:id");
@@ -1153,7 +1551,7 @@ export default function CustomerDetail() {
   const { data: accountContacts } = useQuery<Contact[]>({ queryKey: ["/api/contacts", customerId], enabled: !!customerId });
   const { data: locationBalances } = useQuery<LocationBalanceSummary[]>({ queryKey: ["/api/location-balances", customerId], enabled: !!customerId });
 
-  const { data: locationCounts } = useQuery<{ contacts: number; appointments: number; services: number; invoices: number; communications: number }>({
+  const { data: locationCounts } = useQuery<{ contacts: number; appointments: number; agreements: number; services: number; invoices: number; communications: number }>({
     queryKey: ["/api/location-counts", activeLocationId],
     enabled: !!activeLocationId,
   });
@@ -1521,7 +1919,7 @@ export default function CustomerDetail() {
         <Tabs defaultValue="contacts">
           <TabsList className="flex-wrap">
             <TabsTrigger value="contacts" data-testid="tab-contacts"><User className="h-3 w-3 mr-1" /> Contacts ({locationCounts?.contacts ?? contacts?.length ?? 0})</TabsTrigger>
-            <TabsTrigger value="schedule" data-testid="tab-schedule"><Calendar className="h-3 w-3 mr-1" /> Schedule ({locationCounts?.appointments ?? 0})</TabsTrigger>
+            <TabsTrigger value="agreements" data-testid="tab-agreements"><Calendar className="h-3 w-3 mr-1" /> Agreements ({locationCounts?.agreements ?? 0})</TabsTrigger>
             <TabsTrigger value="services" data-testid="tab-services"><ClipboardList className="h-3 w-3 mr-1" /> Services ({locationCounts?.services ?? 0})</TabsTrigger>
             <TabsTrigger value="invoices" data-testid="tab-invoices"><FileText className="h-3 w-3 mr-1" /> Invoices ({locationCounts?.invoices ?? 0})</TabsTrigger>
             <TabsTrigger value="comms" data-testid="tab-comms"><MessageSquare className="h-3 w-3 mr-1" /> Comms ({locationCounts?.communications ?? 0})</TabsTrigger>
@@ -1607,24 +2005,36 @@ export default function CustomerDetail() {
             ))}
           </TabsContent>
 
-          <TabsContent value="schedule" className="mt-4 space-y-3">
-            {!locationAppts || locationAppts.length === 0 ? (
-              <Card><CardContent className="text-center py-8"><Calendar className="h-8 w-8 mx-auto text-muted-foreground/30 mb-2" /><p className="text-sm text-muted-foreground">No appointments for this location</p></CardContent></Card>
-            ) : locationAppts.map((appt) => (
-              <Card key={appt.id} data-testid={`card-appt-${appt.id}`}>
-                <CardContent className="p-4 flex items-center justify-between gap-3">
-                  <div>
-                    <p className="text-sm font-medium">{new Date(appt.scheduledDate).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" })}</p>
-                    {appt.notes && <p className="text-xs text-muted-foreground mt-0.5">{appt.notes}</p>}
-                    {appt.assignedTo && <p className="text-xs text-muted-foreground">Tech: {appt.assignedTo}</p>}
-                  </div>
-                  <Badge variant="secondary" className={`shrink-0 ${appt.status === "completed" ? "bg-primary/10 text-primary" : appt.status === "scheduled" ? "bg-chart-2/10 text-chart-2" : ""}`}>{appt.status}</Badge>
-                </CardContent>
-              </Card>
-            ))}
+          <TabsContent value="agreements" className="mt-4 space-y-3">
+            <AgreementsTab customerId={customerId} locationId={activeLocationId} appointments={locationAppts} />
           </TabsContent>
 
           <TabsContent value="services" className="mt-4 space-y-3">
+            {locationAppts && locationAppts.some((appointment) => appointment.source === "AGREEMENT_GENERATED") && (
+              <Card data-testid="card-generated-service-orders">
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm font-medium">Agreement Service Orders</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  {locationAppts
+                    .filter((appointment) => appointment.source === "AGREEMENT_GENERATED")
+                    .sort((a, b) => new Date(a.scheduledDate).getTime() - new Date(b.scheduledDate).getTime())
+                    .map((appointment) => (
+                      <div key={appointment.id} className="flex items-center justify-between gap-3 rounded-md border bg-muted/20 px-3 py-2">
+                        <div>
+                          <p className="text-sm font-medium">
+                            {new Date(appointment.scheduledDate).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" })}
+                          </p>
+                          {appointment.notes && <p className="text-xs text-muted-foreground mt-1 line-clamp-2">{appointment.notes}</p>}
+                        </div>
+                        <Badge variant="secondary" className={`text-xs ${appointment.status === "completed" ? "bg-primary/10 text-primary" : appointment.status === "scheduled" ? "bg-chart-2/10 text-chart-2" : ""}`}>
+                          {appointment.status}
+                        </Badge>
+                      </div>
+                    ))}
+                </CardContent>
+              </Card>
+            )}
             {!locationServices || locationServices.length === 0 ? (
               <Card><CardContent className="text-center py-8"><ClipboardList className="h-8 w-8 mx-auto text-muted-foreground/30 mb-2" /><p className="text-sm text-muted-foreground">No service history for this location</p></CardContent></Card>
             ) : locationServices.map((svc) => (

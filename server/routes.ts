@@ -6,6 +6,7 @@ import {
   insertServiceTypeSchema, insertAppointmentSchema, insertServiceRecordSchema,
   insertProductApplicationSchema, insertInvoiceSchema, insertCommunicationSchema,
   insertBillingProfileSchema,
+  insertAgreementSchema,
 } from "@shared/schema";
 import { normalizePhone } from "@shared/phone";
 import { ZodError, z } from "zod";
@@ -89,6 +90,54 @@ export async function registerRoutes(
       isPrimary: true,
     })
     .partial();
+  const agreementStatusSchema = z.enum(["ACTIVE", "PAUSED", "CANCELLED"]);
+  const recurrenceUnitSchema = z.enum(["MONTH", "QUARTER", "YEAR", "CUSTOM"]);
+  const agreementSchema = insertAgreementSchema.extend({
+    status: agreementStatusSchema,
+    recurrenceUnit: recurrenceUnitSchema,
+  }).superRefine((value, ctx) => {
+    if (!value.locationId) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["locationId"], message: "locationId is required" });
+    }
+    if (!value.customerId) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["customerId"], message: "customerId is required" });
+    }
+    if (!value.agreementName?.trim()) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["agreementName"], message: "agreementName is required" });
+    }
+    if (!value.startDate) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["startDate"], message: "startDate is required" });
+    }
+    if (!value.nextServiceDate) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["nextServiceDate"], message: "nextServiceDate is required" });
+    }
+    if (!value.serviceTypeId) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["serviceTypeId"], message: "serviceTypeId is required" });
+    }
+    if ((value.recurrenceInterval || 0) < 1) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["recurrenceInterval"], message: "recurrenceInterval must be at least 1" });
+    }
+    if ((value.generationLeadDays || 0) < 0) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["generationLeadDays"], message: "generationLeadDays cannot be negative" });
+    }
+    if (value.renewalDate && value.startDate && value.renewalDate < value.startDate) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["renewalDate"], message: "renewalDate cannot be before startDate" });
+    }
+  });
+  const updateAgreementSchema = insertAgreementSchema.extend({
+    status: agreementStatusSchema.optional(),
+    recurrenceUnit: recurrenceUnitSchema.optional(),
+  }).partial().superRefine((value, ctx) => {
+    if (value.recurrenceInterval !== undefined && value.recurrenceInterval < 1) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["recurrenceInterval"], message: "recurrenceInterval must be at least 1" });
+    }
+    if (value.generationLeadDays !== undefined && value.generationLeadDays < 0) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["generationLeadDays"], message: "generationLeadDays cannot be negative" });
+    }
+    if (value.renewalDate && value.startDate && value.renewalDate < value.startDate) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["renewalDate"], message: "renewalDate cannot be before startDate" });
+    }
+  });
 
   // Transitional dev-only diagnostics for Phase 1 account/location hardening.
   // TODO(Phase2): gate behind auth/admin controls once user model exists.
@@ -563,12 +612,14 @@ export async function registerRoutes(
 
   // Location-scoped counts
   app.get("/api/location-counts/:locationId", async (req, res) => {
+    await storage.generateAgreementAppointmentsForLocation(req.params.locationId);
     const data = await storage.getLocationScopedCounts(req.params.locationId);
     res.json(data);
   });
 
   // Location-scoped data endpoints
   app.get("/api/appointments/by-location/:locationId", async (req, res) => {
+    await storage.generateAgreementAppointmentsForLocation(req.params.locationId);
     const data = await storage.getAppointmentsByLocation(req.params.locationId);
     res.json(data);
   });
@@ -604,6 +655,36 @@ export async function registerRoutes(
       const validated = insertServiceTypeSchema.parse(req.body);
       const data = await storage.createServiceType(validated);
       res.status(201).json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  // Agreements
+  app.get("/api/agreements/location/:locationId", async (req, res) => {
+    await storage.generateAgreementAppointmentsForLocation(req.params.locationId);
+    const data = await storage.getAgreementsByLocation(req.params.locationId);
+    res.json(data);
+  });
+
+  app.post("/api/agreements", async (req, res) => {
+    try {
+      const validated = agreementSchema.parse(req.body);
+      const data = await storage.createAgreement(validated, getAuditActor(req));
+      res.status(201).json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.patch("/api/agreements/:id", async (req, res) => {
+    try {
+      const validated = updateAgreementSchema.parse(req.body);
+      const data = await storage.updateAgreement(req.params.id, validated, getAuditActor(req));
+      if (!data) return res.status(404).json({ message: "Agreement not found" });
+      res.json(data);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
       res.status(400).json({ message: e.message });
