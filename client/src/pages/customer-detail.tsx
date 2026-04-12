@@ -178,6 +178,8 @@ function buildAgreementFormState(agreement?: Agreement | null, template?: Agreem
 
   return {
     agreementTemplateId: agreement?.agreementTemplateId ?? template?.id ?? "",
+    initialAppointmentId: agreement?.initialAppointmentId ?? "",
+    startDateSource: agreement?.startDateSource ?? "MANUAL",
     agreementName: agreement?.agreementName ?? template?.name ?? "",
     status: agreement?.status ?? "ACTIVE",
     agreementType: agreement?.agreementType ?? template?.defaultAgreementType ?? "",
@@ -1244,45 +1246,56 @@ function AgreementForm({
   customerId,
   locationId,
   agreement,
+  appointments,
   onClose,
 }: {
   customerId: string;
   locationId: string;
   agreement?: Agreement | null;
+  appointments?: Appointment[];
   onClose: () => void;
 }) {
   const { toast } = useToast();
-  const isEditMode = !!agreement;
+  const [, setLocation] = useLocation();
+  const [draftAgreement, setDraftAgreement] = useState<Agreement | null>(agreement ?? null);
+  const currentAgreement = draftAgreement ?? agreement ?? null;
+  const isEditMode = !!currentAgreement;
   const { data: serviceTypes } = useQuery<ServiceType[]>({ queryKey: ["/api/service-types"] });
   const { data: agreementTemplates } = useQuery<AgreementTemplate[]>({ queryKey: ["/api/agreement-templates"] });
   const activeTemplates = useMemo(() => {
     return (agreementTemplates ?? [])
-      .filter((template) => template.isActive || template.id === agreement?.agreementTemplateId)
+      .filter((template) => template.isActive || template.id === currentAgreement?.agreementTemplateId)
       .sort((a, b) => {
         const sortA = a.sortOrder ?? Number.MAX_SAFE_INTEGER;
         const sortB = b.sortOrder ?? Number.MAX_SAFE_INTEGER;
         if (sortA !== sortB) return sortA - sortB;
         return a.name.localeCompare(b.name);
       });
-  }, [agreement?.agreementTemplateId, agreementTemplates]);
+  }, [currentAgreement?.agreementTemplateId, agreementTemplates]);
   const templateById = useMemo(() => new Map(activeTemplates.map((template) => [template.id, template])), [activeTemplates]);
-  const [selectedTemplateId, setSelectedTemplateId] = useState(agreement?.agreementTemplateId ?? "");
+  const [selectedTemplateId, setSelectedTemplateId] = useState(currentAgreement?.agreementTemplateId ?? "");
   const [form, setForm] = useState(() => {
-    const initialTemplate = agreement?.agreementTemplateId ? templateById.get(agreement.agreementTemplateId) ?? null : null;
-    const initialState = buildAgreementFormState(agreement, initialTemplate);
-    return agreement ? initialState : { ...initialState, startDate: initialState.startDate || getTodayDateInputValue() };
+    const initialTemplate = currentAgreement?.agreementTemplateId ? templateById.get(currentAgreement.agreementTemplateId) ?? null : null;
+    const initialState = buildAgreementFormState(currentAgreement, initialTemplate);
+    return currentAgreement ? initialState : { ...initialState, startDate: initialState.startDate || getTodayDateInputValue() };
   });
   const [renewalDateOverridden, setRenewalDateOverridden] = useState(false);
   const [nextServiceDateOverridden, setNextServiceDateOverridden] = useState(false);
+  const [linkDialogOpen, setLinkDialogOpen] = useState(false);
 
   useEffect(() => {
+    if (draftAgreement && !agreement) {
+      return;
+    }
+
     const agreementTemplate = agreement?.agreementTemplateId ? templateById.get(agreement.agreementTemplateId) ?? null : null;
+    setDraftAgreement(agreement ?? null);
     setSelectedTemplateId(agreement?.agreementTemplateId ?? "");
     const nextState = buildAgreementFormState(agreement, agreementTemplate);
     setForm(agreement ? nextState : { ...nextState, startDate: nextState.startDate || getTodayDateInputValue() });
     setRenewalDateOverridden(false);
     setNextServiceDateOverridden(false);
-  }, [agreement, templateById]);
+  }, [agreement, templateById, draftAgreement]);
 
   const applyTemplate = (templateId: string) => {
     setSelectedTemplateId(templateId);
@@ -1307,6 +1320,7 @@ function AgreementForm({
   const syncDerivedDates = (
     startDate: string,
     options?: {
+      startDateSource?: string;
       termUnit?: string;
       termInterval?: string;
       recurrenceUnit?: string;
@@ -1318,10 +1332,12 @@ function AgreementForm({
       const nextTermInterval = options?.termInterval ?? prev.termInterval;
       const nextRecurrenceUnit = options?.recurrenceUnit ?? prev.recurrenceUnit;
       const nextRecurrenceInterval = options?.recurrenceInterval ?? prev.recurrenceInterval;
+      const nextStartDateSource = options?.startDateSource ?? prev.startDateSource;
 
       return {
         ...prev,
         startDate,
+        startDateSource: nextStartDateSource,
         termUnit: nextTermUnit,
         termInterval: nextTermInterval,
         recurrenceUnit: nextRecurrenceUnit,
@@ -1332,48 +1348,78 @@ function AgreementForm({
     });
   };
 
+  const buildAgreementPayload = (data: typeof form) => ({
+    customerId,
+    locationId,
+    agreementTemplateId: data.agreementTemplateId || null,
+    initialAppointmentId: data.initialAppointmentId || null,
+    startDateSource: data.startDateSource || "MANUAL",
+    agreementName: data.agreementName.trim(),
+    status: data.status,
+    agreementType: data.agreementType.trim() || null,
+    startDate: data.startDate,
+    termUnit: data.termUnit,
+    termInterval: parseInt(data.termInterval, 10),
+    renewalDate: data.renewalDate || null,
+    nextServiceDate: data.nextServiceDate,
+    billingFrequency: data.billingFrequency.trim() || null,
+    price: data.price.trim() || null,
+    recurrenceUnit: data.recurrenceUnit,
+    recurrenceInterval: parseInt(data.recurrenceInterval, 10),
+    generationLeadDays: parseInt(data.generationLeadDays, 10),
+    serviceWindowDays: data.serviceWindowDays.trim() ? parseInt(data.serviceWindowDays, 10) : null,
+    serviceTypeId: data.serviceTypeId || null,
+    serviceTemplateName: data.serviceTemplateName.trim() || null,
+    defaultDurationMinutes: data.defaultDurationMinutes.trim() ? parseInt(data.defaultDurationMinutes, 10) : null,
+    serviceInstructions: data.serviceInstructions.trim() || null,
+    contractUrl: data.contractUrl.trim() || null,
+    contractSignedAt: data.contractSignedAt ? new Date(`${data.contractSignedAt}T00:00:00.000Z`).toISOString() : null,
+    notes: data.notes.trim() || null,
+  });
+
+  const invalidateAgreementQueries = () => {
+    queryClient.invalidateQueries({ queryKey: ["/api/agreements/location", locationId] });
+    queryClient.invalidateQueries({ queryKey: ["/api/appointments/by-location", locationId] });
+    queryClient.invalidateQueries({ queryKey: ["/api/location-counts", locationId] });
+  };
+
+  const persistAgreement = async (data: typeof form) => {
+    const payload = buildAgreementPayload(data);
+    const response = currentAgreement
+      ? await apiRequest("PATCH", `/api/agreements/${currentAgreement.id}`, payload)
+      : await apiRequest("POST", "/api/agreements", {
+          agreementTemplateId: data.agreementTemplateId || null,
+          agreement: payload,
+        });
+
+    const savedAgreement = await response.json() as Agreement;
+    setDraftAgreement(savedAgreement);
+    invalidateAgreementQueries();
+    return savedAgreement;
+  };
+
+  const validateBeforeSave = () => {
+    if (!currentAgreement && !form.agreementTemplateId) {
+      toast({ title: "Select an agreement template before creating a location agreement", variant: "destructive" });
+      return false;
+    }
+
+    if (!form.agreementName.trim() || !form.startDate || !form.nextServiceDate || !form.serviceTypeId) {
+      toast({ title: "Agreement name, start date, next service date, and service type are required", variant: "destructive" });
+      return false;
+    }
+
+    if (parseInt(form.termInterval, 10) < 1 || parseInt(form.recurrenceInterval, 10) < 1 || parseInt(form.generationLeadDays, 10) < 0) {
+      toast({ title: "Term and recurrence intervals must be at least 1 and lead days cannot be negative", variant: "destructive" });
+      return false;
+    }
+
+    return true;
+  };
+
   const mutation = useMutation({
-    mutationFn: async (data: typeof form) => {
-      const payload = {
-        customerId,
-        locationId,
-        agreementTemplateId: data.agreementTemplateId || null,
-        agreementName: data.agreementName.trim(),
-        status: data.status,
-        agreementType: data.agreementType.trim() || null,
-        startDate: data.startDate,
-        termUnit: data.termUnit,
-        termInterval: parseInt(data.termInterval, 10),
-        renewalDate: data.renewalDate || null,
-        nextServiceDate: data.nextServiceDate,
-        billingFrequency: data.billingFrequency.trim() || null,
-        price: data.price.trim() || null,
-        recurrenceUnit: data.recurrenceUnit,
-        recurrenceInterval: parseInt(data.recurrenceInterval, 10),
-        generationLeadDays: parseInt(data.generationLeadDays, 10),
-        serviceWindowDays: data.serviceWindowDays.trim() ? parseInt(data.serviceWindowDays, 10) : null,
-        serviceTypeId: data.serviceTypeId || null,
-        serviceTemplateName: data.serviceTemplateName.trim() || null,
-        defaultDurationMinutes: data.defaultDurationMinutes.trim() ? parseInt(data.defaultDurationMinutes, 10) : null,
-        serviceInstructions: data.serviceInstructions.trim() || null,
-        contractUrl: data.contractUrl.trim() || null,
-        contractSignedAt: data.contractSignedAt ? new Date(`${data.contractSignedAt}T00:00:00.000Z`).toISOString() : null,
-        notes: data.notes.trim() || null,
-      };
-
-      const response = isEditMode
-        ? await apiRequest("PATCH", `/api/agreements/${agreement.id}`, payload)
-        : await apiRequest("POST", "/api/agreements", {
-            agreementTemplateId: data.agreementTemplateId || null,
-            agreement: payload,
-          });
-
-      return response.json() as Promise<Agreement>;
-    },
+    mutationFn: persistAgreement,
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/agreements/location", locationId] });
-      queryClient.invalidateQueries({ queryKey: ["/api/appointments/by-location", locationId] });
-      queryClient.invalidateQueries({ queryKey: ["/api/location-counts", locationId] });
       toast({ title: isEditMode ? "Agreement updated" : "Agreement created" });
       onClose();
     },
@@ -1385,22 +1431,87 @@ function AgreementForm({
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (!isEditMode && !form.agreementTemplateId) {
-      toast({ title: "Select an agreement template before creating a location agreement", variant: "destructive" });
-      return;
-    }
-
-    if (!form.agreementName.trim() || !form.startDate || !form.nextServiceDate || !form.serviceTypeId) {
-      toast({ title: "Agreement name, start date, next service date, and service type are required", variant: "destructive" });
-      return;
-    }
-
-    if (parseInt(form.termInterval, 10) < 1 || parseInt(form.recurrenceInterval, 10) < 1 || parseInt(form.generationLeadDays, 10) < 0) {
-      toast({ title: "Term and recurrence intervals must be at least 1 and lead days cannot be negative", variant: "destructive" });
+    if (!validateBeforeSave()) {
       return;
     }
 
     mutation.mutate(form);
+  };
+
+  const initialServiceCandidates = useMemo(() => {
+    return (appointments ?? [])
+      .filter((appointment) => appointment.source !== "AGREEMENT_GENERATED")
+      .filter((appointment) => !appointment.agreementId || appointment.agreementId === currentAgreement?.id)
+      .sort((a, b) => new Date(b.scheduledDate).getTime() - new Date(a.scheduledDate).getTime());
+  }, [appointments, currentAgreement?.id]);
+
+  const linkedInitialAppointment = useMemo(() => {
+    if (!form.initialAppointmentId) {
+      return null;
+    }
+    return (appointments ?? []).find((appointment) => appointment.id === form.initialAppointmentId) ?? null;
+  }, [appointments, form.initialAppointmentId]);
+
+  const handleScheduleInitialService = async () => {
+    if (!validateBeforeSave()) {
+      return;
+    }
+
+    try {
+      const savedAgreement = await persistAgreement(form);
+      const scheduledDate = `${(form.startDate || getTodayDateInputValue())}T14:00`;
+      const returnTo = `/customers/${customerId}?locationId=${locationId}`;
+      const params = new URLSearchParams({
+        agreementId: savedAgreement.id,
+        customerId,
+        locationId,
+        serviceTypeId: form.serviceTypeId,
+        agreementName: savedAgreement.agreementName,
+        scheduledDate,
+        returnTo,
+      });
+      setLocation(`/schedule?${params.toString()}`);
+    } catch (error) {
+      toast({ title: "Unable to prepare initial service scheduling", description: (error as Error).message, variant: "destructive" });
+    }
+  };
+
+  const handleOpenLinkExistingService = async () => {
+    if (initialServiceCandidates.length === 0) {
+      toast({ title: "No existing services available to link for this location", variant: "destructive" });
+      return;
+    }
+
+    if (!validateBeforeSave()) {
+      return;
+    }
+
+    try {
+      await persistAgreement(form);
+      setLinkDialogOpen(true);
+    } catch (error) {
+      toast({ title: "Unable to prepare agreement for initial service linking", description: (error as Error).message, variant: "destructive" });
+    }
+  };
+
+  const handleLinkExistingService = async (appointmentId: string) => {
+    if (!currentAgreement) {
+      return;
+    }
+
+    try {
+      const response = await apiRequest("POST", `/api/agreements/${currentAgreement.id}/link-initial-appointment`, { appointmentId });
+      const updatedAgreement = await response.json() as Agreement;
+      setDraftAgreement(updatedAgreement);
+      setForm(buildAgreementFormState(updatedAgreement, updatedAgreement.agreementTemplateId ? templateById.get(updatedAgreement.agreementTemplateId) ?? null : null));
+      setRenewalDateOverridden(false);
+      setNextServiceDateOverridden(false);
+      invalidateAgreementQueries();
+      setLinkDialogOpen(false);
+      toast({ title: "Initial service linked" });
+    } catch (error) {
+      toast({ title: "Unable to link initial service", description: (error as Error).message, variant: "destructive" });
+    }
   };
 
   return (
@@ -1460,7 +1571,29 @@ function AgreementForm({
         </div>
       </div>
       <div className="grid gap-3 sm:grid-cols-3">
-        <div className="space-y-1.5"><Label>Start Date</Label><Input type="date" value={form.startDate} onChange={(e) => syncDerivedDates(e.target.value)} /></div>
+        <div className="space-y-1.5">
+          <Label>Start Date</Label>
+          <Input
+            type="date"
+            value={form.startDate}
+            onChange={(e) => syncDerivedDates(e.target.value, { startDateSource: "MANUAL" })}
+          />
+          <div className="flex flex-wrap items-center gap-3 text-xs">
+            <Button type="button" variant="ghost" className="h-auto p-0 text-xs text-primary hover:bg-transparent hover:underline" onClick={handleScheduleInitialService}>
+              Schedule initial service
+            </Button>
+            <Button type="button" variant="ghost" className="h-auto p-0 text-xs text-primary hover:bg-transparent hover:underline" onClick={handleOpenLinkExistingService}>
+              Link existing service
+            </Button>
+          </div>
+          {linkedInitialAppointment && (
+            <p className="text-xs text-muted-foreground">
+              {form.startDateSource === "INITIAL_APPOINTMENT" ? "Start date derived from linked service." : "Linked initial service retained for reference."}{" "}
+              {new Date(linkedInitialAppointment.scheduledDate).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}{" "}
+              ({linkedInitialAppointment.status}).
+            </p>
+          )}
+        </div>
         <div className="space-y-1.5"><Label>Renewal Date</Label><Input type="date" value={form.renewalDate} onChange={(e) => { setRenewalDateOverridden(true); setForm((prev) => ({ ...prev, renewalDate: e.target.value })); }} /></div>
         <div className="space-y-1.5"><Label>Next Service Date</Label><Input type="date" value={form.nextServiceDate} onChange={(e) => { setNextServiceDateOverridden(true); setForm((prev) => ({ ...prev, nextServiceDate: e.target.value })); }} /></div>
       </div>
@@ -1476,6 +1609,46 @@ function AgreementForm({
         <h3 className="text-sm font-semibold">Internal Notes</h3>
       </div>
       <div className="space-y-1.5"><Label>Internal Notes</Label><Textarea value={form.notes} onChange={(e) => setForm((prev) => ({ ...prev, notes: e.target.value }))} className="resize-none" /></div>
+      <Dialog open={linkDialogOpen} onOpenChange={setLinkDialogOpen}>
+        <DialogContent className="max-w-xl">
+          <DialogHeader>
+            <DialogTitle>Link Existing Service</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 max-h-[60vh] overflow-y-auto pr-1">
+            {initialServiceCandidates.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No qualifying location services are available to link.</p>
+            ) : (
+              initialServiceCandidates.map((appointment) => (
+                <button
+                  key={appointment.id}
+                  type="button"
+                  onClick={() => handleLinkExistingService(appointment.id)}
+                  className="w-full rounded-md border px-3 py-3 text-left transition-colors hover:bg-muted/30"
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-medium">
+                        {new Date(appointment.scheduledDate).toLocaleDateString("en-US", {
+                          month: "short",
+                          day: "numeric",
+                          year: "numeric",
+                          hour: "numeric",
+                          minute: "2-digit",
+                        })}
+                      </p>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        {appointment.status} {appointment.assignedTo ? `| ${appointment.assignedTo}` : ""} {appointment.agreementId && appointment.agreementId !== currentAgreement?.id ? "| already linked to another agreement" : ""}
+                      </p>
+                      {appointment.notes && <p className="mt-1 text-xs text-muted-foreground line-clamp-2">{appointment.notes}</p>}
+                    </div>
+                    <span className="text-xs font-medium text-primary">Link</span>
+                  </div>
+                </button>
+              ))
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
       <Accordion type="single" collapsible className="rounded-md border px-3">
         <AccordionItem value="advanced-overrides" className="border-b-0">
           <AccordionTrigger className="py-3 text-sm font-medium">Advanced Overrides</AccordionTrigger>
@@ -1596,6 +1769,9 @@ function AgreementsTab({
     }
     return grouped;
   }, [agreementAppointments]);
+  const appointmentById = useMemo(() => {
+    return new Map((appointments ?? []).map((appointment) => [appointment.id, appointment]));
+  }, [appointments]);
 
   const openCreate = () => {
     setEditingAgreement(null);
@@ -1627,7 +1803,7 @@ function AgreementsTab({
             <DialogHeader>
               <DialogTitle>{editingAgreement ? "Edit Agreement" : "Create Agreement"}</DialogTitle>
             </DialogHeader>
-            <AgreementForm customerId={customerId} locationId={locationId} agreement={editingAgreement} onClose={() => closeDialog(false)} />
+            <AgreementForm customerId={customerId} locationId={locationId} agreement={editingAgreement} appointments={appointments} onClose={() => closeDialog(false)} />
           </DialogContent>
         </Dialog>
       </div>
@@ -1647,6 +1823,7 @@ function AgreementsTab({
               .sort((a, b) => new Date(a.scheduledDate).getTime() - new Date(b.scheduledDate).getTime());
             const nextGeneratedAppointment = linkedAppointments.find((appointment) => appointment.status !== "completed" && appointment.status !== "canceled");
             const serviceTypeLabel = serviceTypeNameById.get(agreement.serviceTypeId || "") || agreement.serviceTemplateName || "Service not set";
+            const initialAppointment = agreement.initialAppointmentId ? appointmentById.get(agreement.initialAppointmentId) ?? null : null;
 
             return (
               <Card key={agreement.id} data-testid={`card-agreement-${agreement.id}`}>
@@ -1662,6 +1839,11 @@ function AgreementsTab({
                         {agreement.contractUrl && <Badge variant="outline" className="text-xs"><Link2 className="h-3 w-3 mr-1" /> Contract</Badge>}
                       </div>
                       <p className="text-xs text-muted-foreground">{formatAgreementRecurrence(agreement)} • Next due {formatDateOnly(agreement.nextServiceDate)}</p>
+                      {initialAppointment && (
+                        <p className="text-xs text-muted-foreground">
+                          Initial service linked for {new Date(initialAppointment.scheduledDate).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}.
+                        </p>
+                      )}
                     </div>
                     <Button variant="outline" size="sm" onClick={() => openEdit(agreement)} data-testid={`button-edit-agreement-${agreement.id}`}>
                       Edit

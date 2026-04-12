@@ -25,6 +25,14 @@ function getAuditActor(req: Request) {
   };
 }
 
+function toIsoStringOrNull(value: Date | null | undefined) {
+  return value ? value.toISOString() : null;
+}
+
+function toDateOnlyStringOrNull(value: Date | null | undefined) {
+  return value ? value.toISOString().slice(0, 10) : null;
+}
+
 export async function registerRoutes(
   httpServer: Server,
   app: Express
@@ -91,6 +99,18 @@ export async function registerRoutes(
       isPrimary: true,
     })
     .partial();
+  const nullableDateSchema = z.preprocess((value) => {
+    if (value === "" || value === null || value === undefined) {
+      return null;
+    }
+    return value;
+  }, z.coerce.date().nullable());
+  const appointmentSchema = insertAppointmentSchema.extend({
+    generatedForDate: nullableDateSchema.optional(),
+    scheduledDate: z.coerce.date(),
+    scheduledEndDate: nullableDateSchema.optional(),
+  });
+  const updateAppointmentSchema = appointmentSchema.partial();
   const agreementStatusSchema = z.enum(["ACTIVE", "PAUSED", "CANCELLED"]);
   const recurrenceUnitSchema = z.enum(["MONTH", "QUARTER", "YEAR", "CUSTOM"]);
   const agreementTemplateSchema = insertAgreementTemplateSchema.extend({
@@ -193,6 +213,9 @@ export async function registerRoutes(
         ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["renewalDate"], message: "renewalDate cannot be before startDate" });
       }
     }),
+  });
+  const linkAgreementInitialAppointmentSchema = z.object({
+    appointmentId: z.string(),
   });
 
   // Transitional dev-only diagnostics for Phase 1 account/location hardening.
@@ -780,6 +803,22 @@ export async function registerRoutes(
     }
   });
 
+  app.post("/api/agreements/:id/link-initial-appointment", async (req, res) => {
+    try {
+      const validated = linkAgreementInitialAppointmentSchema.parse(req.body);
+      const data = await storage.linkAgreementInitialAppointment({
+        agreementId: req.params.id,
+        appointmentId: validated.appointmentId,
+        actor: getAuditActor(req),
+      });
+      if (!data) return res.status(404).json({ message: "Agreement not found" });
+      res.json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
   // Appointments
   app.get("/api/appointments", async (_req, res) => {
     const data = await storage.getAppointments();
@@ -788,8 +827,13 @@ export async function registerRoutes(
 
   app.post("/api/appointments", async (req, res) => {
     try {
-      const validated = insertAppointmentSchema.parse(req.body);
-      const data = await storage.createAppointment(validated);
+      const validated = appointmentSchema.parse(req.body);
+      const data = await storage.createAppointment({
+        ...validated,
+        scheduledDate: validated.scheduledDate,
+        scheduledEndDate: validated.scheduledEndDate,
+        generatedForDate: toDateOnlyStringOrNull(validated.generatedForDate),
+      });
       res.status(201).json(data);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
@@ -799,8 +843,13 @@ export async function registerRoutes(
 
   app.patch("/api/appointments/:id", async (req, res) => {
     try {
-      const validated = insertAppointmentSchema.partial().parse(req.body);
-      const data = await storage.updateAppointment(req.params.id, validated);
+      const validated = updateAppointmentSchema.parse(req.body);
+      const data = await storage.updateAppointment(req.params.id, {
+        ...validated,
+        scheduledDate: validated.scheduledDate,
+        scheduledEndDate: validated.scheduledEndDate,
+        generatedForDate: validated.generatedForDate === undefined ? undefined : toDateOnlyStringOrNull(validated.generatedForDate),
+      });
       if (!data) return res.status(404).json({ message: "Appointment not found" });
       res.json(data);
     } catch (e: any) {

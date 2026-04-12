@@ -1,5 +1,6 @@
-import { useState, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
+import { useLocation, useSearch } from "wouter";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -43,20 +44,39 @@ function getFirstDayOfMonth(year: number, month: number) {
   return new Date(year, month, 1).getDay();
 }
 
-function AppointmentForm({ onClose, initialDate }: { onClose: () => void; initialDate?: Date }) {
+function AppointmentForm({
+  onClose,
+  initialDate,
+  initialValues,
+}: {
+  onClose: () => void;
+  initialDate?: Date;
+  initialValues?: {
+    customerId?: string;
+    locationId?: string;
+    serviceTypeId?: string;
+    agreementId?: string;
+    source?: string;
+    notes?: string;
+    scheduledDate?: string;
+  };
+}) {
   const { toast } = useToast();
   const { data: customers } = useQuery<Customer[]>({ queryKey: ["/api/customers"] });
   const { data: serviceTypes } = useQuery<ServiceType[]>({ queryKey: ["/api/service-types"] });
   const { data: allLocations } = useQuery<Location[]>({ queryKey: ["/api/all-locations"] });
+  const [, setLocation] = useLocation();
 
   const [form, setForm] = useState({
-    customerId: "",
-    locationId: "",
-    serviceTypeId: "",
-    scheduledDate: initialDate ? initialDate.toISOString().slice(0, 16) : new Date().toISOString().slice(0, 16),
+    customerId: initialValues?.customerId ?? "",
+    locationId: initialValues?.locationId ?? "",
+    serviceTypeId: initialValues?.serviceTypeId ?? "",
+    agreementId: initialValues?.agreementId ?? "",
+    source: initialValues?.source ?? "MANUAL",
+    scheduledDate: initialValues?.scheduledDate ?? (initialDate ? initialDate.toISOString().slice(0, 16) : new Date().toISOString().slice(0, 16)),
     scheduledEndDate: "",
     assignedTo: "",
-    notes: "",
+    notes: initialValues?.notes ?? "",
     status: "scheduled",
   });
 
@@ -70,10 +90,20 @@ function AppointmentForm({ onClose, initialDate }: { onClose: () => void; initia
         scheduledEndDate: data.scheduledEndDate ? new Date(data.scheduledEndDate).toISOString() : null,
         locationId: data.locationId || null,
         serviceTypeId: data.serviceTypeId || null,
+        agreementId: data.agreementId || null,
+        source: data.source || "MANUAL",
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/appointments"] });
+      if (form.locationId) {
+        queryClient.invalidateQueries({ queryKey: ["/api/appointments/by-location", form.locationId] });
+        queryClient.invalidateQueries({ queryKey: ["/api/agreements/location", form.locationId] });
+      }
       toast({ title: "Appointment scheduled" });
+      const returnTo = new URLSearchParams(window.location.search).get("returnTo");
+      if (returnTo) {
+        setLocation(returnTo);
+      }
       onClose();
     },
     onError: (err: Error) => {
@@ -147,9 +177,38 @@ function AppointmentForm({ onClose, initialDate }: { onClose: () => void; initia
 }
 
 export default function Schedule() {
+  const search = useSearch();
+  const [, setLocation] = useLocation();
   const [currentDate, setCurrentDate] = useState(new Date());
   const [dialogOpen, setDialogOpen] = useState(false);
   const [selectedDate, setSelectedDate] = useState<Date | undefined>();
+  const params = useMemo(() => new URLSearchParams(search), [search]);
+  const prefilledInitialValues = useMemo(() => {
+    const customerId = params.get("customerId") || undefined;
+    const locationId = params.get("locationId") || undefined;
+    const serviceTypeId = params.get("serviceTypeId") || undefined;
+    const agreementId = params.get("agreementId") || undefined;
+    const scheduledDate = params.get("scheduledDate") || undefined;
+    const noteParts = ["Initial service for linked agreement"];
+    const agreementName = params.get("agreementName");
+    if (agreementName) {
+      noteParts.unshift(`Agreement: ${agreementName}`);
+    }
+
+    if (!agreementId || !customerId) {
+      return undefined;
+    }
+
+    return {
+      customerId,
+      locationId,
+      serviceTypeId,
+      agreementId,
+      source: "AGREEMENT_INITIAL",
+      scheduledDate,
+      notes: noteParts.join("\n"),
+    };
+  }, [params]);
 
   const year = currentDate.getFullYear();
   const month = currentDate.getMonth();
@@ -192,6 +251,19 @@ export default function Schedule() {
     setSelectedDate(date);
     setDialogOpen(true);
   };
+
+  useEffect(() => {
+    if (prefilledInitialValues?.scheduledDate) {
+      const parsedDate = new Date(prefilledInitialValues.scheduledDate);
+      if (!Number.isNaN(parsedDate.getTime())) {
+        setSelectedDate(parsedDate);
+        setCurrentDate(new Date(parsedDate.getFullYear(), parsedDate.getMonth(), 1));
+      }
+    }
+    if (prefilledInitialValues) {
+      setDialogOpen(true);
+    }
+  }, [prefilledInitialValues]);
 
   const calendarCells = [];
   for (let i = 0; i < firstDay; i++) {
@@ -251,7 +323,17 @@ export default function Schedule() {
           </DialogTrigger>
           <DialogContent className="max-w-lg">
             <DialogHeader><DialogTitle>Schedule Appointment</DialogTitle></DialogHeader>
-            <AppointmentForm onClose={() => setDialogOpen(false)} initialDate={selectedDate} />
+            <AppointmentForm
+              onClose={() => {
+                const returnTo = params.get("returnTo");
+                setDialogOpen(false);
+                if (!returnTo && prefilledInitialValues) {
+                  setLocation("/schedule");
+                }
+              }}
+              initialDate={selectedDate}
+              initialValues={prefilledInitialValues}
+            />
           </DialogContent>
         </Dialog>
       </div>

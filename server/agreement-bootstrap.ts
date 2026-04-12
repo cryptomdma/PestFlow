@@ -36,6 +36,8 @@ export async function bootstrapAgreements(): Promise<void> {
       customer_id varchar NOT NULL REFERENCES customers(id),
       location_id varchar NOT NULL REFERENCES locations(id),
       agreement_template_id varchar,
+      initial_appointment_id varchar REFERENCES appointments(id),
+      start_date_source text NOT NULL DEFAULT 'MANUAL',
       agreement_name text NOT NULL,
       status text NOT NULL DEFAULT 'ACTIVE',
       agreement_type text,
@@ -68,6 +70,8 @@ export async function bootstrapAgreements(): Promise<void> {
   await db.execute(sql`CREATE INDEX IF NOT EXISTS agreements_location_id_idx ON agreements (location_id)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS agreements_status_idx ON agreements (status)`);
   await db.execute(sql`ALTER TABLE agreements ADD COLUMN IF NOT EXISTS agreement_template_id varchar`);
+  await db.execute(sql`ALTER TABLE agreements ADD COLUMN IF NOT EXISTS initial_appointment_id varchar`);
+  await db.execute(sql`ALTER TABLE agreements ADD COLUMN IF NOT EXISTS start_date_source text NOT NULL DEFAULT 'MANUAL'`);
   await db.execute(sql`ALTER TABLE agreements ADD COLUMN IF NOT EXISTS term_unit text NOT NULL DEFAULT 'YEAR'`);
   await db.execute(sql`ALTER TABLE agreements ADD COLUMN IF NOT EXISTS term_interval integer NOT NULL DEFAULT 1`);
   await db.execute(sql`ALTER TABLE agreement_templates ADD COLUMN IF NOT EXISTS default_term_unit text NOT NULL DEFAULT 'YEAR'`);

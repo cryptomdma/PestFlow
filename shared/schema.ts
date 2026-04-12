@@ -137,6 +137,8 @@ export const agreements = pgTable("agreements", {
   customerId: varchar("customer_id").notNull().references(() => customers.id),
   locationId: varchar("location_id").notNull().references(() => locations.id),
   agreementTemplateId: varchar("agreement_template_id"),
+  initialAppointmentId: varchar("initial_appointment_id").references(() => appointments.id),
+  startDateSource: text("start_date_source").notNull().default("MANUAL"),
   agreementName: text("agreement_name").notNull(),
   status: text("status").notNull().default("ACTIVE"),
   agreementType: text("agreement_type"),
