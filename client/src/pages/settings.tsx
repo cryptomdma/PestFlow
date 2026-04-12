@@ -41,6 +41,18 @@ function formatTemplateRecurrence(template: AgreementTemplate) {
   return `Every ${interval} ${interval === 1 ? unitLabel : `${unitLabel}s`}`;
 }
 
+function formatTemplateTerm(template: AgreementTemplate) {
+  const interval = template.defaultTermInterval || 1;
+  const unitMap: Record<string, string> = {
+    MONTH: "month",
+    QUARTER: "quarter",
+    YEAR: "year",
+    CUSTOM: "day",
+  };
+  const unitLabel = unitMap[template.defaultTermUnit] || template.defaultTermUnit.toLowerCase();
+  return `Renews every ${interval} ${interval === 1 ? unitLabel : `${unitLabel}s`}`;
+}
+
 function ServiceTypeForm({ onClose }: { onClose: () => void }) {
   const { toast } = useToast();
   const [form, setForm] = useState({
@@ -101,6 +113,8 @@ function AgreementTemplateForm({
     isActive: template?.isActive ?? true,
     defaultAgreementType: template?.defaultAgreementType ?? "",
     defaultBillingFrequency: template?.defaultBillingFrequency ?? "",
+    defaultTermUnit: template?.defaultTermUnit ?? "YEAR",
+    defaultTermInterval: template?.defaultTermInterval ? String(template.defaultTermInterval) : "1",
     defaultRecurrenceUnit: template?.defaultRecurrenceUnit ?? "MONTH",
     defaultRecurrenceInterval: template?.defaultRecurrenceInterval ? String(template.defaultRecurrenceInterval) : "1",
     defaultGenerationLeadDays: template?.defaultGenerationLeadDays ? String(template.defaultGenerationLeadDays) : "14",
@@ -122,6 +136,8 @@ function AgreementTemplateForm({
         isActive: data.isActive,
         defaultAgreementType: data.defaultAgreementType.trim() || null,
         defaultBillingFrequency: data.defaultBillingFrequency.trim() || null,
+        defaultTermUnit: data.defaultTermUnit,
+        defaultTermInterval: parseInt(data.defaultTermInterval, 10),
         defaultRecurrenceUnit: data.defaultRecurrenceUnit,
         defaultRecurrenceInterval: parseInt(data.defaultRecurrenceInterval, 10),
         defaultGenerationLeadDays: parseInt(data.defaultGenerationLeadDays, 10),
@@ -174,6 +190,21 @@ function AgreementTemplateForm({
       <div className="grid gap-3 sm:grid-cols-2">
         <div className="space-y-1.5"><Label>Agreement Type</Label><Input value={form.defaultAgreementType} onChange={(e) => setForm((prev) => ({ ...prev, defaultAgreementType: e.target.value }))} /></div>
         <div className="space-y-1.5"><Label>Billing Frequency</Label><Input value={form.defaultBillingFrequency} onChange={(e) => setForm((prev) => ({ ...prev, defaultBillingFrequency: e.target.value }))} /></div>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="space-y-1.5">
+          <Label>Agreement Term Unit</Label>
+          <Select value={form.defaultTermUnit} onValueChange={(value) => setForm((prev) => ({ ...prev, defaultTermUnit: value }))}>
+            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="MONTH">Month</SelectItem>
+              <SelectItem value="QUARTER">Quarter</SelectItem>
+              <SelectItem value="YEAR">Year</SelectItem>
+              <SelectItem value="CUSTOM">Custom</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="space-y-1.5"><Label>Agreement Term Interval</Label><Input type="number" min="1" value={form.defaultTermInterval} onChange={(e) => setForm((prev) => ({ ...prev, defaultTermInterval: e.target.value }))} /></div>
       </div>
       <div className="space-y-1">
         <h3 className="text-sm font-semibold">Recurrence / Scheduling Defaults</h3>
@@ -346,7 +377,7 @@ export default function Settings() {
                           {template.internalCode && <Badge variant="outline" className="text-xs">{template.internalCode}</Badge>}
                         </div>
                         <p className="text-xs text-muted-foreground mt-0.5">
-                          {formatTemplateRecurrence(template)} • {template.defaultBillingFrequency || "No billing frequency"} • {serviceType?.name || "No service type"}
+                          {formatTemplateRecurrence(template)} | {formatTemplateTerm(template)} | {template.defaultBillingFrequency || "No billing frequency"} | {serviceType?.name || "No service type"}
                         </p>
                         {template.description && <p className="text-xs text-muted-foreground mt-1">{template.description}</p>}
                       </div>

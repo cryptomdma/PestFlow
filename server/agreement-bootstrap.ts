@@ -10,6 +10,8 @@ export async function bootstrapAgreements(): Promise<void> {
       is_active boolean NOT NULL DEFAULT true,
       default_agreement_type text,
       default_billing_frequency text,
+      default_term_unit text NOT NULL DEFAULT 'YEAR',
+      default_term_interval integer NOT NULL DEFAULT 1,
       default_recurrence_unit text NOT NULL DEFAULT 'MONTH',
       default_recurrence_interval integer NOT NULL DEFAULT 1,
       default_generation_lead_days integer NOT NULL DEFAULT 14,
@@ -38,6 +40,8 @@ export async function bootstrapAgreements(): Promise<void> {
       status text NOT NULL DEFAULT 'ACTIVE',
       agreement_type text,
       start_date date NOT NULL,
+      term_unit text NOT NULL DEFAULT 'YEAR',
+      term_interval integer NOT NULL DEFAULT 1,
       renewal_date date,
       next_service_date date NOT NULL,
       billing_frequency text,
@@ -64,6 +68,10 @@ export async function bootstrapAgreements(): Promise<void> {
   await db.execute(sql`CREATE INDEX IF NOT EXISTS agreements_location_id_idx ON agreements (location_id)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS agreements_status_idx ON agreements (status)`);
   await db.execute(sql`ALTER TABLE agreements ADD COLUMN IF NOT EXISTS agreement_template_id varchar`);
+  await db.execute(sql`ALTER TABLE agreements ADD COLUMN IF NOT EXISTS term_unit text NOT NULL DEFAULT 'YEAR'`);
+  await db.execute(sql`ALTER TABLE agreements ADD COLUMN IF NOT EXISTS term_interval integer NOT NULL DEFAULT 1`);
+  await db.execute(sql`ALTER TABLE agreement_templates ADD COLUMN IF NOT EXISTS default_term_unit text NOT NULL DEFAULT 'YEAR'`);
+  await db.execute(sql`ALTER TABLE agreement_templates ADD COLUMN IF NOT EXISTS default_term_interval integer NOT NULL DEFAULT 1`);
 
   await db.execute(sql`ALTER TABLE appointments ADD COLUMN IF NOT EXISTS agreement_id varchar`);
   await db.execute(sql`ALTER TABLE appointments ADD COLUMN IF NOT EXISTS source text DEFAULT 'MANUAL'`);

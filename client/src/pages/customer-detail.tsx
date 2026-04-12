@@ -114,6 +114,48 @@ function formatAgreementRecurrence(agreement: Agreement) {
     : `Every ${interval} ${suffix}`;
 }
 
+function formatDateInputValue(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function getTodayDateInputValue() {
+  return formatDateInputValue(new Date());
+}
+
+function addAgreementInterval(dateOnly: string, unit: string | null | undefined, interval: number | null | undefined) {
+  if (!dateOnly) {
+    return "";
+  }
+
+  const [year, month, day] = dateOnly.split("-").map(Number);
+  if (!year || !month || !day) {
+    return "";
+  }
+
+  const nextDate = new Date(year, month - 1, day);
+  const step = Math.max(interval || 1, 1);
+
+  switch (unit) {
+    case "MONTH":
+      nextDate.setMonth(nextDate.getMonth() + step);
+      break;
+    case "QUARTER":
+      nextDate.setMonth(nextDate.getMonth() + step * 3);
+      break;
+    case "YEAR":
+      nextDate.setFullYear(nextDate.getFullYear() + step);
+      break;
+    default:
+      nextDate.setDate(nextDate.getDate() + step);
+      break;
+  }
+
+  return formatDateInputValue(nextDate);
+}
+
 function agreementStatusBadgeClass(status: string) {
   switch (status) {
     case "ACTIVE":
@@ -128,18 +170,26 @@ function agreementStatusBadgeClass(status: string) {
 }
 
 function buildAgreementFormState(agreement?: Agreement | null, template?: AgreementTemplate | null) {
+  const startDate = agreement?.startDate ?? "";
+  const termUnit = agreement?.termUnit ?? template?.defaultTermUnit ?? "YEAR";
+  const termInterval = agreement?.termInterval ? String(agreement.termInterval) : template?.defaultTermInterval ? String(template.defaultTermInterval) : "1";
+  const recurrenceUnit = agreement?.recurrenceUnit ?? template?.defaultRecurrenceUnit ?? "MONTH";
+  const recurrenceInterval = agreement?.recurrenceInterval ? String(agreement.recurrenceInterval) : template?.defaultRecurrenceInterval ? String(template.defaultRecurrenceInterval) : "1";
+
   return {
     agreementTemplateId: agreement?.agreementTemplateId ?? template?.id ?? "",
     agreementName: agreement?.agreementName ?? template?.name ?? "",
     status: agreement?.status ?? "ACTIVE",
     agreementType: agreement?.agreementType ?? template?.defaultAgreementType ?? "",
-    startDate: agreement?.startDate ?? "",
-    renewalDate: agreement?.renewalDate ?? "",
-    nextServiceDate: agreement?.nextServiceDate ?? "",
+    startDate,
+    termUnit,
+    termInterval,
+    renewalDate: agreement?.renewalDate ?? (startDate ? addAgreementInterval(startDate, termUnit, parseInt(termInterval, 10)) : ""),
+    nextServiceDate: agreement?.nextServiceDate ?? (startDate ? addAgreementInterval(startDate, recurrenceUnit, parseInt(recurrenceInterval, 10)) : ""),
     billingFrequency: agreement?.billingFrequency ?? template?.defaultBillingFrequency ?? "",
     price: agreement?.price ?? template?.defaultPrice ?? "",
-    recurrenceUnit: agreement?.recurrenceUnit ?? template?.defaultRecurrenceUnit ?? "MONTH",
-    recurrenceInterval: agreement?.recurrenceInterval ? String(agreement.recurrenceInterval) : template?.defaultRecurrenceInterval ? String(template.defaultRecurrenceInterval) : "1",
+    recurrenceUnit,
+    recurrenceInterval,
     generationLeadDays: agreement?.generationLeadDays ? String(agreement.generationLeadDays) : template?.defaultGenerationLeadDays ? String(template.defaultGenerationLeadDays) : "14",
     serviceWindowDays: agreement?.serviceWindowDays ? String(agreement.serviceWindowDays) : template?.defaultServiceWindowDays ? String(template.defaultServiceWindowDays) : "",
     serviceTypeId: agreement?.serviceTypeId ?? template?.defaultServiceTypeId ?? "",
@@ -1217,12 +1267,21 @@ function AgreementForm({
   }, [agreement?.agreementTemplateId, agreementTemplates]);
   const templateById = useMemo(() => new Map(activeTemplates.map((template) => [template.id, template])), [activeTemplates]);
   const [selectedTemplateId, setSelectedTemplateId] = useState(agreement?.agreementTemplateId ?? "");
-  const [form, setForm] = useState(() => buildAgreementFormState(agreement, agreement?.agreementTemplateId ? templateById.get(agreement.agreementTemplateId) ?? null : null));
+  const [form, setForm] = useState(() => {
+    const initialTemplate = agreement?.agreementTemplateId ? templateById.get(agreement.agreementTemplateId) ?? null : null;
+    const initialState = buildAgreementFormState(agreement, initialTemplate);
+    return agreement ? initialState : { ...initialState, startDate: initialState.startDate || getTodayDateInputValue() };
+  });
+  const [renewalDateOverridden, setRenewalDateOverridden] = useState(false);
+  const [nextServiceDateOverridden, setNextServiceDateOverridden] = useState(false);
 
   useEffect(() => {
     const agreementTemplate = agreement?.agreementTemplateId ? templateById.get(agreement.agreementTemplateId) ?? null : null;
     setSelectedTemplateId(agreement?.agreementTemplateId ?? "");
-    setForm(buildAgreementFormState(agreement, agreementTemplate));
+    const nextState = buildAgreementFormState(agreement, agreementTemplate);
+    setForm(agreement ? nextState : { ...nextState, startDate: nextState.startDate || getTodayDateInputValue() });
+    setRenewalDateOverridden(false);
+    setNextServiceDateOverridden(false);
   }, [agreement, templateById]);
 
   const applyTemplate = (templateId: string) => {
@@ -1230,15 +1289,45 @@ function AgreementForm({
     const template = templateById.get(templateId) ?? null;
     setForm((prev) => {
       const next = buildAgreementFormState(null, template);
+      const startDate = prev.startDate || getTodayDateInputValue();
       return {
         ...next,
+        agreementTemplateId: templateId,
         status: prev.status || next.status,
-        startDate: prev.startDate || next.startDate,
-        renewalDate: prev.renewalDate || next.renewalDate,
-        nextServiceDate: prev.nextServiceDate || next.nextServiceDate,
+        startDate,
+        renewalDate: renewalDateOverridden ? prev.renewalDate : addAgreementInterval(startDate, next.termUnit, parseInt(next.termInterval, 10)),
+        nextServiceDate: nextServiceDateOverridden ? prev.nextServiceDate : addAgreementInterval(startDate, next.recurrenceUnit, parseInt(next.recurrenceInterval, 10)),
         contractUrl: prev.contractUrl,
         contractSignedAt: prev.contractSignedAt,
         notes: prev.notes,
+      };
+    });
+  };
+
+  const syncDerivedDates = (
+    startDate: string,
+    options?: {
+      termUnit?: string;
+      termInterval?: string;
+      recurrenceUnit?: string;
+      recurrenceInterval?: string;
+    },
+  ) => {
+    setForm((prev) => {
+      const nextTermUnit = options?.termUnit ?? prev.termUnit;
+      const nextTermInterval = options?.termInterval ?? prev.termInterval;
+      const nextRecurrenceUnit = options?.recurrenceUnit ?? prev.recurrenceUnit;
+      const nextRecurrenceInterval = options?.recurrenceInterval ?? prev.recurrenceInterval;
+
+      return {
+        ...prev,
+        startDate,
+        termUnit: nextTermUnit,
+        termInterval: nextTermInterval,
+        recurrenceUnit: nextRecurrenceUnit,
+        recurrenceInterval: nextRecurrenceInterval,
+        renewalDate: renewalDateOverridden ? prev.renewalDate : addAgreementInterval(startDate, nextTermUnit, parseInt(nextTermInterval, 10)),
+        nextServiceDate: nextServiceDateOverridden ? prev.nextServiceDate : addAgreementInterval(startDate, nextRecurrenceUnit, parseInt(nextRecurrenceInterval, 10)),
       };
     });
   };
@@ -1253,6 +1342,8 @@ function AgreementForm({
         status: data.status,
         agreementType: data.agreementType.trim() || null,
         startDate: data.startDate,
+        termUnit: data.termUnit,
+        termInterval: parseInt(data.termInterval, 10),
         renewalDate: data.renewalDate || null,
         nextServiceDate: data.nextServiceDate,
         billingFrequency: data.billingFrequency.trim() || null,
@@ -1304,8 +1395,8 @@ function AgreementForm({
       return;
     }
 
-    if (parseInt(form.recurrenceInterval, 10) < 1 || parseInt(form.generationLeadDays, 10) < 0) {
-      toast({ title: "Recurrence interval must be at least 1 and lead days cannot be negative", variant: "destructive" });
+    if (parseInt(form.termInterval, 10) < 1 || parseInt(form.recurrenceInterval, 10) < 1 || parseInt(form.generationLeadDays, 10) < 0) {
+      toast({ title: "Term and recurrence intervals must be at least 1 and lead days cannot be negative", variant: "destructive" });
       return;
     }
 
@@ -1368,38 +1459,11 @@ function AgreementForm({
           </Select>
         </div>
       </div>
-      <div className="grid gap-3 sm:grid-cols-2">
-        <div className="space-y-1.5"><Label>Agreement Type</Label><Input value={form.agreementType} onChange={(e) => setForm((prev) => ({ ...prev, agreementType: e.target.value }))} placeholder="e.g., Quarterly pest prevention" /></div>
-        <div className="space-y-1.5"><Label>Billing Frequency</Label><Input value={form.billingFrequency} onChange={(e) => setForm((prev) => ({ ...prev, billingFrequency: e.target.value }))} placeholder="e.g., Monthly, Per service" /></div>
-      </div>
       <div className="grid gap-3 sm:grid-cols-3">
-        <div className="space-y-1.5"><Label>Start Date</Label><Input type="date" value={form.startDate} onChange={(e) => setForm((prev) => ({ ...prev, startDate: e.target.value }))} /></div>
-        <div className="space-y-1.5"><Label>Renewal Date</Label><Input type="date" value={form.renewalDate} onChange={(e) => setForm((prev) => ({ ...prev, renewalDate: e.target.value }))} /></div>
-        <div className="space-y-1.5"><Label>Next Service Date</Label><Input type="date" value={form.nextServiceDate} onChange={(e) => setForm((prev) => ({ ...prev, nextServiceDate: e.target.value }))} /></div>
+        <div className="space-y-1.5"><Label>Start Date</Label><Input type="date" value={form.startDate} onChange={(e) => syncDerivedDates(e.target.value)} /></div>
+        <div className="space-y-1.5"><Label>Renewal Date</Label><Input type="date" value={form.renewalDate} onChange={(e) => { setRenewalDateOverridden(true); setForm((prev) => ({ ...prev, renewalDate: e.target.value })); }} /></div>
+        <div className="space-y-1.5"><Label>Next Service Date</Label><Input type="date" value={form.nextServiceDate} onChange={(e) => { setNextServiceDateOverridden(true); setForm((prev) => ({ ...prev, nextServiceDate: e.target.value })); }} /></div>
       </div>
-      <div className="space-y-1">
-        <h3 className="text-sm font-semibold">Service Details</h3>
-        <p className="text-sm text-muted-foreground">Review the service defaults copied from the template and override them only for this location if needed.</p>
-      </div>
-      <div className="grid gap-3 sm:grid-cols-2">
-        <div className="space-y-1.5">
-          <Label>Service Type</Label>
-          <Select value={form.serviceTypeId} onValueChange={(value) => setForm((prev) => ({ ...prev, serviceTypeId: value }))}>
-            <SelectTrigger data-testid="select-agreement-service-type"><SelectValue placeholder="Select service type" /></SelectTrigger>
-            <SelectContent>
-              {serviceTypes?.map((serviceType) => (
-                <SelectItem key={serviceType.id} value={serviceType.id}>{serviceType.name}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="space-y-1.5"><Label>Service Template Name</Label><Input value={form.serviceTemplateName} onChange={(e) => setForm((prev) => ({ ...prev, serviceTemplateName: e.target.value }))} placeholder="Optional override label" /></div>
-      </div>
-      <div className="grid gap-3 sm:grid-cols-2">
-        <div className="space-y-1.5"><Label>Default Duration Minutes</Label><Input type="number" min="0" value={form.defaultDurationMinutes} onChange={(e) => setForm((prev) => ({ ...prev, defaultDurationMinutes: e.target.value }))} /></div>
-        <div className="space-y-1.5"><Label>Price</Label><Input type="number" min="0" step="0.01" value={form.price} onChange={(e) => setForm((prev) => ({ ...prev, price: e.target.value }))} placeholder="Optional" /></div>
-      </div>
-      <div className="space-y-1.5"><Label>Service Instructions</Label><Textarea value={form.serviceInstructions} onChange={(e) => setForm((prev) => ({ ...prev, serviceInstructions: e.target.value }))} className="resize-none" /></div>
       <div className="space-y-1">
         <h3 className="text-sm font-semibold">Contract / Document</h3>
         <p className="text-sm text-muted-foreground">This MVP stores a contract link because the app does not yet have a dedicated file upload pipeline.</p>
@@ -1422,8 +1486,23 @@ function AgreementForm({
             </div>
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="space-y-1.5">
+                <Label>Agreement Term Unit</Label>
+                <Select value={form.termUnit} onValueChange={(value) => syncDerivedDates(form.startDate, { termUnit: value })}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="MONTH">Month</SelectItem>
+                    <SelectItem value="QUARTER">Quarter</SelectItem>
+                    <SelectItem value="YEAR">Year</SelectItem>
+                    <SelectItem value="CUSTOM">Custom</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1.5"><Label>Agreement Term Interval</Label><Input type="number" min="1" value={form.termInterval} onChange={(e) => syncDerivedDates(form.startDate, { termInterval: e.target.value })} /></div>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="space-y-1.5">
                 <Label>Recurrence Unit</Label>
-                <Select value={form.recurrenceUnit} onValueChange={(value) => setForm((prev) => ({ ...prev, recurrenceUnit: value }))}>
+                <Select value={form.recurrenceUnit} onValueChange={(value) => syncDerivedDates(form.startDate, { recurrenceUnit: value })}>
                   <SelectTrigger data-testid="select-agreement-recurrence-unit"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="MONTH">Month</SelectItem>
@@ -1433,7 +1512,7 @@ function AgreementForm({
                   </SelectContent>
                 </Select>
               </div>
-              <div className="space-y-1.5"><Label>Recurrence Interval</Label><Input type="number" min="1" value={form.recurrenceInterval} onChange={(e) => setForm((prev) => ({ ...prev, recurrenceInterval: e.target.value }))} /></div>
+              <div className="space-y-1.5"><Label>Recurrence Interval</Label><Input type="number" min="1" value={form.recurrenceInterval} onChange={(e) => syncDerivedDates(form.startDate, { recurrenceInterval: e.target.value })} /></div>
             </div>
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="space-y-1.5"><Label>Generation Lead Days</Label><Input type="number" min="0" value={form.generationLeadDays} onChange={(e) => setForm((prev) => ({ ...prev, generationLeadDays: e.target.value }))} /></div>
@@ -1443,6 +1522,29 @@ function AgreementForm({
               <div className="space-y-1.5"><Label>Billing Frequency Override</Label><Input value={form.billingFrequency} onChange={(e) => setForm((prev) => ({ ...prev, billingFrequency: e.target.value }))} /></div>
               <div className="space-y-1.5"><Label>Agreement Type Override</Label><Input value={form.agreementType} onChange={(e) => setForm((prev) => ({ ...prev, agreementType: e.target.value }))} /></div>
             </div>
+            <div className="space-y-1">
+              <h3 className="text-sm font-semibold">Service Details</h3>
+              <p className="text-sm text-muted-foreground">Use these only when this location needs service behavior that differs from the template defaults.</p>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="space-y-1.5">
+                <Label>Service Type</Label>
+                <Select value={form.serviceTypeId} onValueChange={(value) => setForm((prev) => ({ ...prev, serviceTypeId: value }))}>
+                  <SelectTrigger data-testid="select-agreement-service-type"><SelectValue placeholder="Select service type" /></SelectTrigger>
+                  <SelectContent>
+                    {serviceTypes?.map((serviceType) => (
+                      <SelectItem key={serviceType.id} value={serviceType.id}>{serviceType.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1.5"><Label>Service Template Name</Label><Input value={form.serviceTemplateName} onChange={(e) => setForm((prev) => ({ ...prev, serviceTemplateName: e.target.value }))} placeholder="Optional override label" /></div>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="space-y-1.5"><Label>Default Duration Minutes</Label><Input type="number" min="0" value={form.defaultDurationMinutes} onChange={(e) => setForm((prev) => ({ ...prev, defaultDurationMinutes: e.target.value }))} /></div>
+              <div className="space-y-1.5"><Label>Price</Label><Input type="number" min="0" step="0.01" value={form.price} onChange={(e) => setForm((prev) => ({ ...prev, price: e.target.value }))} placeholder="Optional" /></div>
+            </div>
+            <div className="space-y-1.5"><Label>Service Instructions</Label><Textarea value={form.serviceInstructions} onChange={(e) => setForm((prev) => ({ ...prev, serviceInstructions: e.target.value }))} className="resize-none" /></div>
           </AccordionContent>
         </AccordionItem>
       </Accordion>

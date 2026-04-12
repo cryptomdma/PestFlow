@@ -94,6 +94,7 @@ export async function registerRoutes(
   const agreementStatusSchema = z.enum(["ACTIVE", "PAUSED", "CANCELLED"]);
   const recurrenceUnitSchema = z.enum(["MONTH", "QUARTER", "YEAR", "CUSTOM"]);
   const agreementTemplateSchema = insertAgreementTemplateSchema.extend({
+    defaultTermUnit: recurrenceUnitSchema,
     defaultRecurrenceUnit: recurrenceUnitSchema,
   }).superRefine((value, ctx) => {
     if (!value.name?.trim()) {
@@ -101,6 +102,9 @@ export async function registerRoutes(
     }
     if ((value.defaultRecurrenceInterval || 0) < 1) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["defaultRecurrenceInterval"], message: "defaultRecurrenceInterval must be at least 1" });
+    }
+    if ((value.defaultTermInterval || 0) < 1) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["defaultTermInterval"], message: "defaultTermInterval must be at least 1" });
     }
     if ((value.defaultGenerationLeadDays || 0) < 0) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["defaultGenerationLeadDays"], message: "defaultGenerationLeadDays cannot be negative" });
@@ -110,10 +114,12 @@ export async function registerRoutes(
     }
   });
   const updateAgreementTemplateSchema = insertAgreementTemplateSchema.extend({
+    defaultTermUnit: recurrenceUnitSchema.optional(),
     defaultRecurrenceUnit: recurrenceUnitSchema.optional(),
   }).partial();
   const agreementBaseSchema = insertAgreementSchema.extend({
     status: agreementStatusSchema,
+    termUnit: recurrenceUnitSchema,
     recurrenceUnit: recurrenceUnitSchema,
   });
   const agreementSchema = agreementBaseSchema.superRefine((value, ctx) => {
@@ -138,6 +144,9 @@ export async function registerRoutes(
     if ((value.recurrenceInterval || 0) < 1) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["recurrenceInterval"], message: "recurrenceInterval must be at least 1" });
     }
+    if ((value.termInterval || 0) < 1) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["termInterval"], message: "termInterval must be at least 1" });
+    }
     if ((value.generationLeadDays || 0) < 0) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["generationLeadDays"], message: "generationLeadDays cannot be negative" });
     }
@@ -146,6 +155,9 @@ export async function registerRoutes(
     }
   });
   const updateAgreementSchema = agreementBaseSchema.partial().superRefine((value, ctx) => {
+    if (value.termInterval !== undefined && value.termInterval < 1) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["termInterval"], message: "termInterval must be at least 1" });
+    }
     if (value.recurrenceInterval !== undefined && value.recurrenceInterval < 1) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["recurrenceInterval"], message: "recurrenceInterval must be at least 1" });
     }
@@ -170,6 +182,9 @@ export async function registerRoutes(
       }
       if (value.recurrenceInterval !== undefined && value.recurrenceInterval < 1) {
         ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["recurrenceInterval"], message: "recurrenceInterval must be at least 1" });
+      }
+      if (value.termInterval !== undefined && value.termInterval < 1) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["termInterval"], message: "termInterval must be at least 1" });
       }
       if (value.generationLeadDays !== undefined && value.generationLeadDays < 0) {
         ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["generationLeadDays"], message: "generationLeadDays cannot be negative" });
