@@ -3,6 +3,7 @@ import {
   accounts,
   customers, contacts, locations, serviceTypes, appointments,
   agreements,
+  agreementTemplates,
   serviceRecords, productApplications, invoices, communications,
   billingProfiles, customerNotes,
   noteRevisions,
@@ -13,6 +14,7 @@ import {
   type ServiceType, type InsertServiceType,
   type Appointment, type InsertAppointment,
   type Agreement, type InsertAgreement,
+  type AgreementTemplate, type InsertAgreementTemplate,
   type ServiceRecord, type InsertServiceRecord,
   type ProductApplication, type InsertProductApplication,
   type Invoice, type InsertInvoice,
@@ -76,6 +78,18 @@ export interface GenerateAgreementAppointmentsResult {
   createdAppointments: Appointment[];
 }
 
+export interface CreateAgreementFromTemplateInput {
+  agreementTemplateId?: string | null;
+  agreement: Partial<InsertAgreement> & Pick<InsertAgreement, "customerId" | "locationId" | "status" | "startDate" | "nextServiceDate">;
+  actor?: AuditActor;
+}
+
+export interface LinkAgreementInitialAppointmentInput {
+  agreementId: string;
+  appointmentId: string;
+  actor?: AuditActor;
+}
+
 export interface SaveScopedNoteInput {
   scope: "ACCOUNT" | "LOCATION";
   accountId?: string | null;
@@ -120,10 +134,17 @@ export interface IStorage {
   getServiceTypes(): Promise<ServiceType[]>;
   createServiceType(data: InsertServiceType): Promise<ServiceType>;
 
+  getAgreementTemplates(): Promise<AgreementTemplate[]>;
+  getAgreementTemplate(id: string): Promise<AgreementTemplate | undefined>;
+  createAgreementTemplate(data: InsertAgreementTemplate): Promise<AgreementTemplate>;
+  updateAgreementTemplate(id: string, data: Partial<InsertAgreementTemplate>): Promise<AgreementTemplate | undefined>;
+
   getAgreementsByLocation(locationId: string): Promise<Agreement[]>;
   getAgreement(id: string): Promise<Agreement | undefined>;
+  createAgreementFromTemplate(input: CreateAgreementFromTemplateInput): Promise<Agreement>;
   createAgreement(data: InsertAgreement, actor?: AuditActor): Promise<Agreement>;
   updateAgreement(id: string, data: Partial<InsertAgreement>, actor?: AuditActor): Promise<Agreement | undefined>;
+  linkAgreementInitialAppointment(input: LinkAgreementInitialAppointmentInput): Promise<Agreement | undefined>;
   generateAgreementAppointmentsForLocation(locationId: string): Promise<GenerateAgreementAppointmentsResult>;
 
   getAppointments(): Promise<Appointment[]>;
@@ -200,6 +221,20 @@ function advanceAgreementDate(dateOnly: string, recurrenceUnit: string, recurren
     default:
       return addMonths(dateOnly, step);
   }
+}
+
+function resolveAgreementStartDateFromValues(
+  dateOnly: string,
+  termUnit: string,
+  termInterval: number,
+  recurrenceUnit: string,
+  recurrenceInterval: number,
+) {
+  return {
+    startDate: dateOnly,
+    renewalDate: advanceAgreementDate(dateOnly, termUnit, termInterval),
+    nextServiceDate: advanceAgreementDate(dateOnly, recurrenceUnit, recurrenceInterval),
+  };
 }
 
 function buildAppointmentSchedule(dateOnly: string, defaultDurationMinutes?: number | null) {
@@ -291,9 +326,14 @@ export class DatabaseStorage implements IStorage {
 
     return {
       ...data,
+      agreementTemplateId: data.agreementTemplateId || null,
+      initialAppointmentId: data.initialAppointmentId || null,
+      startDateSource: data.startDateSource || "MANUAL",
       agreementName: data.agreementName.trim(),
       agreementType: data.agreementType?.trim() || null,
       startDate: normalizeDateOnly(data.startDate)!,
+      termUnit: data.termUnit || "YEAR",
+      termInterval: Math.max(data.termInterval || 1, 1),
       renewalDate: normalizeDateOnly(data.renewalDate),
       nextServiceDate: normalizeDateOnly(data.nextServiceDate)!,
       billingFrequency: data.billingFrequency?.trim() || null,
@@ -322,8 +362,13 @@ export class DatabaseStorage implements IStorage {
     };
 
     if (data.agreementName !== undefined) payload.agreementName = data.agreementName.trim();
+    if (data.agreementTemplateId !== undefined) payload.agreementTemplateId = data.agreementTemplateId || null;
+    if (data.initialAppointmentId !== undefined) payload.initialAppointmentId = data.initialAppointmentId || null;
+    if (data.startDateSource !== undefined) payload.startDateSource = data.startDateSource || "MANUAL";
     if (data.agreementType !== undefined) payload.agreementType = data.agreementType?.trim() || null;
     if (data.startDate !== undefined) payload.startDate = normalizeDateOnly(data.startDate as any) as any;
+    if (data.termUnit !== undefined) payload.termUnit = data.termUnit || "YEAR";
+    if (data.termInterval !== undefined) payload.termInterval = Math.max(data.termInterval || 1, 1);
     if (data.renewalDate !== undefined) payload.renewalDate = normalizeDateOnly(data.renewalDate as any) as any;
     if (data.nextServiceDate !== undefined) payload.nextServiceDate = normalizeDateOnly(data.nextServiceDate as any) as any;
     if (data.billingFrequency !== undefined) payload.billingFrequency = data.billingFrequency?.trim() || null;
@@ -339,6 +384,138 @@ export class DatabaseStorage implements IStorage {
     }
 
     return payload;
+  }
+
+  private normalizeAgreementTemplateInsert(data: InsertAgreementTemplate): InsertAgreementTemplate {
+    return {
+      ...data,
+      name: data.name.trim(),
+      description: data.description?.trim() || null,
+      defaultAgreementType: data.defaultAgreementType?.trim() || null,
+      defaultBillingFrequency: data.defaultBillingFrequency?.trim() || null,
+      defaultTermUnit: data.defaultTermUnit || "YEAR",
+      defaultTermInterval: Math.max(data.defaultTermInterval || 1, 1),
+      defaultRecurrenceUnit: data.defaultRecurrenceUnit,
+      defaultRecurrenceInterval: Math.max(data.defaultRecurrenceInterval || 1, 1),
+      defaultGenerationLeadDays: Math.max(data.defaultGenerationLeadDays || 0, 0),
+      defaultServiceWindowDays: data.defaultServiceWindowDays ?? null,
+      defaultServiceTypeId: data.defaultServiceTypeId || null,
+      defaultServiceTemplateName: data.defaultServiceTemplateName?.trim() || null,
+      defaultDurationMinutes: data.defaultDurationMinutes ?? null,
+      defaultPrice: data.defaultPrice || null,
+      defaultInstructions: data.defaultInstructions?.trim() || null,
+      sortOrder: data.sortOrder ?? null,
+      internalCode: data.internalCode?.trim() || null,
+      isActive: data.isActive ?? true,
+    };
+  }
+
+  private normalizeAgreementTemplateUpdate(data: Partial<InsertAgreementTemplate>): Partial<InsertAgreementTemplate> {
+    const payload: Partial<InsertAgreementTemplate> = { ...data };
+    if (data.name !== undefined) payload.name = data.name.trim();
+    if (data.description !== undefined) payload.description = data.description?.trim() || null;
+    if (data.defaultAgreementType !== undefined) payload.defaultAgreementType = data.defaultAgreementType?.trim() || null;
+    if (data.defaultBillingFrequency !== undefined) payload.defaultBillingFrequency = data.defaultBillingFrequency?.trim() || null;
+    if (data.defaultTermUnit !== undefined) payload.defaultTermUnit = data.defaultTermUnit || "YEAR";
+    if (data.defaultTermInterval !== undefined) payload.defaultTermInterval = Math.max(data.defaultTermInterval || 1, 1);
+    if (data.defaultRecurrenceInterval !== undefined) payload.defaultRecurrenceInterval = Math.max(data.defaultRecurrenceInterval || 1, 1);
+    if (data.defaultGenerationLeadDays !== undefined) payload.defaultGenerationLeadDays = Math.max(data.defaultGenerationLeadDays || 0, 0);
+    if (data.defaultServiceTypeId !== undefined) payload.defaultServiceTypeId = data.defaultServiceTypeId || null;
+    if (data.defaultServiceTemplateName !== undefined) payload.defaultServiceTemplateName = data.defaultServiceTemplateName?.trim() || null;
+    if (data.defaultPrice !== undefined) payload.defaultPrice = data.defaultPrice || null;
+    if (data.defaultInstructions !== undefined) payload.defaultInstructions = data.defaultInstructions?.trim() || null;
+    if (data.internalCode !== undefined) payload.internalCode = data.internalCode?.trim() || null;
+    return payload;
+  }
+
+  private async buildAgreementInsertFromTemplate(input: CreateAgreementFromTemplateInput): Promise<InsertAgreement> {
+    const template = input.agreementTemplateId ? await this.getAgreementTemplate(input.agreementTemplateId) : undefined;
+    const agreementData = input.agreement;
+
+    return {
+      customerId: agreementData.customerId,
+      locationId: agreementData.locationId,
+      agreementTemplateId: template?.id ?? agreementData.agreementTemplateId ?? null,
+      initialAppointmentId: agreementData.initialAppointmentId ?? null,
+      startDateSource: agreementData.startDateSource ?? "MANUAL",
+      agreementName: agreementData.agreementName ?? template?.name ?? "Agreement",
+      status: agreementData.status,
+      agreementType: agreementData.agreementType ?? template?.defaultAgreementType ?? null,
+      startDate: agreementData.startDate,
+      termUnit: agreementData.termUnit ?? template?.defaultTermUnit ?? "YEAR",
+      termInterval: agreementData.termInterval ?? template?.defaultTermInterval ?? 1,
+      renewalDate: agreementData.renewalDate ?? null,
+      nextServiceDate: agreementData.nextServiceDate,
+      billingFrequency: agreementData.billingFrequency ?? template?.defaultBillingFrequency ?? null,
+      price: agreementData.price ?? template?.defaultPrice ?? null,
+      recurrenceUnit: agreementData.recurrenceUnit ?? template?.defaultRecurrenceUnit ?? "MONTH",
+      recurrenceInterval: agreementData.recurrenceInterval ?? template?.defaultRecurrenceInterval ?? 1,
+      generationLeadDays: agreementData.generationLeadDays ?? template?.defaultGenerationLeadDays ?? 14,
+      serviceWindowDays: agreementData.serviceWindowDays ?? template?.defaultServiceWindowDays ?? null,
+      serviceTypeId: agreementData.serviceTypeId ?? template?.defaultServiceTypeId ?? null,
+      serviceTemplateName: agreementData.serviceTemplateName ?? template?.defaultServiceTemplateName ?? null,
+      defaultDurationMinutes: agreementData.defaultDurationMinutes ?? template?.defaultDurationMinutes ?? null,
+      serviceInstructions: agreementData.serviceInstructions ?? template?.defaultInstructions ?? null,
+      contractUrl: agreementData.contractUrl ?? null,
+      contractUploadedAt: agreementData.contractUploadedAt ?? null,
+      contractSignedAt: agreementData.contractSignedAt ?? null,
+      notes: agreementData.notes ?? null,
+      createdByUserId: input.actor?.userId || null,
+      updatedByUserId: input.actor?.userId || null,
+    };
+  }
+
+  private async getAgreementStartDateFromAppointment(
+    tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+    appointmentId: string,
+  ): Promise<string | null> {
+    const [appointment] = await tx.select().from(appointments).where(eq(appointments.id, appointmentId));
+    if (!appointment) {
+      return null;
+    }
+
+    const [serviceRecord] = await tx.select().from(serviceRecords).where(eq(serviceRecords.appointmentId, appointmentId));
+    return normalizeDateOnly(serviceRecord?.serviceDate) || normalizeDateOnly(appointment.scheduledDate);
+  }
+
+  private async syncAgreementInitialAppointmentDates(
+    tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+    agreementId: string,
+    actor?: AuditActor,
+  ) {
+    const [agreement] = await tx.select().from(agreements).where(eq(agreements.id, agreementId));
+    if (!agreement?.initialAppointmentId) {
+      return agreement;
+    }
+
+    const startDate = await this.getAgreementStartDateFromAppointment(tx, agreement.initialAppointmentId);
+    if (!startDate) {
+      return agreement;
+    }
+
+    const nextDates = resolveAgreementStartDateFromValues(
+      startDate,
+      agreement.termUnit,
+      agreement.termInterval,
+      agreement.recurrenceUnit,
+      agreement.recurrenceInterval,
+    );
+
+    const [updatedAgreement] = await tx
+      .update(agreements)
+      .set({
+        initialAppointmentId: agreement.initialAppointmentId,
+        startDateSource: "INITIAL_APPOINTMENT",
+        startDate: nextDates.startDate as any,
+        renewalDate: nextDates.renewalDate as any,
+        nextServiceDate: nextDates.nextServiceDate as any,
+        updatedAt: new Date(),
+        updatedByUserId: actor?.userId || agreement.updatedByUserId || null,
+      })
+      .where(eq(agreements.id, agreement.id))
+      .returning();
+
+    return updatedAgreement;
   }
 
   private async generateAppointmentForAgreement(
@@ -922,6 +1099,27 @@ export class DatabaseStorage implements IStorage {
     return st;
   }
 
+  async getAgreementTemplates(): Promise<AgreementTemplate[]> {
+    return db.select().from(agreementTemplates);
+  }
+
+  async getAgreementTemplate(id: string): Promise<AgreementTemplate | undefined> {
+    const [template] = await db.select().from(agreementTemplates).where(eq(agreementTemplates.id, id));
+    return template;
+  }
+
+  async createAgreementTemplate(data: InsertAgreementTemplate): Promise<AgreementTemplate> {
+    const payload = this.normalizeAgreementTemplateInsert(data);
+    const [template] = await db.insert(agreementTemplates).values(payload).returning();
+    return template;
+  }
+
+  async updateAgreementTemplate(id: string, data: Partial<InsertAgreementTemplate>): Promise<AgreementTemplate | undefined> {
+    const payload = this.normalizeAgreementTemplateUpdate(data);
+    const [template] = await db.update(agreementTemplates).set({ ...payload, updatedAt: new Date() }).where(eq(agreementTemplates.id, id)).returning();
+    return template;
+  }
+
   async getAgreementsByLocation(locationId: string): Promise<Agreement[]> {
     return db.select().from(agreements).where(eq(agreements.locationId, locationId));
   }
@@ -931,17 +1129,98 @@ export class DatabaseStorage implements IStorage {
     return agreement;
   }
 
-  async createAgreement(data: InsertAgreement, actor?: AuditActor): Promise<Agreement> {
-    const payload = this.normalizeAgreementInsert(data, actor);
+  async createAgreementFromTemplate(input: CreateAgreementFromTemplateInput): Promise<Agreement> {
+    const payload = await this.buildAgreementInsertFromTemplate(input);
+    return this.createAgreement(payload, input.actor);
+  }
 
-    const [agreement] = await db.insert(agreements).values(payload).returning();
+  async createAgreement(data: InsertAgreement, actor?: AuditActor): Promise<Agreement> {
+    const agreement = await db.transaction(async (tx) => {
+      const payload = this.normalizeAgreementInsert(data, actor);
+      const [createdAgreement] = await tx.insert(agreements).values(payload).returning();
+
+      if (createdAgreement.initialAppointmentId && createdAgreement.startDateSource === "INITIAL_APPOINTMENT") {
+        await tx
+          .update(appointments)
+          .set({
+            agreementId: createdAgreement.id,
+            source: "AGREEMENT_INITIAL",
+          })
+          .where(eq(appointments.id, createdAgreement.initialAppointmentId));
+
+        return (await this.syncAgreementInitialAppointmentDates(tx, createdAgreement.id, actor)) || createdAgreement;
+      }
+
+      return createdAgreement;
+    });
+
     await this.generateAgreementAppointmentsForLocation(agreement.locationId);
     return agreement;
   }
 
   async updateAgreement(id: string, data: Partial<InsertAgreement>, actor?: AuditActor): Promise<Agreement | undefined> {
-    const payload = this.normalizeAgreementUpdate(data, actor);
-    const [agreement] = await db.update(agreements).set({ ...payload, updatedAt: new Date() }).where(eq(agreements.id, id)).returning();
+    const agreement = await db.transaction(async (tx) => {
+      const payload = this.normalizeAgreementUpdate(data, actor);
+      const [updatedAgreement] = await tx.update(agreements).set({ ...payload, updatedAt: new Date() }).where(eq(agreements.id, id)).returning();
+      if (!updatedAgreement) {
+        return undefined;
+      }
+
+      if (updatedAgreement.initialAppointmentId && updatedAgreement.startDateSource === "INITIAL_APPOINTMENT") {
+        await tx
+          .update(appointments)
+          .set({
+            agreementId: updatedAgreement.id,
+            source: "AGREEMENT_INITIAL",
+          })
+          .where(eq(appointments.id, updatedAgreement.initialAppointmentId));
+
+        return (await this.syncAgreementInitialAppointmentDates(tx, updatedAgreement.id, actor)) || updatedAgreement;
+      }
+
+      return updatedAgreement;
+    });
+    if (!agreement) {
+      return undefined;
+    }
+
+    await this.generateAgreementAppointmentsForLocation(agreement.locationId);
+    return agreement;
+  }
+
+  async linkAgreementInitialAppointment(input: LinkAgreementInitialAppointmentInput): Promise<Agreement | undefined> {
+    const agreement = await db.transaction(async (tx) => {
+      const [existingAgreement] = await tx.select().from(agreements).where(eq(agreements.id, input.agreementId));
+      if (!existingAgreement) {
+        return undefined;
+      }
+
+      const [appointment] = await tx.select().from(appointments).where(eq(appointments.id, input.appointmentId));
+      if (!appointment || appointment.locationId !== existingAgreement.locationId || appointment.source === "AGREEMENT_GENERATED") {
+        throw new Error("Selected appointment cannot be linked as the agreement's initial service");
+      }
+
+      await tx
+        .update(appointments)
+        .set({
+          agreementId: existingAgreement.id,
+          source: "AGREEMENT_INITIAL",
+        })
+        .where(eq(appointments.id, appointment.id));
+
+      await tx
+        .update(agreements)
+        .set({
+          initialAppointmentId: appointment.id,
+          startDateSource: "INITIAL_APPOINTMENT",
+          updatedAt: new Date(),
+          updatedByUserId: input.actor?.userId || existingAgreement.updatedByUserId || null,
+        })
+        .where(eq(agreements.id, existingAgreement.id));
+
+      return await this.syncAgreementInitialAppointmentDates(tx, existingAgreement.id, input.actor);
+    });
+
     if (!agreement) {
       return undefined;
     }
@@ -980,13 +1259,30 @@ export class DatabaseStorage implements IStorage {
   }
 
   async createAppointment(data: InsertAppointment): Promise<Appointment> {
-    const [appt] = await db.insert(appointments).values({
-      ...data,
-      source: data.source || "MANUAL",
-      agreementId: data.agreementId || null,
-      generatedForDate: data.generatedForDate || null,
-    }).returning();
-    return appt;
+    const appointment = await db.transaction(async (tx) => {
+      const [appt] = await tx.insert(appointments).values({
+        ...data,
+        source: data.source || "MANUAL",
+        agreementId: data.agreementId || null,
+        generatedForDate: data.generatedForDate || null,
+      }).returning();
+
+      if (appt.agreementId && appt.source === "AGREEMENT_INITIAL") {
+        await tx
+          .update(agreements)
+          .set({
+            initialAppointmentId: appt.id,
+            startDateSource: "INITIAL_APPOINTMENT",
+            updatedAt: new Date(),
+          })
+          .where(eq(agreements.id, appt.agreementId));
+
+        await this.syncAgreementInitialAppointmentDates(tx, appt.agreementId);
+      }
+
+      return appt;
+    });
+    return appointment;
   }
 
   async updateAppointment(id: string, data: Partial<InsertAppointment>): Promise<Appointment | undefined> {
@@ -1004,6 +1300,11 @@ export class DatabaseStorage implements IStorage {
 
       if (existingAppointment.status !== "completed" && updatedAppointment.status === "completed") {
         await this.advanceAgreementForCompletedAppointment(tx, updatedAppointment);
+      }
+
+      const [linkedAgreement] = await tx.select().from(agreements).where(eq(agreements.initialAppointmentId, updatedAppointment.id));
+      if (linkedAgreement?.startDateSource === "INITIAL_APPOINTMENT") {
+        await this.syncAgreementInitialAppointmentDates(tx, linkedAgreement.id);
       }
 
       return updatedAppointment;
@@ -1024,13 +1325,36 @@ export class DatabaseStorage implements IStorage {
   }
 
   async createServiceRecord(data: InsertServiceRecord): Promise<ServiceRecord> {
-    const [sr] = await db.insert(serviceRecords).values(data).returning();
-    return sr;
+    return db.transaction(async (tx) => {
+      const [sr] = await tx.insert(serviceRecords).values(data).returning();
+
+      if (sr.appointmentId) {
+        const [linkedAgreement] = await tx.select().from(agreements).where(eq(agreements.initialAppointmentId, sr.appointmentId));
+        if (linkedAgreement?.startDateSource === "INITIAL_APPOINTMENT") {
+          await this.syncAgreementInitialAppointmentDates(tx, linkedAgreement.id);
+        }
+      }
+
+      return sr;
+    });
   }
 
   async updateServiceRecord(id: string, data: Partial<InsertServiceRecord>): Promise<ServiceRecord | undefined> {
-    const [sr] = await db.update(serviceRecords).set(data).where(eq(serviceRecords.id, id)).returning();
-    return sr;
+    return db.transaction(async (tx) => {
+      const [sr] = await tx.update(serviceRecords).set(data).where(eq(serviceRecords.id, id)).returning();
+      if (!sr) {
+        return undefined;
+      }
+
+      if (sr.appointmentId) {
+        const [linkedAgreement] = await tx.select().from(agreements).where(eq(agreements.initialAppointmentId, sr.appointmentId));
+        if (linkedAgreement?.startDateSource === "INITIAL_APPOINTMENT") {
+          await this.syncAgreementInitialAppointmentDates(tx, linkedAgreement.id);
+        }
+      }
+
+      return sr;
+    });
   }
 
   async getProductApplications(): Promise<ProductApplication[]> {

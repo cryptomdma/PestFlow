@@ -136,10 +136,15 @@ export const agreements = pgTable("agreements", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   customerId: varchar("customer_id").notNull().references(() => customers.id),
   locationId: varchar("location_id").notNull().references(() => locations.id),
+  agreementTemplateId: varchar("agreement_template_id"),
+  initialAppointmentId: varchar("initial_appointment_id").references(() => appointments.id),
+  startDateSource: text("start_date_source").notNull().default("MANUAL"),
   agreementName: text("agreement_name").notNull(),
   status: text("status").notNull().default("ACTIVE"),
   agreementType: text("agreement_type"),
   startDate: date("start_date").notNull(),
+  termUnit: text("term_unit").notNull().default("YEAR"),
+  termInterval: integer("term_interval").notNull().default(1),
   renewalDate: date("renewal_date"),
   nextServiceDate: date("next_service_date").notNull(),
   billingFrequency: text("billing_frequency"),
@@ -158,6 +163,30 @@ export const agreements = pgTable("agreements", {
   notes: text("notes"),
   createdByUserId: varchar("created_by_user_id"),
   updatedByUserId: varchar("updated_by_user_id"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const agreementTemplates = pgTable("agreement_templates", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  name: text("name").notNull(),
+  description: text("description"),
+  isActive: boolean("is_active").notNull().default(true),
+  defaultAgreementType: text("default_agreement_type"),
+  defaultBillingFrequency: text("default_billing_frequency"),
+  defaultTermUnit: text("default_term_unit").notNull().default("YEAR"),
+  defaultTermInterval: integer("default_term_interval").notNull().default(1),
+  defaultRecurrenceUnit: text("default_recurrence_unit").notNull().default("MONTH"),
+  defaultRecurrenceInterval: integer("default_recurrence_interval").notNull().default(1),
+  defaultGenerationLeadDays: integer("default_generation_lead_days").notNull().default(14),
+  defaultServiceWindowDays: integer("default_service_window_days"),
+  defaultServiceTypeId: varchar("default_service_type_id").references(() => serviceTypes.id),
+  defaultServiceTemplateName: text("default_service_template_name"),
+  defaultDurationMinutes: integer("default_duration_minutes"),
+  defaultPrice: decimal("default_price", { precision: 10, scale: 2 }),
+  defaultInstructions: text("default_instructions"),
+  sortOrder: integer("sort_order"),
+  internalCode: text("internal_code"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
@@ -241,6 +270,7 @@ export const insertNoteRevisionSchema = createInsertSchema(noteRevisions).omit({
 export const insertServiceTypeSchema = createInsertSchema(serviceTypes).omit({ id: true });
 export const insertAppointmentSchema = createInsertSchema(appointments).omit({ id: true, createdAt: true });
 export const insertAgreementSchema = createInsertSchema(agreements).omit({ id: true, createdAt: true, updatedAt: true });
+export const insertAgreementTemplateSchema = createInsertSchema(agreementTemplates).omit({ id: true, createdAt: true, updatedAt: true });
 export const insertServiceRecordSchema = createInsertSchema(serviceRecords).omit({ id: true, createdAt: true });
 export const insertProductApplicationSchema = createInsertSchema(productApplications).omit({ id: true });
 export const insertInvoiceSchema = createInsertSchema(invoices).omit({ id: true, createdAt: true });
@@ -267,6 +297,8 @@ export type Appointment = typeof appointments.$inferSelect;
 export type InsertAppointment = z.infer<typeof insertAppointmentSchema>;
 export type Agreement = typeof agreements.$inferSelect;
 export type InsertAgreement = z.infer<typeof insertAgreementSchema>;
+export type AgreementTemplate = typeof agreementTemplates.$inferSelect;
+export type InsertAgreementTemplate = z.infer<typeof insertAgreementTemplateSchema>;
 export type ServiceRecord = typeof serviceRecords.$inferSelect;
 export type InsertServiceRecord = z.infer<typeof insertServiceRecordSchema>;
 export type ProductApplication = typeof productApplications.$inferSelect;
