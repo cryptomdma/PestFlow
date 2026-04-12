@@ -4,6 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -13,10 +14,32 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { Plus, Settings as SettingsIcon, Wrench, Trash2 } from "lucide-react";
-import type { ServiceType } from "@shared/schema";
+import { Plus, Settings as SettingsIcon, Wrench, FileText } from "lucide-react";
+import type { AgreementTemplate, ServiceType } from "@shared/schema";
+
+function formatTemplateRecurrence(template: AgreementTemplate) {
+  const interval = template.defaultRecurrenceInterval || 1;
+  const unitMap: Record<string, string> = {
+    MONTH: "Month",
+    QUARTER: "Quarter",
+    YEAR: "Year",
+    CUSTOM: "Day",
+  };
+  if (template.defaultRecurrenceUnit === "QUARTER" && interval === 1) {
+    return "Quarterly";
+  }
+  const unitLabel = unitMap[template.defaultRecurrenceUnit] || template.defaultRecurrenceUnit;
+  return `Every ${interval} ${interval === 1 ? unitLabel : `${unitLabel}s`}`;
+}
 
 function ServiceTypeForm({ onClose }: { onClose: () => void }) {
   const { toast } = useToast();
@@ -61,9 +84,181 @@ function ServiceTypeForm({ onClose }: { onClose: () => void }) {
   );
 }
 
+function AgreementTemplateForm({
+  serviceTypes,
+  template,
+  onClose,
+}: {
+  serviceTypes?: ServiceType[];
+  template?: AgreementTemplate | null;
+  onClose: () => void;
+}) {
+  const { toast } = useToast();
+  const isEditMode = !!template;
+  const [form, setForm] = useState({
+    name: template?.name ?? "",
+    description: template?.description ?? "",
+    isActive: template?.isActive ?? true,
+    defaultAgreementType: template?.defaultAgreementType ?? "",
+    defaultBillingFrequency: template?.defaultBillingFrequency ?? "",
+    defaultRecurrenceUnit: template?.defaultRecurrenceUnit ?? "MONTH",
+    defaultRecurrenceInterval: template?.defaultRecurrenceInterval ? String(template.defaultRecurrenceInterval) : "1",
+    defaultGenerationLeadDays: template?.defaultGenerationLeadDays ? String(template.defaultGenerationLeadDays) : "14",
+    defaultServiceWindowDays: template?.defaultServiceWindowDays ? String(template.defaultServiceWindowDays) : "",
+    defaultServiceTypeId: template?.defaultServiceTypeId ?? "",
+    defaultServiceTemplateName: template?.defaultServiceTemplateName ?? "",
+    defaultDurationMinutes: template?.defaultDurationMinutes ? String(template.defaultDurationMinutes) : "",
+    defaultPrice: template?.defaultPrice ?? "",
+    defaultInstructions: template?.defaultInstructions ?? "",
+    sortOrder: template?.sortOrder ? String(template.sortOrder) : "",
+    internalCode: template?.internalCode ?? "",
+  });
+
+  const mutation = useMutation({
+    mutationFn: async (data: typeof form) => {
+      const payload = {
+        name: data.name.trim(),
+        description: data.description.trim() || null,
+        isActive: data.isActive,
+        defaultAgreementType: data.defaultAgreementType.trim() || null,
+        defaultBillingFrequency: data.defaultBillingFrequency.trim() || null,
+        defaultRecurrenceUnit: data.defaultRecurrenceUnit,
+        defaultRecurrenceInterval: parseInt(data.defaultRecurrenceInterval, 10),
+        defaultGenerationLeadDays: parseInt(data.defaultGenerationLeadDays, 10),
+        defaultServiceWindowDays: data.defaultServiceWindowDays.trim() ? parseInt(data.defaultServiceWindowDays, 10) : null,
+        defaultServiceTypeId: data.defaultServiceTypeId || null,
+        defaultServiceTemplateName: data.defaultServiceTemplateName.trim() || null,
+        defaultDurationMinutes: data.defaultDurationMinutes.trim() ? parseInt(data.defaultDurationMinutes, 10) : null,
+        defaultPrice: data.defaultPrice.trim() || null,
+        defaultInstructions: data.defaultInstructions.trim() || null,
+        sortOrder: data.sortOrder.trim() ? parseInt(data.sortOrder, 10) : null,
+        internalCode: data.internalCode.trim() || null,
+      };
+
+      const response = isEditMode
+        ? await apiRequest("PATCH", `/api/agreement-templates/${template.id}`, payload)
+        : await apiRequest("POST", "/api/agreement-templates", payload);
+
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/agreement-templates"] });
+      toast({ title: isEditMode ? "Agreement template updated" : "Agreement template created" });
+      onClose();
+    },
+    onError: (err: Error) => {
+      toast({ title: isEditMode ? "Error updating template" : "Error creating template", description: err.message, variant: "destructive" });
+    },
+  });
+
+  return (
+    <form onSubmit={(e) => { e.preventDefault(); mutation.mutate(form); }} className="space-y-5 max-h-[75vh] overflow-y-auto pr-1">
+      <div className="space-y-1">
+        <h3 className="text-sm font-semibold">Template Details</h3>
+        <p className="text-sm text-muted-foreground">Define the company-standard recurring agreement configuration your office can reuse.</p>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="space-y-1.5"><Label>Name</Label><Input value={form.name} onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))} data-testid="input-template-name" /></div>
+        <div className="space-y-1.5">
+          <Label>Status</Label>
+          <Select value={form.isActive ? "ACTIVE" : "INACTIVE"} onValueChange={(value) => setForm((prev) => ({ ...prev, isActive: value === "ACTIVE" }))}>
+            <SelectTrigger data-testid="select-template-status"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="ACTIVE">Active</SelectItem>
+              <SelectItem value="INACTIVE">Inactive</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+      <div className="space-y-1.5"><Label>Description</Label><Textarea value={form.description} onChange={(e) => setForm((prev) => ({ ...prev, description: e.target.value }))} className="resize-none" /></div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="space-y-1.5"><Label>Agreement Type</Label><Input value={form.defaultAgreementType} onChange={(e) => setForm((prev) => ({ ...prev, defaultAgreementType: e.target.value }))} /></div>
+        <div className="space-y-1.5"><Label>Billing Frequency</Label><Input value={form.defaultBillingFrequency} onChange={(e) => setForm((prev) => ({ ...prev, defaultBillingFrequency: e.target.value }))} /></div>
+      </div>
+      <div className="space-y-1">
+        <h3 className="text-sm font-semibold">Recurrence / Scheduling Defaults</h3>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="space-y-1.5">
+          <Label>Recurrence Unit</Label>
+          <Select value={form.defaultRecurrenceUnit} onValueChange={(value) => setForm((prev) => ({ ...prev, defaultRecurrenceUnit: value }))}>
+            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="MONTH">Month</SelectItem>
+              <SelectItem value="QUARTER">Quarter</SelectItem>
+              <SelectItem value="YEAR">Year</SelectItem>
+              <SelectItem value="CUSTOM">Custom</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="space-y-1.5"><Label>Recurrence Interval</Label><Input type="number" min="1" value={form.defaultRecurrenceInterval} onChange={(e) => setForm((prev) => ({ ...prev, defaultRecurrenceInterval: e.target.value }))} /></div>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="space-y-1.5"><Label>Generation Lead Days</Label><Input type="number" min="0" value={form.defaultGenerationLeadDays} onChange={(e) => setForm((prev) => ({ ...prev, defaultGenerationLeadDays: e.target.value }))} /></div>
+        <div className="space-y-1.5"><Label>Service Window Days</Label><Input type="number" min="0" value={form.defaultServiceWindowDays} onChange={(e) => setForm((prev) => ({ ...prev, defaultServiceWindowDays: e.target.value }))} /></div>
+      </div>
+      <div className="space-y-1">
+        <h3 className="text-sm font-semibold">Service Defaults</h3>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="space-y-1.5">
+          <Label>Default Service Type</Label>
+          <Select value={form.defaultServiceTypeId} onValueChange={(value) => setForm((prev) => ({ ...prev, defaultServiceTypeId: value }))}>
+            <SelectTrigger><SelectValue placeholder="Select service type" /></SelectTrigger>
+            <SelectContent>
+              {serviceTypes?.map((serviceType) => (
+                <SelectItem key={serviceType.id} value={serviceType.id}>{serviceType.name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="space-y-1.5"><Label>Default Service Template Name</Label><Input value={form.defaultServiceTemplateName} onChange={(e) => setForm((prev) => ({ ...prev, defaultServiceTemplateName: e.target.value }))} /></div>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="space-y-1.5"><Label>Default Duration Minutes</Label><Input type="number" min="0" value={form.defaultDurationMinutes} onChange={(e) => setForm((prev) => ({ ...prev, defaultDurationMinutes: e.target.value }))} /></div>
+        <div className="space-y-1.5"><Label>Default Price</Label><Input type="number" min="0" step="0.01" value={form.defaultPrice} onChange={(e) => setForm((prev) => ({ ...prev, defaultPrice: e.target.value }))} /></div>
+      </div>
+      <div className="space-y-1.5"><Label>Default Instructions</Label><Textarea value={form.defaultInstructions} onChange={(e) => setForm((prev) => ({ ...prev, defaultInstructions: e.target.value }))} className="resize-none" /></div>
+      <div className="space-y-1">
+        <h3 className="text-sm font-semibold">Template Metadata</h3>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="space-y-1.5"><Label>Sort Order</Label><Input type="number" value={form.sortOrder} onChange={(e) => setForm((prev) => ({ ...prev, sortOrder: e.target.value }))} /></div>
+        <div className="space-y-1.5"><Label>Internal Code</Label><Input value={form.internalCode} onChange={(e) => setForm((prev) => ({ ...prev, internalCode: e.target.value }))} /></div>
+      </div>
+      <div className="flex justify-end gap-2 pt-2">
+        <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
+        <Button type="submit" disabled={mutation.isPending || !form.name.trim() || !form.defaultServiceTypeId}>
+          {mutation.isPending ? "Saving..." : isEditMode ? "Save Template" : "Create Template"}
+        </Button>
+      </div>
+    </form>
+  );
+}
+
 export default function Settings() {
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [templateDialogOpen, setTemplateDialogOpen] = useState(false);
+  const [editingTemplate, setEditingTemplate] = useState<AgreementTemplate | null>(null);
   const { data: serviceTypes, isLoading } = useQuery<ServiceType[]>({ queryKey: ["/api/service-types"] });
+  const { data: agreementTemplates, isLoading: templatesLoading } = useQuery<AgreementTemplate[]>({ queryKey: ["/api/agreement-templates"] });
+
+  const openCreateTemplate = () => {
+    setEditingTemplate(null);
+    setTemplateDialogOpen(true);
+  };
+
+  const openEditTemplate = (template: AgreementTemplate) => {
+    setEditingTemplate(template);
+    setTemplateDialogOpen(true);
+  };
+
+  const closeTemplateDialog = (open: boolean) => {
+    setTemplateDialogOpen(open);
+    if (!open) {
+      setEditingTemplate(null);
+    }
+  };
 
   return (
     <div className="p-6 space-y-6 max-w-5xl mx-auto">
@@ -106,6 +301,62 @@ export default function Settings() {
                   </div>
                 </div>
               ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
+          <CardTitle className="text-base font-semibold flex items-center gap-2"><FileText className="h-4 w-4" /> Agreement Templates</CardTitle>
+          <Dialog open={templateDialogOpen} onOpenChange={closeTemplateDialog}>
+            <DialogTrigger asChild><Button size="sm" data-testid="button-add-agreement-template" onClick={openCreateTemplate}><Plus className="h-3 w-3 mr-1" /> Add Template</Button></DialogTrigger>
+            <DialogContent className="max-w-2xl">
+              <DialogHeader><DialogTitle>{editingTemplate ? "Edit Agreement Template" : "New Agreement Template"}</DialogTitle></DialogHeader>
+              <AgreementTemplateForm serviceTypes={serviceTypes} template={editingTemplate} onClose={() => closeTemplateDialog(false)} />
+            </DialogContent>
+          </Dialog>
+        </CardHeader>
+        <CardContent>
+          {templatesLoading ? (
+            <div className="space-y-2">{[1, 2, 3].map((i) => <Skeleton key={i} className="h-20" />)}</div>
+          ) : !agreementTemplates || agreementTemplates.length === 0 ? (
+            <div className="text-center py-8">
+              <FileText className="h-8 w-8 mx-auto text-muted-foreground/30 mb-2" />
+              <p className="text-sm text-muted-foreground">No agreement templates configured</p>
+              <Button variant="outline" size="sm" className="mt-3" onClick={openCreateTemplate}>Add Agreement Template</Button>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {agreementTemplates
+                .sort((a, b) => {
+                  const sortA = a.sortOrder ?? Number.MAX_SAFE_INTEGER;
+                  const sortB = b.sortOrder ?? Number.MAX_SAFE_INTEGER;
+                  if (sortA !== sortB) return sortA - sortB;
+                  return a.name.localeCompare(b.name);
+                })
+                .map((template) => {
+                  const serviceType = serviceTypes?.find((serviceType) => serviceType.id === template.defaultServiceTypeId);
+                  return (
+                    <div key={template.id} className="flex items-center justify-between gap-3 p-3 rounded-md bg-muted/50" data-testid={`card-agreement-template-${template.id}`}>
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-sm font-medium">{template.name}</span>
+                          <Badge variant="secondary" className={`text-xs ${template.isActive ? "bg-primary/10 text-primary" : ""}`}>{template.isActive ? "Active" : "Inactive"}</Badge>
+                          {template.internalCode && <Badge variant="outline" className="text-xs">{template.internalCode}</Badge>}
+                        </div>
+                        <p className="text-xs text-muted-foreground mt-0.5">
+                          {formatTemplateRecurrence(template)} • {template.defaultBillingFrequency || "No billing frequency"} • {serviceType?.name || "No service type"}
+                        </p>
+                        {template.description && <p className="text-xs text-muted-foreground mt-1">{template.description}</p>}
+                      </div>
+                      <div className="flex items-center gap-3 shrink-0">
+                        {template.defaultPrice && <span className="text-sm font-semibold">${parseFloat(template.defaultPrice).toFixed(2)}</span>}
+                        <Button variant="outline" size="sm" onClick={() => openEditTemplate(template)} data-testid={`button-edit-agreement-template-${template.id}`}>Edit</Button>
+                      </div>
+                    </div>
+                  );
+                })}
             </div>
           )}
         </CardContent>

@@ -7,6 +7,7 @@ import {
   insertProductApplicationSchema, insertInvoiceSchema, insertCommunicationSchema,
   insertBillingProfileSchema,
   insertAgreementSchema,
+  insertAgreementTemplateSchema,
 } from "@shared/schema";
 import { normalizePhone } from "@shared/phone";
 import { ZodError, z } from "zod";
@@ -92,10 +93,30 @@ export async function registerRoutes(
     .partial();
   const agreementStatusSchema = z.enum(["ACTIVE", "PAUSED", "CANCELLED"]);
   const recurrenceUnitSchema = z.enum(["MONTH", "QUARTER", "YEAR", "CUSTOM"]);
-  const agreementSchema = insertAgreementSchema.extend({
+  const agreementTemplateSchema = insertAgreementTemplateSchema.extend({
+    defaultRecurrenceUnit: recurrenceUnitSchema,
+  }).superRefine((value, ctx) => {
+    if (!value.name?.trim()) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["name"], message: "name is required" });
+    }
+    if ((value.defaultRecurrenceInterval || 0) < 1) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["defaultRecurrenceInterval"], message: "defaultRecurrenceInterval must be at least 1" });
+    }
+    if ((value.defaultGenerationLeadDays || 0) < 0) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["defaultGenerationLeadDays"], message: "defaultGenerationLeadDays cannot be negative" });
+    }
+    if (!value.defaultServiceTypeId) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["defaultServiceTypeId"], message: "defaultServiceTypeId is required" });
+    }
+  });
+  const updateAgreementTemplateSchema = insertAgreementTemplateSchema.extend({
+    defaultRecurrenceUnit: recurrenceUnitSchema.optional(),
+  }).partial();
+  const agreementBaseSchema = insertAgreementSchema.extend({
     status: agreementStatusSchema,
     recurrenceUnit: recurrenceUnitSchema,
-  }).superRefine((value, ctx) => {
+  });
+  const agreementSchema = agreementBaseSchema.superRefine((value, ctx) => {
     if (!value.locationId) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["locationId"], message: "locationId is required" });
     }
@@ -124,10 +145,7 @@ export async function registerRoutes(
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["renewalDate"], message: "renewalDate cannot be before startDate" });
     }
   });
-  const updateAgreementSchema = insertAgreementSchema.extend({
-    status: agreementStatusSchema.optional(),
-    recurrenceUnit: recurrenceUnitSchema.optional(),
-  }).partial().superRefine((value, ctx) => {
+  const updateAgreementSchema = agreementBaseSchema.partial().superRefine((value, ctx) => {
     if (value.recurrenceInterval !== undefined && value.recurrenceInterval < 1) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["recurrenceInterval"], message: "recurrenceInterval must be at least 1" });
     }
@@ -137,6 +155,29 @@ export async function registerRoutes(
     if (value.renewalDate && value.startDate && value.renewalDate < value.startDate) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["renewalDate"], message: "renewalDate cannot be before startDate" });
     }
+  });
+  const createAgreementFromTemplateSchema = z.object({
+    agreementTemplateId: z.string().nullable().optional(),
+    agreement: agreementBaseSchema.partial().extend({
+      customerId: z.string(),
+      locationId: z.string(),
+      status: agreementStatusSchema,
+      startDate: z.string(),
+      nextServiceDate: z.string(),
+    }).superRefine((value, ctx) => {
+      if (!value.agreementName?.trim()) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["agreementName"], message: "agreementName is required" });
+      }
+      if (value.recurrenceInterval !== undefined && value.recurrenceInterval < 1) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["recurrenceInterval"], message: "recurrenceInterval must be at least 1" });
+      }
+      if (value.generationLeadDays !== undefined && value.generationLeadDays < 0) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["generationLeadDays"], message: "generationLeadDays cannot be negative" });
+      }
+      if (value.renewalDate && value.startDate && value.renewalDate < value.startDate) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["renewalDate"], message: "renewalDate cannot be before startDate" });
+      }
+    }),
   });
 
   // Transitional dev-only diagnostics for Phase 1 account/location hardening.
@@ -661,6 +702,35 @@ export async function registerRoutes(
     }
   });
 
+  // Agreement Templates
+  app.get("/api/agreement-templates", async (_req, res) => {
+    const data = await storage.getAgreementTemplates();
+    res.json(data);
+  });
+
+  app.post("/api/agreement-templates", async (req, res) => {
+    try {
+      const validated = agreementTemplateSchema.parse(req.body);
+      const data = await storage.createAgreementTemplate(validated);
+      res.status(201).json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.patch("/api/agreement-templates/:id", async (req, res) => {
+    try {
+      const validated = updateAgreementTemplateSchema.parse(req.body);
+      const data = await storage.updateAgreementTemplate(req.params.id, validated);
+      if (!data) return res.status(404).json({ message: "Agreement template not found" });
+      res.json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
   // Agreements
   app.get("/api/agreements/location/:locationId", async (req, res) => {
     await storage.generateAgreementAppointmentsForLocation(req.params.locationId);
@@ -670,8 +740,12 @@ export async function registerRoutes(
 
   app.post("/api/agreements", async (req, res) => {
     try {
-      const validated = agreementSchema.parse(req.body);
-      const data = await storage.createAgreement(validated, getAuditActor(req));
+      const validated = createAgreementFromTemplateSchema.parse(req.body);
+      const data = await storage.createAgreementFromTemplate({
+        agreementTemplateId: validated.agreementTemplateId ?? null,
+        agreement: validated.agreement,
+        actor: getAuditActor(req),
+      });
       res.status(201).json(data);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);

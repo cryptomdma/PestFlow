@@ -1,5 +1,5 @@
 import { db } from "./db";
-import { customers, contacts, locations, serviceTypes, appointments, serviceRecords, productApplications, invoices, communications, billingProfiles, customerNotes } from "@shared/schema";
+import { customers, contacts, locations, serviceTypes, appointments, serviceRecords, productApplications, invoices, communications, billingProfiles, customerNotes, agreementTemplates } from "@shared/schema";
 import { eq } from "drizzle-orm";
 
 export async function seedDatabase() {
@@ -57,6 +57,63 @@ export async function seedDatabase() {
     { name: "Rodent Control", description: "Interior/exterior rodent baiting and exclusion", defaultPrice: "175.00", estimatedDuration: 60, category: "Rodent" },
     { name: "Commercial Kitchen Service", description: "Monthly commercial pest management service", defaultPrice: "250.00", estimatedDuration: 90, category: "Commercial" },
   ]).returning();
+
+  await db.insert(agreementTemplates).values([
+    {
+      name: "Control Plus",
+      description: "Standard recurring residential pest prevention agreement.",
+      isActive: true,
+      defaultAgreementType: "Residential Recurring",
+      defaultBillingFrequency: "Quarterly",
+      defaultRecurrenceUnit: "QUARTER",
+      defaultRecurrenceInterval: 1,
+      defaultGenerationLeadDays: 14,
+      defaultServiceWindowDays: 7,
+      defaultServiceTypeId: st1.id,
+      defaultServiceTemplateName: "General Pest Control Visit",
+      defaultDurationMinutes: 45,
+      defaultPrice: "125.00",
+      defaultInstructions: "Exterior perimeter treatment, garage, and common interior touchpoints.",
+      sortOrder: 1,
+      internalCode: "CONTROL_PLUS",
+    },
+    {
+      name: "Sentricon Renewal",
+      description: "Annual termite monitoring and renewal agreement.",
+      isActive: true,
+      defaultAgreementType: "Termite Renewal",
+      defaultBillingFrequency: "Annual",
+      defaultRecurrenceUnit: "YEAR",
+      defaultRecurrenceInterval: 1,
+      defaultGenerationLeadDays: 30,
+      defaultServiceWindowDays: 14,
+      defaultServiceTypeId: st2.id,
+      defaultServiceTemplateName: "Annual Termite Inspection",
+      defaultDurationMinutes: 60,
+      defaultPrice: "200.00",
+      defaultInstructions: "Inspect stations, note activity, and document renewal status.",
+      sortOrder: 2,
+      internalCode: "SENTRICON_RENEWAL",
+    },
+    {
+      name: "Mosquito Seasonal",
+      description: "Warm-season mosquito reduction service template.",
+      isActive: true,
+      defaultAgreementType: "Seasonal Mosquito",
+      defaultBillingFrequency: "Monthly",
+      defaultRecurrenceUnit: "MONTH",
+      defaultRecurrenceInterval: 1,
+      defaultGenerationLeadDays: 7,
+      defaultServiceWindowDays: 5,
+      defaultServiceTypeId: st1.id,
+      defaultServiceTemplateName: "Mosquito Yard Treatment",
+      defaultDurationMinutes: 35,
+      defaultPrice: "95.00",
+      defaultInstructions: "Treat harborage, standing water edges, and fence-line foliage.",
+      sortOrder: 3,
+      internalCode: "MOSQUITO_SEASONAL",
+    },
+  ]);
 
   const now = new Date();
   const twoDaysAgo = new Date(now.getTime() - 2 * 86400000);

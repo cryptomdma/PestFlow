@@ -3,6 +3,7 @@ import {
   accounts,
   customers, contacts, locations, serviceTypes, appointments,
   agreements,
+  agreementTemplates,
   serviceRecords, productApplications, invoices, communications,
   billingProfiles, customerNotes,
   noteRevisions,
@@ -13,6 +14,7 @@ import {
   type ServiceType, type InsertServiceType,
   type Appointment, type InsertAppointment,
   type Agreement, type InsertAgreement,
+  type AgreementTemplate, type InsertAgreementTemplate,
   type ServiceRecord, type InsertServiceRecord,
   type ProductApplication, type InsertProductApplication,
   type Invoice, type InsertInvoice,
@@ -76,6 +78,12 @@ export interface GenerateAgreementAppointmentsResult {
   createdAppointments: Appointment[];
 }
 
+export interface CreateAgreementFromTemplateInput {
+  agreementTemplateId?: string | null;
+  agreement: Partial<InsertAgreement> & Pick<InsertAgreement, "customerId" | "locationId" | "status" | "startDate" | "nextServiceDate">;
+  actor?: AuditActor;
+}
+
 export interface SaveScopedNoteInput {
   scope: "ACCOUNT" | "LOCATION";
   accountId?: string | null;
@@ -120,8 +128,14 @@ export interface IStorage {
   getServiceTypes(): Promise<ServiceType[]>;
   createServiceType(data: InsertServiceType): Promise<ServiceType>;
 
+  getAgreementTemplates(): Promise<AgreementTemplate[]>;
+  getAgreementTemplate(id: string): Promise<AgreementTemplate | undefined>;
+  createAgreementTemplate(data: InsertAgreementTemplate): Promise<AgreementTemplate>;
+  updateAgreementTemplate(id: string, data: Partial<InsertAgreementTemplate>): Promise<AgreementTemplate | undefined>;
+
   getAgreementsByLocation(locationId: string): Promise<Agreement[]>;
   getAgreement(id: string): Promise<Agreement | undefined>;
+  createAgreementFromTemplate(input: CreateAgreementFromTemplateInput): Promise<Agreement>;
   createAgreement(data: InsertAgreement, actor?: AuditActor): Promise<Agreement>;
   updateAgreement(id: string, data: Partial<InsertAgreement>, actor?: AuditActor): Promise<Agreement | undefined>;
   generateAgreementAppointmentsForLocation(locationId: string): Promise<GenerateAgreementAppointmentsResult>;
@@ -291,6 +305,7 @@ export class DatabaseStorage implements IStorage {
 
     return {
       ...data,
+      agreementTemplateId: data.agreementTemplateId || null,
       agreementName: data.agreementName.trim(),
       agreementType: data.agreementType?.trim() || null,
       startDate: normalizeDateOnly(data.startDate)!,
@@ -322,6 +337,7 @@ export class DatabaseStorage implements IStorage {
     };
 
     if (data.agreementName !== undefined) payload.agreementName = data.agreementName.trim();
+    if (data.agreementTemplateId !== undefined) payload.agreementTemplateId = data.agreementTemplateId || null;
     if (data.agreementType !== undefined) payload.agreementType = data.agreementType?.trim() || null;
     if (data.startDate !== undefined) payload.startDate = normalizeDateOnly(data.startDate as any) as any;
     if (data.renewalDate !== undefined) payload.renewalDate = normalizeDateOnly(data.renewalDate as any) as any;
@@ -339,6 +355,77 @@ export class DatabaseStorage implements IStorage {
     }
 
     return payload;
+  }
+
+  private normalizeAgreementTemplateInsert(data: InsertAgreementTemplate): InsertAgreementTemplate {
+    return {
+      ...data,
+      name: data.name.trim(),
+      description: data.description?.trim() || null,
+      defaultAgreementType: data.defaultAgreementType?.trim() || null,
+      defaultBillingFrequency: data.defaultBillingFrequency?.trim() || null,
+      defaultRecurrenceUnit: data.defaultRecurrenceUnit,
+      defaultRecurrenceInterval: Math.max(data.defaultRecurrenceInterval || 1, 1),
+      defaultGenerationLeadDays: Math.max(data.defaultGenerationLeadDays || 0, 0),
+      defaultServiceWindowDays: data.defaultServiceWindowDays ?? null,
+      defaultServiceTypeId: data.defaultServiceTypeId || null,
+      defaultServiceTemplateName: data.defaultServiceTemplateName?.trim() || null,
+      defaultDurationMinutes: data.defaultDurationMinutes ?? null,
+      defaultPrice: data.defaultPrice || null,
+      defaultInstructions: data.defaultInstructions?.trim() || null,
+      sortOrder: data.sortOrder ?? null,
+      internalCode: data.internalCode?.trim() || null,
+      isActive: data.isActive ?? true,
+    };
+  }
+
+  private normalizeAgreementTemplateUpdate(data: Partial<InsertAgreementTemplate>): Partial<InsertAgreementTemplate> {
+    const payload: Partial<InsertAgreementTemplate> = { ...data };
+    if (data.name !== undefined) payload.name = data.name.trim();
+    if (data.description !== undefined) payload.description = data.description?.trim() || null;
+    if (data.defaultAgreementType !== undefined) payload.defaultAgreementType = data.defaultAgreementType?.trim() || null;
+    if (data.defaultBillingFrequency !== undefined) payload.defaultBillingFrequency = data.defaultBillingFrequency?.trim() || null;
+    if (data.defaultRecurrenceInterval !== undefined) payload.defaultRecurrenceInterval = Math.max(data.defaultRecurrenceInterval || 1, 1);
+    if (data.defaultGenerationLeadDays !== undefined) payload.defaultGenerationLeadDays = Math.max(data.defaultGenerationLeadDays || 0, 0);
+    if (data.defaultServiceTypeId !== undefined) payload.defaultServiceTypeId = data.defaultServiceTypeId || null;
+    if (data.defaultServiceTemplateName !== undefined) payload.defaultServiceTemplateName = data.defaultServiceTemplateName?.trim() || null;
+    if (data.defaultPrice !== undefined) payload.defaultPrice = data.defaultPrice || null;
+    if (data.defaultInstructions !== undefined) payload.defaultInstructions = data.defaultInstructions?.trim() || null;
+    if (data.internalCode !== undefined) payload.internalCode = data.internalCode?.trim() || null;
+    return payload;
+  }
+
+  private async buildAgreementInsertFromTemplate(input: CreateAgreementFromTemplateInput): Promise<InsertAgreement> {
+    const template = input.agreementTemplateId ? await this.getAgreementTemplate(input.agreementTemplateId) : undefined;
+    const agreementData = input.agreement;
+
+    return {
+      customerId: agreementData.customerId,
+      locationId: agreementData.locationId,
+      agreementTemplateId: template?.id ?? agreementData.agreementTemplateId ?? null,
+      agreementName: agreementData.agreementName ?? template?.name ?? "Agreement",
+      status: agreementData.status,
+      agreementType: agreementData.agreementType ?? template?.defaultAgreementType ?? null,
+      startDate: agreementData.startDate,
+      renewalDate: agreementData.renewalDate ?? null,
+      nextServiceDate: agreementData.nextServiceDate,
+      billingFrequency: agreementData.billingFrequency ?? template?.defaultBillingFrequency ?? null,
+      price: agreementData.price ?? template?.defaultPrice ?? null,
+      recurrenceUnit: agreementData.recurrenceUnit ?? template?.defaultRecurrenceUnit ?? "MONTH",
+      recurrenceInterval: agreementData.recurrenceInterval ?? template?.defaultRecurrenceInterval ?? 1,
+      generationLeadDays: agreementData.generationLeadDays ?? template?.defaultGenerationLeadDays ?? 14,
+      serviceWindowDays: agreementData.serviceWindowDays ?? template?.defaultServiceWindowDays ?? null,
+      serviceTypeId: agreementData.serviceTypeId ?? template?.defaultServiceTypeId ?? null,
+      serviceTemplateName: agreementData.serviceTemplateName ?? template?.defaultServiceTemplateName ?? null,
+      defaultDurationMinutes: agreementData.defaultDurationMinutes ?? template?.defaultDurationMinutes ?? null,
+      serviceInstructions: agreementData.serviceInstructions ?? template?.defaultInstructions ?? null,
+      contractUrl: agreementData.contractUrl ?? null,
+      contractUploadedAt: agreementData.contractUploadedAt ?? null,
+      contractSignedAt: agreementData.contractSignedAt ?? null,
+      notes: agreementData.notes ?? null,
+      createdByUserId: input.actor?.userId || null,
+      updatedByUserId: input.actor?.userId || null,
+    };
   }
 
   private async generateAppointmentForAgreement(
@@ -922,6 +1009,27 @@ export class DatabaseStorage implements IStorage {
     return st;
   }
 
+  async getAgreementTemplates(): Promise<AgreementTemplate[]> {
+    return db.select().from(agreementTemplates);
+  }
+
+  async getAgreementTemplate(id: string): Promise<AgreementTemplate | undefined> {
+    const [template] = await db.select().from(agreementTemplates).where(eq(agreementTemplates.id, id));
+    return template;
+  }
+
+  async createAgreementTemplate(data: InsertAgreementTemplate): Promise<AgreementTemplate> {
+    const payload = this.normalizeAgreementTemplateInsert(data);
+    const [template] = await db.insert(agreementTemplates).values(payload).returning();
+    return template;
+  }
+
+  async updateAgreementTemplate(id: string, data: Partial<InsertAgreementTemplate>): Promise<AgreementTemplate | undefined> {
+    const payload = this.normalizeAgreementTemplateUpdate(data);
+    const [template] = await db.update(agreementTemplates).set({ ...payload, updatedAt: new Date() }).where(eq(agreementTemplates.id, id)).returning();
+    return template;
+  }
+
   async getAgreementsByLocation(locationId: string): Promise<Agreement[]> {
     return db.select().from(agreements).where(eq(agreements.locationId, locationId));
   }
@@ -929,6 +1037,11 @@ export class DatabaseStorage implements IStorage {
   async getAgreement(id: string): Promise<Agreement | undefined> {
     const [agreement] = await db.select().from(agreements).where(eq(agreements.id, id));
     return agreement;
+  }
+
+  async createAgreementFromTemplate(input: CreateAgreementFromTemplateInput): Promise<Agreement> {
+    const payload = await this.buildAgreementInsertFromTemplate(input);
+    return this.createAgreement(payload, input.actor);
   }
 
   async createAgreement(data: InsertAgreement, actor?: AuditActor): Promise<Agreement> {
