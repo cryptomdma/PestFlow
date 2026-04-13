@@ -2,6 +2,8 @@ import {
   auditLogs,
   accounts,
   customers, contacts, locations, serviceTypes, appointments,
+  technicians,
+  services,
   agreements,
   agreementTemplates,
   serviceRecords, productApplications, invoices, communications,
@@ -12,6 +14,8 @@ import {
   type Contact, type InsertContact,
   type Location, type InsertLocation,
   type ServiceType, type InsertServiceType,
+  type Technician, type InsertTechnician,
+  type Service, type InsertService,
   type Appointment, type InsertAppointment,
   type Agreement, type InsertAgreement,
   type AgreementTemplate, type InsertAgreementTemplate,
@@ -78,6 +82,11 @@ export interface GenerateAgreementAppointmentsResult {
   createdAppointments: Appointment[];
 }
 
+export interface DispatchBoardWindow {
+  dateFrom: string;
+  dateTo: string;
+}
+
 export interface CreateAgreementFromTemplateInput {
   agreementTemplateId?: string | null;
   agreement: Partial<InsertAgreement> & Pick<InsertAgreement, "customerId" | "locationId" | "status" | "startDate" | "nextServiceDate">;
@@ -133,6 +142,16 @@ export interface IStorage {
 
   getServiceTypes(): Promise<ServiceType[]>;
   createServiceType(data: InsertServiceType): Promise<ServiceType>;
+
+  getTechnicians(includeInactive?: boolean): Promise<Technician[]>;
+  createTechnician(data: InsertTechnician): Promise<Technician>;
+  updateTechnician(id: string, data: Partial<InsertTechnician>): Promise<Technician | undefined>;
+
+  getServicesByLocation(locationId: string): Promise<Service[]>;
+  getPendingServices(window?: DispatchBoardWindow): Promise<Service[]>;
+  getService(id: string): Promise<Service | undefined>;
+  createService(data: InsertService): Promise<Service>;
+  updateService(id: string, data: Partial<InsertService>): Promise<Service | undefined>;
 
   getAgreementTemplates(): Promise<AgreementTemplate[]>;
   getAgreementTemplate(id: string): Promise<AgreementTemplate | undefined>;
@@ -428,6 +447,57 @@ export class DatabaseStorage implements IStorage {
     return payload;
   }
 
+  private normalizeTechnicianInsert(data: InsertTechnician): InsertTechnician {
+    return {
+      ...data,
+      displayName: data.displayName.trim(),
+      licenseId: data.licenseId.trim(),
+      status: data.status || "ACTIVE",
+      email: data.email?.trim() || null,
+      phone: data.phone?.trim() || null,
+      color: data.color?.trim() || null,
+      notes: data.notes?.trim() || null,
+    };
+  }
+
+  private normalizeTechnicianUpdate(data: Partial<InsertTechnician>): Partial<InsertTechnician> {
+    const payload: Partial<InsertTechnician> = { ...data };
+    if (data.displayName !== undefined) payload.displayName = data.displayName.trim();
+    if (data.licenseId !== undefined) payload.licenseId = data.licenseId.trim();
+    if (data.email !== undefined) payload.email = data.email?.trim() || null;
+    if (data.phone !== undefined) payload.phone = data.phone?.trim() || null;
+    if (data.color !== undefined) payload.color = data.color?.trim() || null;
+    if (data.notes !== undefined) payload.notes = data.notes?.trim() || null;
+    return payload;
+  }
+
+  private normalizeServiceInsert(data: InsertService): InsertService {
+    return {
+      ...data,
+      agreementId: data.agreementId || null,
+      serviceTypeId: data.serviceTypeId || null,
+      dueDate: normalizeDateOnly(data.dueDate),
+      expectedDurationMinutes: data.expectedDurationMinutes ?? null,
+      price: data.price || null,
+      status: data.status || "PENDING_SCHEDULING",
+      assignedTechnicianId: data.assignedTechnicianId || null,
+      source: data.source || "MANUAL",
+      notes: data.notes?.trim() || null,
+    };
+  }
+
+  private normalizeServiceUpdate(data: Partial<InsertService>): Partial<InsertService> {
+    const payload: Partial<InsertService> = { ...data };
+    if (data.agreementId !== undefined) payload.agreementId = data.agreementId || null;
+    if (data.serviceTypeId !== undefined) payload.serviceTypeId = data.serviceTypeId || null;
+    if (data.dueDate !== undefined) payload.dueDate = normalizeDateOnly(data.dueDate as any) as any;
+    if (data.expectedDurationMinutes !== undefined) payload.expectedDurationMinutes = data.expectedDurationMinutes ?? null;
+    if (data.price !== undefined) payload.price = data.price || null;
+    if (data.assignedTechnicianId !== undefined) payload.assignedTechnicianId = data.assignedTechnicianId || null;
+    if (data.notes !== undefined) payload.notes = data.notes?.trim() || null;
+    return payload;
+  }
+
   private async buildAgreementInsertFromTemplate(input: CreateAgreementFromTemplateInput): Promise<InsertAgreement> {
     const template = input.agreementTemplateId ? await this.getAgreementTemplate(input.agreementTemplateId) : undefined;
     const agreementData = input.agreement;
@@ -546,6 +616,26 @@ export class DatabaseStorage implements IStorage {
       return null;
     }
 
+    const existingServices = await tx.select().from(services).where(eq(services.agreementId, agreement.id));
+    let serviceForCycle = existingServices.find((service) => service.dueDate === nextServiceDate && service.status !== "CANCELLED");
+
+    if (!serviceForCycle) {
+      const [createdService] = await tx.insert(services).values({
+        customerId: agreement.customerId,
+        locationId: agreement.locationId,
+        agreementId: agreement.id,
+        serviceTypeId: agreement.serviceTypeId,
+        dueDate: nextServiceDate as any,
+        expectedDurationMinutes: agreement.defaultDurationMinutes ?? null,
+        price: agreement.price ?? null,
+        status: "SCHEDULED",
+        assignedTechnicianId: null,
+        source: "AGREEMENT_GENERATED",
+        notes: [agreement.serviceTemplateName, agreement.serviceInstructions, agreement.notes].filter((value): value is string => !!value?.trim()).join("\n\n") || null,
+      }).returning();
+      serviceForCycle = createdService;
+    }
+
     const { scheduledDate, scheduledEndDate } = buildAppointmentSchedule(nextServiceDate, agreement.defaultDurationMinutes);
     const notes = [agreement.serviceInstructions, agreement.notes]
       .filter((value): value is string => !!value?.trim())
@@ -554,8 +644,10 @@ export class DatabaseStorage implements IStorage {
     const [createdAppointment] = await tx.insert(appointments).values({
       customerId: agreement.customerId,
       locationId: agreement.locationId,
+      serviceId: serviceForCycle.id,
       agreementId: agreement.id,
       serviceTypeId: agreement.serviceTypeId,
+      assignedTechnicianId: serviceForCycle.assignedTechnicianId,
       source: "AGREEMENT_GENERATED",
       generatedForDate: nextServiceDate as any,
       scheduledDate,
@@ -1099,6 +1191,55 @@ export class DatabaseStorage implements IStorage {
     return st;
   }
 
+  async getTechnicians(includeInactive = false): Promise<Technician[]> {
+    const allTechnicians = await db.select().from(technicians);
+    if (includeInactive) {
+      return allTechnicians;
+    }
+    return allTechnicians.filter((technician) => technician.status === "ACTIVE");
+  }
+
+  async createTechnician(data: InsertTechnician): Promise<Technician> {
+    const payload = this.normalizeTechnicianInsert(data);
+    const [technician] = await db.insert(technicians).values(payload).returning();
+    return technician;
+  }
+
+  async updateTechnician(id: string, data: Partial<InsertTechnician>): Promise<Technician | undefined> {
+    const payload = this.normalizeTechnicianUpdate(data);
+    const [technician] = await db.update(technicians).set({ ...payload, updatedAt: new Date() }).where(eq(technicians.id, id)).returning();
+    return technician;
+  }
+
+  async getServicesByLocation(locationId: string): Promise<Service[]> {
+    return db.select().from(services).where(eq(services.locationId, locationId));
+  }
+
+  async getPendingServices(window?: DispatchBoardWindow): Promise<Service[]> {
+    const pendingServices = await db.select().from(services).where(eq(services.status, "PENDING_SCHEDULING"));
+    if (!window?.dateTo) {
+      return pendingServices;
+    }
+    return pendingServices.filter((service) => !service.dueDate || service.dueDate <= window.dateTo);
+  }
+
+  async getService(id: string): Promise<Service | undefined> {
+    const [service] = await db.select().from(services).where(eq(services.id, id));
+    return service;
+  }
+
+  async createService(data: InsertService): Promise<Service> {
+    const payload = this.normalizeServiceInsert(data);
+    const [service] = await db.insert(services).values(payload).returning();
+    return service;
+  }
+
+  async updateService(id: string, data: Partial<InsertService>): Promise<Service | undefined> {
+    const payload = this.normalizeServiceUpdate(data);
+    const [service] = await db.update(services).set({ ...payload, updatedAt: new Date() }).where(eq(services.id, id)).returning();
+    return service;
+  }
+
   async getAgreementTemplates(): Promise<AgreementTemplate[]> {
     return db.select().from(agreementTemplates);
   }
@@ -1262,10 +1403,23 @@ export class DatabaseStorage implements IStorage {
     const appointment = await db.transaction(async (tx) => {
       const [appt] = await tx.insert(appointments).values({
         ...data,
+        serviceId: data.serviceId || null,
         source: data.source || "MANUAL",
         agreementId: data.agreementId || null,
+        assignedTechnicianId: data.assignedTechnicianId || null,
         generatedForDate: data.generatedForDate || null,
       }).returning();
+
+      if (appt.serviceId) {
+        await tx
+          .update(services)
+          .set({
+            status: appt.status === "completed" ? "COMPLETED" : appt.status === "canceled" ? "CANCELLED" : "SCHEDULED",
+            assignedTechnicianId: appt.assignedTechnicianId || null,
+            updatedAt: new Date(),
+          })
+          .where(eq(services.id, appt.serviceId));
+      }
 
       if (appt.agreementId && appt.source === "AGREEMENT_INITIAL") {
         await tx
@@ -1298,6 +1452,17 @@ export class DatabaseStorage implements IStorage {
         .where(eq(appointments.id, id))
         .returning();
 
+      if (updatedAppointment.serviceId) {
+        await tx
+          .update(services)
+          .set({
+            status: updatedAppointment.status === "completed" ? "COMPLETED" : updatedAppointment.status === "canceled" ? "CANCELLED" : "SCHEDULED",
+            assignedTechnicianId: updatedAppointment.assignedTechnicianId || null,
+            updatedAt: new Date(),
+          })
+          .where(eq(services.id, updatedAppointment.serviceId));
+      }
+
       if (existingAppointment.status !== "completed" && updatedAppointment.status === "completed") {
         await this.advanceAgreementForCompletedAppointment(tx, updatedAppointment);
       }
@@ -1328,6 +1493,17 @@ export class DatabaseStorage implements IStorage {
     return db.transaction(async (tx) => {
       const [sr] = await tx.insert(serviceRecords).values(data).returning();
 
+      if (sr.serviceId) {
+        await tx
+          .update(services)
+          .set({
+            status: "COMPLETED",
+            assignedTechnicianId: sr.technicianId || null,
+            updatedAt: new Date(),
+          })
+          .where(eq(services.id, sr.serviceId));
+      }
+
       if (sr.appointmentId) {
         const [linkedAgreement] = await tx.select().from(agreements).where(eq(agreements.initialAppointmentId, sr.appointmentId));
         if (linkedAgreement?.startDateSource === "INITIAL_APPOINTMENT") {
@@ -1344,6 +1520,17 @@ export class DatabaseStorage implements IStorage {
       const [sr] = await tx.update(serviceRecords).set(data).where(eq(serviceRecords.id, id)).returning();
       if (!sr) {
         return undefined;
+      }
+
+      if (sr.serviceId) {
+        await tx
+          .update(services)
+          .set({
+            status: "COMPLETED",
+            assignedTechnicianId: sr.technicianId || null,
+            updatedAt: new Date(),
+          })
+          .where(eq(services.id, sr.serviceId));
       }
 
       if (sr.appointmentId) {
@@ -1445,7 +1632,7 @@ export class DatabaseStorage implements IStorage {
       db.select().from(contacts).where(eq(contacts.locationId, locationId)),
       db.select().from(appointments).where(eq(appointments.locationId, locationId)),
       db.select().from(agreements).where(eq(agreements.locationId, locationId)),
-      db.select().from(serviceRecords).where(eq(serviceRecords.locationId, locationId)),
+      db.select().from(services).where(eq(services.locationId, locationId)),
       db.select().from(invoices).where(eq(invoices.locationId, locationId)),
       db.select().from(communications).where(eq(communications.locationId, locationId)),
     ]);

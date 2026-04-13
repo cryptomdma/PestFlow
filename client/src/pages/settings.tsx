@@ -23,8 +23,8 @@ import {
 } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { Plus, Settings as SettingsIcon, Wrench, FileText } from "lucide-react";
-import type { AgreementTemplate, ServiceType } from "@shared/schema";
+import { Plus, Settings as SettingsIcon, Wrench, FileText, Users } from "lucide-react";
+import type { AgreementTemplate, ServiceType, Technician } from "@shared/schema";
 
 function formatTemplateRecurrence(template: AgreementTemplate) {
   const interval = template.defaultRecurrenceInterval || 1;
@@ -92,6 +92,78 @@ function ServiceTypeForm({ onClose }: { onClose: () => void }) {
       </div>
       <div className="space-y-1.5"><Label>Category</Label><Input placeholder="e.g., General, Termite, Wildlife" value={form.category} onChange={(e) => setForm((p) => ({ ...p, category: e.target.value }))} /></div>
       <div className="flex justify-end gap-2"><Button type="button" variant="outline" onClick={onClose}>Cancel</Button><Button type="submit" disabled={mutation.isPending || !form.name} data-testid="button-save-service-type">{mutation.isPending ? "Saving..." : "Create"}</Button></div>
+    </form>
+  );
+}
+
+function TechnicianForm({ technician, onClose }: { technician?: Technician | null; onClose: () => void }) {
+  const { toast } = useToast();
+  const isEditMode = !!technician;
+  const [form, setForm] = useState({
+    displayName: technician?.displayName ?? "",
+    licenseId: technician?.licenseId ?? "",
+    status: technician?.status ?? "ACTIVE",
+    email: technician?.email ?? "",
+    phone: technician?.phone ?? "",
+    color: technician?.color ?? "",
+    notes: technician?.notes ?? "",
+  });
+
+  const mutation = useMutation({
+    mutationFn: async (data: typeof form) => {
+      const payload = {
+        displayName: data.displayName.trim(),
+        licenseId: data.licenseId.trim(),
+        status: data.status,
+        email: data.email.trim() || null,
+        phone: data.phone.trim() || null,
+        color: data.color.trim() || null,
+        notes: data.notes.trim() || null,
+      };
+      const response = isEditMode
+        ? await apiRequest("PATCH", `/api/technicians/${technician.id}`, payload)
+        : await apiRequest("POST", "/api/technicians", payload);
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/technicians"] });
+      toast({ title: isEditMode ? "Technician updated" : "Technician created" });
+      onClose();
+    },
+    onError: (err: Error) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+  });
+
+  return (
+    <form onSubmit={(e) => { e.preventDefault(); mutation.mutate(form); }} className="space-y-4">
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="space-y-1.5"><Label>Name</Label><Input value={form.displayName} onChange={(e) => setForm((prev) => ({ ...prev, displayName: e.target.value }))} /></div>
+        <div className="space-y-1.5"><Label>License ID</Label><Input value={form.licenseId} onChange={(e) => setForm((prev) => ({ ...prev, licenseId: e.target.value }))} /></div>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="space-y-1.5">
+          <Label>Status</Label>
+          <Select value={form.status} onValueChange={(value) => setForm((prev) => ({ ...prev, status: value }))}>
+            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="ACTIVE">Active</SelectItem>
+              <SelectItem value="INACTIVE">Inactive</SelectItem>
+              <SelectItem value="TERMINATED">Terminated</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="space-y-1.5"><Label>Color</Label><Input placeholder="#2563eb" value={form.color} onChange={(e) => setForm((prev) => ({ ...prev, color: e.target.value }))} /></div>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="space-y-1.5"><Label>Email</Label><Input value={form.email} onChange={(e) => setForm((prev) => ({ ...prev, email: e.target.value }))} /></div>
+        <div className="space-y-1.5"><Label>Phone</Label><Input value={form.phone} onChange={(e) => setForm((prev) => ({ ...prev, phone: e.target.value }))} /></div>
+      </div>
+      <div className="space-y-1.5"><Label>Notes</Label><Textarea value={form.notes} onChange={(e) => setForm((prev) => ({ ...prev, notes: e.target.value }))} className="resize-none" /></div>
+      <div className="flex justify-end gap-2">
+        <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
+        <Button type="submit" disabled={mutation.isPending || !form.displayName.trim() || !form.licenseId.trim()}>
+          {mutation.isPending ? "Saving..." : isEditMode ? "Save Technician" : "Create Technician"}
+        </Button>
+      </div>
     </form>
   );
 }
@@ -269,9 +341,12 @@ function AgreementTemplateForm({
 
 export default function Settings() {
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [technicianDialogOpen, setTechnicianDialogOpen] = useState(false);
+  const [editingTechnician, setEditingTechnician] = useState<Technician | null>(null);
   const [templateDialogOpen, setTemplateDialogOpen] = useState(false);
   const [editingTemplate, setEditingTemplate] = useState<AgreementTemplate | null>(null);
   const { data: serviceTypes, isLoading } = useQuery<ServiceType[]>({ queryKey: ["/api/service-types"] });
+  const { data: technicians, isLoading: techniciansLoading } = useQuery<Technician[]>({ queryKey: ["/api/technicians?includeInactive=true"] });
   const { data: agreementTemplates, isLoading: templatesLoading } = useQuery<AgreementTemplate[]>({ queryKey: ["/api/agreement-templates"] });
 
   const openCreateTemplate = () => {
@@ -282,6 +357,11 @@ export default function Settings() {
   const openEditTemplate = (template: AgreementTemplate) => {
     setEditingTemplate(template);
     setTemplateDialogOpen(true);
+  };
+
+  const closeTechnicianDialog = (open: boolean) => {
+    setTechnicianDialogOpen(open);
+    if (!open) setEditingTechnician(null);
   };
 
   const closeTemplateDialog = (open: boolean) => {
@@ -330,6 +410,49 @@ export default function Settings() {
                     {st.defaultPrice && <span className="font-semibold">${parseFloat(st.defaultPrice).toFixed(2)}</span>}
                     {st.estimatedDuration && <span className="text-xs text-muted-foreground">{st.estimatedDuration} min</span>}
                   </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
+          <CardTitle className="text-base font-semibold flex items-center gap-2"><Users className="h-4 w-4" /> Technicians</CardTitle>
+          <Dialog open={technicianDialogOpen} onOpenChange={closeTechnicianDialog}>
+            <DialogTrigger asChild><Button size="sm" onClick={() => setEditingTechnician(null)}><Plus className="h-3 w-3 mr-1" /> Add Technician</Button></DialogTrigger>
+            <DialogContent>
+              <DialogHeader><DialogTitle>{editingTechnician ? "Edit Technician" : "New Technician"}</DialogTitle></DialogHeader>
+              <TechnicianForm technician={editingTechnician} onClose={() => closeTechnicianDialog(false)} />
+            </DialogContent>
+          </Dialog>
+        </CardHeader>
+        <CardContent>
+          {techniciansLoading ? (
+            <div className="space-y-2">{[1, 2, 3].map((i) => <Skeleton key={i} className="h-16" />)}</div>
+          ) : !technicians || technicians.length === 0 ? (
+            <div className="text-center py-8">
+              <Users className="h-8 w-8 mx-auto text-muted-foreground/30 mb-2" />
+              <p className="text-sm text-muted-foreground">No technicians configured</p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {technicians.map((technician) => (
+                <div key={technician.id} className="flex items-center justify-between gap-3 rounded-md bg-muted/50 p-3">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-sm font-medium">{technician.displayName}</span>
+                      <Badge variant={technician.status === "ACTIVE" ? "secondary" : "outline"} className={`text-xs ${technician.status === "ACTIVE" ? "bg-primary/10 text-primary" : ""}`}>{technician.status}</Badge>
+                      <Badge variant="outline" className="text-xs">{technician.licenseId}</Badge>
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      {technician.email || "No email"} {technician.phone ? `| ${technician.phone}` : ""}
+                    </p>
+                  </div>
+                  <Button variant="outline" size="sm" onClick={() => { setEditingTechnician(technician); setTechnicianDialogOpen(true); }}>
+                    Edit
+                  </Button>
                 </div>
               ))}
             </div>

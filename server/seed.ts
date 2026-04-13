@@ -1,5 +1,5 @@
 import { db } from "./db";
-import { customers, contacts, locations, serviceTypes, appointments, serviceRecords, productApplications, invoices, communications, billingProfiles, customerNotes, agreementTemplates } from "@shared/schema";
+import { customers, contacts, locations, serviceTypes, technicians, services, appointments, serviceRecords, productApplications, invoices, communications, billingProfiles, customerNotes, agreementTemplates } from "@shared/schema";
 import { eq } from "drizzle-orm";
 
 export async function seedDatabase() {
@@ -56,6 +56,11 @@ export async function seedDatabase() {
     { name: "Termite Treatment", description: "Liquid or bait station termite treatment", defaultPrice: "1500.00", estimatedDuration: 240, category: "Termite" },
     { name: "Rodent Control", description: "Interior/exterior rodent baiting and exclusion", defaultPrice: "175.00", estimatedDuration: 60, category: "Rodent" },
     { name: "Commercial Kitchen Service", description: "Monthly commercial pest management service", defaultPrice: "250.00", estimatedDuration: 90, category: "Commercial" },
+  ]).returning();
+
+  const [tech1, tech2] = await db.insert(technicians).values([
+    { displayName: "Jake Miller", licenseId: "TX-PCO-1001", status: "ACTIVE", email: "jake@pestflow.local", color: "#2563eb" },
+    { displayName: "Sam Torres", licenseId: "TX-PCO-1002", status: "ACTIVE", email: "sam@pestflow.local", color: "#16a34a" },
   ]).returning();
 
   await db.insert(agreementTemplates).values([
@@ -129,17 +134,26 @@ export async function seedDatabase() {
   const nextWeek = new Date(now.getTime() + 7 * 86400000);
   const twoWeeks = new Date(now.getTime() + 14 * 86400000);
 
+  const [svc1, svc2, svc3, svc4, svc5, svc6] = await db.insert(services).values([
+    { customerId: c1.id, locationId: l1.id, serviceTypeId: st1.id, dueDate: twoDaysAgo.toISOString().slice(0, 10), expectedDurationMinutes: 45, price: "125.00", status: "COMPLETED", assignedTechnicianId: tech1.id, source: "MANUAL", notes: "Monthly prevention service" },
+    { customerId: c2.id, locationId: l2.id, serviceTypeId: st5.id, dueDate: yesterday.toISOString().slice(0, 10), expectedDurationMinutes: 90, price: "250.00", status: "COMPLETED", assignedTechnicianId: tech1.id, source: "MANUAL", notes: "Monthly kitchen service" },
+    { customerId: c3.id, locationId: l4.id, serviceTypeId: st2.id, dueDate: tomorrow.toISOString().slice(0, 10), expectedDurationMinutes: 60, price: "200.00", status: "SCHEDULED", assignedTechnicianId: tech1.id, source: "MANUAL", notes: "Annual termite inspection" },
+    { customerId: c4.id, locationId: l5.id, serviceTypeId: st1.id, dueDate: threeDays.toISOString().slice(0, 10), expectedDurationMinutes: 45, price: "125.00", status: "SCHEDULED", assignedTechnicianId: tech2.id, source: "MANUAL", notes: "Quarterly service - all common areas" },
+    { customerId: c2.id, locationId: l3.id, serviceTypeId: st5.id, dueDate: nextWeek.toISOString().slice(0, 10), expectedDurationMinutes: 90, price: "250.00", status: "SCHEDULED", assignedTechnicianId: tech1.id, source: "MANUAL", notes: "Monthly kitchen service - Westside" },
+    { customerId: c3.id, locationId: l4.id, serviceTypeId: st4.id, dueDate: twoWeeks.toISOString().slice(0, 10), expectedDurationMinutes: 60, price: "175.00", status: "PENDING_SCHEDULING", assignedTechnicianId: null, source: "MANUAL", notes: "Rodent follow-up awaiting dispatch." },
+  ]).returning();
+
   const [a1, a2, a3, a4, a5] = await db.insert(appointments).values([
-    { customerId: c1.id, locationId: l1.id, serviceTypeId: st1.id, scheduledDate: twoDaysAgo, status: "completed", assignedTo: "Jake Miller", notes: "Monthly prevention service" },
-    { customerId: c2.id, locationId: l2.id, serviceTypeId: st5.id, scheduledDate: yesterday, status: "completed", assignedTo: "Jake Miller", notes: "Monthly kitchen service" },
-    { customerId: c3.id, locationId: l4.id, serviceTypeId: st2.id, scheduledDate: tomorrow, status: "scheduled", assignedTo: "Jake Miller", notes: "Annual termite inspection" },
-    { customerId: c4.id, locationId: l5.id, serviceTypeId: st1.id, scheduledDate: threeDays, status: "scheduled", assignedTo: "Sam Torres", notes: "Quarterly service - all common areas" },
-    { customerId: c2.id, locationId: l3.id, serviceTypeId: st5.id, scheduledDate: nextWeek, status: "scheduled", assignedTo: "Jake Miller", notes: "Monthly kitchen service - Westside" },
+    { customerId: c1.id, locationId: l1.id, serviceId: svc1.id, serviceTypeId: st1.id, scheduledDate: twoDaysAgo, status: "completed", assignedTo: "Jake Miller", assignedTechnicianId: tech1.id, notes: "Monthly prevention service" },
+    { customerId: c2.id, locationId: l2.id, serviceId: svc2.id, serviceTypeId: st5.id, scheduledDate: yesterday, status: "completed", assignedTo: "Jake Miller", assignedTechnicianId: tech1.id, notes: "Monthly kitchen service" },
+    { customerId: c3.id, locationId: l4.id, serviceId: svc3.id, serviceTypeId: st2.id, scheduledDate: tomorrow, status: "scheduled", assignedTo: "Jake Miller", assignedTechnicianId: tech1.id, notes: "Annual termite inspection" },
+    { customerId: c4.id, locationId: l5.id, serviceId: svc4.id, serviceTypeId: st1.id, scheduledDate: threeDays, status: "scheduled", assignedTo: "Sam Torres", assignedTechnicianId: tech2.id, notes: "Quarterly service - all common areas" },
+    { customerId: c2.id, locationId: l3.id, serviceId: svc5.id, serviceTypeId: st5.id, scheduledDate: nextWeek, status: "scheduled", assignedTo: "Jake Miller", assignedTechnicianId: tech1.id, notes: "Monthly kitchen service - Westside" },
   ]).returning();
 
   const [sr1, sr2] = await db.insert(serviceRecords).values([
-    { appointmentId: a1.id, customerId: c1.id, locationId: l1.id, serviceTypeId: st1.id, serviceDate: twoDaysAgo, technicianName: "Jake Miller", targetPests: ["Ants", "Spiders", "Crickets"], areasServiced: "Exterior perimeter, garage, kitchen, bathrooms", conditionsFound: "Minor ant activity near kitchen window. Spider webs in garage corners.", recommendations: "Seal gap around kitchen window. Remove debris from foundation.", customerSignature: true, confirmed: true },
-    { appointmentId: a2.id, customerId: c2.id, locationId: l2.id, serviceTypeId: st5.id, serviceDate: yesterday, technicianName: "Jake Miller", targetPests: ["Roaches", "Flies", "Stored Product Pests"], areasServiced: "Kitchen, storage areas, dumpster area, dining room", conditionsFound: "Clean conditions. Minor fly activity near back door. No roach activity detected.", recommendations: "Replace weather stripping on back door. Continue monthly service.", customerSignature: true, confirmed: false },
+    { serviceId: svc1.id, appointmentId: a1.id, customerId: c1.id, locationId: l1.id, serviceTypeId: st1.id, serviceDate: twoDaysAgo, technicianId: tech1.id, technicianName: "Jake Miller", targetPests: ["Ants", "Spiders", "Crickets"], areasServiced: "Exterior perimeter, garage, kitchen, bathrooms", conditionsFound: "Minor ant activity near kitchen window. Spider webs in garage corners.", recommendations: "Seal gap around kitchen window. Remove debris from foundation.", customerSignature: true, confirmed: true },
+    { serviceId: svc2.id, appointmentId: a2.id, customerId: c2.id, locationId: l2.id, serviceTypeId: st5.id, serviceDate: yesterday, technicianId: tech1.id, technicianName: "Jake Miller", targetPests: ["Roaches", "Flies", "Stored Product Pests"], areasServiced: "Kitchen, storage areas, dumpster area, dining room", conditionsFound: "Clean conditions. Minor fly activity near back door. No roach activity detected.", recommendations: "Replace weather stripping on back door. Continue monthly service.", customerSignature: true, confirmed: false },
   ]).returning();
 
   await db.insert(productApplications).values([

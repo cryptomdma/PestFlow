@@ -1,425 +1,318 @@
 import { useEffect, useMemo, useState } from "react";
-import { useQuery, useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { useLocation, useSearch } from "wouter";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import {
-  Plus,
-  ChevronLeft,
-  ChevronRight,
-  Clock,
-  User,
-  MapPin,
-} from "lucide-react";
-import type { Customer, Appointment, ServiceType, Location } from "@shared/schema";
+import { ChevronLeft, ChevronRight, ClipboardList, MapPin, Users } from "lucide-react";
+import type { Appointment, Customer, Location, Service, ServiceType, Technician } from "@shared/schema";
 
-const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const VIEW_OPTIONS = [
+  { value: "day", label: "1 Day", step: 1 },
+  { value: "three-day", label: "3 Day", step: 3 },
+  { value: "week", label: "1 Week", step: 7 },
+] as const;
 
-function getDaysInMonth(year: number, month: number) {
-  return new Date(year, month + 1, 0).getDate();
+const HOURS = [8, 10, 12, 14, 16];
+
+function formatDateInputValue(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
-function getFirstDayOfMonth(year: number, month: number) {
-  return new Date(year, month, 1).getDay();
+function startOfDay(date: Date) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
 }
 
-function AppointmentForm({
-  onClose,
-  initialDate,
-  initialValues,
-}: {
-  onClose: () => void;
-  initialDate?: Date;
-  initialValues?: {
-    customerId?: string;
-    locationId?: string;
-    serviceTypeId?: string;
-    agreementId?: string;
-    source?: string;
-    notes?: string;
-    scheduledDate?: string;
-  };
-}) {
-  const { toast } = useToast();
-  const { data: customers } = useQuery<Customer[]>({ queryKey: ["/api/customers"] });
-  const { data: serviceTypes } = useQuery<ServiceType[]>({ queryKey: ["/api/service-types"] });
-  const { data: allLocations } = useQuery<Location[]>({ queryKey: ["/api/all-locations"] });
-  const [, setLocation] = useLocation();
+function addDays(date: Date, days: number) {
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
+  return next;
+}
 
-  const [form, setForm] = useState({
-    customerId: initialValues?.customerId ?? "",
-    locationId: initialValues?.locationId ?? "",
-    serviceTypeId: initialValues?.serviceTypeId ?? "",
-    agreementId: initialValues?.agreementId ?? "",
-    source: initialValues?.source ?? "MANUAL",
-    scheduledDate: initialValues?.scheduledDate ?? (initialDate ? initialDate.toISOString().slice(0, 16) : new Date().toISOString().slice(0, 16)),
-    scheduledEndDate: "",
-    assignedTo: "",
-    notes: initialValues?.notes ?? "",
-    status: "scheduled",
-  });
+function formatCurrency(value: string | null | undefined) {
+  if (!value) return "Not set";
+  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(parseFloat(value));
+}
 
-  const customerLocations = allLocations?.filter((l) => l.customerId === form.customerId) || [];
-
-  const mutation = useMutation({
-    mutationFn: (data: typeof form) =>
-      apiRequest("POST", "/api/appointments", {
-        ...data,
-        scheduledDate: new Date(data.scheduledDate).toISOString(),
-        scheduledEndDate: data.scheduledEndDate ? new Date(data.scheduledEndDate).toISOString() : null,
-        locationId: data.locationId || null,
-        serviceTypeId: data.serviceTypeId || null,
-        agreementId: data.agreementId || null,
-        source: data.source || "MANUAL",
-      }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/appointments"] });
-      if (form.locationId) {
-        queryClient.invalidateQueries({ queryKey: ["/api/appointments/by-location", form.locationId] });
-        queryClient.invalidateQueries({ queryKey: ["/api/agreements/location", form.locationId] });
-      }
-      toast({ title: "Appointment scheduled" });
-      const returnTo = new URLSearchParams(window.location.search).get("returnTo");
-      if (returnTo) {
-        setLocation(returnTo);
-      }
-      onClose();
-    },
-    onError: (err: Error) => {
-      toast({ title: "Error", description: err.message, variant: "destructive" });
-    },
-  });
-
-  return (
-    <form onSubmit={(e) => { e.preventDefault(); mutation.mutate(form); }} className="space-y-4">
-      <div className="space-y-1.5">
-        <Label>Customer *</Label>
-        <Select value={form.customerId} onValueChange={(v) => setForm((p) => ({ ...p, customerId: v, locationId: "" }))}>
-          <SelectTrigger data-testid="select-appt-customer"><SelectValue placeholder="Select customer" /></SelectTrigger>
-          <SelectContent>
-            {customers?.map((c) => (
-              <SelectItem key={c.id} value={c.id}>{c.firstName} {c.lastName}{c.companyName ? ` (${c.companyName})` : ""}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
-      {customerLocations.length > 0 && (
-        <div className="space-y-1.5">
-          <Label>Location</Label>
-          <Select value={form.locationId} onValueChange={(v) => setForm((p) => ({ ...p, locationId: v }))}>
-            <SelectTrigger><SelectValue placeholder="Select location" /></SelectTrigger>
-            <SelectContent>
-              {customerLocations.map((l) => (
-                <SelectItem key={l.id} value={l.id}>{l.name} - {l.address}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-      )}
-      <div className="space-y-1.5">
-        <Label>Service Type</Label>
-        <Select value={form.serviceTypeId} onValueChange={(v) => setForm((p) => ({ ...p, serviceTypeId: v }))}>
-          <SelectTrigger data-testid="select-service-type"><SelectValue placeholder="Select service" /></SelectTrigger>
-          <SelectContent>
-            {serviceTypes?.map((st) => (
-              <SelectItem key={st.id} value={st.id}>{st.name}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
-      <div className="grid grid-cols-2 gap-3">
-        <div className="space-y-1.5">
-          <Label>Start Date/Time *</Label>
-          <Input type="datetime-local" data-testid="input-scheduled-date" value={form.scheduledDate} onChange={(e) => setForm((p) => ({ ...p, scheduledDate: e.target.value }))} />
-        </div>
-        <div className="space-y-1.5">
-          <Label>End Date/Time</Label>
-          <Input type="datetime-local" value={form.scheduledEndDate} onChange={(e) => setForm((p) => ({ ...p, scheduledEndDate: e.target.value }))} />
-        </div>
-      </div>
-      <div className="space-y-1.5">
-        <Label>Assigned Technician</Label>
-        <Input data-testid="input-assigned-to" placeholder="Technician name" value={form.assignedTo} onChange={(e) => setForm((p) => ({ ...p, assignedTo: e.target.value }))} />
-      </div>
-      <div className="space-y-1.5">
-        <Label>Notes</Label>
-        <Textarea value={form.notes} onChange={(e) => setForm((p) => ({ ...p, notes: e.target.value }))} className="resize-none" />
-      </div>
-      <div className="flex justify-end gap-2">
-        <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
-        <Button type="submit" disabled={mutation.isPending || !form.customerId} data-testid="button-save-appointment">
-          {mutation.isPending ? "Scheduling..." : "Schedule"}
-        </Button>
-      </div>
-    </form>
-  );
+function buildSlotDate(baseDate: Date, hour: number) {
+  return new Date(baseDate.getFullYear(), baseDate.getMonth(), baseDate.getDate(), hour, 0, 0, 0);
 }
 
 export default function Schedule() {
+  const { toast } = useToast();
   const search = useSearch();
   const [, setLocation] = useLocation();
-  const [currentDate, setCurrentDate] = useState(new Date());
-  const [dialogOpen, setDialogOpen] = useState(false);
-  const [selectedDate, setSelectedDate] = useState<Date | undefined>();
   const params = useMemo(() => new URLSearchParams(search), [search]);
-  const prefilledInitialValues = useMemo(() => {
-    const customerId = params.get("customerId") || undefined;
-    const locationId = params.get("locationId") || undefined;
-    const serviceTypeId = params.get("serviceTypeId") || undefined;
-    const agreementId = params.get("agreementId") || undefined;
-    const scheduledDate = params.get("scheduledDate") || undefined;
-    const noteParts = ["Initial service for linked agreement"];
-    const agreementName = params.get("agreementName");
-    if (agreementName) {
-      noteParts.unshift(`Agreement: ${agreementName}`);
-    }
 
-    if (!agreementId || !customerId) {
-      return undefined;
-    }
+  const [view, setView] = useState<(typeof VIEW_OPTIONS)[number]["value"]>("day");
+  const [currentDate, setCurrentDate] = useState(() => {
+    const dateParam = params.get("date");
+    return dateParam ? new Date(`${dateParam}T00:00:00`) : new Date();
+  });
+  const [selectedServiceId, setSelectedServiceId] = useState<string | null>(params.get("serviceId"));
 
-    return {
-      customerId,
-      locationId,
-      serviceTypeId,
-      agreementId,
-      source: "AGREEMENT_INITIAL",
-      scheduledDate,
-      notes: noteParts.join("\n"),
-    };
-  }, [params]);
-
-  const year = currentDate.getFullYear();
-  const month = currentDate.getMonth();
-
-  const { data: appointments, isLoading } = useQuery<Appointment[]>({ queryKey: ["/api/appointments"] });
+  const { data: technicians, isLoading: techniciansLoading } = useQuery<Technician[]>({ queryKey: ["/api/technicians"] });
+  const { data: appointments, isLoading: appointmentsLoading } = useQuery<Appointment[]>({ queryKey: ["/api/appointments"] });
+  const { data: pendingServices, isLoading: pendingLoading } = useQuery<Service[]>({ queryKey: ["/api/services/pending"] });
+  const { data: serviceTypes } = useQuery<ServiceType[]>({ queryKey: ["/api/service-types"] });
   const { data: customers } = useQuery<Customer[]>({ queryKey: ["/api/customers"] });
+  const { data: locations } = useQuery<Location[]>({ queryKey: ["/api/all-locations"] });
 
-  const prevMonth = () => setCurrentDate(new Date(year, month - 1, 1));
-  const nextMonth = () => setCurrentDate(new Date(year, month + 1, 1));
-  const today = () => setCurrentDate(new Date());
+  const activeTechnicians = useMemo(() => (technicians ?? []).filter((technician) => technician.status === "ACTIVE"), [technicians]);
+  const serviceTypeNameById = useMemo(() => new Map((serviceTypes ?? []).map((serviceType) => [serviceType.id, serviceType.name])), [serviceTypes]);
+  const customerById = useMemo(() => new Map((customers ?? []).map((customer) => [customer.id, customer])), [customers]);
+  const locationById = useMemo(() => new Map((locations ?? []).map((location) => [location.id, location])), [locations]);
 
-  const daysInMonth = getDaysInMonth(year, month);
-  const firstDay = getFirstDayOfMonth(year, month);
-  const todayStr = new Date().toDateString();
+  const currentView = VIEW_OPTIONS.find((option) => option.value === view)!;
+  const boardDates = useMemo(() => {
+    return Array.from({ length: currentView.step }, (_, index) => startOfDay(addDays(currentDate, index)));
+  }, [currentDate, currentView.step]);
 
-  const apptsByDate = useMemo(() => {
-    const map: Record<string, Appointment[]> = {};
-    appointments?.forEach((a) => {
-      const key = new Date(a.scheduledDate).toDateString();
-      if (!map[key]) map[key] = [];
-      map[key].push(a);
-    });
+  const prefillServiceMutation = useMutation({
+    mutationFn: async () => {
+      const customerId = params.get("customerId");
+      const locationId = params.get("locationId");
+      const serviceTypeId = params.get("serviceTypeId");
+      if (!customerId || !locationId || !serviceTypeId) {
+        throw new Error("Missing context to create the pending service");
+      }
+      const dueDate = params.get("date") || params.get("scheduledDate")?.slice(0, 10) || formatDateInputValue(new Date());
+      const response = await apiRequest("POST", "/api/services", {
+        customerId,
+        locationId,
+        agreementId: params.get("agreementId") || null,
+        serviceTypeId,
+        dueDate,
+        expectedDurationMinutes: null,
+        price: null,
+        status: "PENDING_SCHEDULING",
+        assignedTechnicianId: null,
+        source: params.get("agreementId") ? "AGREEMENT_INITIAL" : "MANUAL",
+        notes: params.get("agreementName") ? `Agreement: ${params.get("agreementName")}` : null,
+      });
+      return response.json() as Promise<Service>;
+    },
+    onSuccess: (service) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/services/pending"] });
+      setSelectedServiceId(service.id);
+      const nextParams = new URLSearchParams(params);
+      nextParams.set("serviceId", service.id);
+      setLocation(`/schedule?${nextParams.toString()}`);
+    },
+  });
+
+  useEffect(() => {
+    const hasExistingService = !!params.get("serviceId");
+    const hasSeedContext = !!params.get("customerId") && !!params.get("locationId") && !!params.get("serviceTypeId");
+    if (!hasExistingService && hasSeedContext && !prefillServiceMutation.isPending && !prefillServiceMutation.isSuccess) {
+      prefillServiceMutation.mutate();
+    }
+  }, [params, prefillServiceMutation]);
+
+  const selectedService = useMemo(() => {
+    return (pendingServices ?? []).find((service) => service.id === selectedServiceId) ?? null;
+  }, [pendingServices, selectedServiceId]);
+
+  const appointmentsByTechnicianAndSlot = useMemo(() => {
+    const map = new Map<string, Appointment[]>();
+    for (const appointment of appointments ?? []) {
+      if (!appointment.assignedTechnicianId) continue;
+      const scheduled = new Date(appointment.scheduledDate);
+      const hourSlot = HOURS.reduce((closest, hour) => (Math.abs(hour - scheduled.getHours()) < Math.abs(closest - scheduled.getHours()) ? hour : closest), HOURS[0]);
+      const key = `${appointment.assignedTechnicianId}:${formatDateInputValue(scheduled)}:${hourSlot}`;
+      const items = map.get(key) ?? [];
+      items.push(appointment);
+      map.set(key, items);
+    }
     return map;
   }, [appointments]);
 
-  const statusColor = (status: string) => {
-    switch (status) {
-      case "scheduled": return "bg-chart-2";
-      case "confirmed": return "bg-chart-4";
-      case "in_progress": return "bg-chart-4";
-      case "completed": return "bg-primary";
-      case "canceled": return "bg-destructive";
-      case "rescheduled": return "bg-chart-5";
-      case "issue": return "bg-destructive";
-      default: return "bg-muted-foreground";
-    }
-  };
-
-  const openNewAppt = (date?: Date) => {
-    setSelectedDate(date);
-    setDialogOpen(true);
-  };
-
-  useEffect(() => {
-    if (prefilledInitialValues?.scheduledDate) {
-      const parsedDate = new Date(prefilledInitialValues.scheduledDate);
-      if (!Number.isNaN(parsedDate.getTime())) {
-        setSelectedDate(parsedDate);
-        setCurrentDate(new Date(parsedDate.getFullYear(), parsedDate.getMonth(), 1));
+  const scheduleMutation = useMutation({
+    mutationFn: async ({ service, technician, slotDate }: { service: Service; technician: Technician; slotDate: Date }) => {
+      const endDate = service.expectedDurationMinutes
+        ? new Date(slotDate.getTime() + service.expectedDurationMinutes * 60 * 1000)
+        : null;
+      const response = await apiRequest("POST", "/api/appointments", {
+        customerId: service.customerId,
+        locationId: service.locationId,
+        serviceId: service.id,
+        agreementId: service.agreementId || null,
+        serviceTypeId: service.serviceTypeId,
+        assignedTechnicianId: technician.id,
+        assignedTo: technician.displayName,
+        source: service.source,
+        generatedForDate: service.source === "AGREEMENT_GENERATED" ? service.dueDate || null : null,
+        scheduledDate: slotDate.toISOString(),
+        scheduledEndDate: endDate ? endDate.toISOString() : null,
+        status: "scheduled",
+        notes: service.notes || null,
+      });
+      return response.json() as Promise<Appointment>;
+    },
+    onSuccess: async () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/appointments"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/services/pending"] });
+      if (selectedService?.locationId) {
+        queryClient.invalidateQueries({ queryKey: ["/api/services/by-location", selectedService.locationId] });
+        queryClient.invalidateQueries({ queryKey: ["/api/appointments/by-location", selectedService.locationId] });
       }
-    }
-    if (prefilledInitialValues) {
-      setDialogOpen(true);
-    }
-  }, [prefilledInitialValues]);
+      toast({ title: "Service scheduled" });
+      const returnTo = params.get("returnTo");
+      if (returnTo) {
+        setLocation(returnTo);
+      }
+    },
+    onError: (error: Error) => toast({ title: "Unable to schedule service", description: error.message, variant: "destructive" }),
+  });
 
-  const calendarCells = [];
-  for (let i = 0; i < firstDay; i++) {
-    calendarCells.push(<div key={`empty-${i}`} className="min-h-[100px] bg-muted/20 rounded-md" />);
-  }
-  for (let d = 1; d <= daysInMonth; d++) {
-    const dateObj = new Date(year, month, d);
-    const dateStr = dateObj.toDateString();
-    const dayAppts = apptsByDate[dateStr] || [];
-    const isToday = dateStr === todayStr;
+  const moveWindow = (direction: 1 | -1) => {
+    setCurrentDate((prev) => addDays(prev, currentView.step * direction));
+  };
 
-    calendarCells.push(
-      <div
-        key={d}
-        className={`min-h-[100px] rounded-md p-1.5 cursor-pointer hover-elevate ${isToday ? "bg-primary/5 ring-1 ring-primary/30" : "bg-muted/30"}`}
-        onClick={() => openNewAppt(dateObj)}
-        data-testid={`calendar-day-${d}`}
-      >
-        <div className={`text-xs font-medium mb-1 ${isToday ? "text-primary" : "text-muted-foreground"}`}>
-          {d}
-        </div>
-        <div className="space-y-0.5">
-          {dayAppts.slice(0, 3).map((appt) => {
-            const cust = customers?.find((c) => c.id === appt.customerId);
-            return (
-              <div
-                key={appt.id}
-                className="flex items-center gap-1 text-xs truncate rounded px-1 py-0.5 bg-background/80"
-                title={`${cust?.firstName} ${cust?.lastName} - ${appt.status}`}
-              >
-                <div className={`h-1.5 w-1.5 rounded-full shrink-0 ${statusColor(appt.status)}`} />
-                <span className="truncate">{cust ? `${cust.firstName} ${cust.lastName.charAt(0)}.` : "N/A"}</span>
-              </div>
-            );
-          })}
-          {dayAppts.length > 3 && (
-            <div className="text-xs text-muted-foreground pl-1">+{dayAppts.length - 3} more</div>
-          )}
-        </div>
-      </div>
-    );
-  }
+  const isLoading = techniciansLoading || appointmentsLoading || pendingLoading || prefillServiceMutation.isPending;
 
   return (
-    <div className="p-6 space-y-6 max-w-7xl mx-auto">
-      <div className="flex items-center justify-between flex-wrap gap-3">
+    <div className="mx-auto max-w-7xl space-y-6 p-6">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight" data-testid="text-page-title">Schedule</h1>
-          <p className="text-muted-foreground text-sm mt-0.5">Manage appointments and service schedules</p>
+          <h1 className="text-2xl font-bold tracking-tight" data-testid="text-page-title">Dispatch Board</h1>
+          <p className="mt-0.5 text-sm text-muted-foreground">Technicians run vertically, time runs horizontally, and pending services stay visible until dispatched.</p>
         </div>
-        <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-          <DialogTrigger asChild>
-            <Button data-testid="button-new-appointment">
-              <Plus className="h-4 w-4 mr-2" />
-              New Appointment
+        <div className="flex items-center gap-2 flex-wrap">
+          {VIEW_OPTIONS.map((option) => (
+            <Button key={option.value} variant={view === option.value ? "default" : "outline"} size="sm" onClick={() => setView(option.value)}>
+              {option.label}
             </Button>
-          </DialogTrigger>
-          <DialogContent className="max-w-lg">
-            <DialogHeader><DialogTitle>Schedule Appointment</DialogTitle></DialogHeader>
-            <AppointmentForm
-              onClose={() => {
-                const returnTo = params.get("returnTo");
-                setDialogOpen(false);
-                if (!returnTo && prefilledInitialValues) {
-                  setLocation("/schedule");
-                }
-              }}
-              initialDate={selectedDate}
-              initialValues={prefilledInitialValues}
-            />
-          </DialogContent>
-        </Dialog>
+          ))}
+        </div>
+      </div>
+
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="icon" onClick={() => moveWindow(-1)}><ChevronLeft className="h-4 w-4" /></Button>
+          <Button variant="outline" size="icon" onClick={() => moveWindow(1)}><ChevronRight className="h-4 w-4" /></Button>
+          <Button variant="outline" size="sm" onClick={() => setCurrentDate(new Date())}>Today</Button>
+        </div>
+        <p className="text-sm font-medium">
+          {boardDates[0].toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+          {boardDates.length > 1 && ` - ${boardDates[boardDates.length - 1].toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}`}
+        </p>
       </div>
 
       <Card>
-        <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0 pb-4">
-          <div className="flex items-center gap-2">
-            <Button variant="outline" size="icon" onClick={prevMonth} data-testid="button-prev-month">
-              <ChevronLeft className="h-4 w-4" />
-            </Button>
-            <h2 className="text-lg font-semibold min-w-[180px] text-center" data-testid="text-current-month">
-              {currentDate.toLocaleDateString("en-US", { month: "long", year: "numeric" })}
-            </h2>
-            <Button variant="outline" size="icon" onClick={nextMonth} data-testid="button-next-month">
-              <ChevronRight className="h-4 w-4" />
-            </Button>
-          </div>
-          <Button variant="outline" size="sm" onClick={today} data-testid="button-today">Today</Button>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base font-semibold flex items-center gap-2"><Users className="h-4 w-4" /> Technician Dispatch Board</CardTitle>
         </CardHeader>
         <CardContent>
           {isLoading ? (
-            <div className="grid grid-cols-7 gap-1">
-              {Array.from({ length: 35 }).map((_, i) => (
-                <Skeleton key={i} className="h-24" />
-              ))}
-            </div>
+            <div className="space-y-2">{[1, 2, 3].map((index) => <Skeleton key={index} className="h-20" />)}</div>
+          ) : activeTechnicians.length === 0 ? (
+            <div className="py-10 text-center text-sm text-muted-foreground">No active technicians available for dispatch.</div>
           ) : (
-            <>
-              <div className="grid grid-cols-7 gap-1 mb-1">
-                {DAYS.map((d) => (
-                  <div key={d} className="text-xs font-medium text-muted-foreground text-center py-1.5">{d}</div>
-                ))}
-              </div>
-              <div className="grid grid-cols-7 gap-1">
-                {calendarCells}
-              </div>
-            </>
-          )}
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base font-semibold">Upcoming Appointments</CardTitle>
-        </CardHeader>
-        <CardContent>
-          {isLoading ? (
-            <div className="space-y-2">{[1, 2, 3].map((i) => <Skeleton key={i} className="h-16" />)}</div>
-          ) : (
-            <div className="space-y-2">
-              {appointments
-                ?.filter((a) => new Date(a.scheduledDate) >= new Date() && a.status !== "canceled")
-                .sort((a, b) => new Date(a.scheduledDate).getTime() - new Date(b.scheduledDate).getTime())
-                .slice(0, 10)
-                .map((appt) => {
-                  const cust = customers?.find((c) => c.id === appt.customerId);
-                  return (
-                    <div key={appt.id} className="flex items-center gap-3 p-3 rounded-md bg-muted/50" data-testid={`upcoming-appt-${appt.id}`}>
-                      <div className={`h-2 w-2 rounded-full shrink-0 ${statusColor(appt.status)}`} />
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className="text-sm font-medium">{cust ? `${cust.firstName} ${cust.lastName}` : "N/A"}</span>
-                          <Badge variant="secondary" className="text-xs capitalize">{appt.status}</Badge>
-                        </div>
-                        <div className="flex items-center gap-3 mt-0.5 text-xs text-muted-foreground flex-wrap">
-                          <span className="flex items-center gap-1">
-                            <Clock className="h-3 w-3" />
-                            {new Date(appt.scheduledDate).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}
-                          </span>
-                          {appt.assignedTo && <span className="flex items-center gap-1"><User className="h-3 w-3" />{appt.assignedTo}</span>}
+            <div className="overflow-x-auto">
+              <div className="min-w-[960px]">
+                <div className="grid border-b bg-muted/20" style={{ gridTemplateColumns: `180px repeat(${boardDates.length * HOURS.length}, minmax(120px, 1fr))` }}>
+                  <div className="border-r px-3 py-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">Technician</div>
+                  {boardDates.flatMap((date) => HOURS.map((hour) => (
+                    <div key={`${formatDateInputValue(date)}-${hour}`} className="border-r px-2 py-2 text-center text-xs font-medium text-muted-foreground">
+                      <div>{date.toLocaleDateString("en-US", { month: "short", day: "numeric" })}</div>
+                      <div>{new Date(2000, 0, 1, hour).toLocaleTimeString("en-US", { hour: "numeric" })}</div>
+                    </div>
+                  )))}
+                </div>
+                {activeTechnicians.map((technician) => (
+                  <div key={technician.id} className="grid border-b last:border-b-0" style={{ gridTemplateColumns: `180px repeat(${boardDates.length * HOURS.length}, minmax(120px, 1fr))` }}>
+                    <div className="border-r px-3 py-3">
+                      <div className="flex items-center gap-2">
+                        <span className="h-3 w-3 rounded-full" style={{ backgroundColor: technician.color || "#2563eb" }} />
+                        <div>
+                          <p className="text-sm font-medium">{technician.displayName}</p>
+                          <p className="text-xs text-muted-foreground">{technician.licenseId}</p>
                         </div>
                       </div>
                     </div>
-                  );
-                }) || <p className="text-sm text-muted-foreground text-center py-4">No upcoming appointments</p>}
+                    {boardDates.flatMap((date) => HOURS.map((hour) => {
+                      const slotDate = buildSlotDate(date, hour);
+                      const slotKey = `${technician.id}:${formatDateInputValue(slotDate)}:${hour}`;
+                      const slotAppointments = appointmentsByTechnicianAndSlot.get(slotKey) ?? [];
+                      return (
+                        <button
+                          key={slotKey}
+                          type="button"
+                          className={`min-h-[92px] border-r px-2 py-2 text-left align-top transition-colors ${selectedService ? "hover:bg-primary/5" : "hover:bg-muted/20"}`}
+                          onClick={() => selectedService && scheduleMutation.mutate({ service: selectedService, technician, slotDate })}
+                          disabled={!selectedService || scheduleMutation.isPending}
+                        >
+                          <div className="text-[11px] text-muted-foreground">{new Date(2000, 0, 1, hour).toLocaleTimeString("en-US", { hour: "numeric" })}</div>
+                          <div className="mt-2 space-y-1">
+                            {slotAppointments.map((appointment) => (
+                              <div key={appointment.id} className="rounded-md border bg-background px-2 py-1 text-xs">
+                                <p className="font-medium">{customerById.get(appointment.customerId)?.lastName || "Location"}</p>
+                                <p className="text-muted-foreground">{serviceTypeNameById.get(appointment.serviceTypeId || "") || "Service"}</p>
+                              </div>
+                            ))}
+                            {!slotAppointments.length && selectedService && (
+                              <div className="rounded-md border border-dashed px-2 py-3 text-center text-[11px] text-primary">Place here</div>
+                            )}
+                          </div>
+                        </button>
+                      );
+                    }))}
+                  </div>
+                ))}
+              </div>
             </div>
           )}
         </CardContent>
       </Card>
 
-      <div className="flex items-center gap-4 flex-wrap">
-        <div className="flex items-center gap-1.5"><div className="h-2.5 w-2.5 rounded-full bg-chart-2" /><span className="text-xs text-muted-foreground">Scheduled</span></div>
-        <div className="flex items-center gap-1.5"><div className="h-2.5 w-2.5 rounded-full bg-chart-4" /><span className="text-xs text-muted-foreground">Confirmed / In Progress</span></div>
-        <div className="flex items-center gap-1.5"><div className="h-2.5 w-2.5 rounded-full bg-primary" /><span className="text-xs text-muted-foreground">Completed</span></div>
-        <div className="flex items-center gap-1.5"><div className="h-2.5 w-2.5 rounded-full bg-destructive" /><span className="text-xs text-muted-foreground">Canceled / Issue</span></div>
-      </div>
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base font-semibold flex items-center gap-2"><ClipboardList className="h-4 w-4" /> Pending Dispatch Queue</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {pendingLoading ? (
+            <div className="space-y-2">{[1, 2, 3].map((index) => <Skeleton key={index} className="h-16" />)}</div>
+          ) : !pendingServices || pendingServices.length === 0 ? (
+            <div className="py-8 text-center text-sm text-muted-foreground">No pending services waiting for dispatch.</div>
+          ) : (
+            <div className="space-y-2">
+              {pendingServices.map((service) => {
+                const location = locationById.get(service.locationId);
+                const customer = customerById.get(service.customerId);
+                const isSelected = service.id === selectedServiceId;
+                return (
+                  <button
+                    key={service.id}
+                    type="button"
+                    className={`flex w-full items-start justify-between gap-3 rounded-md border px-3 py-3 text-left transition-colors ${isSelected ? "border-primary bg-primary/5" : "hover:bg-muted/20"}`}
+                    onClick={() => setSelectedServiceId(service.id)}
+                  >
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <p className="text-sm font-medium">{customer ? `${customer.firstName} ${customer.lastName}` : "Location service"}</p>
+                        <Badge variant="outline" className="text-xs">{service.status}</Badge>
+                      </div>
+                      <p className="mt-1 text-xs text-muted-foreground">{serviceTypeNameById.get(service.serviceTypeId || "") || "Service"} | {service.expectedDurationMinutes ? `${service.expectedDurationMinutes} min` : "Duration not set"} | Due {service.dueDate || "Not set"}</p>
+                      {location && <p className="mt-1 flex items-center gap-1 text-xs text-muted-foreground"><MapPin className="h-3 w-3" /> {location.name} - {location.address}</p>}
+                    </div>
+                    <div className="shrink-0 text-right">
+                      <p className="text-sm font-medium">{formatCurrency(service.price)}</p>
+                      <p className="mt-1 text-xs text-muted-foreground">{isSelected ? "Selected" : "Click to dispatch"}</p>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </CardContent>
+      </Card>
     </div>
   );
 }
