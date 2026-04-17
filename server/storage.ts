@@ -147,6 +147,7 @@ export interface IStorage {
   createTechnician(data: InsertTechnician): Promise<Technician>;
   updateTechnician(id: string, data: Partial<InsertTechnician>): Promise<Technician | undefined>;
 
+  getServices(): Promise<Service[]>;
   getServicesByLocation(locationId: string): Promise<Service[]>;
   getPendingServices(window?: DispatchBoardWindow): Promise<Service[]>;
   getService(id: string): Promise<Service | undefined>;
@@ -1209,6 +1210,10 @@ export class DatabaseStorage implements IStorage {
     const payload = this.normalizeTechnicianUpdate(data);
     const [technician] = await db.update(technicians).set({ ...payload, updatedAt: new Date() }).where(eq(technicians.id, id)).returning();
     return technician;
+  }
+
+  async getServices(): Promise<Service[]> {
+    return db.select().from(services);
   }
 
   async getServicesByLocation(locationId: string): Promise<Service[]> {

@@ -159,6 +159,8 @@ export const appointments = pgTable("appointments", {
   scheduledDate: timestamp("scheduled_date").notNull(),
   scheduledEndDate: timestamp("scheduled_end_date"),
   status: text("status").notNull().default("scheduled"),
+  lockTime: boolean("lock_time").notNull().default(false),
+  lockTechnician: boolean("lock_technician").notNull().default(false),
   assignedTo: text("assigned_to"),
   notes: text("notes"),
   createdAt: timestamp("created_at").defaultNow().notNull(),

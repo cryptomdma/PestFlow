@@ -802,6 +802,11 @@ export async function registerRoutes(
   });
 
   // Services
+  app.get("/api/services", async (_req, res) => {
+    const data = await storage.getServices();
+    res.json(data);
+  });
+
   app.get("/api/services/by-location/:locationId", async (req, res) => {
     const data = await storage.getServicesByLocation(req.params.locationId);
     res.json(data);
