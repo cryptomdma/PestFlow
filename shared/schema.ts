@@ -114,6 +114,8 @@ export const serviceTypes = pgTable("service_types", {
   defaultPrice: decimal("default_price", { precision: 10, scale: 2 }),
   estimatedDuration: integer("estimated_duration"),
   category: text("category"),
+  opportunityLeadDays: integer("opportunity_lead_days"),
+  opportunityLabel: text("opportunity_label"),
 });
 
 export const technicians = pgTable("technicians", {
@@ -133,6 +135,7 @@ export const services = pgTable("services", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   customerId: varchar("customer_id").notNull().references(() => customers.id),
   locationId: varchar("location_id").notNull().references(() => locations.id),
+  appointmentId: varchar("appointment_id").references(() => appointments.id),
   agreementId: varchar("agreement_id"),
   serviceTypeId: varchar("service_type_id").references(() => serviceTypes.id),
   dueDate: date("due_date"),
@@ -235,6 +238,8 @@ export const serviceRecords = pgTable("service_records", {
   serviceDate: timestamp("service_date").notNull(),
   technicianId: varchar("technician_id").references(() => technicians.id),
   technicianName: text("technician_name"),
+  technicianLicenseNumber: text("technician_license_number"),
+  notes: text("notes"),
   targetPests: text("target_pests").array(),
   areasServiced: text("areas_serviced"),
   conditionsFound: text("conditions_found"),
@@ -242,6 +247,20 @@ export const serviceRecords = pgTable("service_records", {
   customerSignature: boolean("customer_signature").default(false),
   confirmed: boolean("confirmed").default(false),
   createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const opportunities = pgTable("opportunities", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  locationId: varchar("location_id").notNull().references(() => locations.id),
+  sourceServiceId: varchar("source_service_id").references(() => services.id),
+  sourceServiceRecordId: varchar("source_service_record_id").references(() => serviceRecords.id),
+  serviceTypeId: varchar("service_type_id").references(() => serviceTypes.id),
+  opportunityType: text("opportunity_type"),
+  dueDate: date("due_date").notNull(),
+  status: text("status").notNull().default("OPEN"),
+  notes: text("notes"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
 export const productApplications = pgTable("product_applications", {
@@ -310,6 +329,7 @@ export const insertAppointmentSchema = createInsertSchema(appointments).omit({ i
 export const insertAgreementSchema = createInsertSchema(agreements).omit({ id: true, createdAt: true, updatedAt: true });
 export const insertAgreementTemplateSchema = createInsertSchema(agreementTemplates).omit({ id: true, createdAt: true, updatedAt: true });
 export const insertServiceRecordSchema = createInsertSchema(serviceRecords).omit({ id: true, createdAt: true });
+export const insertOpportunitySchema = createInsertSchema(opportunities).omit({ id: true, createdAt: true, updatedAt: true });
 export const insertProductApplicationSchema = createInsertSchema(productApplications).omit({ id: true });
 export const insertInvoiceSchema = createInsertSchema(invoices).omit({ id: true, createdAt: true });
 export const insertCommunicationSchema = createInsertSchema(communications).omit({ id: true });
@@ -343,6 +363,8 @@ export type AgreementTemplate = typeof agreementTemplates.$inferSelect;
 export type InsertAgreementTemplate = z.infer<typeof insertAgreementTemplateSchema>;
 export type ServiceRecord = typeof serviceRecords.$inferSelect;
 export type InsertServiceRecord = z.infer<typeof insertServiceRecordSchema>;
+export type Opportunity = typeof opportunities.$inferSelect;
+export type InsertOpportunity = z.infer<typeof insertOpportunitySchema>;
 export type ProductApplication = typeof productApplications.$inferSelect;
 export type InsertProductApplication = z.infer<typeof insertProductApplicationSchema>;
 export type Invoice = typeof invoices.$inferSelect;

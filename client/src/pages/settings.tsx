@@ -61,6 +61,8 @@ function ServiceTypeForm({ onClose }: { onClose: () => void }) {
     defaultPrice: "",
     estimatedDuration: "",
     category: "",
+    opportunityLeadDays: "",
+    opportunityLabel: "",
   });
 
   const mutation = useMutation({
@@ -71,6 +73,8 @@ function ServiceTypeForm({ onClose }: { onClose: () => void }) {
         estimatedDuration: data.estimatedDuration ? parseInt(data.estimatedDuration) : null,
         category: data.category || null,
         description: data.description || null,
+        opportunityLeadDays: data.opportunityLeadDays ? parseInt(data.opportunityLeadDays) : null,
+        opportunityLabel: data.opportunityLabel || null,
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/service-types"] });
@@ -91,6 +95,10 @@ function ServiceTypeForm({ onClose }: { onClose: () => void }) {
         <div className="space-y-1.5"><Label>Duration (min)</Label><Input type="number" value={form.estimatedDuration} onChange={(e) => setForm((p) => ({ ...p, estimatedDuration: e.target.value }))} /></div>
       </div>
       <div className="space-y-1.5"><Label>Category</Label><Input placeholder="e.g., General, Termite, Wildlife" value={form.category} onChange={(e) => setForm((p) => ({ ...p, category: e.target.value }))} /></div>
+      <div className="grid grid-cols-2 gap-3">
+        <div className="space-y-1.5"><Label>Opportunity Lead Days</Label><Input type="number" min="0" value={form.opportunityLeadDays} onChange={(e) => setForm((p) => ({ ...p, opportunityLeadDays: e.target.value }))} /></div>
+        <div className="space-y-1.5"><Label>Opportunity Label</Label><Input placeholder="e.g., Annual Renewal" value={form.opportunityLabel} onChange={(e) => setForm((p) => ({ ...p, opportunityLabel: e.target.value }))} /></div>
+      </div>
       <div className="flex justify-end gap-2"><Button type="button" variant="outline" onClick={onClose}>Cancel</Button><Button type="submit" disabled={mutation.isPending || !form.name} data-testid="button-save-service-type">{mutation.isPending ? "Saving..." : "Create"}</Button></div>
     </form>
   );
@@ -403,8 +411,10 @@ export default function Settings() {
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className="text-sm font-medium">{st.name}</span>
                       {st.category && <Badge variant="outline" className="text-xs">{st.category}</Badge>}
+                      {st.opportunityLeadDays ? <Badge variant="secondary" className="text-xs">{st.opportunityLeadDays}d opportunity</Badge> : null}
                     </div>
                     {st.description && <p className="text-xs text-muted-foreground mt-0.5">{st.description}</p>}
+                    {st.opportunityLabel && <p className="text-xs text-muted-foreground mt-0.5">Opportunity: {st.opportunityLabel}</p>}
                   </div>
                   <div className="flex items-center gap-3 shrink-0 text-sm">
                     {st.defaultPrice && <span className="font-semibold">${parseFloat(st.defaultPrice).toFixed(2)}</span>}

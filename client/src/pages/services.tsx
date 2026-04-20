@@ -32,7 +32,7 @@ import {
   Beaker,
   AlertTriangle,
 } from "lucide-react";
-import type { Customer, ServiceRecord, ProductApplication, ServiceType, Location } from "@shared/schema";
+import type { Customer, ServiceRecord, ProductApplication, ServiceType, Location, Technician } from "@shared/schema";
 
 function ProductApplicationForm({
   products,
@@ -106,13 +106,17 @@ function ServiceRecordForm({ onClose }: { onClose: () => void }) {
   const { data: customers } = useQuery<Customer[]>({ queryKey: ["/api/customers"] });
   const { data: serviceTypes } = useQuery<ServiceType[]>({ queryKey: ["/api/service-types"] });
   const { data: allLocations } = useQuery<Location[]>({ queryKey: ["/api/all-locations"] });
+  const { data: technicians } = useQuery<Technician[]>({ queryKey: ["/api/technicians?includeInactive=true"] });
 
   const [form, setForm] = useState({
     customerId: "",
     locationId: "",
     serviceTypeId: "",
     serviceDate: new Date().toISOString().slice(0, 16),
+    technicianId: "",
     technicianName: "",
+    technicianLicenseNumber: "",
+    notes: "",
     targetPests: "",
     areasServiced: "",
     conditionsFound: "",
@@ -127,6 +131,7 @@ function ServiceRecordForm({ onClose }: { onClose: () => void }) {
   }>>([]);
 
   const customerLocations = allLocations?.filter((l) => l.customerId === form.customerId) || [];
+  const selectedTechnician = technicians?.find((technician) => technician.id === form.technicianId) ?? null;
 
   const mutation = useMutation({
     mutationFn: async (data: typeof form) => {
@@ -136,6 +141,10 @@ function ServiceRecordForm({ onClose }: { onClose: () => void }) {
         targetPests: data.targetPests ? data.targetPests.split(",").map((s) => s.trim()) : [],
         locationId: data.locationId || null,
         serviceTypeId: data.serviceTypeId || null,
+        technicianId: data.technicianId || null,
+        technicianName: data.technicianName || null,
+        technicianLicenseNumber: data.technicianLicenseNumber || null,
+        notes: data.notes || null,
         appointmentId: null,
       });
       const record = await res.json();
@@ -192,7 +201,29 @@ function ServiceRecordForm({ onClose }: { onClose: () => void }) {
           <Input type="datetime-local" data-testid="input-service-date" value={form.serviceDate} onChange={(e) => setForm((p) => ({ ...p, serviceDate: e.target.value }))} />
         </div>
       </div>
-      <div className="space-y-1.5"><Label>Technician</Label><Input data-testid="input-technician" value={form.technicianName} onChange={(e) => setForm((p) => ({ ...p, technicianName: e.target.value }))} /></div>
+      <div className="grid grid-cols-2 gap-3">
+        <div className="space-y-1.5">
+          <Label>Technician</Label>
+          <Select
+            value={form.technicianId}
+            onValueChange={(value) => {
+              const technician = technicians?.find((item) => item.id === value);
+              setForm((p) => ({
+                ...p,
+                technicianId: value,
+                technicianName: technician?.displayName || "",
+                technicianLicenseNumber: technician?.licenseId || "",
+              }));
+            }}
+          >
+            <SelectTrigger><SelectValue placeholder="Select technician" /></SelectTrigger>
+            <SelectContent>{technicians?.map((technician) => <SelectItem key={technician.id} value={technician.id}>{technician.displayName}</SelectItem>)}</SelectContent>
+          </Select>
+        </div>
+        <div className="space-y-1.5"><Label>Technician License #</Label><Input value={form.technicianLicenseNumber} onChange={(e) => setForm((p) => ({ ...p, technicianLicenseNumber: e.target.value }))} placeholder={selectedTechnician?.licenseId || ""} /></div>
+      </div>
+      <div className="space-y-1.5"><Label>Technician Name Snapshot</Label><Input data-testid="input-technician" value={form.technicianName} onChange={(e) => setForm((p) => ({ ...p, technicianName: e.target.value }))} /></div>
+      <div className="space-y-1.5"><Label>Completion Notes</Label><Textarea value={form.notes} onChange={(e) => setForm((p) => ({ ...p, notes: e.target.value }))} className="resize-none" /></div>
       <div className="space-y-1.5"><Label>Target Pests (comma-separated)</Label><Input value={form.targetPests} onChange={(e) => setForm((p) => ({ ...p, targetPests: e.target.value }))} placeholder="e.g., Ants, Roaches, Spiders" /></div>
       <div className="space-y-1.5"><Label>Areas Serviced</Label><Input value={form.areasServiced} onChange={(e) => setForm((p) => ({ ...p, areasServiced: e.target.value }))} /></div>
       <div className="space-y-1.5"><Label>Conditions Found</Label><Textarea value={form.conditionsFound} onChange={(e) => setForm((p) => ({ ...p, conditionsFound: e.target.value }))} className="resize-none" /></div>

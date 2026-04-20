@@ -51,10 +51,10 @@ export async function seedDatabase() {
   ]);
 
   const [st1, st2, st3, st4, st5] = await db.insert(serviceTypes).values([
-    { name: "General Pest Control", description: "Standard interior/exterior pest prevention treatment", defaultPrice: "125.00", estimatedDuration: 45, category: "General" },
-    { name: "Termite Inspection", description: "Comprehensive WDI/WDO inspection with report", defaultPrice: "200.00", estimatedDuration: 60, category: "Termite" },
-    { name: "Termite Treatment", description: "Liquid or bait station termite treatment", defaultPrice: "1500.00", estimatedDuration: 240, category: "Termite" },
-    { name: "Rodent Control", description: "Interior/exterior rodent baiting and exclusion", defaultPrice: "175.00", estimatedDuration: 60, category: "Rodent" },
+    { name: "General Pest Control", description: "Standard interior/exterior pest prevention treatment", defaultPrice: "125.00", estimatedDuration: 45, category: "General", opportunityLeadDays: 90, opportunityLabel: "General Pest Follow-up" },
+    { name: "Termite Inspection", description: "Comprehensive WDI/WDO inspection with report", defaultPrice: "200.00", estimatedDuration: 60, category: "Termite", opportunityLeadDays: 365, opportunityLabel: "Annual Termite Renewal" },
+    { name: "Termite Treatment", description: "Liquid or bait station termite treatment", defaultPrice: "1500.00", estimatedDuration: 240, category: "Termite", opportunityLeadDays: 365, opportunityLabel: "Termite Renewal" },
+    { name: "Rodent Control", description: "Interior/exterior rodent baiting and exclusion", defaultPrice: "175.00", estimatedDuration: 60, category: "Rodent", opportunityLeadDays: 60, opportunityLabel: "Rodent Follow-up" },
     { name: "Commercial Kitchen Service", description: "Monthly commercial pest management service", defaultPrice: "250.00", estimatedDuration: 90, category: "Commercial" },
   ]).returning();
 

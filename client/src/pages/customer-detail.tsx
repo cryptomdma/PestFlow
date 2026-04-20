@@ -35,9 +35,9 @@ import {
   ArrowLeft, Mail, Phone, MapPin, Plus, Calendar, FileText, MessageSquare,
   ClipboardList, Building2, User, ChevronDown, ArrowUpRight, StickyNote,
   History,
-  CreditCard, KeyRound, Ruler, ChevronUp, Check, Link2,
+  CreditCard, KeyRound, Ruler, ChevronUp, Check, Link2, Target,
 } from "lucide-react";
-import type { Customer, Contact, Location, Appointment, Invoice, Service, ServiceRecord, Communication, CustomerNote, BillingProfile, NoteRevision, Agreement, AgreementTemplate, ServiceType, Technician } from "@shared/schema";
+import type { Customer, Contact, Location, Appointment, Invoice, Service, ServiceRecord, Communication, CustomerNote, BillingProfile, NoteRevision, Agreement, AgreementTemplate, ServiceType, Technician, Opportunity } from "@shared/schema";
 
 interface CustomerDetailCompatResponse {
   legacyCustomer: Customer;
@@ -97,6 +97,41 @@ function formatDateOnly(value: string | null | undefined) {
     day: "numeric",
     year: "numeric",
   });
+}
+
+function formatDateTimeValue(value: string | Date | null | undefined) {
+  if (!value) {
+    return "Not set";
+  }
+
+  return new Date(value).toLocaleString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function getServiceDisplayDate(service: Service, appointment?: Appointment | null, serviceRecord?: ServiceRecord | null) {
+  if (serviceRecord?.serviceDate) {
+    return {
+      label: formatDateTimeValue(serviceRecord.serviceDate),
+      source: "completed",
+    };
+  }
+
+  if (appointment?.scheduledDate) {
+    return {
+      label: formatDateTimeValue(appointment.scheduledDate),
+      source: "scheduled",
+    };
+  }
+
+  return {
+    label: formatDateOnly(service.dueDate),
+    source: "due",
+  };
 }
 
 function formatAgreementRecurrence(agreement: Agreement) {
@@ -2008,6 +2043,8 @@ function ServiceDetailModal({
   appointment,
   serviceRecord,
   invoice,
+  siblingServices,
+  serviceTypeNameById,
 }: {
   service: Service;
   serviceTypeName: string;
@@ -2015,13 +2052,18 @@ function ServiceDetailModal({
   appointment?: Appointment | null;
   serviceRecord?: ServiceRecord | null;
   invoice?: Invoice | null;
+  siblingServices?: Service[];
+  serviceTypeNameById: Map<string, string>;
 }) {
+  const displayDate = getServiceDisplayDate(service, appointment, serviceRecord);
+  const siblingCount = Math.max((siblingServices?.length ?? 1) - 1, 0);
+
   return (
     <div className="space-y-4 text-sm">
       <div className="grid gap-3 sm:grid-cols-2">
         <div><p className="text-xs uppercase tracking-wide text-muted-foreground">Service Type</p><p className="mt-1 font-medium">{serviceTypeName}</p></div>
         <div><p className="text-xs uppercase tracking-wide text-muted-foreground">Status</p><p className="mt-1">{service.status}</p></div>
-        <div><p className="text-xs uppercase tracking-wide text-muted-foreground">Due / Service Date</p><p className="mt-1">{formatDateOnly(serviceRecord ? new Date(serviceRecord.serviceDate).toISOString().slice(0, 10) : service.dueDate)}</p></div>
+        <div><p className="text-xs uppercase tracking-wide text-muted-foreground">Service Date</p><p className="mt-1">{displayDate.label}</p></div>
         <div><p className="text-xs uppercase tracking-wide text-muted-foreground">Technician</p><p className="mt-1">{technicianName || "Unassigned"}</p></div>
         <div><p className="text-xs uppercase tracking-wide text-muted-foreground">Cost</p><p className="mt-1">{service.price ? formatCurrency(parseFloat(service.price)) : "Not set"}</p></div>
         <div><p className="text-xs uppercase tracking-wide text-muted-foreground">Duration</p><p className="mt-1">{service.expectedDurationMinutes ? `${service.expectedDurationMinutes} min` : "Not set"}</p></div>
@@ -2029,7 +2071,8 @@ function ServiceDetailModal({
       {appointment && (
         <div className="rounded-md border bg-muted/20 p-3">
           <p className="text-xs uppercase tracking-wide text-muted-foreground">Linked Appointment</p>
-          <p className="mt-1 font-medium">{new Date(appointment.scheduledDate).toLocaleString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" })}</p>
+          <p className="mt-1 font-medium">{formatDateTimeValue(appointment.scheduledDate)}</p>
+          {siblingCount > 0 ? <p className="mt-1 text-xs text-muted-foreground">This visit also includes {siblingCount} other service{siblingCount === 1 ? "" : "s"}.</p> : null}
         </div>
       )}
       {invoice && (
@@ -2047,9 +2090,26 @@ function ServiceDetailModal({
       {serviceRecord && (
         <div className="space-y-2">
           <p className="text-xs uppercase tracking-wide text-muted-foreground">Completion Details</p>
+          {serviceRecord.technicianName && <p><span className="font-medium">Technician:</span> {serviceRecord.technicianName}</p>}
+          {serviceRecord.technicianLicenseNumber && <p><span className="font-medium">License #:</span> {serviceRecord.technicianLicenseNumber}</p>}
+          {serviceRecord.notes && <p><span className="font-medium">Notes:</span> {serviceRecord.notes}</p>}
           {serviceRecord.areasServiced && <p><span className="font-medium">Areas:</span> {serviceRecord.areasServiced}</p>}
           {serviceRecord.conditionsFound && <p><span className="font-medium">Conditions:</span> {serviceRecord.conditionsFound}</p>}
           {serviceRecord.recommendations && <p><span className="font-medium">Recommendations:</span> {serviceRecord.recommendations}</p>}
+        </div>
+      )}
+      {appointment && siblingServices && siblingServices.length > 1 && (
+        <div className="space-y-2">
+          <p className="text-xs uppercase tracking-wide text-muted-foreground">Other Services In This Visit</p>
+          <div className="space-y-1">
+            {siblingServices
+              .filter((sibling) => sibling.id !== service.id)
+              .map((sibling) => (
+                <div key={sibling.id} className="rounded-md border bg-muted/20 px-3 py-2">
+                  {serviceTypeNameById.get(sibling.serviceTypeId || "") || "Service"}
+                </div>
+              ))}
+          </div>
         </div>
       )}
     </div>
@@ -2081,13 +2141,19 @@ function ServicesTab({
 
   const serviceTypeNameById = useMemo(() => new Map((serviceTypes ?? []).map((serviceType) => [serviceType.id, serviceType.name])), [serviceTypes]);
   const technicianNameById = useMemo(() => new Map((technicians ?? []).map((technician) => [technician.id, technician.displayName])), [technicians]);
+  const appointmentsById = useMemo(() => new Map((appointments ?? []).map((appointment) => [appointment.id, appointment])), [appointments]);
   const appointmentByServiceId = useMemo(() => {
     const map = new Map<string, Appointment>();
+    for (const service of services ?? []) {
+      if (service.appointmentId && appointmentsById.has(service.appointmentId)) {
+        map.set(service.id, appointmentsById.get(service.appointmentId)!);
+      }
+    }
     for (const appointment of appointments ?? []) {
-      if (appointment.serviceId) map.set(appointment.serviceId, appointment);
+      if (appointment.serviceId && !map.has(appointment.serviceId)) map.set(appointment.serviceId, appointment);
     }
     return map;
-  }, [appointments]);
+  }, [appointments, appointmentsById, services]);
   const serviceRecordByServiceId = useMemo(() => {
     const map = new Map<string, ServiceRecord>();
     for (const serviceRecord of serviceRecords ?? []) {
@@ -2105,14 +2171,37 @@ function ServicesTab({
     }
     return map;
   }, [invoices, serviceRecords]);
+  const siblingServicesByAppointmentId = useMemo(() => {
+    const map = new Map<string, Service[]>();
+    for (const service of services ?? []) {
+      const appointmentId = service.appointmentId || appointmentByServiceId.get(service.id)?.id;
+      if (!appointmentId) continue;
+      const existing = map.get(appointmentId) ?? [];
+      existing.push(service);
+      map.set(appointmentId, existing);
+    }
+    return map;
+  }, [appointmentByServiceId, services]);
 
   const sortedServices = useMemo(() => {
     return [...(services ?? [])].sort((a, b) => {
-      const dateA = a.dueDate ?? "";
-      const dateB = b.dueDate ?? "";
+      const appointmentA = appointmentByServiceId.get(a.id) ?? null;
+      const appointmentB = appointmentByServiceId.get(b.id) ?? null;
+      const serviceRecordA = serviceRecordByServiceId.get(a.id) ?? null;
+      const serviceRecordB = serviceRecordByServiceId.get(b.id) ?? null;
+      const dateA = serviceRecordA?.serviceDate
+        ? new Date(serviceRecordA.serviceDate).toISOString()
+        : appointmentA?.scheduledDate
+          ? new Date(appointmentA.scheduledDate).toISOString()
+          : `${a.dueDate ?? ""}T00:00:00.000Z`;
+      const dateB = serviceRecordB?.serviceDate
+        ? new Date(serviceRecordB.serviceDate).toISOString()
+        : appointmentB?.scheduledDate
+          ? new Date(appointmentB.scheduledDate).toISOString()
+          : `${b.dueDate ?? ""}T00:00:00.000Z`;
       return dateB.localeCompare(dateA);
     });
-  }, [services]);
+  }, [appointmentByServiceId, serviceRecordByServiceId, services]);
 
   const openCreate = () => {
     setEditingService(null);
@@ -2124,6 +2213,10 @@ function ServicesTab({
       serviceId: service.id,
       returnTo: `/customers/${customerId}?locationId=${locationId}`,
     });
+    const linkedAppointment = appointmentByServiceId.get(service.id);
+    if (linkedAppointment) {
+      params.set("appointmentId", linkedAppointment.id);
+    }
     if (service.dueDate) params.set("date", service.dueDate);
     setLocation(`/schedule?${params.toString()}`);
   };
@@ -2155,9 +2248,9 @@ function ServicesTab({
             const appointment = appointmentByServiceId.get(service.id) ?? null;
             const serviceRecord = serviceRecordByServiceId.get(service.id) ?? null;
             const invoice = invoiceByServiceId.get(service.id) ?? null;
-            const serviceDateLabel = serviceRecord
-              ? new Date(serviceRecord.serviceDate).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
-              : formatDateOnly(service.dueDate);
+            const displayDate = getServiceDisplayDate(service, appointment, serviceRecord);
+            const siblingServices = appointment ? siblingServicesByAppointmentId.get(appointment.id) ?? [service] : [service];
+            const siblingCount = Math.max(siblingServices.length - 1, 0);
             const technicianName = technicianNameById.get(service.assignedTechnicianId || "") || serviceRecord?.technicianName || "Unassigned";
             return (
               <div
@@ -2165,8 +2258,19 @@ function ServicesTab({
                 onClick={() => setDetailService(service)}
                 className="grid w-full cursor-pointer grid-cols-[1.1fr_1.6fr_0.9fr_1.1fr_0.8fr_1fr] gap-3 border-b px-3 py-2 text-left text-sm transition-colors hover:bg-muted/20 last:border-b-0"
               >
-                <span>{serviceDateLabel}</span>
-                <span className="truncate">{serviceTypeNameById.get(service.serviceTypeId || "") || "Service"}</span>
+                <span>
+                  <span className="block">{displayDate.label}</span>
+                  {displayDate.source === "scheduled" ? <span className="text-xs text-muted-foreground">Scheduled visit date</span> : null}
+                </span>
+                <span className="min-w-0">
+                  <span className="block truncate">{serviceTypeNameById.get(service.serviceTypeId || "") || "Service"}</span>
+                  {appointment ? (
+                    <span className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
+                      <Badge variant="outline" className="h-5 px-1.5 text-[10px]">Shared visit</Badge>
+                      {siblingCount > 0 ? `Scheduled with ${siblingCount} other service${siblingCount === 1 ? "" : "s"}` : "Scheduled visit"}
+                    </span>
+                  ) : null}
+                </span>
                 <span>{service.price ? formatCurrency(parseFloat(service.price)) : "Not set"}</span>
                 <span className="truncate">{technicianName}</span>
                 <span>
@@ -2185,7 +2289,9 @@ function ServicesTab({
                 </span>
                 <span className="flex justify-end gap-2">
                   <Button type="button" variant="outline" size="sm" onClick={(event) => { event.stopPropagation(); setEditingService(service); setDialogOpen(true); }}>Edit</Button>
-                  <Button type="button" size="sm" onClick={(event) => { event.stopPropagation(); scheduleService(service); }} disabled={service.status === "COMPLETED" || service.status === "CANCELLED"}>Schedule</Button>
+                  <Button type="button" size="sm" onClick={(event) => { event.stopPropagation(); scheduleService(service); }} disabled={service.status === "COMPLETED" || service.status === "CANCELLED"}>
+                    {appointment ? "Reschedule" : "Schedule"}
+                  </Button>
                 </span>
               </div>
             );
@@ -2203,10 +2309,56 @@ function ServicesTab({
               appointment={appointmentByServiceId.get(detailService.id) ?? null}
               serviceRecord={serviceRecordByServiceId.get(detailService.id) ?? null}
               invoice={invoiceByServiceId.get(detailService.id) ?? null}
+              siblingServices={(appointmentByServiceId.get(detailService.id) ? siblingServicesByAppointmentId.get(appointmentByServiceId.get(detailService.id)!.id) : undefined) ?? [detailService]}
+              serviceTypeNameById={serviceTypeNameById}
             />
           )}
         </DialogContent>
       </Dialog>
+    </div>
+  );
+}
+
+function OpportunitiesTab({
+  locationId,
+}: {
+  locationId: string;
+}) {
+  const { data: opportunities } = useQuery<Opportunity[]>({ queryKey: ["/api/opportunities/by-location", locationId], enabled: !!locationId });
+  const { data: serviceTypes } = useQuery<ServiceType[]>({ queryKey: ["/api/service-types"] });
+
+  const serviceTypeNameById = useMemo(() => new Map((serviceTypes ?? []).map((serviceType) => [serviceType.id, serviceType.name])), [serviceTypes]);
+  const sortedOpportunities = useMemo(() => {
+    return [...(opportunities ?? [])].sort((a, b) => b.dueDate.localeCompare(a.dueDate));
+  }, [opportunities]);
+
+  if (!sortedOpportunities.length) {
+    return (
+      <Card>
+        <CardContent className="py-8 text-center">
+          <Target className="mx-auto mb-2 h-8 w-8 text-muted-foreground/30" />
+          <p className="text-sm text-muted-foreground">No open opportunities for this location.</p>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      {sortedOpportunities.map((opportunity) => (
+        <Card key={opportunity.id}>
+          <CardContent className="flex items-start justify-between gap-3 p-4">
+            <div>
+              <div className="flex items-center gap-2">
+                <p className="font-medium">{opportunity.opportunityType || serviceTypeNameById.get(opportunity.serviceTypeId || "") || "Opportunity"}</p>
+                <Badge variant="outline">{opportunity.status}</Badge>
+              </div>
+              <p className="mt-1 text-sm text-muted-foreground">Due {formatDateOnly(opportunity.dueDate)}</p>
+              {opportunity.notes ? <p className="mt-2 text-sm text-muted-foreground">{opportunity.notes}</p> : null}
+            </div>
+          </CardContent>
+        </Card>
+      ))}
     </div>
   );
 }
@@ -2241,7 +2393,7 @@ export default function CustomerDetail() {
   const { data: accountContacts } = useQuery<Contact[]>({ queryKey: ["/api/contacts", customerId], enabled: !!customerId });
   const { data: locationBalances } = useQuery<LocationBalanceSummary[]>({ queryKey: ["/api/location-balances", customerId], enabled: !!customerId });
 
-  const { data: locationCounts } = useQuery<{ contacts: number; appointments: number; agreements: number; services: number; invoices: number; communications: number }>({
+  const { data: locationCounts } = useQuery<{ contacts: number; appointments: number; agreements: number; services: number; invoices: number; communications: number; opportunities: number }>({
     queryKey: ["/api/location-counts", activeLocationId],
     enabled: !!activeLocationId,
   });
@@ -2611,6 +2763,7 @@ export default function CustomerDetail() {
             <TabsTrigger value="contacts" data-testid="tab-contacts"><User className="h-3 w-3 mr-1" /> Contacts ({locationCounts?.contacts ?? contacts?.length ?? 0})</TabsTrigger>
             <TabsTrigger value="agreements" data-testid="tab-agreements"><Calendar className="h-3 w-3 mr-1" /> Agreements ({locationCounts?.agreements ?? 0})</TabsTrigger>
             <TabsTrigger value="services" data-testid="tab-services"><ClipboardList className="h-3 w-3 mr-1" /> Services ({locationCounts?.services ?? 0})</TabsTrigger>
+            <TabsTrigger value="opportunities" data-testid="tab-opportunities"><Target className="h-3 w-3 mr-1" /> Opportunities ({locationCounts?.opportunities ?? 0})</TabsTrigger>
             <TabsTrigger value="invoices" data-testid="tab-invoices"><FileText className="h-3 w-3 mr-1" /> Invoices ({locationCounts?.invoices ?? 0})</TabsTrigger>
             <TabsTrigger value="comms" data-testid="tab-comms"><MessageSquare className="h-3 w-3 mr-1" /> Comms ({locationCounts?.communications ?? 0})</TabsTrigger>
           </TabsList>
@@ -2708,6 +2861,10 @@ export default function CustomerDetail() {
               invoices={locationInvoices}
               onOpenInvoices={() => setActiveTab("invoices")}
             />
+          </TabsContent>
+
+          <TabsContent value="opportunities" className="mt-4 space-y-3">
+            <OpportunitiesTab locationId={activeLocationId} />
           </TabsContent>
 
           <TabsContent value="invoices" className="mt-4 space-y-3">

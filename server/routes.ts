@@ -826,6 +826,11 @@ export async function registerRoutes(
     res.json(data);
   });
 
+  app.get("/api/opportunities/by-location/:locationId", async (req, res) => {
+    const data = await storage.getOpportunitiesByLocation(req.params.locationId);
+    res.json(data);
+  });
+
   app.post("/api/services", async (req, res) => {
     try {
       const validated = serviceSchema.parse(req.body);

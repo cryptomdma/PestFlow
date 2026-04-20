@@ -4,6 +4,7 @@ import {
   customers, contacts, locations, serviceTypes, appointments,
   technicians,
   services,
+  opportunities,
   agreements,
   agreementTemplates,
   serviceRecords, productApplications, invoices, communications,
@@ -20,6 +21,7 @@ import {
   type Agreement, type InsertAgreement,
   type AgreementTemplate, type InsertAgreementTemplate,
   type ServiceRecord, type InsertServiceRecord,
+  type Opportunity, type InsertOpportunity,
   type ProductApplication, type InsertProductApplication,
   type Invoice, type InsertInvoice,
   type Communication, type InsertCommunication,
@@ -153,6 +155,9 @@ export interface IStorage {
   getService(id: string): Promise<Service | undefined>;
   createService(data: InsertService): Promise<Service>;
   updateService(id: string, data: Partial<InsertService>): Promise<Service | undefined>;
+  getOpportunitiesByLocation(locationId: string): Promise<Opportunity[]>;
+  createOpportunity(data: InsertOpportunity): Promise<Opportunity>;
+  updateOpportunity(id: string, data: Partial<InsertOpportunity>): Promise<Opportunity | undefined>;
 
   getAgreementTemplates(): Promise<AgreementTemplate[]>;
   getAgreementTemplate(id: string): Promise<AgreementTemplate | undefined>;
@@ -195,7 +200,7 @@ export interface IStorage {
   getAllCommunications(): Promise<Communication[]>;
   createCommunication(data: InsertCommunication): Promise<Communication>;
 
-  getLocationScopedCounts(locationId: string): Promise<{ contacts: number; appointments: number; agreements: number; services: number; invoices: number; communications: number }>;
+  getLocationScopedCounts(locationId: string): Promise<{ contacts: number; appointments: number; agreements: number; services: number; invoices: number; communications: number; opportunities: number }>;
 }
 
 function normalizeDateOnly(value: string | Date | null | undefined): string | null {
@@ -475,6 +480,7 @@ export class DatabaseStorage implements IStorage {
   private normalizeServiceInsert(data: InsertService): InsertService {
     return {
       ...data,
+      appointmentId: data.appointmentId || null,
       agreementId: data.agreementId || null,
       serviceTypeId: data.serviceTypeId || null,
       dueDate: normalizeDateOnly(data.dueDate),
@@ -489,6 +495,7 @@ export class DatabaseStorage implements IStorage {
 
   private normalizeServiceUpdate(data: Partial<InsertService>): Partial<InsertService> {
     const payload: Partial<InsertService> = { ...data };
+    if (data.appointmentId !== undefined) payload.appointmentId = data.appointmentId || null;
     if (data.agreementId !== undefined) payload.agreementId = data.agreementId || null;
     if (data.serviceTypeId !== undefined) payload.serviceTypeId = data.serviceTypeId || null;
     if (data.dueDate !== undefined) payload.dueDate = normalizeDateOnly(data.dueDate as any) as any;
@@ -497,6 +504,126 @@ export class DatabaseStorage implements IStorage {
     if (data.assignedTechnicianId !== undefined) payload.assignedTechnicianId = data.assignedTechnicianId || null;
     if (data.notes !== undefined) payload.notes = data.notes?.trim() || null;
     return payload;
+  }
+
+  private async getLinkedServicesForAppointmentTx(
+    tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+    appointmentId: string,
+    legacyRepresentativeServiceId?: string | null,
+  ) {
+    const linkedServices = await tx.select().from(services).where(eq(services.appointmentId, appointmentId));
+    if (!legacyRepresentativeServiceId) {
+      return linkedServices;
+    }
+
+    const hasRepresentative = linkedServices.some((service) => service.id === legacyRepresentativeServiceId);
+    if (hasRepresentative) {
+      return linkedServices;
+    }
+
+    const [legacyRepresentative] = await tx.select().from(services).where(eq(services.id, legacyRepresentativeServiceId));
+    return legacyRepresentative ? [...linkedServices, legacyRepresentative] : linkedServices;
+  }
+
+  private async syncServicesForAppointmentTx(
+    tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+    appointment: Appointment,
+  ) {
+    const linkedServices = await this.getLinkedServicesForAppointmentTx(tx, appointment.id, appointment.serviceId);
+    if (!linkedServices.length) {
+      return;
+    }
+
+    const nextStatus = appointment.status === "completed"
+      ? "COMPLETED"
+      : appointment.status === "canceled"
+        ? "CANCELLED"
+        : "SCHEDULED";
+
+    await tx
+      .update(services)
+      .set({
+        status: nextStatus,
+        assignedTechnicianId: appointment.assignedTechnicianId || null,
+        appointmentId: appointment.id,
+        updatedAt: new Date(),
+      })
+      .where(inArray(services.id, linkedServices.map((service) => service.id)));
+  }
+
+  private async resolveServiceRecordTechnicianSnapshot(
+    tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+    data: InsertServiceRecord | Partial<InsertServiceRecord>,
+    existingRecord?: ServiceRecord,
+  ) {
+    let technicianId = data.technicianId ?? existingRecord?.technicianId ?? null;
+
+    const serviceId = data.serviceId ?? existingRecord?.serviceId;
+    const appointmentId = data.appointmentId ?? existingRecord?.appointmentId;
+
+    if (!technicianId && serviceId) {
+      const [linkedService] = await tx.select().from(services).where(eq(services.id, serviceId));
+      technicianId = linkedService?.assignedTechnicianId || null;
+    }
+
+    if (!technicianId && appointmentId) {
+      const [linkedAppointment] = await tx.select().from(appointments).where(eq(appointments.id, appointmentId));
+      technicianId = linkedAppointment?.assignedTechnicianId || null;
+    }
+
+    const technician = technicianId
+      ? (await tx.select().from(technicians).where(eq(technicians.id, technicianId)))[0]
+      : undefined;
+
+    return {
+      technicianId,
+      technicianName: data.technicianName ?? existingRecord?.technicianName ?? technician?.displayName ?? null,
+      technicianLicenseNumber: (data as InsertServiceRecord).technicianLicenseNumber ?? existingRecord?.technicianLicenseNumber ?? technician?.licenseId ?? null,
+      notes: data.notes !== undefined ? data.notes?.trim() || null : existingRecord?.notes ?? null,
+    };
+  }
+
+  private async ensureOpportunityForServiceRecordTx(
+    tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+    serviceRecord: ServiceRecord,
+  ) {
+    if (!serviceRecord.serviceId) {
+      return;
+    }
+
+    const [linkedService] = await tx.select().from(services).where(eq(services.id, serviceRecord.serviceId));
+    if (!linkedService || linkedService.agreementId) {
+      return;
+    }
+
+    const [serviceType] = linkedService.serviceTypeId
+      ? await tx.select().from(serviceTypes).where(eq(serviceTypes.id, linkedService.serviceTypeId))
+      : [undefined];
+
+    const leadDays = serviceType?.opportunityLeadDays ?? null;
+    if (!leadDays || leadDays < 1) {
+      return;
+    }
+
+    const [existingOpportunity] = await tx
+      .select()
+      .from(opportunities)
+      .where(eq(opportunities.sourceServiceRecordId, serviceRecord.id));
+
+    if (existingOpportunity) {
+      return;
+    }
+
+    await tx.insert(opportunities).values({
+      locationId: serviceRecord.locationId || linkedService.locationId,
+      sourceServiceId: linkedService.id,
+      sourceServiceRecordId: serviceRecord.id,
+      serviceTypeId: linkedService.serviceTypeId || null,
+      opportunityType: serviceType?.opportunityLabel || serviceType?.name || "Service Opportunity",
+      dueDate: addDays(new Date(serviceRecord.serviceDate).toISOString().slice(0, 10), leadDays),
+      status: "OPEN",
+      notes: linkedService.notes || null,
+    });
   }
 
   private async buildAgreementInsertFromTemplate(input: CreateAgreementFromTemplateInput): Promise<InsertAgreement> {
@@ -1234,15 +1361,78 @@ export class DatabaseStorage implements IStorage {
   }
 
   async createService(data: InsertService): Promise<Service> {
-    const payload = this.normalizeServiceInsert(data);
-    const [service] = await db.insert(services).values(payload).returning();
-    return service;
+    return db.transaction(async (tx) => {
+      const payload = this.normalizeServiceInsert(data);
+      const [service] = await tx.insert(services).values(payload).returning();
+
+      if (service.appointmentId) {
+        const [appointment] = await tx.select().from(appointments).where(eq(appointments.id, service.appointmentId));
+        if (appointment) {
+          await tx
+            .update(services)
+            .set({
+              status: appointment.status === "completed" ? "COMPLETED" : appointment.status === "canceled" ? "CANCELLED" : "SCHEDULED",
+              assignedTechnicianId: appointment.assignedTechnicianId || null,
+              updatedAt: new Date(),
+            })
+            .where(eq(services.id, service.id));
+
+          if (!appointment.serviceId) {
+            await tx.update(appointments).set({ serviceId: service.id }).where(eq(appointments.id, appointment.id));
+          }
+
+          const [updatedService] = await tx.select().from(services).where(eq(services.id, service.id));
+          return updatedService || service;
+        }
+      }
+
+      return service;
+    });
   }
 
   async updateService(id: string, data: Partial<InsertService>): Promise<Service | undefined> {
-    const payload = this.normalizeServiceUpdate(data);
-    const [service] = await db.update(services).set({ ...payload, updatedAt: new Date() }).where(eq(services.id, id)).returning();
-    return service;
+    return db.transaction(async (tx) => {
+      const payload = this.normalizeServiceUpdate(data);
+      const [service] = await tx.update(services).set({ ...payload, updatedAt: new Date() }).where(eq(services.id, id)).returning();
+      if (!service) {
+        return undefined;
+      }
+
+      if (payload.appointmentId !== undefined && service.appointmentId) {
+        const [appointment] = await tx.select().from(appointments).where(eq(appointments.id, service.appointmentId));
+        if (appointment) {
+          await tx
+            .update(services)
+            .set({
+              status: appointment.status === "completed" ? "COMPLETED" : appointment.status === "canceled" ? "CANCELLED" : "SCHEDULED",
+              assignedTechnicianId: appointment.assignedTechnicianId || null,
+              updatedAt: new Date(),
+            })
+            .where(eq(services.id, service.id));
+
+          if (!appointment.serviceId) {
+            await tx.update(appointments).set({ serviceId: service.id }).where(eq(appointments.id, appointment.id));
+          }
+        }
+      }
+
+      const [updatedService] = await tx.select().from(services).where(eq(services.id, id));
+      return updatedService;
+    });
+  }
+
+  async getOpportunitiesByLocation(locationId: string): Promise<Opportunity[]> {
+    return db.select().from(opportunities).where(eq(opportunities.locationId, locationId));
+  }
+
+  async createOpportunity(data: InsertOpportunity): Promise<Opportunity> {
+    const [opportunity] = await db.insert(opportunities).values(data).returning();
+    return opportunity;
+  }
+
+  async updateOpportunity(id: string, data: Partial<InsertOpportunity>): Promise<Opportunity | undefined> {
+    const [opportunity] = await db.update(opportunities).set({ ...data, updatedAt: new Date() }).where(eq(opportunities.id, id)).returning();
+    return opportunity;
   }
 
   async getAgreementTemplates(): Promise<AgreementTemplate[]> {
@@ -1416,15 +1606,10 @@ export class DatabaseStorage implements IStorage {
       }).returning();
 
       if (appt.serviceId) {
-        await tx
-          .update(services)
-          .set({
-            status: appt.status === "completed" ? "COMPLETED" : appt.status === "canceled" ? "CANCELLED" : "SCHEDULED",
-            assignedTechnicianId: appt.assignedTechnicianId || null,
-            updatedAt: new Date(),
-          })
-          .where(eq(services.id, appt.serviceId));
+        await tx.update(services).set({ appointmentId: appt.id, updatedAt: new Date() }).where(eq(services.id, appt.serviceId));
       }
+
+      await this.syncServicesForAppointmentTx(tx, appt);
 
       if (appt.agreementId && appt.source === "AGREEMENT_INITIAL") {
         await tx
@@ -1457,16 +1642,7 @@ export class DatabaseStorage implements IStorage {
         .where(eq(appointments.id, id))
         .returning();
 
-      if (updatedAppointment.serviceId) {
-        await tx
-          .update(services)
-          .set({
-            status: updatedAppointment.status === "completed" ? "COMPLETED" : updatedAppointment.status === "canceled" ? "CANCELLED" : "SCHEDULED",
-            assignedTechnicianId: updatedAppointment.assignedTechnicianId || null,
-            updatedAt: new Date(),
-          })
-          .where(eq(services.id, updatedAppointment.serviceId));
-      }
+      await this.syncServicesForAppointmentTx(tx, updatedAppointment);
 
       if (existingAppointment.status !== "completed" && updatedAppointment.status === "completed") {
         await this.advanceAgreementForCompletedAppointment(tx, updatedAppointment);
@@ -1496,7 +1672,14 @@ export class DatabaseStorage implements IStorage {
 
   async createServiceRecord(data: InsertServiceRecord): Promise<ServiceRecord> {
     return db.transaction(async (tx) => {
-      const [sr] = await tx.insert(serviceRecords).values(data).returning();
+      const technicianSnapshot = await this.resolveServiceRecordTechnicianSnapshot(tx, data);
+      const [sr] = await tx.insert(serviceRecords).values({
+        ...data,
+        technicianId: technicianSnapshot.technicianId,
+        technicianName: technicianSnapshot.technicianName,
+        technicianLicenseNumber: technicianSnapshot.technicianLicenseNumber,
+        notes: technicianSnapshot.notes,
+      }).returning();
 
       if (sr.serviceId) {
         await tx
@@ -1515,6 +1698,8 @@ export class DatabaseStorage implements IStorage {
           await this.syncAgreementInitialAppointmentDates(tx, linkedAgreement.id);
         }
       }
+
+      await this.ensureOpportunityForServiceRecordTx(tx, sr);
 
       return sr;
     });
@@ -1522,10 +1707,19 @@ export class DatabaseStorage implements IStorage {
 
   async updateServiceRecord(id: string, data: Partial<InsertServiceRecord>): Promise<ServiceRecord | undefined> {
     return db.transaction(async (tx) => {
-      const [sr] = await tx.update(serviceRecords).set(data).where(eq(serviceRecords.id, id)).returning();
-      if (!sr) {
+      const [existingRecord] = await tx.select().from(serviceRecords).where(eq(serviceRecords.id, id));
+      if (!existingRecord) {
         return undefined;
       }
+
+      const technicianSnapshot = await this.resolveServiceRecordTechnicianSnapshot(tx, data, existingRecord);
+      const [sr] = await tx.update(serviceRecords).set({
+        ...data,
+        technicianId: technicianSnapshot.technicianId,
+        technicianName: technicianSnapshot.technicianName,
+        technicianLicenseNumber: technicianSnapshot.technicianLicenseNumber,
+        notes: technicianSnapshot.notes,
+      }).where(eq(serviceRecords.id, id)).returning();
 
       if (sr.serviceId) {
         await tx
@@ -1544,6 +1738,8 @@ export class DatabaseStorage implements IStorage {
           await this.syncAgreementInitialAppointmentDates(tx, linkedAgreement.id);
         }
       }
+
+      await this.ensureOpportunityForServiceRecordTx(tx, sr);
 
       return sr;
     });
@@ -1632,16 +1828,17 @@ export class DatabaseStorage implements IStorage {
     return comm;
   }
 
-  async getLocationScopedCounts(locationId: string): Promise<{ contacts: number; appointments: number; agreements: number; services: number; invoices: number; communications: number }> {
-    const [cts, appts, agrs, svcs, invs, comms] = await Promise.all([
+  async getLocationScopedCounts(locationId: string): Promise<{ contacts: number; appointments: number; agreements: number; services: number; invoices: number; communications: number; opportunities: number }> {
+    const [cts, appts, agrs, svcs, invs, comms, opps] = await Promise.all([
       db.select().from(contacts).where(eq(contacts.locationId, locationId)),
       db.select().from(appointments).where(eq(appointments.locationId, locationId)),
       db.select().from(agreements).where(eq(agreements.locationId, locationId)),
       db.select().from(services).where(eq(services.locationId, locationId)),
       db.select().from(invoices).where(eq(invoices.locationId, locationId)),
       db.select().from(communications).where(eq(communications.locationId, locationId)),
+      db.select().from(opportunities).where(eq(opportunities.locationId, locationId)),
     ]);
-    return { contacts: cts.length, appointments: appts.length, agreements: agrs.length, services: svcs.length, invoices: invs.length, communications: comms.length };
+    return { contacts: cts.length, appointments: appts.length, agreements: agrs.length, services: svcs.length, invoices: invs.length, communications: comms.length, opportunities: opps.length };
   }
 }
 
