@@ -139,6 +139,7 @@ export const services = pgTable("services", {
   agreementId: varchar("agreement_id"),
   serviceTypeId: varchar("service_type_id").references(() => serviceTypes.id),
   dueDate: date("due_date"),
+  timeWindow: text("time_window"),
   expectedDurationMinutes: integer("expected_duration_minutes"),
   price: decimal("price", { precision: 10, scale: 2 }),
   status: text("status").notNull().default("PENDING_SCHEDULING"),

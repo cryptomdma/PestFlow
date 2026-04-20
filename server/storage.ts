@@ -155,6 +155,7 @@ export interface IStorage {
   getService(id: string): Promise<Service | undefined>;
   createService(data: InsertService): Promise<Service>;
   updateService(id: string, data: Partial<InsertService>): Promise<Service | undefined>;
+  deleteService(id: string): Promise<boolean>;
   getOpportunitiesByLocation(locationId: string): Promise<Opportunity[]>;
   createOpportunity(data: InsertOpportunity): Promise<Opportunity>;
   updateOpportunity(id: string, data: Partial<InsertOpportunity>): Promise<Opportunity | undefined>;
@@ -484,6 +485,7 @@ export class DatabaseStorage implements IStorage {
       agreementId: data.agreementId || null,
       serviceTypeId: data.serviceTypeId || null,
       dueDate: normalizeDateOnly(data.dueDate),
+      timeWindow: data.timeWindow?.trim() || null,
       expectedDurationMinutes: data.expectedDurationMinutes ?? null,
       price: data.price || null,
       status: data.status || "PENDING_SCHEDULING",
@@ -499,6 +501,7 @@ export class DatabaseStorage implements IStorage {
     if (data.agreementId !== undefined) payload.agreementId = data.agreementId || null;
     if (data.serviceTypeId !== undefined) payload.serviceTypeId = data.serviceTypeId || null;
     if (data.dueDate !== undefined) payload.dueDate = normalizeDateOnly(data.dueDate as any) as any;
+    if (data.timeWindow !== undefined) payload.timeWindow = data.timeWindow?.trim() || null;
     if (data.expectedDurationMinutes !== undefined) payload.expectedDurationMinutes = data.expectedDurationMinutes ?? null;
     if (data.price !== undefined) payload.price = data.price || null;
     if (data.assignedTechnicianId !== undefined) payload.assignedTechnicianId = data.assignedTechnicianId || null;
@@ -1418,6 +1421,43 @@ export class DatabaseStorage implements IStorage {
 
       const [updatedService] = await tx.select().from(services).where(eq(services.id, id));
       return updatedService;
+    });
+  }
+
+  async deleteService(id: string): Promise<boolean> {
+    return db.transaction(async (tx) => {
+      const [service] = await tx.select().from(services).where(eq(services.id, id));
+      if (!service) {
+        return false;
+      }
+
+      const linkedServiceRecords = await tx.select().from(serviceRecords).where(eq(serviceRecords.serviceId, id));
+      if (linkedServiceRecords.length) {
+        throw new Error("Completed services with service records cannot be deleted");
+      }
+
+      const linkedOpportunities = await tx.select().from(opportunities).where(eq(opportunities.sourceServiceId, id));
+      if (linkedOpportunities.length) {
+        throw new Error("Services with linked opportunities cannot be deleted");
+      }
+
+      if (service.appointmentId) {
+        const siblingServices = await tx.select().from(services).where(eq(services.appointmentId, service.appointmentId));
+        const remainingSiblings = siblingServices.filter((sibling) => sibling.id !== id);
+        await tx.delete(services).where(eq(services.id, id));
+
+        if (remainingSiblings.length === 0) {
+          await tx.delete(appointments).where(eq(appointments.id, service.appointmentId));
+        } else {
+          const [representative] = remainingSiblings;
+          await tx.update(appointments).set({ serviceId: representative.id }).where(eq(appointments.id, service.appointmentId));
+        }
+
+        return true;
+      }
+
+      await tx.delete(services).where(eq(services.id, id));
+      return true;
     });
   }
 

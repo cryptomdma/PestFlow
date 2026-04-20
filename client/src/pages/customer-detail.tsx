@@ -62,6 +62,13 @@ interface LocationBalanceSummary {
 const BASE_LOCATION_TYPE_OPTIONS = ["residential", "commercial"] as const;
 const BASE_SOURCE_OPTIONS = ["Google", "Youtube", "Referal", "Facebook"] as const;
 const CONTACT_PHONE_TYPE_OPTIONS = ["mobile", "home", "work", "fax"] as const;
+const DEFAULT_TIME_WINDOW_OPTIONS = [
+  "8:00am-9:00am",
+  "9:00am-11:00am",
+  "11:00am-1:00pm",
+  "1:00pm-3:00pm",
+  "3:00pm-5:00pm",
+] as const;
 
 function buildOptions(currentValue: string | null | undefined, baseOptions: readonly string[]) {
   if (!currentValue || baseOptions.includes(currentValue)) {
@@ -1940,63 +1947,146 @@ function ServiceForm({
   const { data: serviceTypes } = useQuery<ServiceType[]>({ queryKey: ["/api/service-types"] });
   const [submitMode, setSubmitMode] = useState<"pending" | "schedule">("pending");
   const [form, setForm] = useState({
-    serviceTypeId: service?.serviceTypeId ?? "",
     dueDate: service?.dueDate ?? getTodayDateInputValue(),
-    expectedDurationMinutes: service?.expectedDurationMinutes ? String(service.expectedDurationMinutes) : "",
-    price: service?.price ?? "",
+    timeWindow: service?.timeWindow ?? DEFAULT_TIME_WINDOW_OPTIONS[1],
     notes: service?.notes ?? "",
   });
+  const [serviceLines, setServiceLines] = useState<Array<{
+    key: string;
+    serviceTypeId: string;
+    expectedDurationMinutes: string;
+    price: string;
+  }>>([
+    {
+      key: service?.id ?? "line-1",
+      serviceTypeId: service?.serviceTypeId ?? "",
+      expectedDurationMinutes: service?.expectedDurationMinutes ? String(service.expectedDurationMinutes) : "",
+      price: service?.price ?? "",
+    },
+  ]);
+
+  const updateServiceLine = (key: string, updates: Partial<(typeof serviceLines)[number]>) => {
+    setServiceLines((current) => current.map((line) => line.key === key ? { ...line, ...updates } : line));
+  };
+
+  const addServiceLine = () => {
+    setServiceLines((current) => [
+      ...current,
+      {
+        key: `line-${Date.now()}-${current.length + 1}`,
+        serviceTypeId: "",
+        expectedDurationMinutes: "",
+        price: "",
+      },
+    ]);
+  };
+
+  const removeServiceLine = (key: string) => {
+    setServiceLines((current) => current.length > 1 ? current.filter((line) => line.key !== key) : current);
+  };
 
   useEffect(() => {
-    if (!form.serviceTypeId || !serviceTypes) return;
-    const selectedServiceType = serviceTypes.find((serviceType) => serviceType.id === form.serviceTypeId);
-    if (!selectedServiceType || isEditMode) return;
-    setForm((prev) => ({
-      ...prev,
-      expectedDurationMinutes: prev.expectedDurationMinutes || (selectedServiceType.estimatedDuration ? String(selectedServiceType.estimatedDuration) : ""),
-      price: prev.price || selectedServiceType.defaultPrice || "",
+    if (!serviceTypes || isEditMode) return;
+    setServiceLines((current) => current.map((line) => {
+      if (!line.serviceTypeId) return line;
+      const selectedServiceType = serviceTypes.find((serviceType) => serviceType.id === line.serviceTypeId);
+      if (!selectedServiceType) return line;
+      return {
+        ...line,
+        expectedDurationMinutes: line.expectedDurationMinutes || (selectedServiceType.estimatedDuration ? String(selectedServiceType.estimatedDuration) : ""),
+        price: line.price || selectedServiceType.defaultPrice || "",
+      };
     }));
-  }, [form.serviceTypeId, serviceTypes, isEditMode, form.expectedDurationMinutes, form.price]);
+  }, [isEditMode, serviceLines.length, serviceTypes]);
+
+  const deleteMutation = useMutation({
+    mutationFn: async () => {
+      if (!service) return;
+      await apiRequest("DELETE", `/api/services/${service.id}`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/services/by-location", locationId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/services"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/services/pending"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/appointments/by-location", locationId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/location-counts", locationId] });
+      toast({ title: "Service deleted" });
+      onClose();
+    },
+    onError: (error: Error) => toast({ title: "Unable to delete service", description: error.message, variant: "destructive" }),
+  });
 
   const mutation = useMutation({
     mutationFn: async () => {
-      const payload = {
-        customerId,
-        locationId,
-        agreementId: service?.agreementId ?? null,
-        serviceTypeId: form.serviceTypeId,
-        dueDate: form.dueDate || null,
-        expectedDurationMinutes: form.expectedDurationMinutes ? parseInt(form.expectedDurationMinutes, 10) : null,
-        price: form.price.trim() || null,
-        status: submitMode === "schedule" ? "PENDING_SCHEDULING" : "PENDING_SCHEDULING",
-        assignedTechnicianId: service?.assignedTechnicianId ?? null,
-        source: service?.source ?? "MANUAL",
-        notes: form.notes.trim() || null,
-      };
+      if (isEditMode && service) {
+        const line = serviceLines[0];
+        const payload = {
+          customerId,
+          locationId,
+          agreementId: service.agreementId ?? null,
+          serviceTypeId: line.serviceTypeId,
+          dueDate: form.dueDate || null,
+          timeWindow: form.timeWindow || null,
+          expectedDurationMinutes: line.expectedDurationMinutes ? parseInt(line.expectedDurationMinutes, 10) : null,
+          price: line.price.trim() || null,
+          status: service.status,
+          assignedTechnicianId: service.assignedTechnicianId ?? null,
+          source: service.source ?? "MANUAL",
+          notes: form.notes.trim() || null,
+        };
 
-      const response = isEditMode
-        ? await apiRequest("PATCH", `/api/services/${service.id}`, payload)
-        : await apiRequest("POST", "/api/services", payload);
-      return response.json() as Promise<Service>;
+        const response = await apiRequest("PATCH", `/api/services/${service.id}`, payload);
+        return [await response.json() as Service];
+      }
+
+      const createdServices: Service[] = [];
+      for (const line of serviceLines.filter((entry) => entry.serviceTypeId)) {
+        const response = await apiRequest("POST", "/api/services", {
+          customerId,
+          locationId,
+          agreementId: null,
+          serviceTypeId: line.serviceTypeId,
+          dueDate: form.dueDate || null,
+          timeWindow: form.timeWindow || null,
+          expectedDurationMinutes: line.expectedDurationMinutes ? parseInt(line.expectedDurationMinutes, 10) : null,
+          price: line.price.trim() || null,
+          status: "PENDING_SCHEDULING",
+          assignedTechnicianId: null,
+          source: "MANUAL",
+          notes: form.notes.trim() || null,
+        });
+        createdServices.push(await response.json() as Service);
+      }
+
+      return createdServices;
     },
-    onSuccess: (savedService) => {
+    onSuccess: (savedServices) => {
       queryClient.invalidateQueries({ queryKey: ["/api/services/by-location", locationId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/services"] });
       queryClient.invalidateQueries({ queryKey: ["/api/services/pending"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/appointments/by-location", locationId] });
       queryClient.invalidateQueries({ queryKey: ["/api/location-counts", locationId] });
 
       if (submitMode === "schedule") {
+        const [primaryService, ...additionalServices] = savedServices;
+        if (!primaryService) {
+          toast({ title: "No services were created", variant: "destructive" });
+          return;
+        }
         const params = new URLSearchParams({
-          serviceId: savedService.id,
+          serviceId: primaryService.id,
+          serviceIds: savedServices.map((savedService) => savedService.id).join(","),
           returnTo: `/customers/${customerId}?locationId=${locationId}`,
         });
-        if (savedService.dueDate) {
-          params.set("date", savedService.dueDate);
+        if (primaryService.dueDate) {
+          params.set("date", primaryService.dueDate);
         }
+        if (primaryService.timeWindow) params.set("timeWindow", primaryService.timeWindow);
         setLocation(`/schedule?${params.toString()}`);
         return;
       }
 
-      toast({ title: isEditMode ? "Service updated" : "Service saved" });
+      toast({ title: isEditMode ? "Service updated" : savedServices.length > 1 ? "Services saved" : "Service saved" });
       onClose();
     },
     onError: (error: Error) => toast({ title: "Error saving service", description: error.message, variant: "destructive" }),
@@ -2004,31 +2094,96 @@ function ServiceForm({
 
   return (
     <form onSubmit={(e) => { e.preventDefault(); mutation.mutate(); }} className="space-y-4">
-      <div className="space-y-1.5">
-        <Label>Service Type</Label>
-        <Select value={form.serviceTypeId} onValueChange={(value) => setForm((prev) => ({ ...prev, serviceTypeId: value }))}>
-          <SelectTrigger><SelectValue placeholder="Select service type" /></SelectTrigger>
-          <SelectContent>
-            {serviceTypes?.map((serviceType) => (
-              <SelectItem key={serviceType.id} value={serviceType.id}>{serviceType.name}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
-      <div className="grid gap-3 sm:grid-cols-3">
+      {!isEditMode && (
+        <div className="space-y-3">
+          {serviceLines.map((line, index) => (
+            <div key={line.key} className="rounded-md border p-3 space-y-3">
+              <div className="flex items-center justify-between gap-3">
+                <Label className="text-sm font-medium">Add Service {index + 1}</Label>
+                {serviceLines.length > 1 && (
+                  <Button type="button" variant="ghost" size="sm" onClick={() => removeServiceLine(line.key)}>Remove</Button>
+                )}
+              </div>
+              <div className="grid gap-3 sm:grid-cols-3">
+                <div className="space-y-1.5 sm:col-span-1">
+                  <Label>Service Type</Label>
+                  <Select value={line.serviceTypeId} onValueChange={(value) => {
+                    const serviceType = serviceTypes?.find((item) => item.id === value);
+                    updateServiceLine(line.key, {
+                      serviceTypeId: value,
+                      expectedDurationMinutes: line.expectedDurationMinutes || (serviceType?.estimatedDuration ? String(serviceType.estimatedDuration) : ""),
+                      price: line.price || serviceType?.defaultPrice || "",
+                    });
+                  }}>
+                    <SelectTrigger><SelectValue placeholder="Select service type" /></SelectTrigger>
+                    <SelectContent>
+                      {serviceTypes?.map((serviceType) => (
+                        <SelectItem key={serviceType.id} value={serviceType.id}>{serviceType.name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Expected Duration</Label>
+                  <Input type="number" min="0" value={line.expectedDurationMinutes} onChange={(e) => updateServiceLine(line.key, { expectedDurationMinutes: e.target.value })} placeholder="Minutes" />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Service Cost</Label>
+                  <Input type="number" min="0" step="0.01" value={line.price} onChange={(e) => updateServiceLine(line.key, { price: e.target.value })} />
+                </div>
+              </div>
+            </div>
+          ))}
+          <Button type="button" variant="outline" size="sm" onClick={addServiceLine}>Add Service</Button>
+        </div>
+      )}
+
+      {isEditMode && (
+        <div className="grid gap-3 sm:grid-cols-3">
+          <div className="space-y-1.5 sm:col-span-1">
+            <Label>Service Type</Label>
+            <Select value={serviceLines[0]?.serviceTypeId || ""} onValueChange={(value) => updateServiceLine(serviceLines[0].key, { serviceTypeId: value })}>
+              <SelectTrigger><SelectValue placeholder="Select service type" /></SelectTrigger>
+              <SelectContent>
+                {serviceTypes?.map((serviceType) => (
+                  <SelectItem key={serviceType.id} value={serviceType.id}>{serviceType.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-1.5"><Label>Expected Duration</Label><Input type="number" min="0" value={serviceLines[0]?.expectedDurationMinutes || ""} onChange={(e) => updateServiceLine(serviceLines[0].key, { expectedDurationMinutes: e.target.value })} placeholder="Minutes" /></div>
+          <div className="space-y-1.5"><Label>Service Cost</Label><Input type="number" min="0" step="0.01" value={serviceLines[0]?.price || ""} onChange={(e) => updateServiceLine(serviceLines[0].key, { price: e.target.value })} /></div>
+        </div>
+      )}
+
+      <div className="grid gap-3 sm:grid-cols-2">
         <div className="space-y-1.5"><Label>Target Date</Label><Input type="date" value={form.dueDate} onChange={(e) => setForm((prev) => ({ ...prev, dueDate: e.target.value }))} /></div>
-        <div className="space-y-1.5"><Label>Expected Duration</Label><Input type="number" min="0" value={form.expectedDurationMinutes} onChange={(e) => setForm((prev) => ({ ...prev, expectedDurationMinutes: e.target.value }))} placeholder="Minutes" /></div>
-        <div className="space-y-1.5"><Label>Service Cost</Label><Input type="number" min="0" step="0.01" value={form.price} onChange={(e) => setForm((prev) => ({ ...prev, price: e.target.value }))} /></div>
+        <div className="space-y-1.5">
+          <Label>Time Window</Label>
+          <Select value={form.timeWindow} onValueChange={(value) => setForm((prev) => ({ ...prev, timeWindow: value }))}>
+            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {DEFAULT_TIME_WINDOW_OPTIONS.map((windowOption) => (
+                <SelectItem key={windowOption} value={windowOption}>{windowOption}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
       </div>
       <div className="space-y-1.5"><Label>Instructions</Label><Textarea value={form.notes} onChange={(e) => setForm((prev) => ({ ...prev, notes: e.target.value }))} className="resize-none" /></div>
       <div className="flex justify-end gap-2">
         <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
+        {isEditMode && (
+          <Button type="button" variant="destructive" onClick={() => deleteMutation.mutate()} disabled={deleteMutation.isPending}>
+            {deleteMutation.isPending ? "Deleting..." : "Delete Service"}
+          </Button>
+        )}
         {!isEditMode && (
-          <Button type="submit" variant="outline" onClick={() => setSubmitMode("pending")} disabled={mutation.isPending || !form.serviceTypeId}>
+          <Button type="submit" variant="outline" onClick={() => setSubmitMode("pending")} disabled={mutation.isPending || serviceLines.every((line) => !line.serviceTypeId)}>
             {mutation.isPending && submitMode === "pending" ? "Saving..." : "Save as Pending"}
           </Button>
         )}
-        <Button type="submit" onClick={() => setSubmitMode(isEditMode ? "pending" : "schedule")} disabled={mutation.isPending || !form.serviceTypeId}>
+        <Button type="submit" onClick={() => setSubmitMode(isEditMode ? "pending" : "schedule")} disabled={mutation.isPending || serviceLines.every((line) => !line.serviceTypeId)}>
           {mutation.isPending ? "Saving..." : isEditMode ? "Save Service" : "Schedule Now"}
         </Button>
       </div>
@@ -2067,6 +2222,7 @@ function ServiceDetailModal({
         <div><p className="text-xs uppercase tracking-wide text-muted-foreground">Technician</p><p className="mt-1">{technicianName || "Unassigned"}</p></div>
         <div><p className="text-xs uppercase tracking-wide text-muted-foreground">Cost</p><p className="mt-1">{service.price ? formatCurrency(parseFloat(service.price)) : "Not set"}</p></div>
         <div><p className="text-xs uppercase tracking-wide text-muted-foreground">Duration</p><p className="mt-1">{service.expectedDurationMinutes ? `${service.expectedDurationMinutes} min` : "Not set"}</p></div>
+        <div><p className="text-xs uppercase tracking-wide text-muted-foreground">Time Window</p><p className="mt-1">{service.timeWindow || "Not set"}</p></div>
       </div>
       {appointment && (
         <div className="rounded-md border bg-muted/20 p-3">

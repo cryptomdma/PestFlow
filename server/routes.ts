@@ -854,6 +854,16 @@ export async function registerRoutes(
     }
   });
 
+  app.delete("/api/services/:id", async (req, res) => {
+    try {
+      const deleted = await storage.deleteService(req.params.id);
+      if (!deleted) return res.status(404).json({ message: "Service not found" });
+      res.status(204).send();
+    } catch (e: any) {
+      res.status(400).json({ message: e.message });
+    }
+  });
+
   // Agreement Templates
   app.get("/api/agreement-templates", async (_req, res) => {
     const data = await storage.getAgreementTemplates();

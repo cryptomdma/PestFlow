@@ -138,6 +138,14 @@ function getViewportLabel(boardDates: Date[]) {
   return boardDates.length > 1 ? `${startLabel} - ${endLabel}` : startLabel;
 }
 
+function getLocationServicesQueryKey(locationId: string | null | undefined) {
+  return ["/api/services/by-location", locationId || ""];
+}
+
+function getLocationAppointmentsQueryKey(locationId: string | null | undefined) {
+  return ["/api/appointments/by-location", locationId || ""];
+}
+
 function AppointmentSheet({
   appointment,
   service,
@@ -285,6 +293,19 @@ function AppointmentSheet({
             </div>
 
             <div className="flex items-center justify-end gap-2">
+              {status !== "canceled" ? (
+                <Button type="button" variant="destructive" onClick={() => onSave({
+                  assignedTechnicianId: assignedTechnicianId || null,
+                  scheduledDate: new Date(scheduledDate).toISOString(),
+                  scheduledEndDate: scheduledEndDate ? new Date(scheduledEndDate).toISOString() : null,
+                  status: "canceled",
+                  lockTime,
+                  lockTechnician,
+                  notes: notes.trim() || null,
+                })} disabled={isSaving || !scheduledDate}>
+                  Cancel Service
+                </Button>
+              ) : null}
               <Button variant="outline" onClick={() => onOpenChange(false)}>Close</Button>
               <Button
                 onClick={() => onSave({
@@ -398,6 +419,7 @@ export default function Schedule() {
   const [boardStartHour, setBoardStartHour] = useState(8);
   const [boardEndHour, setBoardEndHour] = useState(18);
   const [slotIntervalHours, setSlotIntervalHours] = useState(2);
+  const groupedServiceIds = useMemo(() => (params.get("serviceIds") || "").split(",").map((id) => id.trim()).filter(Boolean), [params]);
 
   const { data: technicians, isLoading: techniciansLoading } = useQuery<Technician[]>({ queryKey: ["/api/technicians?includeInactive=true"] });
   const { data: appointments, isLoading: appointmentsLoading } = useQuery<Appointment[]>({ queryKey: ["/api/appointments"] });
@@ -541,12 +563,27 @@ export default function Schedule() {
       });
       return response.json() as Promise<Appointment>;
     },
-    onSuccess: async () => {
+    onSuccess: async (createdAppointment) => {
+      const additionalServiceIds = groupedServiceIds.filter((id) => id !== createdAppointment.serviceId);
+      if (additionalServiceIds.length) {
+        await Promise.all(additionalServiceIds.map(async (serviceId) => {
+          await apiRequest("PATCH", `/api/services/${serviceId}`, {
+            appointmentId: createdAppointment.id,
+            assignedTechnicianId: createdAppointment.assignedTechnicianId || null,
+            status: createdAppointment.status === "completed" ? "COMPLETED" : createdAppointment.status === "canceled" ? "CANCELLED" : "SCHEDULED",
+          });
+        }));
+      }
+
       queryClient.invalidateQueries({ queryKey: ["/api/appointments"] });
       queryClient.invalidateQueries({ queryKey: ["/api/services"] });
       queryClient.invalidateQueries({ queryKey: ["/api/services/pending"] });
+      if (selectedService?.locationId) {
+        queryClient.invalidateQueries({ queryKey: getLocationServicesQueryKey(selectedService.locationId) });
+        queryClient.invalidateQueries({ queryKey: getLocationAppointmentsQueryKey(selectedService.locationId) });
+      }
       setSelectedServiceId(null);
-      toast({ title: "Service scheduled" });
+      toast({ title: additionalServiceIds.length ? "Grouped services scheduled" : "Service scheduled" });
       const returnTo = params.get("returnTo");
       if (returnTo) {
         setLocation(returnTo);
@@ -557,19 +594,24 @@ export default function Schedule() {
 
   const attachServiceToAppointmentMutation = useMutation({
     mutationFn: async ({ service, appointment }: { service: Service; appointment: Appointment }) => {
-      const response = await apiRequest("PATCH", `/api/services/${service.id}`, {
-        appointmentId: appointment.id,
-        assignedTechnicianId: appointment.assignedTechnicianId || null,
-        status: appointment.status === "completed" ? "COMPLETED" : appointment.status === "canceled" ? "CANCELLED" : "SCHEDULED",
-      });
-      return response.json() as Promise<Service>;
+      const bundleIds = groupedServiceIds.length ? groupedServiceIds : [service.id];
+      await Promise.all(bundleIds.map(async (serviceId) => {
+        await apiRequest("PATCH", `/api/services/${serviceId}`, {
+          appointmentId: appointment.id,
+          assignedTechnicianId: appointment.assignedTechnicianId || null,
+          status: appointment.status === "completed" ? "COMPLETED" : appointment.status === "canceled" ? "CANCELLED" : "SCHEDULED",
+        });
+      }));
+      return service;
     },
     onSuccess: (_service, variables) => {
       queryClient.invalidateQueries({ queryKey: ["/api/services"] });
       queryClient.invalidateQueries({ queryKey: ["/api/services/pending"] });
       queryClient.invalidateQueries({ queryKey: ["/api/appointments"] });
+      queryClient.invalidateQueries({ queryKey: getLocationServicesQueryKey(variables.service.locationId) });
+      queryClient.invalidateQueries({ queryKey: getLocationAppointmentsQueryKey(variables.service.locationId) });
       setSelectedServiceId(null);
-      toast({ title: "Service added to shared visit" });
+      toast({ title: groupedServiceIds.length > 1 ? "Services added to shared visit" : "Service added to shared visit" });
       const returnTo = params.get("returnTo");
       if (returnTo) {
         setLocation(returnTo);
@@ -589,6 +631,8 @@ export default function Schedule() {
       queryClient.invalidateQueries({ queryKey: ["/api/appointments"] });
       queryClient.invalidateQueries({ queryKey: ["/api/services"] });
       queryClient.invalidateQueries({ queryKey: ["/api/services/pending"] });
+      queryClient.invalidateQueries({ queryKey: getLocationAppointmentsQueryKey(appointment.locationId) });
+      queryClient.invalidateQueries({ queryKey: getLocationServicesQueryKey(appointment.locationId) });
       setSelectedAppointmentId(null);
       setEditingAppointmentId((current) => current === appointment.id ? null : current);
       toast({ title: "Appointment updated" });
@@ -819,6 +863,7 @@ export default function Schedule() {
                 <>
                   <p className="font-medium">Scheduling selected service</p>
                   <p className="text-muted-foreground">Click an empty slot to create a new visit, or click an existing appointment card at the same location to add this service to that visit.</p>
+                  {selectedService.timeWindow ? <p className="text-muted-foreground">Preferred time window: {selectedService.timeWindow}</p> : null}
                 </>
               ) : selectedAppointment ? (
                 <>
@@ -995,6 +1040,7 @@ export default function Schedule() {
                         <Badge variant="outline" className="text-xs">{service.status}</Badge>
                       </div>
                       <p className="mt-1 text-xs text-muted-foreground">{serviceTypeNameById.get(service.serviceTypeId || "") || "Service"} | {service.expectedDurationMinutes ? `${service.expectedDurationMinutes} min` : "Duration not set"} | Due {service.dueDate || "Not set"}</p>
+                      {service.timeWindow ? <p className="mt-1 text-xs text-muted-foreground">Time window: {service.timeWindow}</p> : null}
                       <p className="mt-1 text-xs text-muted-foreground">{getLocationLabel(location)}</p>
                     </div>
                     <div className="shrink-0 text-right">
