@@ -4,6 +4,7 @@ import { storage } from "./storage";
 import {
   insertCustomerSchema, insertContactSchema, insertLocationSchema,
   insertServiceTypeSchema, insertAppointmentSchema, insertServiceRecordSchema,
+  insertTechnicianSchema, insertServiceSchema,
   insertProductApplicationSchema, insertInvoiceSchema, insertCommunicationSchema,
   insertBillingProfileSchema,
   insertAgreementSchema,
@@ -105,6 +106,36 @@ export async function registerRoutes(
     }
     return value;
   }, z.coerce.date().nullable());
+  const technicianStatusSchema = z.enum(["ACTIVE", "INACTIVE", "TERMINATED"]);
+  const serviceStatusSchema = z.enum(["DRAFT", "PENDING_SCHEDULING", "SCHEDULED", "COMPLETED", "CANCELLED"]);
+  const serviceSourceSchema = z.enum(["MANUAL", "AGREEMENT_GENERATED", "AGREEMENT_INITIAL"]);
+  const technicianSchema = insertTechnicianSchema.extend({
+    status: technicianStatusSchema,
+  }).superRefine((value, ctx) => {
+    if (!value.displayName?.trim()) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["displayName"], message: "displayName is required" });
+    }
+    if (!value.licenseId?.trim()) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["licenseId"], message: "licenseId is required" });
+    }
+  });
+  const updateTechnicianSchema = insertTechnicianSchema.extend({
+    status: technicianStatusSchema.optional(),
+  }).partial();
+  const serviceSchema = insertServiceSchema.extend({
+    status: serviceStatusSchema,
+    source: serviceSourceSchema,
+    dueDate: z.string().nullable().optional(),
+  }).superRefine((value, ctx) => {
+    if (!value.customerId) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["customerId"], message: "customerId is required" });
+    if (!value.locationId) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["locationId"], message: "locationId is required" });
+    if (!value.serviceTypeId) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["serviceTypeId"], message: "serviceTypeId is required" });
+  });
+  const updateServiceSchema = insertServiceSchema.extend({
+    status: serviceStatusSchema.optional(),
+    source: serviceSourceSchema.optional(),
+    dueDate: z.string().nullable().optional(),
+  }).partial();
   const appointmentSchema = insertAppointmentSchema.extend({
     generatedForDate: nullableDateSchema.optional(),
     scheduledDate: z.coerce.date(),
@@ -734,6 +765,84 @@ export async function registerRoutes(
       const validated = insertServiceTypeSchema.parse(req.body);
       const data = await storage.createServiceType(validated);
       res.status(201).json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  // Technicians
+  app.get("/api/technicians", async (req, res) => {
+    const includeInactive = req.query.includeInactive === "true";
+    const data = await storage.getTechnicians(includeInactive);
+    res.json(data);
+  });
+
+  app.post("/api/technicians", async (req, res) => {
+    try {
+      const validated = technicianSchema.parse(req.body);
+      const data = await storage.createTechnician(validated);
+      res.status(201).json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.patch("/api/technicians/:id", async (req, res) => {
+    try {
+      const validated = updateTechnicianSchema.parse(req.body);
+      const data = await storage.updateTechnician(req.params.id, validated);
+      if (!data) return res.status(404).json({ message: "Technician not found" });
+      res.json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  // Services
+  app.get("/api/services", async (_req, res) => {
+    const data = await storage.getServices();
+    res.json(data);
+  });
+
+  app.get("/api/services/by-location/:locationId", async (req, res) => {
+    const data = await storage.getServicesByLocation(req.params.locationId);
+    res.json(data);
+  });
+
+  app.get("/api/services/pending", async (req, res) => {
+    const data = await storage.getPendingServices({
+      dateFrom: typeof req.query.dateFrom === "string" ? req.query.dateFrom : "",
+      dateTo: typeof req.query.dateTo === "string" ? req.query.dateTo : "",
+    });
+    res.json(data);
+  });
+
+  app.get("/api/services/:id", async (req, res) => {
+    const data = await storage.getService(req.params.id);
+    if (!data) return res.status(404).json({ message: "Service not found" });
+    res.json(data);
+  });
+
+  app.post("/api/services", async (req, res) => {
+    try {
+      const validated = serviceSchema.parse(req.body);
+      const data = await storage.createService(validated);
+      res.status(201).json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.patch("/api/services/:id", async (req, res) => {
+    try {
+      const validated = updateServiceSchema.parse(req.body);
+      const data = await storage.updateService(req.params.id, validated);
+      if (!data) return res.status(404).json({ message: "Service not found" });
+      res.json(data);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
       res.status(400).json({ message: e.message });

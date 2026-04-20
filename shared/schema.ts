@@ -116,17 +116,51 @@ export const serviceTypes = pgTable("service_types", {
   category: text("category"),
 });
 
+export const technicians = pgTable("technicians", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  displayName: text("display_name").notNull(),
+  licenseId: text("license_id").notNull(),
+  status: text("status").notNull().default("ACTIVE"),
+  email: text("email"),
+  phone: text("phone"),
+  color: text("color"),
+  notes: text("notes"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const services = pgTable("services", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  customerId: varchar("customer_id").notNull().references(() => customers.id),
+  locationId: varchar("location_id").notNull().references(() => locations.id),
+  agreementId: varchar("agreement_id"),
+  serviceTypeId: varchar("service_type_id").references(() => serviceTypes.id),
+  dueDate: date("due_date"),
+  expectedDurationMinutes: integer("expected_duration_minutes"),
+  price: decimal("price", { precision: 10, scale: 2 }),
+  status: text("status").notNull().default("PENDING_SCHEDULING"),
+  assignedTechnicianId: varchar("assigned_technician_id").references(() => technicians.id),
+  source: text("source").notNull().default("MANUAL"),
+  notes: text("notes"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
 export const appointments = pgTable("appointments", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   customerId: varchar("customer_id").notNull().references(() => customers.id),
   locationId: varchar("location_id").references(() => locations.id),
+  serviceId: varchar("service_id"),
   agreementId: varchar("agreement_id"),
   serviceTypeId: varchar("service_type_id").references(() => serviceTypes.id),
+  assignedTechnicianId: varchar("assigned_technician_id").references(() => technicians.id),
   source: text("source").notNull().default("MANUAL"),
   generatedForDate: date("generated_for_date"),
   scheduledDate: timestamp("scheduled_date").notNull(),
   scheduledEndDate: timestamp("scheduled_end_date"),
   status: text("status").notNull().default("scheduled"),
+  lockTime: boolean("lock_time").notNull().default(false),
+  lockTechnician: boolean("lock_technician").notNull().default(false),
   assignedTo: text("assigned_to"),
   notes: text("notes"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
@@ -193,11 +227,13 @@ export const agreementTemplates = pgTable("agreement_templates", {
 
 export const serviceRecords = pgTable("service_records", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  serviceId: varchar("service_id"),
   appointmentId: varchar("appointment_id").references(() => appointments.id),
   customerId: varchar("customer_id").notNull().references(() => customers.id),
   locationId: varchar("location_id").references(() => locations.id),
   serviceTypeId: varchar("service_type_id").references(() => serviceTypes.id),
   serviceDate: timestamp("service_date").notNull(),
+  technicianId: varchar("technician_id").references(() => technicians.id),
   technicianName: text("technician_name"),
   targetPests: text("target_pests").array(),
   areasServiced: text("areas_serviced"),
@@ -268,6 +304,8 @@ export const insertBillingProfileSchema = createInsertSchema(billingProfiles).om
 export const insertCustomerNoteSchema = createInsertSchema(customerNotes).omit({ id: true, createdAt: true, updatedAt: true });
 export const insertNoteRevisionSchema = createInsertSchema(noteRevisions).omit({ id: true, createdAt: true });
 export const insertServiceTypeSchema = createInsertSchema(serviceTypes).omit({ id: true });
+export const insertTechnicianSchema = createInsertSchema(technicians).omit({ id: true, createdAt: true, updatedAt: true });
+export const insertServiceSchema = createInsertSchema(services).omit({ id: true, createdAt: true, updatedAt: true });
 export const insertAppointmentSchema = createInsertSchema(appointments).omit({ id: true, createdAt: true });
 export const insertAgreementSchema = createInsertSchema(agreements).omit({ id: true, createdAt: true, updatedAt: true });
 export const insertAgreementTemplateSchema = createInsertSchema(agreementTemplates).omit({ id: true, createdAt: true, updatedAt: true });
@@ -293,6 +331,10 @@ export type NoteRevision = typeof noteRevisions.$inferSelect;
 export type InsertNoteRevision = z.infer<typeof insertNoteRevisionSchema>;
 export type ServiceType = typeof serviceTypes.$inferSelect;
 export type InsertServiceType = z.infer<typeof insertServiceTypeSchema>;
+export type Technician = typeof technicians.$inferSelect;
+export type InsertTechnician = z.infer<typeof insertTechnicianSchema>;
+export type Service = typeof services.$inferSelect;
+export type InsertService = z.infer<typeof insertServiceSchema>;
 export type Appointment = typeof appointments.$inferSelect;
 export type InsertAppointment = z.infer<typeof insertAppointmentSchema>;
 export type Agreement = typeof agreements.$inferSelect;

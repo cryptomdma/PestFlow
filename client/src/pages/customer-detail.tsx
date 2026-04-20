@@ -37,7 +37,7 @@ import {
   History,
   CreditCard, KeyRound, Ruler, ChevronUp, Check, Link2,
 } from "lucide-react";
-import type { Customer, Contact, Location, Appointment, Invoice, ServiceRecord, Communication, CustomerNote, BillingProfile, NoteRevision, Agreement, AgreementTemplate, ServiceType } from "@shared/schema";
+import type { Customer, Contact, Location, Appointment, Invoice, Service, ServiceRecord, Communication, CustomerNote, BillingProfile, NoteRevision, Agreement, AgreementTemplate, ServiceType, Technician } from "@shared/schema";
 
 interface CustomerDetailCompatResponse {
   legacyCustomer: Customer;
@@ -1888,6 +1888,329 @@ function AgreementsTab({
   );
 }
 
+function ServiceForm({
+  customerId,
+  locationId,
+  service,
+  onClose,
+}: {
+  customerId: string;
+  locationId: string;
+  service?: Service | null;
+  onClose: () => void;
+}) {
+  const { toast } = useToast();
+  const [, setLocation] = useLocation();
+  const isEditMode = !!service;
+  const { data: serviceTypes } = useQuery<ServiceType[]>({ queryKey: ["/api/service-types"] });
+  const [submitMode, setSubmitMode] = useState<"pending" | "schedule">("pending");
+  const [form, setForm] = useState({
+    serviceTypeId: service?.serviceTypeId ?? "",
+    dueDate: service?.dueDate ?? getTodayDateInputValue(),
+    expectedDurationMinutes: service?.expectedDurationMinutes ? String(service.expectedDurationMinutes) : "",
+    price: service?.price ?? "",
+    notes: service?.notes ?? "",
+  });
+
+  useEffect(() => {
+    if (!form.serviceTypeId || !serviceTypes) return;
+    const selectedServiceType = serviceTypes.find((serviceType) => serviceType.id === form.serviceTypeId);
+    if (!selectedServiceType || isEditMode) return;
+    setForm((prev) => ({
+      ...prev,
+      expectedDurationMinutes: prev.expectedDurationMinutes || (selectedServiceType.estimatedDuration ? String(selectedServiceType.estimatedDuration) : ""),
+      price: prev.price || selectedServiceType.defaultPrice || "",
+    }));
+  }, [form.serviceTypeId, serviceTypes, isEditMode, form.expectedDurationMinutes, form.price]);
+
+  const mutation = useMutation({
+    mutationFn: async () => {
+      const payload = {
+        customerId,
+        locationId,
+        agreementId: service?.agreementId ?? null,
+        serviceTypeId: form.serviceTypeId,
+        dueDate: form.dueDate || null,
+        expectedDurationMinutes: form.expectedDurationMinutes ? parseInt(form.expectedDurationMinutes, 10) : null,
+        price: form.price.trim() || null,
+        status: submitMode === "schedule" ? "PENDING_SCHEDULING" : "PENDING_SCHEDULING",
+        assignedTechnicianId: service?.assignedTechnicianId ?? null,
+        source: service?.source ?? "MANUAL",
+        notes: form.notes.trim() || null,
+      };
+
+      const response = isEditMode
+        ? await apiRequest("PATCH", `/api/services/${service.id}`, payload)
+        : await apiRequest("POST", "/api/services", payload);
+      return response.json() as Promise<Service>;
+    },
+    onSuccess: (savedService) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/services/by-location", locationId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/services/pending"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/location-counts", locationId] });
+
+      if (submitMode === "schedule") {
+        const params = new URLSearchParams({
+          serviceId: savedService.id,
+          returnTo: `/customers/${customerId}?locationId=${locationId}`,
+        });
+        if (savedService.dueDate) {
+          params.set("date", savedService.dueDate);
+        }
+        setLocation(`/schedule?${params.toString()}`);
+        return;
+      }
+
+      toast({ title: isEditMode ? "Service updated" : "Service saved" });
+      onClose();
+    },
+    onError: (error: Error) => toast({ title: "Error saving service", description: error.message, variant: "destructive" }),
+  });
+
+  return (
+    <form onSubmit={(e) => { e.preventDefault(); mutation.mutate(); }} className="space-y-4">
+      <div className="space-y-1.5">
+        <Label>Service Type</Label>
+        <Select value={form.serviceTypeId} onValueChange={(value) => setForm((prev) => ({ ...prev, serviceTypeId: value }))}>
+          <SelectTrigger><SelectValue placeholder="Select service type" /></SelectTrigger>
+          <SelectContent>
+            {serviceTypes?.map((serviceType) => (
+              <SelectItem key={serviceType.id} value={serviceType.id}>{serviceType.name}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-3">
+        <div className="space-y-1.5"><Label>Target Date</Label><Input type="date" value={form.dueDate} onChange={(e) => setForm((prev) => ({ ...prev, dueDate: e.target.value }))} /></div>
+        <div className="space-y-1.5"><Label>Expected Duration</Label><Input type="number" min="0" value={form.expectedDurationMinutes} onChange={(e) => setForm((prev) => ({ ...prev, expectedDurationMinutes: e.target.value }))} placeholder="Minutes" /></div>
+        <div className="space-y-1.5"><Label>Service Cost</Label><Input type="number" min="0" step="0.01" value={form.price} onChange={(e) => setForm((prev) => ({ ...prev, price: e.target.value }))} /></div>
+      </div>
+      <div className="space-y-1.5"><Label>Instructions</Label><Textarea value={form.notes} onChange={(e) => setForm((prev) => ({ ...prev, notes: e.target.value }))} className="resize-none" /></div>
+      <div className="flex justify-end gap-2">
+        <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
+        {!isEditMode && (
+          <Button type="submit" variant="outline" onClick={() => setSubmitMode("pending")} disabled={mutation.isPending || !form.serviceTypeId}>
+            {mutation.isPending && submitMode === "pending" ? "Saving..." : "Save as Pending"}
+          </Button>
+        )}
+        <Button type="submit" onClick={() => setSubmitMode(isEditMode ? "pending" : "schedule")} disabled={mutation.isPending || !form.serviceTypeId}>
+          {mutation.isPending ? "Saving..." : isEditMode ? "Save Service" : "Schedule Now"}
+        </Button>
+      </div>
+    </form>
+  );
+}
+
+function ServiceDetailModal({
+  service,
+  serviceTypeName,
+  technicianName,
+  appointment,
+  serviceRecord,
+  invoice,
+}: {
+  service: Service;
+  serviceTypeName: string;
+  technicianName: string;
+  appointment?: Appointment | null;
+  serviceRecord?: ServiceRecord | null;
+  invoice?: Invoice | null;
+}) {
+  return (
+    <div className="space-y-4 text-sm">
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div><p className="text-xs uppercase tracking-wide text-muted-foreground">Service Type</p><p className="mt-1 font-medium">{serviceTypeName}</p></div>
+        <div><p className="text-xs uppercase tracking-wide text-muted-foreground">Status</p><p className="mt-1">{service.status}</p></div>
+        <div><p className="text-xs uppercase tracking-wide text-muted-foreground">Due / Service Date</p><p className="mt-1">{formatDateOnly(serviceRecord ? new Date(serviceRecord.serviceDate).toISOString().slice(0, 10) : service.dueDate)}</p></div>
+        <div><p className="text-xs uppercase tracking-wide text-muted-foreground">Technician</p><p className="mt-1">{technicianName || "Unassigned"}</p></div>
+        <div><p className="text-xs uppercase tracking-wide text-muted-foreground">Cost</p><p className="mt-1">{service.price ? formatCurrency(parseFloat(service.price)) : "Not set"}</p></div>
+        <div><p className="text-xs uppercase tracking-wide text-muted-foreground">Duration</p><p className="mt-1">{service.expectedDurationMinutes ? `${service.expectedDurationMinutes} min` : "Not set"}</p></div>
+      </div>
+      {appointment && (
+        <div className="rounded-md border bg-muted/20 p-3">
+          <p className="text-xs uppercase tracking-wide text-muted-foreground">Linked Appointment</p>
+          <p className="mt-1 font-medium">{new Date(appointment.scheduledDate).toLocaleString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" })}</p>
+        </div>
+      )}
+      {invoice && (
+        <div className="rounded-md border bg-muted/20 p-3">
+          <p className="text-xs uppercase tracking-wide text-muted-foreground">Invoice</p>
+          <p className="mt-1 font-medium">{invoice.invoiceNumber}</p>
+        </div>
+      )}
+      {service.notes && (
+        <div>
+          <p className="text-xs uppercase tracking-wide text-muted-foreground">Notes</p>
+          <p className="mt-1 whitespace-pre-wrap text-muted-foreground">{service.notes}</p>
+        </div>
+      )}
+      {serviceRecord && (
+        <div className="space-y-2">
+          <p className="text-xs uppercase tracking-wide text-muted-foreground">Completion Details</p>
+          {serviceRecord.areasServiced && <p><span className="font-medium">Areas:</span> {serviceRecord.areasServiced}</p>}
+          {serviceRecord.conditionsFound && <p><span className="font-medium">Conditions:</span> {serviceRecord.conditionsFound}</p>}
+          {serviceRecord.recommendations && <p><span className="font-medium">Recommendations:</span> {serviceRecord.recommendations}</p>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ServicesTab({
+  customerId,
+  locationId,
+  appointments,
+  serviceRecords,
+  invoices,
+  onOpenInvoices,
+}: {
+  customerId: string;
+  locationId: string;
+  appointments?: Appointment[];
+  serviceRecords?: ServiceRecord[];
+  invoices?: Invoice[];
+  onOpenInvoices: () => void;
+}) {
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [editingService, setEditingService] = useState<Service | null>(null);
+  const [detailService, setDetailService] = useState<Service | null>(null);
+  const { data: services } = useQuery<Service[]>({ queryKey: ["/api/services/by-location", locationId], enabled: !!locationId });
+  const { data: serviceTypes } = useQuery<ServiceType[]>({ queryKey: ["/api/service-types"] });
+  const { data: technicians } = useQuery<Technician[]>({ queryKey: ["/api/technicians?includeInactive=true"] });
+  const [, setLocation] = useLocation();
+
+  const serviceTypeNameById = useMemo(() => new Map((serviceTypes ?? []).map((serviceType) => [serviceType.id, serviceType.name])), [serviceTypes]);
+  const technicianNameById = useMemo(() => new Map((technicians ?? []).map((technician) => [technician.id, technician.displayName])), [technicians]);
+  const appointmentByServiceId = useMemo(() => {
+    const map = new Map<string, Appointment>();
+    for (const appointment of appointments ?? []) {
+      if (appointment.serviceId) map.set(appointment.serviceId, appointment);
+    }
+    return map;
+  }, [appointments]);
+  const serviceRecordByServiceId = useMemo(() => {
+    const map = new Map<string, ServiceRecord>();
+    for (const serviceRecord of serviceRecords ?? []) {
+      if (serviceRecord.serviceId) map.set(serviceRecord.serviceId, serviceRecord);
+    }
+    return map;
+  }, [serviceRecords]);
+  const invoiceByServiceId = useMemo(() => {
+    const map = new Map<string, Invoice>();
+    for (const invoice of invoices ?? []) {
+      const matchedServiceRecord = serviceRecords?.find((serviceRecord) => serviceRecord.id === invoice.serviceRecordId);
+      if (matchedServiceRecord?.serviceId) {
+        map.set(matchedServiceRecord.serviceId, invoice);
+      }
+    }
+    return map;
+  }, [invoices, serviceRecords]);
+
+  const sortedServices = useMemo(() => {
+    return [...(services ?? [])].sort((a, b) => {
+      const dateA = a.dueDate ?? "";
+      const dateB = b.dueDate ?? "";
+      return dateB.localeCompare(dateA);
+    });
+  }, [services]);
+
+  const openCreate = () => {
+    setEditingService(null);
+    setDialogOpen(true);
+  };
+
+  const scheduleService = (service: Service) => {
+    const params = new URLSearchParams({
+      serviceId: service.id,
+      returnTo: `/customers/${customerId}?locationId=${locationId}`,
+    });
+    if (service.dueDate) params.set("date", service.dueDate);
+    setLocation(`/schedule?${params.toString()}`);
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="flex justify-end">
+        <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+          <DialogTrigger asChild><Button size="sm" onClick={openCreate}><Plus className="h-3 w-3 mr-1" /> New Service</Button></DialogTrigger>
+          <DialogContent>
+            <DialogHeader><DialogTitle>{editingService ? "Edit Service" : "New Service"}</DialogTitle></DialogHeader>
+            <ServiceForm customerId={customerId} locationId={locationId} service={editingService} onClose={() => setDialogOpen(false)} />
+          </DialogContent>
+        </Dialog>
+      </div>
+      {!sortedServices.length ? (
+        <Card><CardContent className="py-8 text-center"><ClipboardList className="mx-auto mb-2 h-8 w-8 text-muted-foreground/30" /><p className="text-sm text-muted-foreground">No services for this location yet.</p></CardContent></Card>
+      ) : (
+        <div className="rounded-md border">
+          <div className="grid grid-cols-[1.1fr_1.6fr_0.9fr_1.1fr_0.8fr_1fr] gap-3 border-b bg-muted/30 px-3 py-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+            <span>Service Date</span>
+            <span>Service Type</span>
+            <span>Service Cost</span>
+            <span>Technician</span>
+            <span>Invoice</span>
+            <span className="text-right">Actions</span>
+          </div>
+          {sortedServices.map((service) => {
+            const appointment = appointmentByServiceId.get(service.id) ?? null;
+            const serviceRecord = serviceRecordByServiceId.get(service.id) ?? null;
+            const invoice = invoiceByServiceId.get(service.id) ?? null;
+            const serviceDateLabel = serviceRecord
+              ? new Date(serviceRecord.serviceDate).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
+              : formatDateOnly(service.dueDate);
+            const technicianName = technicianNameById.get(service.assignedTechnicianId || "") || serviceRecord?.technicianName || "Unassigned";
+            return (
+              <div
+                key={service.id}
+                onClick={() => setDetailService(service)}
+                className="grid w-full cursor-pointer grid-cols-[1.1fr_1.6fr_0.9fr_1.1fr_0.8fr_1fr] gap-3 border-b px-3 py-2 text-left text-sm transition-colors hover:bg-muted/20 last:border-b-0"
+              >
+                <span>{serviceDateLabel}</span>
+                <span className="truncate">{serviceTypeNameById.get(service.serviceTypeId || "") || "Service"}</span>
+                <span>{service.price ? formatCurrency(parseFloat(service.price)) : "Not set"}</span>
+                <span className="truncate">{technicianName}</span>
+                <span>
+                  {invoice ? (
+                    <button
+                      type="button"
+                      className="text-primary underline"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onOpenInvoices();
+                      }}
+                    >
+                      {invoice.invoiceNumber}
+                    </button>
+                  ) : "—"}
+                </span>
+                <span className="flex justify-end gap-2">
+                  <Button type="button" variant="outline" size="sm" onClick={(event) => { event.stopPropagation(); setEditingService(service); setDialogOpen(true); }}>Edit</Button>
+                  <Button type="button" size="sm" onClick={(event) => { event.stopPropagation(); scheduleService(service); }} disabled={service.status === "COMPLETED" || service.status === "CANCELLED"}>Schedule</Button>
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      <Dialog open={!!detailService} onOpenChange={(open) => !open && setDetailService(null)}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader><DialogTitle>Service Details</DialogTitle></DialogHeader>
+          {detailService && (
+            <ServiceDetailModal
+              service={detailService}
+              serviceTypeName={serviceTypeNameById.get(detailService.serviceTypeId || "") || "Service"}
+              technicianName={technicianNameById.get(detailService.assignedTechnicianId || "") || serviceRecordByServiceId.get(detailService.id)?.technicianName || "Unassigned"}
+              appointment={appointmentByServiceId.get(detailService.id) ?? null}
+              serviceRecord={serviceRecordByServiceId.get(detailService.id) ?? null}
+              invoice={invoiceByServiceId.get(detailService.id) ?? null}
+            />
+          )}
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
 export default function CustomerDetail() {
   const { toast } = useToast();
   const [, params] = useRoute("/customers/:id");
@@ -1901,6 +2224,7 @@ export default function CustomerDetail() {
   const [editLocDialogOpen, setEditLocDialogOpen] = useState(false);
   const [contactDialogOpen, setContactDialogOpen] = useState(false);
   const [editingContact, setEditingContact] = useState<Contact | null>(null);
+  const [activeTab, setActiveTab] = useState("contacts");
 
   const { data: compat, isLoading } = useQuery<CustomerDetailCompatResponse>({
     queryKey: [`/api/customer-detail-compat/${customerId}${urlLocationId ? `?locationId=${urlLocationId}` : ""}`],
@@ -2282,7 +2606,7 @@ export default function CustomerDetail() {
         )}
 
         {/* D) Location-scoped tabs */}
-        <Tabs defaultValue="contacts">
+        <Tabs value={activeTab} onValueChange={setActiveTab}>
           <TabsList className="flex-wrap">
             <TabsTrigger value="contacts" data-testid="tab-contacts"><User className="h-3 w-3 mr-1" /> Contacts ({locationCounts?.contacts ?? contacts?.length ?? 0})</TabsTrigger>
             <TabsTrigger value="agreements" data-testid="tab-agreements"><Calendar className="h-3 w-3 mr-1" /> Agreements ({locationCounts?.agreements ?? 0})</TabsTrigger>
@@ -2376,47 +2700,14 @@ export default function CustomerDetail() {
           </TabsContent>
 
           <TabsContent value="services" className="mt-4 space-y-3">
-            {locationAppts && locationAppts.some((appointment) => appointment.source === "AGREEMENT_GENERATED") && (
-              <Card data-testid="card-generated-service-orders">
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-sm font-medium">Agreement Service Orders</CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  {locationAppts
-                    .filter((appointment) => appointment.source === "AGREEMENT_GENERATED")
-                    .sort((a, b) => new Date(a.scheduledDate).getTime() - new Date(b.scheduledDate).getTime())
-                    .map((appointment) => (
-                      <div key={appointment.id} className="flex items-center justify-between gap-3 rounded-md border bg-muted/20 px-3 py-2">
-                        <div>
-                          <p className="text-sm font-medium">
-                            {new Date(appointment.scheduledDate).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" })}
-                          </p>
-                          {appointment.notes && <p className="text-xs text-muted-foreground mt-1 line-clamp-2">{appointment.notes}</p>}
-                        </div>
-                        <Badge variant="secondary" className={`text-xs ${appointment.status === "completed" ? "bg-primary/10 text-primary" : appointment.status === "scheduled" ? "bg-chart-2/10 text-chart-2" : ""}`}>
-                          {appointment.status}
-                        </Badge>
-                      </div>
-                    ))}
-                </CardContent>
-              </Card>
-            )}
-            {!locationServices || locationServices.length === 0 ? (
-              <Card><CardContent className="text-center py-8"><ClipboardList className="h-8 w-8 mx-auto text-muted-foreground/30 mb-2" /><p className="text-sm text-muted-foreground">No service history for this location</p></CardContent></Card>
-            ) : locationServices.map((svc) => (
-              <Card key={svc.id} className="hover-elevate" data-testid={`card-service-${svc.id}`}>
-                <CardContent className="p-4">
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <p className="text-sm font-medium">{new Date(svc.serviceDate).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}</p>
-                      {svc.technicianName && <p className="text-xs text-muted-foreground">Tech: {svc.technicianName}</p>}
-                      {svc.areasServiced && <p className="text-xs text-muted-foreground mt-0.5">Areas: {svc.areasServiced}</p>}
-                    </div>
-                    {svc.confirmed && <Badge variant="secondary" className="text-xs bg-primary/10 text-primary">Confirmed</Badge>}
-                  </div>
-                </CardContent>
-              </Card>
-            ))}
+            <ServicesTab
+              customerId={customerId}
+              locationId={activeLocationId}
+              appointments={locationAppts}
+              serviceRecords={locationServices}
+              invoices={locationInvoices}
+              onOpenInvoices={() => setActiveTab("invoices")}
+            />
           </TabsContent>
 
           <TabsContent value="invoices" className="mt-4 space-y-3">
