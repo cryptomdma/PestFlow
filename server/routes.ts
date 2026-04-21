@@ -142,6 +142,16 @@ export async function registerRoutes(
     scheduledEndDate: nullableDateSchema.optional(),
   });
   const updateAppointmentSchema = appointmentSchema.partial();
+  const serviceRecordSchema = insertServiceRecordSchema.omit({ serviceDate: true }).extend({
+    serviceDate: z.coerce.date(),
+  }).superRefine((value, ctx) => {
+    if (!value.serviceId) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["serviceId"], message: "serviceId is required" });
+    }
+  });
+  const updateServiceRecordSchema = insertServiceRecordSchema.omit({ serviceDate: true }).extend({
+    serviceDate: z.coerce.date().optional(),
+  }).partial();
   const agreementStatusSchema = z.enum(["ACTIVE", "PAUSED", "CANCELLED"]);
   const recurrenceUnitSchema = z.enum(["MONTH", "QUARTER", "YEAR", "CUSTOM"]);
   const agreementTemplateSchema = insertAgreementTemplateSchema.extend({
@@ -996,7 +1006,7 @@ export async function registerRoutes(
 
   app.post("/api/service-records", async (req, res) => {
     try {
-      const validated = insertServiceRecordSchema.parse(req.body);
+      const validated = serviceRecordSchema.parse(req.body);
       const data = await storage.createServiceRecord(validated);
       res.status(201).json(data);
     } catch (e: any) {
@@ -1007,7 +1017,7 @@ export async function registerRoutes(
 
   app.patch("/api/service-records/:id", async (req, res) => {
     try {
-      const validated = insertServiceRecordSchema.partial().parse(req.body);
+      const validated = updateServiceRecordSchema.parse(req.body);
       const data = await storage.updateServiceRecord(req.params.id, validated);
       if (!data) return res.status(404).json({ message: "Service record not found" });
       res.json(data);
