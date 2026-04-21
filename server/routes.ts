@@ -826,6 +826,11 @@ export async function registerRoutes(
     res.json(data);
   });
 
+  app.get("/api/opportunities/by-location/:locationId", async (req, res) => {
+    const data = await storage.getOpportunitiesByLocation(req.params.locationId);
+    res.json(data);
+  });
+
   app.post("/api/services", async (req, res) => {
     try {
       const validated = serviceSchema.parse(req.body);
@@ -845,6 +850,16 @@ export async function registerRoutes(
       res.json(data);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.delete("/api/services/:id", async (req, res) => {
+    try {
+      const deleted = await storage.deleteService(req.params.id);
+      if (!deleted) return res.status(404).json({ message: "Service not found" });
+      res.status(204).send();
+    } catch (e: any) {
       res.status(400).json({ message: e.message });
     }
   });

@@ -35,9 +35,9 @@ import {
   ArrowLeft, Mail, Phone, MapPin, Plus, Calendar, FileText, MessageSquare,
   ClipboardList, Building2, User, ChevronDown, ArrowUpRight, StickyNote,
   History,
-  CreditCard, KeyRound, Ruler, ChevronUp, Check, Link2,
+  CreditCard, KeyRound, Ruler, ChevronUp, Check, Link2, Target,
 } from "lucide-react";
-import type { Customer, Contact, Location, Appointment, Invoice, Service, ServiceRecord, Communication, CustomerNote, BillingProfile, NoteRevision, Agreement, AgreementTemplate, ServiceType, Technician } from "@shared/schema";
+import type { Customer, Contact, Location, Appointment, Invoice, Service, ServiceRecord, Communication, CustomerNote, BillingProfile, NoteRevision, Agreement, AgreementTemplate, ServiceType, Technician, Opportunity } from "@shared/schema";
 
 interface CustomerDetailCompatResponse {
   legacyCustomer: Customer;
@@ -62,6 +62,13 @@ interface LocationBalanceSummary {
 const BASE_LOCATION_TYPE_OPTIONS = ["residential", "commercial"] as const;
 const BASE_SOURCE_OPTIONS = ["Google", "Youtube", "Referal", "Facebook"] as const;
 const CONTACT_PHONE_TYPE_OPTIONS = ["mobile", "home", "work", "fax"] as const;
+const DEFAULT_TIME_WINDOW_OPTIONS = [
+  "8:00am-9:00am",
+  "9:00am-11:00am",
+  "11:00am-1:00pm",
+  "1:00pm-3:00pm",
+  "3:00pm-5:00pm",
+] as const;
 
 function buildOptions(currentValue: string | null | undefined, baseOptions: readonly string[]) {
   if (!currentValue || baseOptions.includes(currentValue)) {
@@ -97,6 +104,41 @@ function formatDateOnly(value: string | null | undefined) {
     day: "numeric",
     year: "numeric",
   });
+}
+
+function formatDateTimeValue(value: string | Date | null | undefined) {
+  if (!value) {
+    return "Not set";
+  }
+
+  return new Date(value).toLocaleString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function getServiceDisplayDate(service: Service, appointment?: Appointment | null, serviceRecord?: ServiceRecord | null) {
+  if (serviceRecord?.serviceDate) {
+    return {
+      label: formatDateTimeValue(serviceRecord.serviceDate),
+      source: "completed",
+    };
+  }
+
+  if (appointment?.scheduledDate) {
+    return {
+      label: formatDateTimeValue(appointment.scheduledDate),
+      source: "scheduled",
+    };
+  }
+
+  return {
+    label: formatDateOnly(service.dueDate),
+    source: "due",
+  };
 }
 
 function formatAgreementRecurrence(agreement: Agreement) {
@@ -1905,63 +1947,152 @@ function ServiceForm({
   const { data: serviceTypes } = useQuery<ServiceType[]>({ queryKey: ["/api/service-types"] });
   const [submitMode, setSubmitMode] = useState<"pending" | "schedule">("pending");
   const [form, setForm] = useState({
-    serviceTypeId: service?.serviceTypeId ?? "",
     dueDate: service?.dueDate ?? getTodayDateInputValue(),
-    expectedDurationMinutes: service?.expectedDurationMinutes ? String(service.expectedDurationMinutes) : "",
-    price: service?.price ?? "",
+    timeWindow: service?.timeWindow ?? DEFAULT_TIME_WINDOW_OPTIONS[1],
     notes: service?.notes ?? "",
   });
+  const [serviceLines, setServiceLines] = useState<Array<{
+    key: string;
+    serviceTypeId: string;
+    expectedDurationMinutes: string;
+    price: string;
+  }>>([
+    {
+      key: service?.id ?? "line-1",
+      serviceTypeId: service?.serviceTypeId ?? "",
+      expectedDurationMinutes: service?.expectedDurationMinutes ? String(service.expectedDurationMinutes) : "",
+      price: service?.price ?? "",
+    },
+  ]);
+
+  const updateServiceLine = (key: string, updates: Partial<(typeof serviceLines)[number]>) => {
+    setServiceLines((current) => current.map((line) => line.key === key ? { ...line, ...updates } : line));
+  };
+
+  const addServiceLine = () => {
+    setServiceLines((current) => [
+      ...current,
+      {
+        key: `line-${Date.now()}-${current.length + 1}`,
+        serviceTypeId: "",
+        expectedDurationMinutes: "",
+        price: "",
+      },
+    ]);
+  };
+
+  const removeServiceLine = (key: string) => {
+    setServiceLines((current) => current.length > 1 ? current.filter((line) => line.key !== key) : current);
+  };
 
   useEffect(() => {
-    if (!form.serviceTypeId || !serviceTypes) return;
-    const selectedServiceType = serviceTypes.find((serviceType) => serviceType.id === form.serviceTypeId);
-    if (!selectedServiceType || isEditMode) return;
-    setForm((prev) => ({
-      ...prev,
-      expectedDurationMinutes: prev.expectedDurationMinutes || (selectedServiceType.estimatedDuration ? String(selectedServiceType.estimatedDuration) : ""),
-      price: prev.price || selectedServiceType.defaultPrice || "",
+    if (!serviceTypes || isEditMode) return;
+    setServiceLines((current) => current.map((line) => {
+      if (!line.serviceTypeId) return line;
+      const selectedServiceType = serviceTypes.find((serviceType) => serviceType.id === line.serviceTypeId);
+      if (!selectedServiceType) return line;
+      return {
+        ...line,
+        expectedDurationMinutes: line.expectedDurationMinutes || (selectedServiceType.estimatedDuration ? String(selectedServiceType.estimatedDuration) : ""),
+        price: line.price || selectedServiceType.defaultPrice || "",
+      };
     }));
-  }, [form.serviceTypeId, serviceTypes, isEditMode, form.expectedDurationMinutes, form.price]);
+  }, [isEditMode, serviceLines.length, serviceTypes]);
+
+  const deleteMutation = useMutation({
+    mutationFn: async () => {
+      if (!service) return;
+      await apiRequest("DELETE", `/api/services/${service.id}`);
+    },
+    onSuccess: async () => {
+      setServiceLines([{
+        key: "line-1",
+        serviceTypeId: "",
+        expectedDurationMinutes: "",
+        price: "",
+      }]);
+      await queryClient.invalidateQueries({ queryKey: ["/api/services/by-location", locationId] });
+      await queryClient.invalidateQueries({ queryKey: ["/api/services"] });
+      await queryClient.invalidateQueries({ queryKey: ["/api/services/pending"] });
+      await queryClient.invalidateQueries({ queryKey: ["/api/appointments/by-location", locationId] });
+      await queryClient.invalidateQueries({ queryKey: ["/api/location-counts", locationId] });
+      toast({ title: "Service deleted" });
+      onClose();
+    },
+    onError: (error: Error) => toast({ title: "Unable to delete service", description: error.message, variant: "destructive" }),
+  });
 
   const mutation = useMutation({
     mutationFn: async () => {
-      const payload = {
-        customerId,
-        locationId,
-        agreementId: service?.agreementId ?? null,
-        serviceTypeId: form.serviceTypeId,
-        dueDate: form.dueDate || null,
-        expectedDurationMinutes: form.expectedDurationMinutes ? parseInt(form.expectedDurationMinutes, 10) : null,
-        price: form.price.trim() || null,
-        status: submitMode === "schedule" ? "PENDING_SCHEDULING" : "PENDING_SCHEDULING",
-        assignedTechnicianId: service?.assignedTechnicianId ?? null,
-        source: service?.source ?? "MANUAL",
-        notes: form.notes.trim() || null,
-      };
+      if (isEditMode && service) {
+        const line = serviceLines[0];
+        const payload = {
+          customerId,
+          locationId,
+          agreementId: service.agreementId ?? null,
+          serviceTypeId: line.serviceTypeId,
+          dueDate: form.dueDate || null,
+          timeWindow: form.timeWindow || null,
+          expectedDurationMinutes: line.expectedDurationMinutes ? parseInt(line.expectedDurationMinutes, 10) : null,
+          price: line.price.trim() || null,
+          status: service.status,
+          assignedTechnicianId: service.assignedTechnicianId ?? null,
+          source: service.source ?? "MANUAL",
+          notes: form.notes.trim() || null,
+        };
 
-      const response = isEditMode
-        ? await apiRequest("PATCH", `/api/services/${service.id}`, payload)
-        : await apiRequest("POST", "/api/services", payload);
-      return response.json() as Promise<Service>;
+        const response = await apiRequest("PATCH", `/api/services/${service.id}`, payload);
+        return [await response.json() as Service];
+      }
+
+      const createdServices: Service[] = [];
+      for (const line of serviceLines.filter((entry) => entry.serviceTypeId)) {
+        const response = await apiRequest("POST", "/api/services", {
+          customerId,
+          locationId,
+          agreementId: null,
+          serviceTypeId: line.serviceTypeId,
+          dueDate: form.dueDate || null,
+          timeWindow: form.timeWindow || null,
+          expectedDurationMinutes: line.expectedDurationMinutes ? parseInt(line.expectedDurationMinutes, 10) : null,
+          price: line.price.trim() || null,
+          status: "PENDING_SCHEDULING",
+          assignedTechnicianId: null,
+          source: "MANUAL",
+          notes: form.notes.trim() || null,
+        });
+        createdServices.push(await response.json() as Service);
+      }
+
+      return createdServices;
     },
-    onSuccess: (savedService) => {
+    onSuccess: (savedServices) => {
       queryClient.invalidateQueries({ queryKey: ["/api/services/by-location", locationId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/services"] });
       queryClient.invalidateQueries({ queryKey: ["/api/services/pending"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/appointments/by-location", locationId] });
       queryClient.invalidateQueries({ queryKey: ["/api/location-counts", locationId] });
 
       if (submitMode === "schedule") {
+        const [primaryService, ...additionalServices] = savedServices;
+        if (!primaryService) {
+          toast({ title: "No services were created", variant: "destructive" });
+          return;
+        }
         const params = new URLSearchParams({
-          serviceId: savedService.id,
+          serviceId: primaryService.id,
+          serviceIds: savedServices.map((savedService) => savedService.id).join(","),
           returnTo: `/customers/${customerId}?locationId=${locationId}`,
         });
-        if (savedService.dueDate) {
-          params.set("date", savedService.dueDate);
+        if (primaryService.dueDate) {
+          params.set("date", primaryService.dueDate);
         }
+        if (primaryService.timeWindow) params.set("timeWindow", primaryService.timeWindow);
         setLocation(`/schedule?${params.toString()}`);
         return;
       }
 
-      toast({ title: isEditMode ? "Service updated" : "Service saved" });
+      toast({ title: isEditMode ? "Service updated" : savedServices.length > 1 ? "Services saved" : "Service saved" });
       onClose();
     },
     onError: (error: Error) => toast({ title: "Error saving service", description: error.message, variant: "destructive" }),
@@ -1969,31 +2100,96 @@ function ServiceForm({
 
   return (
     <form onSubmit={(e) => { e.preventDefault(); mutation.mutate(); }} className="space-y-4">
-      <div className="space-y-1.5">
-        <Label>Service Type</Label>
-        <Select value={form.serviceTypeId} onValueChange={(value) => setForm((prev) => ({ ...prev, serviceTypeId: value }))}>
-          <SelectTrigger><SelectValue placeholder="Select service type" /></SelectTrigger>
-          <SelectContent>
-            {serviceTypes?.map((serviceType) => (
-              <SelectItem key={serviceType.id} value={serviceType.id}>{serviceType.name}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
-      <div className="grid gap-3 sm:grid-cols-3">
+      {!isEditMode && (
+        <div className="space-y-3">
+          {serviceLines.map((line, index) => (
+            <div key={line.key} className="rounded-md border p-3 space-y-3">
+              <div className="flex items-center justify-between gap-3">
+                <Label className="text-sm font-medium">Add Service {index + 1}</Label>
+                {serviceLines.length > 1 && (
+                  <Button type="button" variant="ghost" size="sm" onClick={() => removeServiceLine(line.key)}>Remove</Button>
+                )}
+              </div>
+              <div className="grid gap-3 sm:grid-cols-3">
+                <div className="space-y-1.5 sm:col-span-1">
+                  <Label>Service Type</Label>
+                  <Select value={line.serviceTypeId} onValueChange={(value) => {
+                    const serviceType = serviceTypes?.find((item) => item.id === value);
+                    updateServiceLine(line.key, {
+                      serviceTypeId: value,
+                      expectedDurationMinutes: line.expectedDurationMinutes || (serviceType?.estimatedDuration ? String(serviceType.estimatedDuration) : ""),
+                      price: line.price || serviceType?.defaultPrice || "",
+                    });
+                  }}>
+                    <SelectTrigger><SelectValue placeholder="Select service type" /></SelectTrigger>
+                    <SelectContent>
+                      {serviceTypes?.map((serviceType) => (
+                        <SelectItem key={serviceType.id} value={serviceType.id}>{serviceType.name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Expected Duration</Label>
+                  <Input type="number" min="0" value={line.expectedDurationMinutes} onChange={(e) => updateServiceLine(line.key, { expectedDurationMinutes: e.target.value })} placeholder="Minutes" />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Service Cost</Label>
+                  <Input type="number" min="0" step="0.01" value={line.price} onChange={(e) => updateServiceLine(line.key, { price: e.target.value })} />
+                </div>
+              </div>
+            </div>
+          ))}
+          <Button type="button" variant="outline" size="sm" onClick={addServiceLine}>Add Service</Button>
+        </div>
+      )}
+
+      {isEditMode && (
+        <div className="grid gap-3 sm:grid-cols-3">
+          <div className="space-y-1.5 sm:col-span-1">
+            <Label>Service Type</Label>
+            <Select value={serviceLines[0]?.serviceTypeId || ""} onValueChange={(value) => updateServiceLine(serviceLines[0].key, { serviceTypeId: value })}>
+              <SelectTrigger><SelectValue placeholder="Select service type" /></SelectTrigger>
+              <SelectContent>
+                {serviceTypes?.map((serviceType) => (
+                  <SelectItem key={serviceType.id} value={serviceType.id}>{serviceType.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-1.5"><Label>Expected Duration</Label><Input type="number" min="0" value={serviceLines[0]?.expectedDurationMinutes || ""} onChange={(e) => updateServiceLine(serviceLines[0].key, { expectedDurationMinutes: e.target.value })} placeholder="Minutes" /></div>
+          <div className="space-y-1.5"><Label>Service Cost</Label><Input type="number" min="0" step="0.01" value={serviceLines[0]?.price || ""} onChange={(e) => updateServiceLine(serviceLines[0].key, { price: e.target.value })} /></div>
+        </div>
+      )}
+
+      <div className="grid gap-3 sm:grid-cols-2">
         <div className="space-y-1.5"><Label>Target Date</Label><Input type="date" value={form.dueDate} onChange={(e) => setForm((prev) => ({ ...prev, dueDate: e.target.value }))} /></div>
-        <div className="space-y-1.5"><Label>Expected Duration</Label><Input type="number" min="0" value={form.expectedDurationMinutes} onChange={(e) => setForm((prev) => ({ ...prev, expectedDurationMinutes: e.target.value }))} placeholder="Minutes" /></div>
-        <div className="space-y-1.5"><Label>Service Cost</Label><Input type="number" min="0" step="0.01" value={form.price} onChange={(e) => setForm((prev) => ({ ...prev, price: e.target.value }))} /></div>
+        <div className="space-y-1.5">
+          <Label>Time Window</Label>
+          <Select value={form.timeWindow} onValueChange={(value) => setForm((prev) => ({ ...prev, timeWindow: value }))}>
+            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {DEFAULT_TIME_WINDOW_OPTIONS.map((windowOption) => (
+                <SelectItem key={windowOption} value={windowOption}>{windowOption}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
       </div>
       <div className="space-y-1.5"><Label>Instructions</Label><Textarea value={form.notes} onChange={(e) => setForm((prev) => ({ ...prev, notes: e.target.value }))} className="resize-none" /></div>
       <div className="flex justify-end gap-2">
         <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
+        {isEditMode && (
+          <Button type="button" variant="destructive" onClick={() => deleteMutation.mutate()} disabled={deleteMutation.isPending}>
+            {deleteMutation.isPending ? "Deleting..." : "Delete Service"}
+          </Button>
+        )}
         {!isEditMode && (
-          <Button type="submit" variant="outline" onClick={() => setSubmitMode("pending")} disabled={mutation.isPending || !form.serviceTypeId}>
+          <Button type="submit" variant="outline" onClick={() => setSubmitMode("pending")} disabled={mutation.isPending || serviceLines.every((line) => !line.serviceTypeId)}>
             {mutation.isPending && submitMode === "pending" ? "Saving..." : "Save as Pending"}
           </Button>
         )}
-        <Button type="submit" onClick={() => setSubmitMode(isEditMode ? "pending" : "schedule")} disabled={mutation.isPending || !form.serviceTypeId}>
+        <Button type="submit" onClick={() => setSubmitMode(isEditMode ? "pending" : "schedule")} disabled={mutation.isPending || serviceLines.every((line) => !line.serviceTypeId)}>
           {mutation.isPending ? "Saving..." : isEditMode ? "Save Service" : "Schedule Now"}
         </Button>
       </div>
@@ -2008,6 +2204,8 @@ function ServiceDetailModal({
   appointment,
   serviceRecord,
   invoice,
+  siblingServices,
+  serviceTypeNameById,
 }: {
   service: Service;
   serviceTypeName: string;
@@ -2015,21 +2213,28 @@ function ServiceDetailModal({
   appointment?: Appointment | null;
   serviceRecord?: ServiceRecord | null;
   invoice?: Invoice | null;
+  siblingServices?: Service[];
+  serviceTypeNameById: Map<string, string>;
 }) {
+  const displayDate = getServiceDisplayDate(service, appointment, serviceRecord);
+  const siblingCount = Math.max((siblingServices?.length ?? 1) - 1, 0);
+
   return (
     <div className="space-y-4 text-sm">
       <div className="grid gap-3 sm:grid-cols-2">
         <div><p className="text-xs uppercase tracking-wide text-muted-foreground">Service Type</p><p className="mt-1 font-medium">{serviceTypeName}</p></div>
         <div><p className="text-xs uppercase tracking-wide text-muted-foreground">Status</p><p className="mt-1">{service.status}</p></div>
-        <div><p className="text-xs uppercase tracking-wide text-muted-foreground">Due / Service Date</p><p className="mt-1">{formatDateOnly(serviceRecord ? new Date(serviceRecord.serviceDate).toISOString().slice(0, 10) : service.dueDate)}</p></div>
+        <div><p className="text-xs uppercase tracking-wide text-muted-foreground">Service Date</p><p className="mt-1">{displayDate.label}</p></div>
         <div><p className="text-xs uppercase tracking-wide text-muted-foreground">Technician</p><p className="mt-1">{technicianName || "Unassigned"}</p></div>
         <div><p className="text-xs uppercase tracking-wide text-muted-foreground">Cost</p><p className="mt-1">{service.price ? formatCurrency(parseFloat(service.price)) : "Not set"}</p></div>
         <div><p className="text-xs uppercase tracking-wide text-muted-foreground">Duration</p><p className="mt-1">{service.expectedDurationMinutes ? `${service.expectedDurationMinutes} min` : "Not set"}</p></div>
+        <div><p className="text-xs uppercase tracking-wide text-muted-foreground">Time Window</p><p className="mt-1">{service.timeWindow || "Not set"}</p></div>
       </div>
       {appointment && (
         <div className="rounded-md border bg-muted/20 p-3">
           <p className="text-xs uppercase tracking-wide text-muted-foreground">Linked Appointment</p>
-          <p className="mt-1 font-medium">{new Date(appointment.scheduledDate).toLocaleString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" })}</p>
+          <p className="mt-1 font-medium">{formatDateTimeValue(appointment.scheduledDate)}</p>
+          {siblingCount > 0 ? <p className="mt-1 text-xs text-muted-foreground">This visit also includes {siblingCount} other service{siblingCount === 1 ? "" : "s"}.</p> : null}
         </div>
       )}
       {invoice && (
@@ -2047,9 +2252,26 @@ function ServiceDetailModal({
       {serviceRecord && (
         <div className="space-y-2">
           <p className="text-xs uppercase tracking-wide text-muted-foreground">Completion Details</p>
+          {serviceRecord.technicianName && <p><span className="font-medium">Technician:</span> {serviceRecord.technicianName}</p>}
+          {serviceRecord.technicianLicenseNumber && <p><span className="font-medium">License #:</span> {serviceRecord.technicianLicenseNumber}</p>}
+          {serviceRecord.notes && <p><span className="font-medium">Notes:</span> {serviceRecord.notes}</p>}
           {serviceRecord.areasServiced && <p><span className="font-medium">Areas:</span> {serviceRecord.areasServiced}</p>}
           {serviceRecord.conditionsFound && <p><span className="font-medium">Conditions:</span> {serviceRecord.conditionsFound}</p>}
           {serviceRecord.recommendations && <p><span className="font-medium">Recommendations:</span> {serviceRecord.recommendations}</p>}
+        </div>
+      )}
+      {appointment && siblingServices && siblingServices.length > 1 && (
+        <div className="space-y-2">
+          <p className="text-xs uppercase tracking-wide text-muted-foreground">Other Services In This Visit</p>
+          <div className="space-y-1">
+            {siblingServices
+              .filter((sibling) => sibling.id !== service.id)
+              .map((sibling) => (
+                <div key={sibling.id} className="rounded-md border bg-muted/20 px-3 py-2">
+                  {serviceTypeNameById.get(sibling.serviceTypeId || "") || "Service"}
+                </div>
+              ))}
+          </div>
         </div>
       )}
     </div>
@@ -2081,13 +2303,19 @@ function ServicesTab({
 
   const serviceTypeNameById = useMemo(() => new Map((serviceTypes ?? []).map((serviceType) => [serviceType.id, serviceType.name])), [serviceTypes]);
   const technicianNameById = useMemo(() => new Map((technicians ?? []).map((technician) => [technician.id, technician.displayName])), [technicians]);
+  const appointmentsById = useMemo(() => new Map((appointments ?? []).map((appointment) => [appointment.id, appointment])), [appointments]);
   const appointmentByServiceId = useMemo(() => {
     const map = new Map<string, Appointment>();
+    for (const service of services ?? []) {
+      if (service.appointmentId && appointmentsById.has(service.appointmentId)) {
+        map.set(service.id, appointmentsById.get(service.appointmentId)!);
+      }
+    }
     for (const appointment of appointments ?? []) {
-      if (appointment.serviceId) map.set(appointment.serviceId, appointment);
+      if (appointment.serviceId && !map.has(appointment.serviceId)) map.set(appointment.serviceId, appointment);
     }
     return map;
-  }, [appointments]);
+  }, [appointments, appointmentsById, services]);
   const serviceRecordByServiceId = useMemo(() => {
     const map = new Map<string, ServiceRecord>();
     for (const serviceRecord of serviceRecords ?? []) {
@@ -2105,14 +2333,37 @@ function ServicesTab({
     }
     return map;
   }, [invoices, serviceRecords]);
+  const siblingServicesByAppointmentId = useMemo(() => {
+    const map = new Map<string, Service[]>();
+    for (const service of services ?? []) {
+      const appointmentId = service.appointmentId;
+      if (!appointmentId) continue;
+      const existing = map.get(appointmentId) ?? [];
+      existing.push(service);
+      map.set(appointmentId, existing);
+    }
+    return map;
+  }, [services]);
 
   const sortedServices = useMemo(() => {
     return [...(services ?? [])].sort((a, b) => {
-      const dateA = a.dueDate ?? "";
-      const dateB = b.dueDate ?? "";
+      const appointmentA = appointmentByServiceId.get(a.id) ?? null;
+      const appointmentB = appointmentByServiceId.get(b.id) ?? null;
+      const serviceRecordA = serviceRecordByServiceId.get(a.id) ?? null;
+      const serviceRecordB = serviceRecordByServiceId.get(b.id) ?? null;
+      const dateA = serviceRecordA?.serviceDate
+        ? new Date(serviceRecordA.serviceDate).toISOString()
+        : appointmentA?.scheduledDate
+          ? new Date(appointmentA.scheduledDate).toISOString()
+          : `${a.dueDate ?? ""}T00:00:00.000Z`;
+      const dateB = serviceRecordB?.serviceDate
+        ? new Date(serviceRecordB.serviceDate).toISOString()
+        : appointmentB?.scheduledDate
+          ? new Date(appointmentB.scheduledDate).toISOString()
+          : `${b.dueDate ?? ""}T00:00:00.000Z`;
       return dateB.localeCompare(dateA);
     });
-  }, [services]);
+  }, [appointmentByServiceId, serviceRecordByServiceId, services]);
 
   const openCreate = () => {
     setEditingService(null);
@@ -2124,6 +2375,10 @@ function ServicesTab({
       serviceId: service.id,
       returnTo: `/customers/${customerId}?locationId=${locationId}`,
     });
+    const linkedAppointment = appointmentByServiceId.get(service.id);
+    if (linkedAppointment) {
+      params.set("appointmentId", linkedAppointment.id);
+    }
     if (service.dueDate) params.set("date", service.dueDate);
     setLocation(`/schedule?${params.toString()}`);
   };
@@ -2143,9 +2398,10 @@ function ServicesTab({
         <Card><CardContent className="py-8 text-center"><ClipboardList className="mx-auto mb-2 h-8 w-8 text-muted-foreground/30" /><p className="text-sm text-muted-foreground">No services for this location yet.</p></CardContent></Card>
       ) : (
         <div className="rounded-md border">
-          <div className="grid grid-cols-[1.1fr_1.6fr_0.9fr_1.1fr_0.8fr_1fr] gap-3 border-b bg-muted/30 px-3 py-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+          <div className="grid grid-cols-[1fr_1.45fr_0.8fr_0.9fr_0.95fr_0.7fr_1fr] gap-2 border-b bg-muted/30 px-3 py-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
             <span>Service Date</span>
             <span>Service Type</span>
+            <span>Status</span>
             <span>Service Cost</span>
             <span>Technician</span>
             <span>Invoice</span>
@@ -2155,18 +2411,33 @@ function ServicesTab({
             const appointment = appointmentByServiceId.get(service.id) ?? null;
             const serviceRecord = serviceRecordByServiceId.get(service.id) ?? null;
             const invoice = invoiceByServiceId.get(service.id) ?? null;
-            const serviceDateLabel = serviceRecord
-              ? new Date(serviceRecord.serviceDate).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
-              : formatDateOnly(service.dueDate);
+            const displayDate = getServiceDisplayDate(service, appointment, serviceRecord);
+            const siblingServices = service.appointmentId ? siblingServicesByAppointmentId.get(service.appointmentId) ?? [service] : [service];
+            const siblingCount = Math.max(siblingServices.length - 1, 0);
+            const hasSharedVisit = !!service.appointmentId && !!appointment && siblingCount > 0;
             const technicianName = technicianNameById.get(service.assignedTechnicianId || "") || serviceRecord?.technicianName || "Unassigned";
             return (
               <div
                 key={service.id}
                 onClick={() => setDetailService(service)}
-                className="grid w-full cursor-pointer grid-cols-[1.1fr_1.6fr_0.9fr_1.1fr_0.8fr_1fr] gap-3 border-b px-3 py-2 text-left text-sm transition-colors hover:bg-muted/20 last:border-b-0"
+                className="grid w-full cursor-pointer grid-cols-[1fr_1.45fr_0.8fr_0.9fr_0.95fr_0.7fr_1fr] gap-2 border-b px-3 py-2 text-left text-sm transition-colors hover:bg-muted/20 last:border-b-0"
               >
-                <span>{serviceDateLabel}</span>
-                <span className="truncate">{serviceTypeNameById.get(service.serviceTypeId || "") || "Service"}</span>
+                <span>
+                  <span className="block">{displayDate.label}</span>
+                  {displayDate.source === "scheduled" ? <span className="text-xs text-muted-foreground">Scheduled visit date</span> : null}
+                </span>
+                <span className="min-w-0">
+                  <span className="block truncate">{serviceTypeNameById.get(service.serviceTypeId || "") || "Service"}</span>
+                  {hasSharedVisit ? (
+                    <span className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
+                      <Badge variant="outline" className="h-5 px-1.5 text-[10px]">Shared visit</Badge>
+                      {`With ${siblingCount} other service${siblingCount === 1 ? "" : "s"}`}
+                    </span>
+                  ) : null}
+                </span>
+                <span>
+                  <Badge variant="secondary" className="text-[10px] uppercase tracking-wide">{service.status}</Badge>
+                </span>
                 <span>{service.price ? formatCurrency(parseFloat(service.price)) : "Not set"}</span>
                 <span className="truncate">{technicianName}</span>
                 <span>
@@ -2183,9 +2454,11 @@ function ServicesTab({
                     </button>
                   ) : "—"}
                 </span>
-                <span className="flex justify-end gap-2">
-                  <Button type="button" variant="outline" size="sm" onClick={(event) => { event.stopPropagation(); setEditingService(service); setDialogOpen(true); }}>Edit</Button>
-                  <Button type="button" size="sm" onClick={(event) => { event.stopPropagation(); scheduleService(service); }} disabled={service.status === "COMPLETED" || service.status === "CANCELLED"}>Schedule</Button>
+                <span className="flex justify-end gap-1">
+                  <Button type="button" variant="outline" size="sm" className="h-8 px-2" onClick={(event) => { event.stopPropagation(); setEditingService(service); setDialogOpen(true); }}>Edit</Button>
+                  <Button type="button" size="sm" className="h-8 px-2" onClick={(event) => { event.stopPropagation(); scheduleService(service); }} disabled={service.status === "COMPLETED" || service.status === "CANCELLED"}>
+                    {appointment ? "Reschedule" : "Schedule"}
+                  </Button>
                 </span>
               </div>
             );
@@ -2203,10 +2476,56 @@ function ServicesTab({
               appointment={appointmentByServiceId.get(detailService.id) ?? null}
               serviceRecord={serviceRecordByServiceId.get(detailService.id) ?? null}
               invoice={invoiceByServiceId.get(detailService.id) ?? null}
+              siblingServices={(appointmentByServiceId.get(detailService.id) ? siblingServicesByAppointmentId.get(appointmentByServiceId.get(detailService.id)!.id) : undefined) ?? [detailService]}
+              serviceTypeNameById={serviceTypeNameById}
             />
           )}
         </DialogContent>
       </Dialog>
+    </div>
+  );
+}
+
+function OpportunitiesTab({
+  locationId,
+}: {
+  locationId: string;
+}) {
+  const { data: opportunities } = useQuery<Opportunity[]>({ queryKey: ["/api/opportunities/by-location", locationId], enabled: !!locationId });
+  const { data: serviceTypes } = useQuery<ServiceType[]>({ queryKey: ["/api/service-types"] });
+
+  const serviceTypeNameById = useMemo(() => new Map((serviceTypes ?? []).map((serviceType) => [serviceType.id, serviceType.name])), [serviceTypes]);
+  const sortedOpportunities = useMemo(() => {
+    return [...(opportunities ?? [])].sort((a, b) => b.dueDate.localeCompare(a.dueDate));
+  }, [opportunities]);
+
+  if (!sortedOpportunities.length) {
+    return (
+      <Card>
+        <CardContent className="py-8 text-center">
+          <Target className="mx-auto mb-2 h-8 w-8 text-muted-foreground/30" />
+          <p className="text-sm text-muted-foreground">No open opportunities for this location.</p>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      {sortedOpportunities.map((opportunity) => (
+        <Card key={opportunity.id}>
+          <CardContent className="flex items-start justify-between gap-3 p-4">
+            <div>
+              <div className="flex items-center gap-2">
+                <p className="font-medium">{opportunity.opportunityType || serviceTypeNameById.get(opportunity.serviceTypeId || "") || "Opportunity"}</p>
+                <Badge variant="outline">{opportunity.status}</Badge>
+              </div>
+              <p className="mt-1 text-sm text-muted-foreground">Due {formatDateOnly(opportunity.dueDate)}</p>
+              {opportunity.notes ? <p className="mt-2 text-sm text-muted-foreground">{opportunity.notes}</p> : null}
+            </div>
+          </CardContent>
+        </Card>
+      ))}
     </div>
   );
 }
@@ -2241,7 +2560,7 @@ export default function CustomerDetail() {
   const { data: accountContacts } = useQuery<Contact[]>({ queryKey: ["/api/contacts", customerId], enabled: !!customerId });
   const { data: locationBalances } = useQuery<LocationBalanceSummary[]>({ queryKey: ["/api/location-balances", customerId], enabled: !!customerId });
 
-  const { data: locationCounts } = useQuery<{ contacts: number; appointments: number; agreements: number; services: number; invoices: number; communications: number }>({
+  const { data: locationCounts } = useQuery<{ contacts: number; appointments: number; agreements: number; services: number; invoices: number; communications: number; opportunities: number }>({
     queryKey: ["/api/location-counts", activeLocationId],
     enabled: !!activeLocationId,
   });
@@ -2611,6 +2930,7 @@ export default function CustomerDetail() {
             <TabsTrigger value="contacts" data-testid="tab-contacts"><User className="h-3 w-3 mr-1" /> Contacts ({locationCounts?.contacts ?? contacts?.length ?? 0})</TabsTrigger>
             <TabsTrigger value="agreements" data-testid="tab-agreements"><Calendar className="h-3 w-3 mr-1" /> Agreements ({locationCounts?.agreements ?? 0})</TabsTrigger>
             <TabsTrigger value="services" data-testid="tab-services"><ClipboardList className="h-3 w-3 mr-1" /> Services ({locationCounts?.services ?? 0})</TabsTrigger>
+            <TabsTrigger value="opportunities" data-testid="tab-opportunities"><Target className="h-3 w-3 mr-1" /> Opportunities ({locationCounts?.opportunities ?? 0})</TabsTrigger>
             <TabsTrigger value="invoices" data-testid="tab-invoices"><FileText className="h-3 w-3 mr-1" /> Invoices ({locationCounts?.invoices ?? 0})</TabsTrigger>
             <TabsTrigger value="comms" data-testid="tab-comms"><MessageSquare className="h-3 w-3 mr-1" /> Comms ({locationCounts?.communications ?? 0})</TabsTrigger>
           </TabsList>
@@ -2708,6 +3028,10 @@ export default function CustomerDetail() {
               invoices={locationInvoices}
               onOpenInvoices={() => setActiveTab("invoices")}
             />
+          </TabsContent>
+
+          <TabsContent value="opportunities" className="mt-4 space-y-3">
+            <OpportunitiesTab locationId={activeLocationId} />
           </TabsContent>
 
           <TabsContent value="invoices" className="mt-4 space-y-3">

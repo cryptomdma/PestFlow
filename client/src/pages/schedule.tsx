@@ -138,6 +138,14 @@ function getViewportLabel(boardDates: Date[]) {
   return boardDates.length > 1 ? `${startLabel} - ${endLabel}` : startLabel;
 }
 
+function getLocationServicesQueryKey(locationId: string | null | undefined) {
+  return ["/api/services/by-location", locationId || ""];
+}
+
+function getLocationAppointmentsQueryKey(locationId: string | null | undefined) {
+  return ["/api/appointments/by-location", locationId || ""];
+}
+
 function AppointmentSheet({
   appointment,
   service,
@@ -285,6 +293,19 @@ function AppointmentSheet({
             </div>
 
             <div className="flex items-center justify-end gap-2">
+              {status !== "canceled" ? (
+                <Button type="button" variant="destructive" onClick={() => onSave({
+                  assignedTechnicianId: assignedTechnicianId || null,
+                  scheduledDate: new Date(scheduledDate).toISOString(),
+                  scheduledEndDate: scheduledEndDate ? new Date(scheduledEndDate).toISOString() : null,
+                  status: "canceled",
+                  lockTime,
+                  lockTechnician,
+                  notes: notes.trim() || null,
+                })} disabled={isSaving || !scheduledDate}>
+                  Cancel Service
+                </Button>
+              ) : null}
               <Button variant="outline" onClick={() => onOpenChange(false)}>Close</Button>
               <Button
                 onClick={() => onSave({
@@ -391,13 +412,14 @@ export default function Schedule() {
     return dateParam ? new Date(`${dateParam}T00:00:00`) : new Date();
   });
   const [selectedServiceId, setSelectedServiceId] = useState<string | null>(params.get("serviceId"));
-  const [selectedAppointmentId, setSelectedAppointmentId] = useState<string | null>(null);
+  const [selectedAppointmentId, setSelectedAppointmentId] = useState<string | null>(params.get("appointmentId"));
   const [editingAppointmentId, setEditingAppointmentId] = useState<string | null>(null);
   const [detailServiceId, setDetailServiceId] = useState<string | null>(null);
   const [datePickerOpen, setDatePickerOpen] = useState(false);
   const [boardStartHour, setBoardStartHour] = useState(8);
   const [boardEndHour, setBoardEndHour] = useState(18);
   const [slotIntervalHours, setSlotIntervalHours] = useState(2);
+  const groupedServiceIds = useMemo(() => (params.get("serviceIds") || "").split(",").map((id) => id.trim()).filter(Boolean), [params]);
 
   const { data: technicians, isLoading: techniciansLoading } = useQuery<Technician[]>({ queryKey: ["/api/technicians?includeInactive=true"] });
   const { data: appointments, isLoading: appointmentsLoading } = useQuery<Appointment[]>({ queryKey: ["/api/appointments"] });
@@ -412,6 +434,16 @@ export default function Schedule() {
   const locationById = useMemo(() => new Map((locations ?? []).map((location) => [location.id, location])), [locations]);
   const serviceById = useMemo(() => new Map((allServices ?? []).map((service) => [service.id, service])), [allServices]);
   const technicianById = useMemo(() => new Map((technicians ?? []).map((technician) => [technician.id, technician])), [technicians]);
+  const servicesByAppointmentId = useMemo(() => {
+    const map = new Map<string, Service[]>();
+    for (const service of allServices ?? []) {
+      if (!service.appointmentId) continue;
+      const existing = map.get(service.appointmentId) ?? [];
+      existing.push(service);
+      map.set(service.appointmentId, existing);
+    }
+    return map;
+  }, [allServices]);
 
   const currentView = VIEW_OPTIONS.find((option) => option.value === view)!;
   const boardDates = useMemo(() => Array.from({ length: currentView.step }, (_, index) => startOfDay(addDays(currentDate, index))), [currentDate, currentView.step]);
@@ -501,6 +533,14 @@ export default function Schedule() {
     }
   }, [params, prefillServiceMutation]);
 
+  useEffect(() => {
+    const appointmentId = params.get("appointmentId");
+    if (appointmentId) {
+      setSelectedAppointmentId(appointmentId);
+      setSelectedServiceId(null);
+    }
+  }, [params]);
+
   const scheduleMutation = useMutation({
     mutationFn: async ({ service, technician, slotDate }: { service: Service; technician: Technician; slotDate: Date }) => {
       const endDate = service.expectedDurationMinutes ? new Date(slotDate.getTime() + service.expectedDurationMinutes * 60 * 1000) : null;
@@ -523,18 +563,63 @@ export default function Schedule() {
       });
       return response.json() as Promise<Appointment>;
     },
-    onSuccess: async () => {
+    onSuccess: async (createdAppointment) => {
+      const additionalServiceIds = groupedServiceIds.filter((id) => id !== createdAppointment.serviceId);
+      if (additionalServiceIds.length) {
+        await Promise.all(additionalServiceIds.map(async (serviceId) => {
+          await apiRequest("PATCH", `/api/services/${serviceId}`, {
+            appointmentId: createdAppointment.id,
+            assignedTechnicianId: createdAppointment.assignedTechnicianId || null,
+            status: createdAppointment.status === "completed" ? "COMPLETED" : createdAppointment.status === "canceled" ? "CANCELLED" : "SCHEDULED",
+          });
+        }));
+      }
+
       queryClient.invalidateQueries({ queryKey: ["/api/appointments"] });
       queryClient.invalidateQueries({ queryKey: ["/api/services"] });
       queryClient.invalidateQueries({ queryKey: ["/api/services/pending"] });
+      if (selectedService?.locationId) {
+        queryClient.invalidateQueries({ queryKey: getLocationServicesQueryKey(selectedService.locationId) });
+        queryClient.invalidateQueries({ queryKey: getLocationAppointmentsQueryKey(selectedService.locationId) });
+      }
       setSelectedServiceId(null);
-      toast({ title: "Service scheduled" });
+      toast({ title: additionalServiceIds.length ? "Grouped services scheduled" : "Service scheduled" });
       const returnTo = params.get("returnTo");
       if (returnTo) {
         setLocation(returnTo);
       }
     },
     onError: (error: Error) => toast({ title: "Unable to schedule service", description: error.message, variant: "destructive" }),
+  });
+
+  const attachServiceToAppointmentMutation = useMutation({
+    mutationFn: async ({ service, appointment }: { service: Service; appointment: Appointment }) => {
+      const bundleIds = groupedServiceIds.length ? groupedServiceIds : [service.id];
+      await Promise.all(bundleIds.map(async (serviceId) => {
+        await apiRequest("PATCH", `/api/services/${serviceId}`, {
+          appointmentId: appointment.id,
+          assignedTechnicianId: appointment.assignedTechnicianId || null,
+          status: appointment.status === "completed" ? "COMPLETED" : appointment.status === "canceled" ? "CANCELLED" : "SCHEDULED",
+        });
+      }));
+      return service;
+    },
+    onSuccess: (_service, variables) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/services"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/services/pending"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/appointments"] });
+      queryClient.invalidateQueries({ queryKey: getLocationServicesQueryKey(variables.service.locationId) });
+      queryClient.invalidateQueries({ queryKey: getLocationAppointmentsQueryKey(variables.service.locationId) });
+      setSelectedServiceId(null);
+      toast({ title: groupedServiceIds.length > 1 ? "Services added to shared visit" : "Service added to shared visit" });
+      const returnTo = params.get("returnTo");
+      if (returnTo) {
+        setLocation(returnTo);
+      } else {
+        setSelectedAppointmentId(variables.appointment.id);
+      }
+    },
+    onError: (error: Error) => toast({ title: "Unable to add service to visit", description: error.message, variant: "destructive" }),
   });
 
   const updateAppointmentMutation = useMutation({
@@ -546,6 +631,8 @@ export default function Schedule() {
       queryClient.invalidateQueries({ queryKey: ["/api/appointments"] });
       queryClient.invalidateQueries({ queryKey: ["/api/services"] });
       queryClient.invalidateQueries({ queryKey: ["/api/services/pending"] });
+      queryClient.invalidateQueries({ queryKey: getLocationAppointmentsQueryKey(appointment.locationId) });
+      queryClient.invalidateQueries({ queryKey: getLocationServicesQueryKey(appointment.locationId) });
       setSelectedAppointmentId(null);
       setEditingAppointmentId((current) => current === appointment.id ? null : current);
       toast({ title: "Appointment updated" });
@@ -598,13 +685,33 @@ export default function Schedule() {
     }
   };
 
+  const handleAppointmentCardClick = (appointment: Appointment) => {
+    if (selectedService) {
+      if (selectedService.locationId !== appointment.locationId) {
+        toast({
+          title: "Different location",
+          description: "Only services from the same location can be grouped into one appointment.",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      attachServiceToAppointmentMutation.mutate({ service: selectedService, appointment });
+      return;
+    }
+
+    setSelectedAppointmentId(appointment.id);
+    setSelectedServiceId(null);
+  };
+
   const analytics = useMemo(() => {
     const totals = { jobs: viewportAppointments.length, revenue: 0 };
     const byTechnician = new Map<string, { technicianName: string; jobs: number; revenue: number }>();
 
     for (const appointment of viewportAppointments) {
-      const linkedService = appointment.serviceId ? serviceById.get(appointment.serviceId) : null;
-      const revenue = linkedService?.price ? parseFloat(linkedService.price) : 0;
+      const linkedServices = servicesByAppointmentId.get(appointment.id)
+        ?? (appointment.serviceId ? [serviceById.get(appointment.serviceId)].filter((service): service is Service => !!service) : []);
+      const revenue = linkedServices.reduce((sum, service) => sum + (service.price ? parseFloat(service.price) : 0), 0);
       totals.revenue += revenue;
 
       const technician = appointment.assignedTechnicianId ? technicianById.get(appointment.assignedTechnicianId) : null;
@@ -623,7 +730,7 @@ export default function Schedule() {
       ...totals,
       byTechnician: Array.from(byTechnician.values()).sort((left, right) => right.jobs - left.jobs),
     };
-  }, [serviceById, technicianById, viewportAppointments]);
+  }, [serviceById, servicesByAppointmentId, technicianById, viewportAppointments]);
 
   const editingAppointmentService = editingAppointment?.serviceId ? serviceById.get(editingAppointment.serviceId) ?? null : null;
   const detailTechnicianName = detailService?.assignedTechnicianId ? technicianById.get(detailService.assignedTechnicianId)?.displayName || "" : "";
@@ -755,12 +862,13 @@ export default function Schedule() {
               {selectedService ? (
                 <>
                   <p className="font-medium">Scheduling selected service</p>
-                  <p className="text-muted-foreground">Click a board slot to assign this service.</p>
+                  <p className="text-muted-foreground">Click an empty slot to create a new visit, or click an existing appointment card at the same location to add this service to that visit.</p>
+                  {selectedService.timeWindow ? <p className="text-muted-foreground">Preferred time window: {selectedService.timeWindow}</p> : null}
                 </>
               ) : selectedAppointment ? (
                 <>
                   <p className="font-medium">Move / reassign selected appointment</p>
-                  <p className="text-muted-foreground">Click a new slot to move it. Locked dimensions stay fixed.</p>
+                  <p className="text-muted-foreground">Click a new slot to move it. Locked dimensions stay fixed. This visit currently includes {(servicesByAppointmentId.get(selectedAppointment.id)?.length ?? 1)} service(s).</p>
                 </>
               ) : null}
             </div>
@@ -820,7 +928,9 @@ export default function Schedule() {
                           <div className="text-[11px] text-muted-foreground">{getHourLabel(hour)}</div>
                           <div className="mt-2 space-y-2">
                             {slotAppointments.map((appointment) => {
-                              const linkedService = appointment.serviceId ? serviceById.get(appointment.serviceId) ?? null : null;
+                              const linkedServices = servicesByAppointmentId.get(appointment.id)
+                                ?? (appointment.serviceId ? [serviceById.get(appointment.serviceId)].filter((service): service is Service => !!service) : []);
+                              const linkedService = linkedServices[0] ?? null;
                               const customer = customerById.get(appointment.customerId);
                               const location = appointment.locationId ? locationById.get(appointment.locationId) : undefined;
                               const customerLabel = getCustomerLabel(customer, location);
@@ -830,6 +940,7 @@ export default function Schedule() {
                               const technicianName = appointment.assignedTechnicianId ? technicianById.get(appointment.assignedTechnicianId)?.displayName || appointment.assignedTo || "Technician" : appointment.assignedTo || "Unassigned";
                               const isSelected = selectedAppointmentId === appointment.id;
                               const hasLocks = appointment.lockTime || appointment.lockTechnician;
+                              const siblingCount = Math.max(linkedServices.length - 1, 0);
 
                               return (
                                 <HoverCard key={appointment.id} openDelay={150}>
@@ -838,18 +949,18 @@ export default function Schedule() {
                                       className={`rounded-md border bg-background px-2 py-2 text-xs shadow-sm transition-colors ${isSelected ? "border-primary ring-1 ring-primary" : ""}`}
                                       onClick={(event) => {
                                         event.stopPropagation();
-                                        setSelectedAppointmentId(appointment.id);
-                                        setSelectedServiceId(null);
+                                        handleAppointmentCardClick(appointment);
                                       }}
                                     >
                                       <div className="flex items-start justify-between gap-2">
                                         <div className="min-w-0">
-                                          <button type="button" className="truncate text-left font-medium underline-offset-2 hover:underline" onClick={(event) => { event.stopPropagation(); if (appointment.serviceId) setDetailServiceId(appointment.serviceId); }}>
+                                          <button type="button" className="truncate text-left font-medium underline-offset-2 hover:underline" onClick={(event) => { event.stopPropagation(); if (linkedService?.id) setDetailServiceId(linkedService.id); }}>
                                             {customerLabel}
                                           </button>
-                                          <button type="button" className="mt-0.5 block truncate text-left text-muted-foreground underline-offset-2 hover:underline" onClick={(event) => { event.stopPropagation(); if (appointment.serviceId) setDetailServiceId(appointment.serviceId); }}>
+                                          <button type="button" className="mt-0.5 block truncate text-left text-muted-foreground underline-offset-2 hover:underline" onClick={(event) => { event.stopPropagation(); if (linkedService?.id) setDetailServiceId(linkedService.id); }}>
                                             {serviceTypeName}
                                           </button>
+                                          {siblingCount > 0 ? <p className="mt-1 text-[11px] text-muted-foreground">+ {siblingCount} other service{siblingCount === 1 ? "" : "s"}</p> : null}
                                         </div>
                                         <div className="flex items-center gap-1">
                                           {hasLocks ? <Lock className="h-3.5 w-3.5 text-muted-foreground" /> : null}
@@ -876,8 +987,9 @@ export default function Schedule() {
                                         <div><p className="uppercase tracking-wide text-muted-foreground">Time</p><p className="mt-1">{new Date(appointment.scheduledDate).toLocaleString()}</p></div>
                                         <div><p className="uppercase tracking-wide text-muted-foreground">Duration</p><p className="mt-1">{durationMinutes ? `${durationMinutes} min` : "Not set"}</p></div>
                                         <div><p className="uppercase tracking-wide text-muted-foreground">Status</p><p className="mt-1">{appointment.status}</p></div>
-                                        <div><p className="uppercase tracking-wide text-muted-foreground">Revenue</p><p className="mt-1">{formatCurrency(linkedService?.price)}</p></div>
+                                        <div><p className="uppercase tracking-wide text-muted-foreground">Revenue</p><p className="mt-1">{formatCurrency(String(linkedServices.reduce((sum, service) => sum + (service.price ? parseFloat(service.price) : 0), 0).toFixed(2)))}</p></div>
                                       </div>
+                                      {siblingCount > 0 ? <div className="rounded-md border bg-muted/20 px-2 py-2 text-[11px]">This appointment includes {linkedServices.length} services in one visit.</div> : null}
                                       {hasLocks ? <div className="rounded-md border bg-muted/20 px-2 py-2 text-[11px]">Lock state: {appointment.lockTime ? "Time locked" : "Time flexible"} | {appointment.lockTechnician ? "Technician locked" : "Technician flexible"}</div> : null}
                                     </div>
                                   </HoverCardContent>
@@ -928,6 +1040,7 @@ export default function Schedule() {
                         <Badge variant="outline" className="text-xs">{service.status}</Badge>
                       </div>
                       <p className="mt-1 text-xs text-muted-foreground">{serviceTypeNameById.get(service.serviceTypeId || "") || "Service"} | {service.expectedDurationMinutes ? `${service.expectedDurationMinutes} min` : "Duration not set"} | Due {service.dueDate || "Not set"}</p>
+                      {service.timeWindow ? <p className="mt-1 text-xs text-muted-foreground">Time window: {service.timeWindow}</p> : null}
                       <p className="mt-1 text-xs text-muted-foreground">{getLocationLabel(location)}</p>
                     </div>
                     <div className="shrink-0 text-right">
