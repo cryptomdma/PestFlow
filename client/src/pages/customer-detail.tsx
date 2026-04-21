@@ -2004,12 +2004,18 @@ function ServiceForm({
       if (!service) return;
       await apiRequest("DELETE", `/api/services/${service.id}`);
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/services/by-location", locationId] });
-      queryClient.invalidateQueries({ queryKey: ["/api/services"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/services/pending"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/appointments/by-location", locationId] });
-      queryClient.invalidateQueries({ queryKey: ["/api/location-counts", locationId] });
+    onSuccess: async () => {
+      setServiceLines([{
+        key: "line-1",
+        serviceTypeId: "",
+        expectedDurationMinutes: "",
+        price: "",
+      }]);
+      await queryClient.invalidateQueries({ queryKey: ["/api/services/by-location", locationId] });
+      await queryClient.invalidateQueries({ queryKey: ["/api/services"] });
+      await queryClient.invalidateQueries({ queryKey: ["/api/services/pending"] });
+      await queryClient.invalidateQueries({ queryKey: ["/api/appointments/by-location", locationId] });
+      await queryClient.invalidateQueries({ queryKey: ["/api/location-counts", locationId] });
       toast({ title: "Service deleted" });
       onClose();
     },
@@ -2330,14 +2336,14 @@ function ServicesTab({
   const siblingServicesByAppointmentId = useMemo(() => {
     const map = new Map<string, Service[]>();
     for (const service of services ?? []) {
-      const appointmentId = service.appointmentId || appointmentByServiceId.get(service.id)?.id;
+      const appointmentId = service.appointmentId;
       if (!appointmentId) continue;
       const existing = map.get(appointmentId) ?? [];
       existing.push(service);
       map.set(appointmentId, existing);
     }
     return map;
-  }, [appointmentByServiceId, services]);
+  }, [services]);
 
   const sortedServices = useMemo(() => {
     return [...(services ?? [])].sort((a, b) => {
@@ -2392,9 +2398,10 @@ function ServicesTab({
         <Card><CardContent className="py-8 text-center"><ClipboardList className="mx-auto mb-2 h-8 w-8 text-muted-foreground/30" /><p className="text-sm text-muted-foreground">No services for this location yet.</p></CardContent></Card>
       ) : (
         <div className="rounded-md border">
-          <div className="grid grid-cols-[1.1fr_1.6fr_0.9fr_1.1fr_0.8fr_1fr] gap-3 border-b bg-muted/30 px-3 py-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+          <div className="grid grid-cols-[1fr_1.45fr_0.8fr_0.9fr_0.95fr_0.7fr_1fr] gap-2 border-b bg-muted/30 px-3 py-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
             <span>Service Date</span>
             <span>Service Type</span>
+            <span>Status</span>
             <span>Service Cost</span>
             <span>Technician</span>
             <span>Invoice</span>
@@ -2405,14 +2412,15 @@ function ServicesTab({
             const serviceRecord = serviceRecordByServiceId.get(service.id) ?? null;
             const invoice = invoiceByServiceId.get(service.id) ?? null;
             const displayDate = getServiceDisplayDate(service, appointment, serviceRecord);
-            const siblingServices = appointment ? siblingServicesByAppointmentId.get(appointment.id) ?? [service] : [service];
+            const siblingServices = service.appointmentId ? siblingServicesByAppointmentId.get(service.appointmentId) ?? [service] : [service];
             const siblingCount = Math.max(siblingServices.length - 1, 0);
+            const hasSharedVisit = !!service.appointmentId && !!appointment && siblingCount > 0;
             const technicianName = technicianNameById.get(service.assignedTechnicianId || "") || serviceRecord?.technicianName || "Unassigned";
             return (
               <div
                 key={service.id}
                 onClick={() => setDetailService(service)}
-                className="grid w-full cursor-pointer grid-cols-[1.1fr_1.6fr_0.9fr_1.1fr_0.8fr_1fr] gap-3 border-b px-3 py-2 text-left text-sm transition-colors hover:bg-muted/20 last:border-b-0"
+                className="grid w-full cursor-pointer grid-cols-[1fr_1.45fr_0.8fr_0.9fr_0.95fr_0.7fr_1fr] gap-2 border-b px-3 py-2 text-left text-sm transition-colors hover:bg-muted/20 last:border-b-0"
               >
                 <span>
                   <span className="block">{displayDate.label}</span>
@@ -2420,12 +2428,15 @@ function ServicesTab({
                 </span>
                 <span className="min-w-0">
                   <span className="block truncate">{serviceTypeNameById.get(service.serviceTypeId || "") || "Service"}</span>
-                  {appointment ? (
+                  {hasSharedVisit ? (
                     <span className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
                       <Badge variant="outline" className="h-5 px-1.5 text-[10px]">Shared visit</Badge>
-                      {siblingCount > 0 ? `Scheduled with ${siblingCount} other service${siblingCount === 1 ? "" : "s"}` : "Scheduled visit"}
+                      {`With ${siblingCount} other service${siblingCount === 1 ? "" : "s"}`}
                     </span>
                   ) : null}
+                </span>
+                <span>
+                  <Badge variant="secondary" className="text-[10px] uppercase tracking-wide">{service.status}</Badge>
                 </span>
                 <span>{service.price ? formatCurrency(parseFloat(service.price)) : "Not set"}</span>
                 <span className="truncate">{technicianName}</span>
@@ -2443,9 +2454,9 @@ function ServicesTab({
                     </button>
                   ) : "—"}
                 </span>
-                <span className="flex justify-end gap-2">
-                  <Button type="button" variant="outline" size="sm" onClick={(event) => { event.stopPropagation(); setEditingService(service); setDialogOpen(true); }}>Edit</Button>
-                  <Button type="button" size="sm" onClick={(event) => { event.stopPropagation(); scheduleService(service); }} disabled={service.status === "COMPLETED" || service.status === "CANCELLED"}>
+                <span className="flex justify-end gap-1">
+                  <Button type="button" variant="outline" size="sm" className="h-8 px-2" onClick={(event) => { event.stopPropagation(); setEditingService(service); setDialogOpen(true); }}>Edit</Button>
+                  <Button type="button" size="sm" className="h-8 px-2" onClick={(event) => { event.stopPropagation(); scheduleService(service); }} disabled={service.status === "COMPLETED" || service.status === "CANCELLED"}>
                     {appointment ? "Reschedule" : "Schedule"}
                   </Button>
                 </span>
