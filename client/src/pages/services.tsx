@@ -32,7 +32,20 @@ import {
   Beaker,
   AlertTriangle,
 } from "lucide-react";
-import type { Customer, ServiceRecord, ProductApplication, ServiceType, Location, Technician } from "@shared/schema";
+import type { Appointment, Customer, Service, ServiceRecord, ProductApplication, ServiceType, Location, Technician } from "@shared/schema";
+
+function toDateTimeLocalValue(value?: string | Date | null) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toISOString().slice(0, 16);
+}
+
+function serviceSummary(service: Service, serviceTypes?: ServiceType[]) {
+  const serviceType = serviceTypes?.find((item) => item.id === service.serviceTypeId);
+  const dueDate = service.dueDate ? ` · due ${new Date(`${service.dueDate}T00:00:00`).toLocaleDateString()}` : "";
+  return `${serviceType?.name || "Service"} · ${service.status}${dueDate}`;
+}
 
 function ProductApplicationForm({
   products,
@@ -111,6 +124,8 @@ function ServiceRecordForm({ onClose }: { onClose: () => void }) {
   const [form, setForm] = useState({
     customerId: "",
     locationId: "",
+    serviceId: "",
+    appointmentId: "",
     serviceTypeId: "",
     serviceDate: new Date().toISOString().slice(0, 16),
     technicianId: "",
@@ -129,9 +144,18 @@ function ServiceRecordForm({ onClose }: { onClose: () => void }) {
     productName: string; epaRegNumber: string; dilutionRate: string;
     amountApplied: string; applicationMethod: string; device: string; applicationLocation: string;
   }>>([]);
+  const { data: locationServices } = useQuery<Service[]>({
+    queryKey: ["/api/services/by-location", form.locationId],
+    enabled: !!form.locationId,
+  });
+  const { data: locationAppointments } = useQuery<Appointment[]>({
+    queryKey: ["/api/appointments/by-location", form.locationId],
+    enabled: !!form.locationId,
+  });
 
   const customerLocations = allLocations?.filter((l) => l.customerId === form.customerId) || [];
   const selectedTechnician = technicians?.find((technician) => technician.id === form.technicianId) ?? null;
+  const appointmentById = new Map((locationAppointments ?? []).map((appointment) => [appointment.id, appointment]));
 
   const mutation = useMutation({
     mutationFn: async (data: typeof form) => {
@@ -140,12 +164,13 @@ function ServiceRecordForm({ onClose }: { onClose: () => void }) {
         serviceDate: new Date(data.serviceDate).toISOString(),
         targetPests: data.targetPests ? data.targetPests.split(",").map((s) => s.trim()) : [],
         locationId: data.locationId || null,
+        serviceId: data.serviceId || null,
         serviceTypeId: data.serviceTypeId || null,
         technicianId: data.technicianId || null,
         technicianName: data.technicianName || null,
         technicianLicenseNumber: data.technicianLicenseNumber || null,
         notes: data.notes || null,
-        appointmentId: null,
+        appointmentId: data.appointmentId || null,
       });
       const record = await res.json();
 
@@ -162,6 +187,8 @@ function ServiceRecordForm({ onClose }: { onClose: () => void }) {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/service-records"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/service-records/by-location", form.locationId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/services/by-location", form.locationId] });
       toast({ title: "Service record created" });
       onClose();
     },
@@ -174,7 +201,7 @@ function ServiceRecordForm({ onClose }: { onClose: () => void }) {
     <form onSubmit={(e) => { e.preventDefault(); mutation.mutate(form); }} className="space-y-4 max-h-[70vh] overflow-y-auto pr-1">
       <div className="space-y-1.5">
         <Label>Customer *</Label>
-        <Select value={form.customerId} onValueChange={(v) => setForm((p) => ({ ...p, customerId: v, locationId: "" }))}>
+        <Select value={form.customerId} onValueChange={(v) => setForm((p) => ({ ...p, customerId: v, locationId: "", serviceId: "", appointmentId: "" }))}>
           <SelectTrigger data-testid="select-sr-customer"><SelectValue placeholder="Select customer" /></SelectTrigger>
           <SelectContent>{customers?.map((c) => <SelectItem key={c.id} value={c.id}>{c.firstName} {c.lastName}</SelectItem>)}</SelectContent>
         </Select>
@@ -182,10 +209,41 @@ function ServiceRecordForm({ onClose }: { onClose: () => void }) {
       {customerLocations.length > 0 && (
         <div className="space-y-1.5">
           <Label>Location</Label>
-          <Select value={form.locationId} onValueChange={(v) => setForm((p) => ({ ...p, locationId: v }))}>
+          <Select value={form.locationId} onValueChange={(v) => setForm((p) => ({ ...p, locationId: v, serviceId: "", appointmentId: "" }))}>
             <SelectTrigger><SelectValue placeholder="Select location" /></SelectTrigger>
             <SelectContent>{customerLocations.map((l) => <SelectItem key={l.id} value={l.id}>{l.name} - {l.address}</SelectItem>)}</SelectContent>
           </Select>
+        </div>
+      )}
+      {form.locationId && (
+        <div className="space-y-1.5">
+          <Label>Service *</Label>
+          <Select
+            value={form.serviceId}
+            onValueChange={(value) => {
+              const service = locationServices?.find((item) => item.id === value);
+              const appointment = service?.appointmentId ? appointmentById.get(service.appointmentId) : null;
+              const technician = technicians?.find((item) => item.id === (appointment?.assignedTechnicianId || service?.assignedTechnicianId || ""));
+              setForm((p) => ({
+                ...p,
+                serviceId: value,
+                appointmentId: service?.appointmentId || "",
+                serviceTypeId: service?.serviceTypeId || p.serviceTypeId,
+                serviceDate: toDateTimeLocalValue(appointment?.scheduledDate || service?.dueDate || p.serviceDate),
+                technicianId: appointment?.assignedTechnicianId || service?.assignedTechnicianId || p.technicianId,
+                technicianName: technician?.displayName || p.technicianName,
+                technicianLicenseNumber: technician?.licenseId || p.technicianLicenseNumber,
+              }));
+            }}
+          >
+            <SelectTrigger data-testid="select-sr-service"><SelectValue placeholder="Select the completed service" /></SelectTrigger>
+            <SelectContent>
+              {(locationServices ?? []).map((service) => (
+                <SelectItem key={service.id} value={service.id}>{serviceSummary(service, serviceTypes)}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <p className="text-xs text-muted-foreground">Service records are compliance records for a specific service. Pick the service being completed.</p>
         </div>
       )}
       <div className="grid grid-cols-2 gap-3">
@@ -244,7 +302,7 @@ function ServiceRecordForm({ onClose }: { onClose: () => void }) {
 
       <div className="flex justify-end gap-2 pt-2">
         <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
-        <Button type="submit" disabled={mutation.isPending || !form.customerId} data-testid="button-save-service-record">
+        <Button type="submit" disabled={mutation.isPending || !form.customerId || !form.locationId || !form.serviceId} data-testid="button-save-service-record">
           {mutation.isPending ? "Saving..." : "Save Record"}
         </Button>
       </div>
