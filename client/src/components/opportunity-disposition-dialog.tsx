@@ -10,6 +10,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import type { Opportunity, OpportunityActivity, OpportunityDisposition } from "@shared/schema";
+import { OpportunityHistoryDialog } from "@/components/opportunity-history-dialog";
 
 function todayDateString() {
   return new Date().toISOString().slice(0, 10);
@@ -58,6 +59,7 @@ export function OpportunityDispositionDialog({
 
   const [nextActionDate, setNextActionDate] = useState("");
   const [notes, setNotes] = useState("");
+  const [historyOpen, setHistoryOpen] = useState(false);
 
   useEffect(() => {
     if (!open || !selectedDisposition) {
@@ -91,7 +93,9 @@ export function OpportunityDispositionDialog({
       if (opportunity?.locationId) {
         queryClient.invalidateQueries({ queryKey: ["/api/location-counts", opportunity.locationId] });
         queryClient.invalidateQueries({ queryKey: ["/api/services/by-location", opportunity.locationId] });
+        queryClient.invalidateQueries({ queryKey: ["/api/communications/by-location", opportunity.locationId] });
       }
+      queryClient.invalidateQueries({ queryKey: ["/api/all-communications"] });
       toast({ title: "Disposition saved" });
       onOpenChange(false);
       onApplied?.();
@@ -146,6 +150,7 @@ export function OpportunityDispositionDialog({
             <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <Label>Opportunity History</Label>
+                <Button type="button" variant="ghost" size="sm" onClick={() => setHistoryOpen(true)}>View Full History</Button>
               </div>
               <div className="max-h-48 space-y-2 overflow-y-auto rounded-md border p-3">
                 {activitiesLoading ? (
@@ -175,6 +180,7 @@ export function OpportunityDispositionDialog({
             </div>
           </div>
         )}
+        <OpportunityHistoryDialog open={historyOpen} onOpenChange={setHistoryOpen} opportunity={opportunity} />
       </DialogContent>
     </Dialog>
   );

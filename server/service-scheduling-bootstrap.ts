@@ -82,6 +82,11 @@ export async function bootstrapServiceSchedulingFoundation(): Promise<void> {
   await db.execute(sql`ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS dismissed_reason text`);
   await db.execute(sql`ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS assigned_user_id varchar`);
   await db.execute(sql`ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS assigned_at timestamp`);
+  await db.execute(sql`ALTER TABLE communications ADD COLUMN IF NOT EXISTS opportunity_id varchar REFERENCES opportunities(id)`);
+  await db.execute(sql`ALTER TABLE communications ADD COLUMN IF NOT EXISTS opportunity_activity_id varchar REFERENCES opportunity_activities(id)`);
+  await db.execute(sql`ALTER TABLE communications ADD COLUMN IF NOT EXISTS next_action_date date`);
+  await db.execute(sql`ALTER TABLE communications ADD COLUMN IF NOT EXISTS actor_label text`);
+  await db.execute(sql`CREATE UNIQUE INDEX IF NOT EXISTS communications_opportunity_activity_id_uidx ON communications (opportunity_activity_id) WHERE opportunity_activity_id IS NOT NULL`);
 
   await db.execute(sql`
     CREATE TABLE IF NOT EXISTS opportunity_dispositions (

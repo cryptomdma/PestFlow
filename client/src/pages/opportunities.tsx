@@ -12,6 +12,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { OpportunityDispositionDialog } from "@/components/opportunity-disposition-dialog";
+import { OpportunityHistoryDialog } from "@/components/opportunity-history-dialog";
 import { ChevronDown, ExternalLink, Target } from "lucide-react";
 import type { Customer, Location, Opportunity, OpportunityDisposition, Service, ServiceRecord, ServiceType } from "@shared/schema";
 
@@ -55,6 +56,7 @@ export default function Opportunities() {
   const [serviceTypeId, setServiceTypeId] = useState("ALL");
   const [dispositionOpportunity, setDispositionOpportunity] = useState<Opportunity | null>(null);
   const [selectedDispositionId, setSelectedDispositionId] = useState<string | null>(null);
+  const [historyOpportunity, setHistoryOpportunity] = useState<Opportunity | null>(null);
 
   const queryString = useMemo(() => {
     const params = new URLSearchParams();
@@ -85,6 +87,8 @@ export default function Opportunities() {
     queryClient.invalidateQueries({ queryKey: ["/api/location-counts"] });
     queryClient.invalidateQueries({ queryKey: ["/api/services"] });
     queryClient.invalidateQueries({ queryKey: ["/api/services/pending"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/all-communications"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/communications/by-location"] });
   };
 
   const convertMutation = useMutation({
@@ -239,6 +243,9 @@ export default function Opportunities() {
                         ))}
                       </DropdownMenuContent>
                     </DropdownMenu>
+                    <Button type="button" variant="outline" size="sm" onClick={() => setHistoryOpportunity(opportunity)}>
+                      View History
+                    </Button>
                     <Button type="button" size="sm" disabled={isTerminal || convertMutation.isPending} onClick={() => convertMutation.mutate(opportunity.id)}>
                       Convert to Service
                     </Button>
@@ -261,6 +268,13 @@ export default function Opportunities() {
         }}
         opportunity={dispositionOpportunity}
         dispositionId={selectedDispositionId}
+      />
+      <OpportunityHistoryDialog
+        open={!!historyOpportunity}
+        onOpenChange={(open) => {
+          if (!open) setHistoryOpportunity(null);
+        }}
+        opportunity={historyOpportunity}
       />
     </div>
   );

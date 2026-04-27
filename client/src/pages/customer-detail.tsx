@@ -31,6 +31,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { cn } from "@/lib/utils";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { OpportunityDispositionDialog } from "@/components/opportunity-disposition-dialog";
+import { OpportunityHistoryDialog } from "@/components/opportunity-history-dialog";
 import { formatPhoneDisplay } from "@shared/phone";
 import {
   ArrowLeft, Mail, Phone, MapPin, Plus, Calendar, FileText, MessageSquare,
@@ -2498,6 +2499,7 @@ function OpportunitiesTab({
   const { data: serviceTypes } = useQuery<ServiceType[]>({ queryKey: ["/api/service-types"] });
   const [selectedOpportunity, setSelectedOpportunity] = useState<Opportunity | null>(null);
   const [selectedDispositionId, setSelectedDispositionId] = useState<string | null>(null);
+  const [historyOpportunity, setHistoryOpportunity] = useState<Opportunity | null>(null);
 
   const serviceTypeNameById = useMemo(() => new Map((serviceTypes ?? []).map((serviceType) => [serviceType.id, serviceType.name])), [serviceTypes]);
   const sortedOpportunities = useMemo(() => {
@@ -2511,6 +2513,8 @@ function OpportunitiesTab({
     queryClient.invalidateQueries({ queryKey: ["/api/services/by-location", locationId] });
     queryClient.invalidateQueries({ queryKey: ["/api/services/pending"] });
     queryClient.invalidateQueries({ queryKey: ["/api/location-counts", locationId] });
+    queryClient.invalidateQueries({ queryKey: ["/api/communications/by-location", locationId] });
+    queryClient.invalidateQueries({ queryKey: ["/api/all-communications"] });
   };
   const convertMutation = useMutation({
     mutationFn: async (id: string) => {
@@ -2570,6 +2574,9 @@ function OpportunitiesTab({
                   ))}
                 </DropdownMenuContent>
               </DropdownMenu>
+              <Button type="button" variant="outline" size="sm" onClick={() => setHistoryOpportunity(opportunity)}>
+                View History
+              </Button>
               <Button type="button" size="sm" disabled={opportunity.status === "CONVERTED" || opportunity.status === "DISMISSED" || convertMutation.isPending} onClick={() => convertMutation.mutate(opportunity.id)}>
                 Convert to Service
               </Button>
@@ -2588,6 +2595,13 @@ function OpportunitiesTab({
         opportunity={selectedOpportunity}
         dispositionId={selectedDispositionId}
         onApplied={invalidateOpportunities}
+      />
+      <OpportunityHistoryDialog
+        open={!!historyOpportunity}
+        onOpenChange={(open) => {
+          if (!open) setHistoryOpportunity(null);
+        }}
+        opportunity={historyOpportunity}
       />
     </div>
   );
@@ -3125,7 +3139,9 @@ export default function CustomerDetail() {
                 <CardContent className="p-4">
                   <div className="flex items-center gap-2 flex-wrap"><Badge variant="outline" className="text-xs capitalize">{comm.type}</Badge><Badge variant="secondary" className="text-xs capitalize">{comm.direction}</Badge><span className="text-xs text-muted-foreground">{new Date(comm.sentAt).toLocaleString()}</span></div>
                   {comm.subject && <p className="text-sm font-medium mt-2">{comm.subject}</p>}
-                  {comm.body && <p className="text-xs text-muted-foreground mt-1 line-clamp-2">{comm.body}</p>}
+                  {comm.body && <p className="text-xs text-muted-foreground mt-1 whitespace-pre-wrap">{comm.body}</p>}
+                  {comm.nextActionDate ? <p className="text-xs text-muted-foreground mt-1">Next Action: {formatDateOnly(comm.nextActionDate)}</p> : null}
+                  {comm.actorLabel ? <p className="text-xs text-muted-foreground mt-1">By: {comm.actorLabel}</p> : null}
                 </CardContent>
               </Card>
             ))}

@@ -180,7 +180,7 @@ export interface IStorage {
   getOpportunitiesByLocation(locationId: string): Promise<Opportunity[]>;
   createOpportunity(data: InsertOpportunity): Promise<Opportunity>;
   updateOpportunity(id: string, data: Partial<InsertOpportunity>): Promise<Opportunity | undefined>;
-  convertOpportunityToService(id: string): Promise<{ opportunity: Opportunity; service: Service } | undefined>;
+  convertOpportunityToService(id: string, actor?: AuditActor): Promise<{ opportunity: Opportunity; service: Service } | undefined>;
   getOpportunityDispositions(includeInactive?: boolean): Promise<OpportunityDisposition[]>;
   createOpportunityDisposition(data: InsertOpportunityDisposition): Promise<OpportunityDisposition>;
   updateOpportunityDisposition(id: string, data: Partial<InsertOpportunityDisposition>): Promise<OpportunityDisposition | undefined>;
@@ -1501,6 +1501,63 @@ export class DatabaseStorage implements IStorage {
     return activity;
   }
 
+  private async createOpportunityCommunicationTx(
+    tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+    {
+      opportunity,
+      activity,
+      subject,
+      body,
+      nextActionDate,
+      actorLabel,
+    }: {
+      opportunity: Opportunity;
+      activity: OpportunityActivity;
+      subject: string;
+      body: string;
+      nextActionDate?: string | null;
+      actorLabel?: string | null;
+    },
+  ): Promise<Communication> {
+    const [linkedService] = opportunity.sourceServiceId
+      ? await tx.select().from(services).where(eq(services.id, opportunity.sourceServiceId))
+      : [undefined];
+    const [linkedLocation] = !linkedService
+      ? await tx.select().from(locations).where(eq(locations.id, opportunity.locationId))
+      : [undefined];
+    const customerId = linkedService?.customerId || linkedLocation?.customerId;
+
+    if (!customerId) {
+      throw new Error("Opportunity communication requires a linked customer");
+    }
+
+    const [existing] = await tx
+      .select()
+      .from(communications)
+      .where(eq(communications.opportunityActivityId, activity.id));
+
+    if (existing) {
+      return existing;
+    }
+
+    const [communication] = await tx.insert(communications).values({
+      customerId,
+      locationId: opportunity.locationId,
+      opportunityId: opportunity.id,
+      opportunityActivityId: activity.id,
+      type: "OPPORTUNITY_CALL",
+      direction: "outbound",
+      subject,
+      body,
+      nextActionDate: nextActionDate || null,
+      actorLabel: actorLabel || null,
+      sentAt: activity.createdAt,
+      status: "logged",
+    }).returning();
+
+    return communication;
+  }
+
   async getOpportunities(filters: OpportunityFilters = {}): Promise<Opportunity[]> {
     const conditions = [];
     if (filters.status) conditions.push(eq(opportunities.status, filters.status));
@@ -1611,7 +1668,7 @@ export class DatabaseStorage implements IStorage {
         .where(eq(opportunities.id, input.opportunityId))
         .returning();
 
-      await this.createOpportunityActivityTx(tx, {
+      const activity = await this.createOpportunityActivityTx(tx, {
         opportunityId: opportunity.id,
         dispositionKey: disposition.key,
         dispositionLabel: disposition.label,
@@ -1621,11 +1678,26 @@ export class DatabaseStorage implements IStorage {
         createdByLabel: input.actor?.actorLabel || null,
       });
 
+      const bodyParts = [
+        `Disposition: ${disposition.label}`,
+        input.notes?.trim() ? `Notes: ${input.notes.trim()}` : null,
+        nextActionDate ? `Next Action: ${nextActionDate}` : null,
+      ].filter(Boolean);
+
+      await this.createOpportunityCommunicationTx(tx, {
+        opportunity: updatedOpportunity,
+        activity,
+        subject: `Opportunity Call - ${disposition.label}`,
+        body: bodyParts.join("\n"),
+        nextActionDate,
+        actorLabel: input.actor?.actorLabel || null,
+      });
+
       return updatedOpportunity;
     });
   }
 
-  async convertOpportunityToService(id: string): Promise<{ opportunity: Opportunity; service: Service } | undefined> {
+  async convertOpportunityToService(id: string, actor?: AuditActor): Promise<{ opportunity: Opportunity; service: Service } | undefined> {
     return db.transaction(async (tx) => {
       const [opportunity] = await tx.select().from(opportunities).where(eq(opportunities.id, id));
       if (!opportunity) return undefined;
@@ -1680,14 +1752,23 @@ export class DatabaseStorage implements IStorage {
         .where(eq(opportunities.id, id))
         .returning();
 
-      await this.createOpportunityActivityTx(tx, {
+      const activity = await this.createOpportunityActivityTx(tx, {
         opportunityId: updatedOpportunity.id,
         dispositionKey: convertedDisposition?.key || "CONVERTED_TO_SERVICE",
         dispositionLabel: convertedDisposition?.label || "Converted to Service",
         notes: `Converted to pending service ${service.id}`,
         nextActionDate: null,
-        createdByUserId: null,
-        createdByLabel: null,
+        createdByUserId: actor?.userId || null,
+        createdByLabel: actor?.actorLabel || null,
+      });
+
+      await this.createOpportunityCommunicationTx(tx, {
+        opportunity: updatedOpportunity,
+        activity,
+        subject: `Opportunity Call - ${convertedDisposition?.label || "Converted to Service"}`,
+        body: `Disposition: ${convertedDisposition?.label || "Converted to Service"}\nConverted to pending service ${service.id}`,
+        nextActionDate: null,
+        actorLabel: actor?.actorLabel || null,
       });
 
       return { opportunity: updatedOpportunity, service };
@@ -2071,15 +2152,15 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getCommunications(customerId: string): Promise<Communication[]> {
-    return db.select().from(communications).where(eq(communications.customerId, customerId));
+    return db.select().from(communications).where(eq(communications.customerId, customerId)).orderBy(desc(communications.sentAt));
   }
 
   async getCommunicationsByLocation(locationId: string): Promise<Communication[]> {
-    return db.select().from(communications).where(eq(communications.locationId, locationId));
+    return db.select().from(communications).where(eq(communications.locationId, locationId)).orderBy(desc(communications.sentAt));
   }
 
   async getAllCommunications(): Promise<Communication[]> {
-    return db.select().from(communications);
+    return db.select().from(communications).orderBy(desc(communications.sentAt));
   }
 
   async createCommunication(data: InsertCommunication): Promise<Communication> {

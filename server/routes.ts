@@ -951,7 +951,7 @@ export async function registerRoutes(
 
   app.post("/api/opportunities/:id/convert", async (req, res) => {
     try {
-      const data = await storage.convertOpportunityToService(req.params.id);
+      const data = await storage.convertOpportunityToService(req.params.id, getAuditActor(req));
       if (!data) return res.status(404).json({ message: "Opportunity not found" });
       res.status(201).json(data);
     } catch (e: any) {
