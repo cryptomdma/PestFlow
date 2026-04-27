@@ -32,6 +32,7 @@ import { cn } from "@/lib/utils";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { OpportunityDispositionDialog } from "@/components/opportunity-disposition-dialog";
 import { OpportunityHistoryDialog } from "@/components/opportunity-history-dialog";
+import { OpportunityConvertDialog } from "@/components/opportunity-convert-dialog";
 import { formatPhoneDisplay } from "@shared/phone";
 import {
   ArrowLeft, Mail, Phone, MapPin, Plus, Calendar, FileText, MessageSquare,
@@ -2490,16 +2491,22 @@ function ServicesTab({
 
 function OpportunitiesTab({
   locationId,
+  customerId,
+  customerLabel,
+  locationLabel,
 }: {
   locationId: string;
+  customerId: string;
+  customerLabel: string;
+  locationLabel: string;
 }) {
-  const { toast } = useToast();
   const { data: opportunities } = useQuery<Opportunity[]>({ queryKey: ["/api/opportunities/by-location", locationId], enabled: !!locationId });
   const { data: dispositions } = useQuery<OpportunityDisposition[]>({ queryKey: ["/api/opportunity-dispositions"] });
   const { data: serviceTypes } = useQuery<ServiceType[]>({ queryKey: ["/api/service-types"] });
   const [selectedOpportunity, setSelectedOpportunity] = useState<Opportunity | null>(null);
   const [selectedDispositionId, setSelectedDispositionId] = useState<string | null>(null);
   const [historyOpportunity, setHistoryOpportunity] = useState<Opportunity | null>(null);
+  const [convertOpportunity, setConvertOpportunity] = useState<Opportunity | null>(null);
 
   const serviceTypeNameById = useMemo(() => new Map((serviceTypes ?? []).map((serviceType) => [serviceType.id, serviceType.name])), [serviceTypes]);
   const sortedOpportunities = useMemo(() => {
@@ -2516,18 +2523,6 @@ function OpportunitiesTab({
     queryClient.invalidateQueries({ queryKey: ["/api/communications/by-location", locationId] });
     queryClient.invalidateQueries({ queryKey: ["/api/all-communications"] });
   };
-  const convertMutation = useMutation({
-    mutationFn: async (id: string) => {
-      const response = await apiRequest("POST", `/api/opportunities/${id}/convert`);
-      return response.json();
-    },
-    onSuccess: () => {
-      invalidateOpportunities();
-      toast({ title: "Opportunity converted to pending service" });
-    },
-    onError: (error: Error) => toast({ title: "Error", description: error.message, variant: "destructive" }),
-  });
-
   if (!sortedOpportunities.length) {
     return (
       <Card>
@@ -2577,7 +2572,7 @@ function OpportunitiesTab({
               <Button type="button" variant="outline" size="sm" onClick={() => setHistoryOpportunity(opportunity)}>
                 View History
               </Button>
-              <Button type="button" size="sm" disabled={opportunity.status === "CONVERTED" || opportunity.status === "DISMISSED" || convertMutation.isPending} onClick={() => convertMutation.mutate(opportunity.id)}>
+              <Button type="button" size="sm" disabled={opportunity.status === "CONVERTED" || opportunity.status === "DISMISSED"} onClick={() => setConvertOpportunity(opportunity)}>
                 Convert to Service
               </Button>
             </div>
@@ -2602,6 +2597,20 @@ function OpportunitiesTab({
           if (!open) setHistoryOpportunity(null);
         }}
         opportunity={historyOpportunity}
+      />
+      <OpportunityConvertDialog
+        open={!!convertOpportunity}
+        onOpenChange={(open) => {
+          if (!open) setConvertOpportunity(null);
+        }}
+        opportunity={convertOpportunity}
+        customerLabel={customerLabel}
+        locationLabel={locationLabel}
+        opportunityTypeLabel={convertOpportunity ? (convertOpportunity.opportunityType || serviceTypeNameById.get(convertOpportunity.serviceTypeId || "") || "Opportunity") : "Opportunity"}
+        sourceServiceLabel={convertOpportunity ? (serviceTypeNameById.get(convertOpportunity.serviceTypeId || "") || "Linked source service") : "Source service unavailable"}
+        serviceTypeLabel={convertOpportunity ? (serviceTypeNameById.get(convertOpportunity.serviceTypeId || "") || "Service") : "Service"}
+        returnTo={`/customers/${customerId}?locationId=${locationId}&tab=opportunities`}
+        onConverted={invalidateOpportunities}
       />
     </div>
   );
@@ -2749,6 +2758,11 @@ export default function CustomerDetail() {
 
     return nickname || contactName || activeLocation.name || "Select Location";
   }, [activeLocation, primaryContactNameByLocationId]);
+
+  const customerDisplayName = useMemo(() => {
+    if (!customer) return "Customer";
+    return customer.companyName || `${customer.firstName || ""} ${customer.lastName || ""}`.trim() || "Customer";
+  }, [customer]);
 
   const setPrimaryContactMutation = useMutation({
     mutationFn: (contactId: string) => apiRequest("POST", `/api/contacts/${contactId}/set-primary`, {}),
@@ -3115,7 +3129,7 @@ export default function CustomerDetail() {
           </TabsContent>
 
           <TabsContent value="opportunities" className="mt-4 space-y-3">
-            <OpportunitiesTab locationId={activeLocationId} />
+            <OpportunitiesTab locationId={activeLocationId} customerId={customerId} customerLabel={customerDisplayName} locationLabel={activeLocationLabel} />
           </TabsContent>
 
           <TabsContent value="invoices" className="mt-4 space-y-3">

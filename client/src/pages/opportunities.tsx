@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useLocation } from "wouter";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -9,10 +9,10 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { useToast } from "@/hooks/use-toast";
-import { apiRequest, queryClient } from "@/lib/queryClient";
+import { queryClient } from "@/lib/queryClient";
 import { OpportunityDispositionDialog } from "@/components/opportunity-disposition-dialog";
 import { OpportunityHistoryDialog } from "@/components/opportunity-history-dialog";
+import { OpportunityConvertDialog } from "@/components/opportunity-convert-dialog";
 import { ChevronDown, ExternalLink, Target } from "lucide-react";
 import type { Customer, Location, Opportunity, OpportunityDisposition, Service, ServiceRecord, ServiceType } from "@shared/schema";
 
@@ -48,7 +48,6 @@ function actionableDate(opportunity: Opportunity) {
 }
 
 export default function Opportunities() {
-  const { toast } = useToast();
   const [, setLocation] = useLocation();
   const [status, setStatus] = useState("OPEN");
   const [dueFrom, setDueFrom] = useState("");
@@ -57,6 +56,7 @@ export default function Opportunities() {
   const [dispositionOpportunity, setDispositionOpportunity] = useState<Opportunity | null>(null);
   const [selectedDispositionId, setSelectedDispositionId] = useState<string | null>(null);
   const [historyOpportunity, setHistoryOpportunity] = useState<Opportunity | null>(null);
+  const [convertOpportunity, setConvertOpportunity] = useState<Opportunity | null>(null);
 
   const queryString = useMemo(() => {
     const params = new URLSearchParams();
@@ -90,18 +90,6 @@ export default function Opportunities() {
     queryClient.invalidateQueries({ queryKey: ["/api/all-communications"] });
     queryClient.invalidateQueries({ queryKey: ["/api/communications/by-location"] });
   };
-
-  const convertMutation = useMutation({
-    mutationFn: async (id: string) => {
-      const response = await apiRequest("POST", `/api/opportunities/${id}/convert`);
-      return response.json();
-    },
-    onSuccess: () => {
-      invalidateOpportunities();
-      toast({ title: "Opportunity converted to pending service" });
-    },
-    onError: (error: Error) => toast({ title: "Error", description: error.message, variant: "destructive" }),
-  });
 
   const setPreset = (preset: "OVERDUE" | "TODAY" | "WEEK" | "MONTH") => {
     const today = todayDateString();
@@ -246,7 +234,7 @@ export default function Opportunities() {
                     <Button type="button" variant="outline" size="sm" onClick={() => setHistoryOpportunity(opportunity)}>
                       View History
                     </Button>
-                    <Button type="button" size="sm" disabled={isTerminal || convertMutation.isPending} onClick={() => convertMutation.mutate(opportunity.id)}>
+                    <Button type="button" size="sm" disabled={isTerminal} onClick={() => setConvertOpportunity(opportunity)}>
                       Convert to Service
                     </Button>
                   </div>
@@ -275,6 +263,20 @@ export default function Opportunities() {
           if (!open) setHistoryOpportunity(null);
         }}
         opportunity={historyOpportunity}
+      />
+      <OpportunityConvertDialog
+        open={!!convertOpportunity}
+        onOpenChange={(open) => {
+          if (!open) setConvertOpportunity(null);
+        }}
+        opportunity={convertOpportunity}
+        customerLabel={customerLabel(convertOpportunity ? customerById.get(locationById.get(convertOpportunity.locationId)?.customerId || "") : undefined)}
+        locationLabel={convertOpportunity ? `${locationById.get(convertOpportunity.locationId)?.name || "Location"} - ${locationById.get(convertOpportunity.locationId)?.address || ""}` : "Location"}
+        opportunityTypeLabel={convertOpportunity ? (convertOpportunity.opportunityType || serviceTypeById.get(convertOpportunity.serviceTypeId || "")?.name || "Opportunity") : "Opportunity"}
+        sourceServiceLabel={convertOpportunity ? (serviceById.get(convertOpportunity.sourceServiceId || "")?.serviceTypeId ? serviceTypeById.get(serviceById.get(convertOpportunity.sourceServiceId || "")!.serviceTypeId || "")?.name || "Service" : "Source service unavailable") : "Source service unavailable"}
+        serviceTypeLabel={convertOpportunity ? (serviceTypeById.get(convertOpportunity.serviceTypeId || "")?.name || "Service") : "Service"}
+        returnTo="/opportunities"
+        onConverted={invalidateOpportunities}
       />
     </div>
   );
