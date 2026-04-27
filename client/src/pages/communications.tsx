@@ -180,6 +180,7 @@ export default function Communications() {
       case "email": return <Mail className="h-4 w-4" />;
       case "phone": return <Phone className="h-4 w-4" />;
       case "sms": return <MessageSquare className="h-4 w-4" />;
+      case "OPPORTUNITY_CALL": return <Phone className="h-4 w-4" />;
       default: return <MessageSquare className="h-4 w-4" />;
     }
   };
@@ -189,6 +190,7 @@ export default function Communications() {
       case "email": return "bg-chart-2/10 text-chart-2";
       case "phone": return "bg-primary/10 text-primary";
       case "sms": return "bg-chart-5/10 text-chart-5";
+      case "OPPORTUNITY_CALL": return "bg-primary/10 text-primary";
       default: return "bg-muted text-muted-foreground";
     }
   };
@@ -218,14 +220,15 @@ export default function Communications() {
         </div>
         <Select value={filterType} onValueChange={setFilterType}>
           <SelectTrigger className="w-[140px]"><SelectValue placeholder="All Types" /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All Types</SelectItem>
-            <SelectItem value="email">Email</SelectItem>
-            <SelectItem value="phone">Phone</SelectItem>
-            <SelectItem value="sms">SMS</SelectItem>
-            <SelectItem value="note">Note</SelectItem>
-          </SelectContent>
-        </Select>
+            <SelectContent>
+              <SelectItem value="all">All Types</SelectItem>
+              <SelectItem value="email">Email</SelectItem>
+              <SelectItem value="phone">Phone</SelectItem>
+              <SelectItem value="sms">SMS</SelectItem>
+              <SelectItem value="OPPORTUNITY_CALL">Opportunity Call</SelectItem>
+              <SelectItem value="note">Note</SelectItem>
+            </SelectContent>
+          </Select>
       </div>
 
       {isLoading ? (
@@ -263,6 +266,8 @@ export default function Communications() {
                       </div>
                       {comm.subject && <p className="text-sm font-medium mt-1">{comm.subject}</p>}
                       {comm.body && <p className="text-sm text-muted-foreground mt-0.5 line-clamp-2">{comm.body}</p>}
+                      {comm.nextActionDate ? <p className="text-xs text-muted-foreground mt-1">Next Action: {new Date(`${comm.nextActionDate}T00:00:00`).toLocaleDateString()}</p> : null}
+                      {comm.actorLabel ? <p className="text-xs text-muted-foreground mt-1">By: {comm.actorLabel}</p> : null}
                     </div>
                   </CardContent>
                 </Card>

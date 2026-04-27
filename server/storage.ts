@@ -5,6 +5,8 @@ import {
   technicians,
   services,
   opportunities,
+  opportunityActivities,
+  opportunityDispositions,
   agreements,
   agreementTemplates,
   serviceRecords, productApplications, invoices, communications,
@@ -22,6 +24,8 @@ import {
   type AgreementTemplate, type InsertAgreementTemplate,
   type ServiceRecord, type InsertServiceRecord,
   type Opportunity, type InsertOpportunity,
+  type OpportunityActivity, type InsertOpportunityActivity,
+  type OpportunityDisposition, type InsertOpportunityDisposition,
   type ProductApplication, type InsertProductApplication,
   type Invoice, type InsertInvoice,
   type Communication, type InsertCommunication,
@@ -30,7 +34,7 @@ import {
   type NoteRevision,
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, and, inArray, sql, gte, lte, asc } from "drizzle-orm";
+import { eq, and, inArray, sql, gte, lte, asc, desc } from "drizzle-orm";
 import { PLACEHOLDER_LOCATION_NAME, PLACEHOLDER_LOCATION_NOTE } from "./account-bootstrap";
 
 export interface CustomerDetailCompatProjection {
@@ -108,6 +112,14 @@ export interface OpportunityFilters {
   serviceTypeId?: string;
 }
 
+export interface ApplyOpportunityDispositionInput {
+  opportunityId: string;
+  dispositionId: string;
+  nextActionDate?: string | null;
+  notes?: string | null;
+  actor?: AuditActor;
+}
+
 export interface SaveScopedNoteInput {
   scope: "ACCOUNT" | "LOCATION";
   accountId?: string | null;
@@ -162,12 +174,18 @@ export interface IStorage {
   getService(id: string): Promise<Service | undefined>;
   createService(data: InsertService): Promise<Service>;
   updateService(id: string, data: Partial<InsertService>): Promise<Service | undefined>;
+  updateServiceType(id: string, data: Partial<InsertServiceType>): Promise<ServiceType | undefined>;
   deleteService(id: string): Promise<boolean>;
   getOpportunities(filters?: OpportunityFilters): Promise<Opportunity[]>;
   getOpportunitiesByLocation(locationId: string): Promise<Opportunity[]>;
   createOpportunity(data: InsertOpportunity): Promise<Opportunity>;
   updateOpportunity(id: string, data: Partial<InsertOpportunity>): Promise<Opportunity | undefined>;
-  convertOpportunityToService(id: string): Promise<{ opportunity: Opportunity; service: Service } | undefined>;
+  convertOpportunityToService(id: string, actor?: AuditActor): Promise<{ opportunity: Opportunity; service: Service } | undefined>;
+  getOpportunityDispositions(includeInactive?: boolean): Promise<OpportunityDisposition[]>;
+  createOpportunityDisposition(data: InsertOpportunityDisposition): Promise<OpportunityDisposition>;
+  updateOpportunityDisposition(id: string, data: Partial<InsertOpportunityDisposition>): Promise<OpportunityDisposition | undefined>;
+  getOpportunityActivitiesByOpportunity(opportunityId: string): Promise<OpportunityActivity[]>;
+  applyOpportunityDisposition(input: ApplyOpportunityDispositionInput): Promise<Opportunity | undefined>;
 
   getAgreementTemplates(): Promise<AgreementTemplate[]>;
   getAgreementTemplate(id: string): Promise<AgreementTemplate | undefined>;
@@ -1331,6 +1349,11 @@ export class DatabaseStorage implements IStorage {
     return st;
   }
 
+  async updateServiceType(id: string, data: Partial<InsertServiceType>): Promise<ServiceType | undefined> {
+    const [serviceType] = await db.update(serviceTypes).set(data).where(eq(serviceTypes.id, id)).returning();
+    return serviceType;
+  }
+
   async getTechnicians(includeInactive = false): Promise<Technician[]> {
     const allTechnicians = await db.select().from(technicians);
     if (includeInactive) {
@@ -1470,18 +1493,83 @@ export class DatabaseStorage implements IStorage {
     });
   }
 
+  private async createOpportunityActivityTx(
+    tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+    data: InsertOpportunityActivity,
+  ): Promise<OpportunityActivity> {
+    const [activity] = await tx.insert(opportunityActivities).values(data).returning();
+    return activity;
+  }
+
+  private async createOpportunityCommunicationTx(
+    tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+    {
+      opportunity,
+      activity,
+      subject,
+      body,
+      nextActionDate,
+      actorLabel,
+    }: {
+      opportunity: Opportunity;
+      activity: OpportunityActivity;
+      subject: string;
+      body: string;
+      nextActionDate?: string | null;
+      actorLabel?: string | null;
+    },
+  ): Promise<Communication> {
+    const [linkedService] = opportunity.sourceServiceId
+      ? await tx.select().from(services).where(eq(services.id, opportunity.sourceServiceId))
+      : [undefined];
+    const [linkedLocation] = !linkedService
+      ? await tx.select().from(locations).where(eq(locations.id, opportunity.locationId))
+      : [undefined];
+    const customerId = linkedService?.customerId || linkedLocation?.customerId;
+
+    if (!customerId) {
+      throw new Error("Opportunity communication requires a linked customer");
+    }
+
+    const [existing] = await tx
+      .select()
+      .from(communications)
+      .where(eq(communications.opportunityActivityId, activity.id));
+
+    if (existing) {
+      return existing;
+    }
+
+    const [communication] = await tx.insert(communications).values({
+      customerId,
+      locationId: opportunity.locationId,
+      opportunityId: opportunity.id,
+      opportunityActivityId: activity.id,
+      type: "OPPORTUNITY_CALL",
+      direction: "outbound",
+      subject,
+      body,
+      nextActionDate: nextActionDate || null,
+      actorLabel: actorLabel || null,
+      sentAt: activity.createdAt,
+      status: "logged",
+    }).returning();
+
+    return communication;
+  }
+
   async getOpportunities(filters: OpportunityFilters = {}): Promise<Opportunity[]> {
     const conditions = [];
     if (filters.status) conditions.push(eq(opportunities.status, filters.status));
-    if (filters.dueFrom) conditions.push(gte(opportunities.dueDate, filters.dueFrom));
-    if (filters.dueTo) conditions.push(lte(opportunities.dueDate, filters.dueTo));
+    if (filters.dueFrom) conditions.push(sql`coalesce(${opportunities.nextActionDate}, ${opportunities.dueDate}) >= ${filters.dueFrom}`);
+    if (filters.dueTo) conditions.push(sql`coalesce(${opportunities.nextActionDate}, ${opportunities.dueDate}) <= ${filters.dueTo}`);
     if (filters.serviceTypeId) conditions.push(eq(opportunities.serviceTypeId, filters.serviceTypeId));
 
     return db
       .select()
       .from(opportunities)
       .where(conditions.length ? and(...conditions) : undefined)
-      .orderBy(asc(opportunities.dueDate));
+      .orderBy(sql`coalesce(${opportunities.nextActionDate}, ${opportunities.dueDate}) asc`, asc(opportunities.createdAt));
   }
 
   async getOpportunitiesByLocation(locationId: string): Promise<Opportunity[]> {
@@ -1489,16 +1577,127 @@ export class DatabaseStorage implements IStorage {
   }
 
   async createOpportunity(data: InsertOpportunity): Promise<Opportunity> {
-    const [opportunity] = await db.insert(opportunities).values(data).returning();
+    const [opportunity] = await db.insert(opportunities).values({
+      ...data,
+      nextActionDate: normalizeDateOnly(data.nextActionDate) ?? normalizeDateOnly(data.dueDate),
+    }).returning();
     return opportunity;
   }
 
   async updateOpportunity(id: string, data: Partial<InsertOpportunity>): Promise<Opportunity | undefined> {
-    const [opportunity] = await db.update(opportunities).set({ ...data, updatedAt: new Date() }).where(eq(opportunities.id, id)).returning();
+    const payload: Record<string, unknown> = {
+      ...data,
+      updatedAt: new Date(),
+    };
+    if (data.nextActionDate !== undefined) {
+      payload.nextActionDate = normalizeDateOnly(data.nextActionDate as any);
+    }
+    if (data.dueDate !== undefined) {
+      const normalizedDueDate = normalizeDateOnly(data.dueDate as any);
+      if (normalizedDueDate !== null) {
+        payload.dueDate = normalizedDueDate;
+      }
+    }
+    const [opportunity] = await db.update(opportunities).set(payload).where(eq(opportunities.id, id)).returning();
     return opportunity;
   }
 
-  async convertOpportunityToService(id: string): Promise<{ opportunity: Opportunity; service: Service } | undefined> {
+  async getOpportunityDispositions(includeInactive = false): Promise<OpportunityDisposition[]> {
+    const items = await db.select().from(opportunityDispositions).orderBy(asc(opportunityDispositions.sortOrder), asc(opportunityDispositions.label));
+    if (includeInactive) return items;
+    return items.filter((item) => item.isActive);
+  }
+
+  async createOpportunityDisposition(data: InsertOpportunityDisposition): Promise<OpportunityDisposition> {
+    const [item] = await db.insert(opportunityDispositions).values(data).returning();
+    return item;
+  }
+
+  async updateOpportunityDisposition(id: string, data: Partial<InsertOpportunityDisposition>): Promise<OpportunityDisposition | undefined> {
+    const [item] = await db
+      .update(opportunityDispositions)
+      .set({ ...data, updatedAt: new Date() })
+      .where(eq(opportunityDispositions.id, id))
+      .returning();
+    return item;
+  }
+
+  async getOpportunityActivitiesByOpportunity(opportunityId: string): Promise<OpportunityActivity[]> {
+    return db
+      .select()
+      .from(opportunityActivities)
+      .where(eq(opportunityActivities.opportunityId, opportunityId))
+      .orderBy(desc(opportunityActivities.createdAt));
+  }
+
+  async applyOpportunityDisposition(input: ApplyOpportunityDispositionInput): Promise<Opportunity | undefined> {
+    return db.transaction(async (tx) => {
+      const [opportunity] = await tx.select().from(opportunities).where(eq(opportunities.id, input.opportunityId));
+      if (!opportunity) return undefined;
+
+      const [disposition] = await tx.select().from(opportunityDispositions).where(eq(opportunityDispositions.id, input.dispositionId));
+      if (!disposition) {
+        throw new Error("Opportunity disposition not found");
+      }
+
+      const normalizedOverride = normalizeDateOnly(input.nextActionDate);
+      const defaultNextActionDate = disposition.isTerminal
+        ? null
+        : disposition.defaultCallbackDays !== null && disposition.defaultCallbackDays !== undefined
+          ? addDays(normalizeDateOnly(new Date())!, disposition.defaultCallbackDays)
+          : normalizeDateOnly(opportunity.nextActionDate) || normalizeDateOnly(opportunity.dueDate);
+      const nextActionDate = normalizedOverride !== null ? normalizedOverride : defaultNextActionDate;
+      const touchedAt = new Date();
+      const shouldTrackContact = disposition.key !== "REMOVE_FROM_QUEUE" && disposition.key !== "CONVERTED_TO_SERVICE";
+
+      const [updatedOpportunity] = await tx
+        .update(opportunities)
+        .set({
+          status: disposition.resultingStatus,
+          nextActionDate,
+          lastDispositionKey: disposition.key,
+          lastDispositionLabel: disposition.label,
+          lastDispositionAt: touchedAt,
+          lastContactedAt: shouldTrackContact ? touchedAt : opportunity.lastContactedAt,
+          contactedAt: shouldTrackContact && !opportunity.contactedAt ? touchedAt : opportunity.contactedAt,
+          dismissedAt: disposition.resultingStatus === "DISMISSED" ? touchedAt : null,
+          dismissedReason: disposition.resultingStatus === "DISMISSED" ? disposition.label : null,
+          notes: input.notes !== undefined && input.notes !== null ? input.notes.trim() || null : opportunity.notes,
+          updatedAt: touchedAt,
+        })
+        .where(eq(opportunities.id, input.opportunityId))
+        .returning();
+
+      const activity = await this.createOpportunityActivityTx(tx, {
+        opportunityId: opportunity.id,
+        dispositionKey: disposition.key,
+        dispositionLabel: disposition.label,
+        notes: input.notes?.trim() || null,
+        nextActionDate,
+        createdByUserId: input.actor?.userId || null,
+        createdByLabel: input.actor?.actorLabel || null,
+      });
+
+      const bodyParts = [
+        `Disposition: ${disposition.label}`,
+        input.notes?.trim() ? `Notes: ${input.notes.trim()}` : null,
+        nextActionDate ? `Next Action: ${nextActionDate}` : null,
+      ].filter(Boolean);
+
+      await this.createOpportunityCommunicationTx(tx, {
+        opportunity: updatedOpportunity,
+        activity,
+        subject: `Opportunity Call - ${disposition.label}`,
+        body: bodyParts.join("\n"),
+        nextActionDate,
+        actorLabel: input.actor?.actorLabel || null,
+      });
+
+      return updatedOpportunity;
+    });
+  }
+
+  async convertOpportunityToService(id: string, actor?: AuditActor): Promise<{ opportunity: Opportunity; service: Service } | undefined> {
     return db.transaction(async (tx) => {
       const [opportunity] = await tx.select().from(opportunities).where(eq(opportunities.id, id));
       if (!opportunity) return undefined;
@@ -1522,6 +1721,10 @@ export class DatabaseStorage implements IStorage {
       const [serviceType] = opportunity.serviceTypeId
         ? await tx.select().from(serviceTypes).where(eq(serviceTypes.id, opportunity.serviceTypeId))
         : [undefined];
+      const [convertedDisposition] = await tx
+        .select()
+        .from(opportunityDispositions)
+        .where(eq(opportunityDispositions.key, "CONVERTED_TO_SERVICE"));
 
       const [service] = await tx.insert(services).values({
         customerId: location.customerId,
@@ -1538,12 +1741,35 @@ export class DatabaseStorage implements IStorage {
       const [updatedOpportunity] = await tx
         .update(opportunities)
         .set({
-          status: "CONVERTED",
+          status: convertedDisposition?.resultingStatus || "CONVERTED",
           convertedServiceId: service.id,
+          nextActionDate: null,
+          lastDispositionKey: convertedDisposition?.key || "CONVERTED_TO_SERVICE",
+          lastDispositionLabel: convertedDisposition?.label || "Converted to Service",
+          lastDispositionAt: new Date(),
           updatedAt: new Date(),
         })
         .where(eq(opportunities.id, id))
         .returning();
+
+      const activity = await this.createOpportunityActivityTx(tx, {
+        opportunityId: updatedOpportunity.id,
+        dispositionKey: convertedDisposition?.key || "CONVERTED_TO_SERVICE",
+        dispositionLabel: convertedDisposition?.label || "Converted to Service",
+        notes: `Converted to pending service ${service.id}`,
+        nextActionDate: null,
+        createdByUserId: actor?.userId || null,
+        createdByLabel: actor?.actorLabel || null,
+      });
+
+      await this.createOpportunityCommunicationTx(tx, {
+        opportunity: updatedOpportunity,
+        activity,
+        subject: `Opportunity Call - ${convertedDisposition?.label || "Converted to Service"}`,
+        body: `Disposition: ${convertedDisposition?.label || "Converted to Service"}\nConverted to pending service ${service.id}`,
+        nextActionDate: null,
+        actorLabel: actor?.actorLabel || null,
+      });
 
       return { opportunity: updatedOpportunity, service };
     });
@@ -1926,15 +2152,15 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getCommunications(customerId: string): Promise<Communication[]> {
-    return db.select().from(communications).where(eq(communications.customerId, customerId));
+    return db.select().from(communications).where(eq(communications.customerId, customerId)).orderBy(desc(communications.sentAt));
   }
 
   async getCommunicationsByLocation(locationId: string): Promise<Communication[]> {
-    return db.select().from(communications).where(eq(communications.locationId, locationId));
+    return db.select().from(communications).where(eq(communications.locationId, locationId)).orderBy(desc(communications.sentAt));
   }
 
   async getAllCommunications(): Promise<Communication[]> {
-    return db.select().from(communications);
+    return db.select().from(communications).orderBy(desc(communications.sentAt));
   }
 
   async createCommunication(data: InsertCommunication): Promise<Communication> {
