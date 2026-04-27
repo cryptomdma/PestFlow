@@ -258,14 +258,47 @@ export const opportunities = pgTable("opportunities", {
   serviceTypeId: varchar("service_type_id").references(() => serviceTypes.id),
   opportunityType: text("opportunity_type"),
   dueDate: date("due_date").notNull(),
+  nextActionDate: date("next_action_date"),
   status: text("status").notNull().default("OPEN"),
   notes: text("notes"),
+  lastDispositionKey: text("last_disposition_key"),
+  lastDispositionLabel: text("last_disposition_label"),
+  lastDispositionAt: timestamp("last_disposition_at"),
+  lastContactedAt: timestamp("last_contacted_at"),
   convertedServiceId: varchar("converted_service_id").references(() => services.id),
   contactedAt: timestamp("contacted_at"),
   dismissedAt: timestamp("dismissed_at"),
   dismissedReason: text("dismissed_reason"),
+  assignedUserId: varchar("assigned_user_id"),
+  assignedAt: timestamp("assigned_at"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const opportunityDispositions = pgTable("opportunity_dispositions", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  key: text("key").notNull().unique(),
+  label: text("label").notNull(),
+  isActive: boolean("is_active").notNull().default(true),
+  defaultCallbackDays: integer("default_callback_days"),
+  resultingStatus: text("resulting_status").notNull().default("OPEN"),
+  isTerminal: boolean("is_terminal").notNull().default(false),
+  isDoNotContact: boolean("is_do_not_contact").notNull().default(false),
+  sortOrder: integer("sort_order").notNull().default(0),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const opportunityActivities = pgTable("opportunity_activities", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  opportunityId: varchar("opportunity_id").notNull().references(() => opportunities.id),
+  dispositionKey: text("disposition_key"),
+  dispositionLabel: text("disposition_label"),
+  notes: text("notes"),
+  nextActionDate: date("next_action_date"),
+  createdByUserId: varchar("created_by_user_id"),
+  createdByLabel: text("created_by_label"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
 export const productApplications = pgTable("product_applications", {
@@ -335,6 +368,8 @@ export const insertAgreementSchema = createInsertSchema(agreements).omit({ id: t
 export const insertAgreementTemplateSchema = createInsertSchema(agreementTemplates).omit({ id: true, createdAt: true, updatedAt: true });
 export const insertServiceRecordSchema = createInsertSchema(serviceRecords).omit({ id: true, createdAt: true });
 export const insertOpportunitySchema = createInsertSchema(opportunities).omit({ id: true, createdAt: true, updatedAt: true });
+export const insertOpportunityDispositionSchema = createInsertSchema(opportunityDispositions).omit({ id: true, createdAt: true, updatedAt: true });
+export const insertOpportunityActivitySchema = createInsertSchema(opportunityActivities).omit({ id: true, createdAt: true });
 export const insertProductApplicationSchema = createInsertSchema(productApplications).omit({ id: true });
 export const insertInvoiceSchema = createInsertSchema(invoices).omit({ id: true, createdAt: true });
 export const insertCommunicationSchema = createInsertSchema(communications).omit({ id: true });
@@ -370,6 +405,10 @@ export type ServiceRecord = typeof serviceRecords.$inferSelect;
 export type InsertServiceRecord = z.infer<typeof insertServiceRecordSchema>;
 export type Opportunity = typeof opportunities.$inferSelect;
 export type InsertOpportunity = z.infer<typeof insertOpportunitySchema>;
+export type OpportunityDisposition = typeof opportunityDispositions.$inferSelect;
+export type InsertOpportunityDisposition = z.infer<typeof insertOpportunityDispositionSchema>;
+export type OpportunityActivity = typeof opportunityActivities.$inferSelect;
+export type InsertOpportunityActivity = z.infer<typeof insertOpportunityActivitySchema>;
 export type ProductApplication = typeof productApplications.$inferSelect;
 export type InsertProductApplication = z.infer<typeof insertProductApplicationSchema>;
 export type Invoice = typeof invoices.$inferSelect;

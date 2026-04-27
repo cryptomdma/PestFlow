@@ -24,7 +24,7 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Plus, Settings as SettingsIcon, Wrench, FileText, Users } from "lucide-react";
-import type { AgreementTemplate, ServiceType, Technician } from "@shared/schema";
+import type { AgreementTemplate, OpportunityDisposition, ServiceType, Technician } from "@shared/schema";
 
 function formatTemplateRecurrence(template: AgreementTemplate) {
   const interval = template.defaultRecurrenceInterval || 1;
@@ -53,21 +53,22 @@ function formatTemplateTerm(template: AgreementTemplate) {
   return `Renews every ${interval} ${interval === 1 ? unitLabel : `${unitLabel}s`}`;
 }
 
-function ServiceTypeForm({ onClose }: { onClose: () => void }) {
+function ServiceTypeForm({ serviceType, onClose }: { serviceType?: ServiceType | null; onClose: () => void }) {
   const { toast } = useToast();
+  const isEditMode = !!serviceType;
   const [form, setForm] = useState({
-    name: "",
-    description: "",
-    defaultPrice: "",
-    estimatedDuration: "",
-    category: "",
-    opportunityLeadDays: "",
-    opportunityLabel: "",
+    name: serviceType?.name ?? "",
+    description: serviceType?.description ?? "",
+    defaultPrice: serviceType?.defaultPrice ?? "",
+    estimatedDuration: serviceType?.estimatedDuration ? String(serviceType.estimatedDuration) : "",
+    category: serviceType?.category ?? "",
+    opportunityLeadDays: serviceType?.opportunityLeadDays ? String(serviceType.opportunityLeadDays) : "",
+    opportunityLabel: serviceType?.opportunityLabel ?? "",
   });
 
   const mutation = useMutation({
-    mutationFn: (data: typeof form) =>
-      apiRequest("POST", "/api/service-types", {
+    mutationFn: (data: typeof form) => {
+      const payload = {
         ...data,
         defaultPrice: data.defaultPrice || null,
         estimatedDuration: data.estimatedDuration ? parseInt(data.estimatedDuration) : null,
@@ -75,10 +76,14 @@ function ServiceTypeForm({ onClose }: { onClose: () => void }) {
         description: data.description || null,
         opportunityLeadDays: data.opportunityLeadDays ? parseInt(data.opportunityLeadDays) : null,
         opportunityLabel: data.opportunityLabel || null,
-      }),
+      };
+      return isEditMode
+        ? apiRequest("PATCH", `/api/service-types/${serviceType.id}`, payload)
+        : apiRequest("POST", "/api/service-types", payload);
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/service-types"] });
-      toast({ title: "Service type created" });
+      toast({ title: isEditMode ? "Service type updated" : "Service type created" });
       onClose();
     },
     onError: (err: Error) => {
@@ -99,7 +104,112 @@ function ServiceTypeForm({ onClose }: { onClose: () => void }) {
         <div className="space-y-1.5"><Label>Opportunity Lead Days</Label><Input type="number" min="0" value={form.opportunityLeadDays} onChange={(e) => setForm((p) => ({ ...p, opportunityLeadDays: e.target.value }))} /></div>
         <div className="space-y-1.5"><Label>Opportunity Label</Label><Input placeholder="e.g., Annual Renewal" value={form.opportunityLabel} onChange={(e) => setForm((p) => ({ ...p, opportunityLabel: e.target.value }))} /></div>
       </div>
-      <div className="flex justify-end gap-2"><Button type="button" variant="outline" onClick={onClose}>Cancel</Button><Button type="submit" disabled={mutation.isPending || !form.name} data-testid="button-save-service-type">{mutation.isPending ? "Saving..." : "Create"}</Button></div>
+      <div className="flex justify-end gap-2"><Button type="button" variant="outline" onClick={onClose}>Cancel</Button><Button type="submit" disabled={mutation.isPending || !form.name} data-testid="button-save-service-type">{mutation.isPending ? "Saving..." : isEditMode ? "Save Type" : "Create"}</Button></div>
+    </form>
+  );
+}
+
+function OpportunityDispositionForm({ disposition, onClose }: { disposition?: OpportunityDisposition | null; onClose: () => void }) {
+  const { toast } = useToast();
+  const isEditMode = !!disposition;
+  const [form, setForm] = useState({
+    key: disposition?.key ?? "",
+    label: disposition?.label ?? "",
+    isActive: disposition?.isActive ?? true,
+    defaultCallbackDays: disposition?.defaultCallbackDays !== null && disposition?.defaultCallbackDays !== undefined ? String(disposition.defaultCallbackDays) : "",
+    resultingStatus: disposition?.resultingStatus ?? "OPEN",
+    isTerminal: disposition?.isTerminal ?? false,
+    isDoNotContact: disposition?.isDoNotContact ?? false,
+    sortOrder: disposition?.sortOrder ? String(disposition.sortOrder) : "0",
+  });
+
+  const mutation = useMutation({
+    mutationFn: async (data: typeof form) => {
+      const payload = {
+        key: data.key.trim().toUpperCase().replace(/\s+/g, "_"),
+        label: data.label.trim(),
+        isActive: data.isActive,
+        defaultCallbackDays: data.defaultCallbackDays.trim() ? parseInt(data.defaultCallbackDays, 10) : null,
+        resultingStatus: data.resultingStatus,
+        isTerminal: data.isTerminal,
+        isDoNotContact: data.isDoNotContact,
+        sortOrder: data.sortOrder.trim() ? parseInt(data.sortOrder, 10) : 0,
+      };
+      const response = isEditMode
+        ? await apiRequest("PATCH", `/api/opportunity-dispositions/${disposition.id}`, payload)
+        : await apiRequest("POST", "/api/opportunity-dispositions", payload);
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/opportunity-dispositions"] });
+      toast({ title: isEditMode ? "Disposition updated" : "Disposition created" });
+      onClose();
+    },
+    onError: (err: Error) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+  });
+
+  return (
+    <form onSubmit={(e) => { e.preventDefault(); mutation.mutate(form); }} className="space-y-4">
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="space-y-1.5"><Label>Label</Label><Input value={form.label} onChange={(e) => setForm((prev) => ({ ...prev, label: e.target.value }))} /></div>
+        <div className="space-y-1.5"><Label>Key</Label><Input value={form.key} onChange={(e) => setForm((prev) => ({ ...prev, key: e.target.value }))} disabled={isEditMode} /></div>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="space-y-1.5"><Label>Default Callback Days</Label><Input type="number" min="0" value={form.defaultCallbackDays} onChange={(e) => setForm((prev) => ({ ...prev, defaultCallbackDays: e.target.value }))} /></div>
+        <div className="space-y-1.5">
+          <Label>Resulting Status</Label>
+          <Select value={form.resultingStatus} onValueChange={(value) => setForm((prev) => ({ ...prev, resultingStatus: value }))}>
+            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="OPEN">OPEN</SelectItem>
+              <SelectItem value="CONTACTED">CONTACTED</SelectItem>
+              <SelectItem value="CONVERTED">CONVERTED</SelectItem>
+              <SelectItem value="DISMISSED">DISMISSED</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="space-y-1.5">
+          <Label>Active</Label>
+          <Select value={form.isActive ? "ACTIVE" : "INACTIVE"} onValueChange={(value) => setForm((prev) => ({ ...prev, isActive: value === "ACTIVE" }))}>
+            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="ACTIVE">Active</SelectItem>
+              <SelectItem value="INACTIVE">Inactive</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="space-y-1.5"><Label>Sort Order</Label><Input type="number" value={form.sortOrder} onChange={(e) => setForm((prev) => ({ ...prev, sortOrder: e.target.value }))} /></div>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="space-y-1.5">
+          <Label>Terminal Behavior</Label>
+          <Select value={form.isTerminal ? "YES" : "NO"} onValueChange={(value) => setForm((prev) => ({ ...prev, isTerminal: value === "YES" }))}>
+            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="NO">No</SelectItem>
+              <SelectItem value="YES">Yes</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="space-y-1.5">
+          <Label>Do Not Contact</Label>
+          <Select value={form.isDoNotContact ? "YES" : "NO"} onValueChange={(value) => setForm((prev) => ({ ...prev, isDoNotContact: value === "YES" }))}>
+            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="NO">No</SelectItem>
+              <SelectItem value="YES">Yes</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+      <div className="flex justify-end gap-2">
+        <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
+        <Button type="submit" disabled={mutation.isPending || !form.label.trim() || !form.key.trim()}>
+          {mutation.isPending ? "Saving..." : isEditMode ? "Save Disposition" : "Create Disposition"}
+        </Button>
+      </div>
     </form>
   );
 }
@@ -349,13 +459,17 @@ function AgreementTemplateForm({
 
 export default function Settings() {
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [editingServiceType, setEditingServiceType] = useState<ServiceType | null>(null);
   const [technicianDialogOpen, setTechnicianDialogOpen] = useState(false);
   const [editingTechnician, setEditingTechnician] = useState<Technician | null>(null);
   const [templateDialogOpen, setTemplateDialogOpen] = useState(false);
   const [editingTemplate, setEditingTemplate] = useState<AgreementTemplate | null>(null);
+  const [dispositionDialogOpen, setDispositionDialogOpen] = useState(false);
+  const [editingDisposition, setEditingDisposition] = useState<OpportunityDisposition | null>(null);
   const { data: serviceTypes, isLoading } = useQuery<ServiceType[]>({ queryKey: ["/api/service-types"] });
   const { data: technicians, isLoading: techniciansLoading } = useQuery<Technician[]>({ queryKey: ["/api/technicians?includeInactive=true"] });
   const { data: agreementTemplates, isLoading: templatesLoading } = useQuery<AgreementTemplate[]>({ queryKey: ["/api/agreement-templates"] });
+  const { data: opportunityDispositions, isLoading: dispositionsLoading } = useQuery<OpportunityDisposition[]>({ queryKey: ["/api/opportunity-dispositions?includeInactive=true"] });
 
   const openCreateTemplate = () => {
     setEditingTemplate(null);
@@ -389,9 +503,9 @@ export default function Settings() {
       <Card>
         <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
           <CardTitle className="text-base font-semibold flex items-center gap-2"><Wrench className="h-4 w-4" /> Service Types</CardTitle>
-          <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-            <DialogTrigger asChild><Button size="sm" data-testid="button-add-service-type"><Plus className="h-3 w-3 mr-1" /> Add Type</Button></DialogTrigger>
-            <DialogContent><DialogHeader><DialogTitle>New Service Type</DialogTitle></DialogHeader><ServiceTypeForm onClose={() => setDialogOpen(false)} /></DialogContent>
+          <Dialog open={dialogOpen} onOpenChange={(open) => { setDialogOpen(open); if (!open) setEditingServiceType(null); }}>
+            <DialogTrigger asChild><Button size="sm" data-testid="button-add-service-type" onClick={() => setEditingServiceType(null)}><Plus className="h-3 w-3 mr-1" /> Add Type</Button></DialogTrigger>
+            <DialogContent><DialogHeader><DialogTitle>{editingServiceType ? "Edit Service Type" : "New Service Type"}</DialogTitle></DialogHeader><ServiceTypeForm serviceType={editingServiceType} onClose={() => { setDialogOpen(false); setEditingServiceType(null); }} /></DialogContent>
           </Dialog>
         </CardHeader>
         <CardContent>
@@ -419,7 +533,55 @@ export default function Settings() {
                   <div className="flex items-center gap-3 shrink-0 text-sm">
                     {st.defaultPrice && <span className="font-semibold">${parseFloat(st.defaultPrice).toFixed(2)}</span>}
                     {st.estimatedDuration && <span className="text-xs text-muted-foreground">{st.estimatedDuration} min</span>}
+                    <Button variant="outline" size="sm" onClick={() => { setEditingServiceType(st); setDialogOpen(true); }}>
+                      Edit
+                    </Button>
                   </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
+          <CardTitle className="text-base font-semibold flex items-center gap-2"><SettingsIcon className="h-4 w-4" /> Opportunity Dispositions</CardTitle>
+          <Dialog open={dispositionDialogOpen} onOpenChange={(open) => { setDispositionDialogOpen(open); if (!open) setEditingDisposition(null); }}>
+            <DialogTrigger asChild><Button size="sm" onClick={() => setEditingDisposition(null)}><Plus className="h-3 w-3 mr-1" /> Add Disposition</Button></DialogTrigger>
+            <DialogContent>
+              <DialogHeader><DialogTitle>{editingDisposition ? "Edit Opportunity Disposition" : "New Opportunity Disposition"}</DialogTitle></DialogHeader>
+              <OpportunityDispositionForm disposition={editingDisposition} onClose={() => { setDispositionDialogOpen(false); setEditingDisposition(null); }} />
+            </DialogContent>
+          </Dialog>
+        </CardHeader>
+        <CardContent>
+          {dispositionsLoading ? (
+            <div className="space-y-2">{[1, 2, 3].map((i) => <Skeleton key={i} className="h-16" />)}</div>
+          ) : !opportunityDispositions?.length ? (
+            <div className="text-center py-8">
+              <SettingsIcon className="h-8 w-8 mx-auto text-muted-foreground/30 mb-2" />
+              <p className="text-sm text-muted-foreground">No opportunity dispositions configured</p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {opportunityDispositions.map((disposition) => (
+                <div key={disposition.id} className="flex items-center justify-between gap-3 rounded-md bg-muted/50 p-3">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-sm font-medium">{disposition.label}</span>
+                      <Badge variant={disposition.isActive ? "secondary" : "outline"} className="text-xs">{disposition.isActive ? "Active" : "Inactive"}</Badge>
+                      <Badge variant="outline" className="text-xs">{disposition.resultingStatus}</Badge>
+                      {disposition.isTerminal ? <Badge variant="outline" className="text-xs">Terminal</Badge> : null}
+                      {disposition.isDoNotContact ? <Badge variant="outline" className="text-xs">DND</Badge> : null}
+                    </div>
+                    <p className="mt-0.5 text-xs text-muted-foreground">
+                      Key: {disposition.key} | Callback: {disposition.defaultCallbackDays ?? "None"} day(s) | Sort: {disposition.sortOrder}
+                    </p>
+                  </div>
+                  <Button variant="outline" size="sm" onClick={() => { setEditingDisposition(disposition); setDispositionDialogOpen(true); }}>
+                    Edit
+                  </Button>
                 </div>
               ))}
             </div>

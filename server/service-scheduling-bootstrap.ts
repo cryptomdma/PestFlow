@@ -71,8 +71,66 @@ export async function bootstrapServiceSchedulingFoundation(): Promise<void> {
   `);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS opportunities_location_id_idx ON opportunities (location_id)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS opportunities_status_idx ON opportunities (status)`);
+  await db.execute(sql`ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS next_action_date date`);
+  await db.execute(sql`ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS last_disposition_key text`);
+  await db.execute(sql`ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS last_disposition_label text`);
+  await db.execute(sql`ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS last_disposition_at timestamp`);
+  await db.execute(sql`ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS last_contacted_at timestamp`);
   await db.execute(sql`ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS converted_service_id varchar REFERENCES services(id)`);
   await db.execute(sql`ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS contacted_at timestamp`);
   await db.execute(sql`ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS dismissed_at timestamp`);
   await db.execute(sql`ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS dismissed_reason text`);
+  await db.execute(sql`ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS assigned_user_id varchar`);
+  await db.execute(sql`ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS assigned_at timestamp`);
+
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS opportunity_dispositions (
+      id varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+      key text NOT NULL UNIQUE,
+      label text NOT NULL,
+      is_active boolean NOT NULL DEFAULT true,
+      default_callback_days integer,
+      resulting_status text NOT NULL DEFAULT 'OPEN',
+      is_terminal boolean NOT NULL DEFAULT false,
+      is_do_not_contact boolean NOT NULL DEFAULT false,
+      sort_order integer NOT NULL DEFAULT 0,
+      created_at timestamp NOT NULL DEFAULT now(),
+      updated_at timestamp NOT NULL DEFAULT now()
+    )
+  `);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS opportunity_dispositions_active_idx ON opportunity_dispositions (is_active)`);
+
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS opportunity_activities (
+      id varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+      opportunity_id varchar NOT NULL REFERENCES opportunities(id),
+      disposition_key text,
+      disposition_label text,
+      notes text,
+      next_action_date date,
+      created_by_user_id varchar,
+      created_by_label text,
+      created_at timestamp NOT NULL DEFAULT now()
+    )
+  `);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS opportunity_activities_opportunity_id_idx ON opportunity_activities (opportunity_id)`);
+
+  await db.execute(sql`
+    INSERT INTO opportunity_dispositions (key, label, is_active, default_callback_days, resulting_status, is_terminal, is_do_not_contact, sort_order)
+    VALUES
+      ('INTERESTED', 'Interested', true, 3, 'OPEN', false, false, 10),
+      ('CALL_BACK', 'Call Back', true, 7, 'OPEN', false, false, 20),
+      ('NOT_INTERESTED_AT_THIS_TIME', 'Not Interested At This Time', true, 90, 'OPEN', false, false, 30),
+      ('LEFT_VOICEMAIL', 'Left Voicemail', true, 7, 'OPEN', false, false, 40),
+      ('NO_ANSWER', 'No Answer', true, 2, 'OPEN', false, false, 50),
+      ('BAD_NUMBER', 'Bad Number', true, null, 'DISMISSED', true, false, 60),
+      ('MOVED', 'Moved', true, null, 'DISMISSED', true, false, 70),
+      ('DO_NOT_CONTACT', 'Do Not Contact', true, null, 'DISMISSED', true, true, 80),
+      ('SWITCHED_TO_COMPETITOR', 'Switched to Competitor', true, 90, 'OPEN', false, false, 90),
+      ('CONVERTED_TO_SERVICE', 'Converted to Service', true, null, 'CONVERTED', true, false, 100),
+      ('REMOVE_FROM_QUEUE', 'Remove From Queue', true, null, 'DISMISSED', true, false, 110)
+    ON CONFLICT (key) DO NOTHING
+  `);
+
+  await db.execute(sql`UPDATE opportunities SET next_action_date = COALESCE(next_action_date, due_date) WHERE next_action_date IS NULL`);
 }

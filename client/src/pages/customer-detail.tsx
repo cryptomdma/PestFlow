@@ -30,6 +30,7 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { cn } from "@/lib/utils";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
+import { OpportunityDispositionDialog } from "@/components/opportunity-disposition-dialog";
 import { formatPhoneDisplay } from "@shared/phone";
 import {
   ArrowLeft, Mail, Phone, MapPin, Plus, Calendar, FileText, MessageSquare,
@@ -37,7 +38,7 @@ import {
   History,
   CreditCard, KeyRound, Ruler, ChevronUp, Check, Link2, Target,
 } from "lucide-react";
-import type { Customer, Contact, Location, Appointment, Invoice, Service, ServiceRecord, Communication, CustomerNote, BillingProfile, NoteRevision, Agreement, AgreementTemplate, ServiceType, Technician, Opportunity } from "@shared/schema";
+import type { Customer, Contact, Location, Appointment, Invoice, Service, ServiceRecord, Communication, CustomerNote, BillingProfile, NoteRevision, Agreement, AgreementTemplate, ServiceType, Technician, Opportunity, OpportunityDisposition } from "@shared/schema";
 
 interface CustomerDetailCompatResponse {
   legacyCustomer: Customer;
@@ -2493,34 +2494,24 @@ function OpportunitiesTab({
 }) {
   const { toast } = useToast();
   const { data: opportunities } = useQuery<Opportunity[]>({ queryKey: ["/api/opportunities/by-location", locationId], enabled: !!locationId });
+  const { data: dispositions } = useQuery<OpportunityDisposition[]>({ queryKey: ["/api/opportunity-dispositions"] });
   const { data: serviceTypes } = useQuery<ServiceType[]>({ queryKey: ["/api/service-types"] });
+  const [selectedOpportunity, setSelectedOpportunity] = useState<Opportunity | null>(null);
+  const [selectedDispositionId, setSelectedDispositionId] = useState<string | null>(null);
 
   const serviceTypeNameById = useMemo(() => new Map((serviceTypes ?? []).map((serviceType) => [serviceType.id, serviceType.name])), [serviceTypes]);
   const sortedOpportunities = useMemo(() => {
     return [...(opportunities ?? [])]
       .filter((opportunity) => opportunity.status !== "CONVERTED" && opportunity.status !== "DISMISSED")
-      .sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+      .sort((a, b) => (a.nextActionDate || a.dueDate).localeCompare(b.nextActionDate || b.dueDate));
   }, [opportunities]);
+  const activeDispositions = (dispositions ?? []).filter((item) => item.isActive && item.key !== "CONVERTED_TO_SERVICE");
   const invalidateOpportunities = () => {
     queryClient.invalidateQueries({ predicate: (query) => String(query.queryKey[0]).startsWith("/api/opportunities") });
     queryClient.invalidateQueries({ queryKey: ["/api/services/by-location", locationId] });
     queryClient.invalidateQueries({ queryKey: ["/api/services/pending"] });
     queryClient.invalidateQueries({ queryKey: ["/api/location-counts", locationId] });
   };
-  const updateStatusMutation = useMutation({
-    mutationFn: async ({ id, status }: { id: string; status: string }) => {
-      const payload: Record<string, unknown> = { status };
-      if (status === "CONTACTED") payload.contactedAt = new Date().toISOString();
-      if (status === "DISMISSED") payload.dismissedAt = new Date().toISOString();
-      const response = await apiRequest("PATCH", `/api/opportunities/${id}`, payload);
-      return response.json();
-    },
-    onSuccess: () => {
-      invalidateOpportunities();
-      toast({ title: "Opportunity updated" });
-    },
-    onError: (error: Error) => toast({ title: "Error", description: error.message, variant: "destructive" }),
-  });
   const convertMutation = useMutation({
     mutationFn: async (id: string) => {
       const response = await apiRequest("POST", `/api/opportunities/${id}/convert`);
@@ -2554,16 +2545,31 @@ function OpportunitiesTab({
                 <p className="font-medium">{opportunity.opportunityType || serviceTypeNameById.get(opportunity.serviceTypeId || "") || "Opportunity"}</p>
                 <Badge variant="outline">{opportunity.status}</Badge>
               </div>
-              <p className="mt-1 text-sm text-muted-foreground">Due {formatDateOnly(opportunity.dueDate)}</p>
+              <p className="mt-1 text-sm text-muted-foreground">Next action {formatDateOnly(opportunity.nextActionDate || opportunity.dueDate)}</p>
+              {opportunity.lastDispositionLabel ? <p className="mt-1 text-xs text-muted-foreground">Last disposition: {opportunity.lastDispositionLabel}</p> : null}
               {opportunity.notes ? <p className="mt-2 text-sm text-muted-foreground">{opportunity.notes}</p> : null}
             </div>
             <div className="flex flex-wrap justify-end gap-2">
-              <Button type="button" variant="outline" size="sm" disabled={opportunity.status === "CONTACTED" || updateStatusMutation.isPending} onClick={() => updateStatusMutation.mutate({ id: opportunity.id, status: "CONTACTED" })}>
-                Mark Contacted
-              </Button>
-              <Button type="button" variant="outline" size="sm" disabled={updateStatusMutation.isPending} onClick={() => updateStatusMutation.mutate({ id: opportunity.id, status: "DISMISSED" })}>
-                Dismiss
-              </Button>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button type="button" variant="outline" size="sm" disabled={!activeDispositions.length}>
+                    Disposition <ChevronDown className="ml-1 h-3 w-3" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  {activeDispositions.map((disposition) => (
+                    <DropdownMenuItem
+                      key={disposition.id}
+                      onClick={() => {
+                        setSelectedOpportunity(opportunity);
+                        setSelectedDispositionId(disposition.id);
+                      }}
+                    >
+                      {disposition.label}
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
               <Button type="button" size="sm" disabled={opportunity.status === "CONVERTED" || opportunity.status === "DISMISSED" || convertMutation.isPending} onClick={() => convertMutation.mutate(opportunity.id)}>
                 Convert to Service
               </Button>
@@ -2571,6 +2577,18 @@ function OpportunitiesTab({
           </CardContent>
         </Card>
       ))}
+      <OpportunityDispositionDialog
+        open={!!selectedOpportunity && !!selectedDispositionId}
+        onOpenChange={(open) => {
+          if (!open) {
+            setSelectedOpportunity(null);
+            setSelectedDispositionId(null);
+          }
+        }}
+        opportunity={selectedOpportunity}
+        dispositionId={selectedDispositionId}
+        onApplied={invalidateOpportunities}
+      />
     </div>
   );
 }
