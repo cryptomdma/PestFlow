@@ -30,7 +30,7 @@ import {
   type NoteRevision,
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, and, inArray, sql } from "drizzle-orm";
+import { eq, and, inArray, sql, gte, lte, asc } from "drizzle-orm";
 import { PLACEHOLDER_LOCATION_NAME, PLACEHOLDER_LOCATION_NOTE } from "./account-bootstrap";
 
 export interface CustomerDetailCompatProjection {
@@ -101,6 +101,13 @@ export interface LinkAgreementInitialAppointmentInput {
   actor?: AuditActor;
 }
 
+export interface OpportunityFilters {
+  status?: string;
+  dueFrom?: string;
+  dueTo?: string;
+  serviceTypeId?: string;
+}
+
 export interface SaveScopedNoteInput {
   scope: "ACCOUNT" | "LOCATION";
   accountId?: string | null;
@@ -156,9 +163,11 @@ export interface IStorage {
   createService(data: InsertService): Promise<Service>;
   updateService(id: string, data: Partial<InsertService>): Promise<Service | undefined>;
   deleteService(id: string): Promise<boolean>;
+  getOpportunities(filters?: OpportunityFilters): Promise<Opportunity[]>;
   getOpportunitiesByLocation(locationId: string): Promise<Opportunity[]>;
   createOpportunity(data: InsertOpportunity): Promise<Opportunity>;
   updateOpportunity(id: string, data: Partial<InsertOpportunity>): Promise<Opportunity | undefined>;
+  convertOpportunityToService(id: string): Promise<{ opportunity: Opportunity; service: Service } | undefined>;
 
   getAgreementTemplates(): Promise<AgreementTemplate[]>;
   getAgreementTemplate(id: string): Promise<AgreementTemplate | undefined>;
@@ -1461,8 +1470,22 @@ export class DatabaseStorage implements IStorage {
     });
   }
 
+  async getOpportunities(filters: OpportunityFilters = {}): Promise<Opportunity[]> {
+    const conditions = [];
+    if (filters.status) conditions.push(eq(opportunities.status, filters.status));
+    if (filters.dueFrom) conditions.push(gte(opportunities.dueDate, filters.dueFrom));
+    if (filters.dueTo) conditions.push(lte(opportunities.dueDate, filters.dueTo));
+    if (filters.serviceTypeId) conditions.push(eq(opportunities.serviceTypeId, filters.serviceTypeId));
+
+    return db
+      .select()
+      .from(opportunities)
+      .where(conditions.length ? and(...conditions) : undefined)
+      .orderBy(asc(opportunities.dueDate));
+  }
+
   async getOpportunitiesByLocation(locationId: string): Promise<Opportunity[]> {
-    return db.select().from(opportunities).where(eq(opportunities.locationId, locationId));
+    return db.select().from(opportunities).where(eq(opportunities.locationId, locationId)).orderBy(asc(opportunities.dueDate));
   }
 
   async createOpportunity(data: InsertOpportunity): Promise<Opportunity> {
@@ -1473,6 +1496,57 @@ export class DatabaseStorage implements IStorage {
   async updateOpportunity(id: string, data: Partial<InsertOpportunity>): Promise<Opportunity | undefined> {
     const [opportunity] = await db.update(opportunities).set({ ...data, updatedAt: new Date() }).where(eq(opportunities.id, id)).returning();
     return opportunity;
+  }
+
+  async convertOpportunityToService(id: string): Promise<{ opportunity: Opportunity; service: Service } | undefined> {
+    return db.transaction(async (tx) => {
+      const [opportunity] = await tx.select().from(opportunities).where(eq(opportunities.id, id));
+      if (!opportunity) return undefined;
+      if (opportunity.status === "DISMISSED") {
+        throw new Error("Dismissed opportunities cannot be converted");
+      }
+
+      if (opportunity.convertedServiceId) {
+        const [existingService] = await tx.select().from(services).where(eq(services.id, opportunity.convertedServiceId));
+        if (existingService) return { opportunity, service: existingService };
+      }
+      if (opportunity.status === "CONVERTED") {
+        throw new Error("Converted opportunity is missing its linked service");
+      }
+
+      const [location] = await tx.select().from(locations).where(eq(locations.id, opportunity.locationId));
+      if (!location) {
+        throw new Error("Opportunity location not found");
+      }
+
+      const [serviceType] = opportunity.serviceTypeId
+        ? await tx.select().from(serviceTypes).where(eq(serviceTypes.id, opportunity.serviceTypeId))
+        : [undefined];
+
+      const [service] = await tx.insert(services).values({
+        customerId: location.customerId,
+        locationId: location.id,
+        serviceTypeId: opportunity.serviceTypeId || null,
+        dueDate: opportunity.dueDate,
+        expectedDurationMinutes: serviceType?.estimatedDuration ?? null,
+        price: serviceType?.defaultPrice ?? null,
+        status: "PENDING_SCHEDULING",
+        source: "MANUAL",
+        notes: opportunity.notes || `Converted from opportunity: ${opportunity.opportunityType || serviceType?.name || "Opportunity"}`,
+      }).returning();
+
+      const [updatedOpportunity] = await tx
+        .update(opportunities)
+        .set({
+          status: "CONVERTED",
+          convertedServiceId: service.id,
+          updatedAt: new Date(),
+        })
+        .where(eq(opportunities.id, id))
+        .returning();
+
+      return { opportunity: updatedOpportunity, service };
+    });
   }
 
   async getAgreementTemplates(): Promise<AgreementTemplate[]> {
@@ -1876,7 +1950,7 @@ export class DatabaseStorage implements IStorage {
       db.select().from(services).where(eq(services.locationId, locationId)),
       db.select().from(invoices).where(eq(invoices.locationId, locationId)),
       db.select().from(communications).where(eq(communications.locationId, locationId)),
-      db.select().from(opportunities).where(eq(opportunities.locationId, locationId)),
+      db.select().from(opportunities).where(and(eq(opportunities.locationId, locationId), eq(opportunities.status, "OPEN"))),
     ]);
     return { contacts: cts.length, appointments: appts.length, agreements: agrs.length, services: svcs.length, invoices: invs.length, communications: comms.length, opportunities: opps.length };
   }

@@ -2491,13 +2491,47 @@ function OpportunitiesTab({
 }: {
   locationId: string;
 }) {
+  const { toast } = useToast();
   const { data: opportunities } = useQuery<Opportunity[]>({ queryKey: ["/api/opportunities/by-location", locationId], enabled: !!locationId });
   const { data: serviceTypes } = useQuery<ServiceType[]>({ queryKey: ["/api/service-types"] });
 
   const serviceTypeNameById = useMemo(() => new Map((serviceTypes ?? []).map((serviceType) => [serviceType.id, serviceType.name])), [serviceTypes]);
   const sortedOpportunities = useMemo(() => {
-    return [...(opportunities ?? [])].sort((a, b) => b.dueDate.localeCompare(a.dueDate));
+    return [...(opportunities ?? [])]
+      .filter((opportunity) => opportunity.status !== "CONVERTED" && opportunity.status !== "DISMISSED")
+      .sort((a, b) => a.dueDate.localeCompare(b.dueDate));
   }, [opportunities]);
+  const invalidateOpportunities = () => {
+    queryClient.invalidateQueries({ predicate: (query) => String(query.queryKey[0]).startsWith("/api/opportunities") });
+    queryClient.invalidateQueries({ queryKey: ["/api/services/by-location", locationId] });
+    queryClient.invalidateQueries({ queryKey: ["/api/services/pending"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/location-counts", locationId] });
+  };
+  const updateStatusMutation = useMutation({
+    mutationFn: async ({ id, status }: { id: string; status: string }) => {
+      const payload: Record<string, unknown> = { status };
+      if (status === "CONTACTED") payload.contactedAt = new Date().toISOString();
+      if (status === "DISMISSED") payload.dismissedAt = new Date().toISOString();
+      const response = await apiRequest("PATCH", `/api/opportunities/${id}`, payload);
+      return response.json();
+    },
+    onSuccess: () => {
+      invalidateOpportunities();
+      toast({ title: "Opportunity updated" });
+    },
+    onError: (error: Error) => toast({ title: "Error", description: error.message, variant: "destructive" }),
+  });
+  const convertMutation = useMutation({
+    mutationFn: async (id: string) => {
+      const response = await apiRequest("POST", `/api/opportunities/${id}/convert`);
+      return response.json();
+    },
+    onSuccess: () => {
+      invalidateOpportunities();
+      toast({ title: "Opportunity converted to pending service" });
+    },
+    onError: (error: Error) => toast({ title: "Error", description: error.message, variant: "destructive" }),
+  });
 
   if (!sortedOpportunities.length) {
     return (
@@ -2523,6 +2557,17 @@ function OpportunitiesTab({
               <p className="mt-1 text-sm text-muted-foreground">Due {formatDateOnly(opportunity.dueDate)}</p>
               {opportunity.notes ? <p className="mt-2 text-sm text-muted-foreground">{opportunity.notes}</p> : null}
             </div>
+            <div className="flex flex-wrap justify-end gap-2">
+              <Button type="button" variant="outline" size="sm" disabled={opportunity.status === "CONTACTED" || updateStatusMutation.isPending} onClick={() => updateStatusMutation.mutate({ id: opportunity.id, status: "CONTACTED" })}>
+                Mark Contacted
+              </Button>
+              <Button type="button" variant="outline" size="sm" disabled={updateStatusMutation.isPending} onClick={() => updateStatusMutation.mutate({ id: opportunity.id, status: "DISMISSED" })}>
+                Dismiss
+              </Button>
+              <Button type="button" size="sm" disabled={opportunity.status === "CONVERTED" || opportunity.status === "DISMISSED" || convertMutation.isPending} onClick={() => convertMutation.mutate(opportunity.id)}>
+                Convert to Service
+              </Button>
+            </div>
           </CardContent>
         </Card>
       ))}
@@ -2544,6 +2589,13 @@ export default function CustomerDetail() {
   const [contactDialogOpen, setContactDialogOpen] = useState(false);
   const [editingContact, setEditingContact] = useState<Contact | null>(null);
   const [activeTab, setActiveTab] = useState("contacts");
+  const requestedTab = searchParams.get("tab");
+
+  useEffect(() => {
+    if (requestedTab && ["contacts", "agreements", "services", "invoices", "communications", "opportunities"].includes(requestedTab)) {
+      setActiveTab(requestedTab);
+    }
+  }, [requestedTab]);
 
   const { data: compat, isLoading } = useQuery<CustomerDetailCompatResponse>({
     queryKey: [`/api/customer-detail-compat/${customerId}${urlLocationId ? `?locationId=${urlLocationId}` : ""}`],

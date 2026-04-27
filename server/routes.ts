@@ -9,6 +9,7 @@ import {
   insertBillingProfileSchema,
   insertAgreementSchema,
   insertAgreementTemplateSchema,
+  insertOpportunitySchema,
 } from "@shared/schema";
 import { normalizePhone } from "@shared/phone";
 import { ZodError, z } from "zod";
@@ -151,6 +152,12 @@ export async function registerRoutes(
   });
   const updateServiceRecordSchema = insertServiceRecordSchema.omit({ serviceDate: true }).extend({
     serviceDate: z.coerce.date().optional(),
+  }).partial();
+  const opportunityStatusSchema = z.enum(["OPEN", "CONTACTED", "CONVERTED", "DISMISSED"]);
+  const opportunityUpdateSchema = insertOpportunitySchema.extend({
+    status: opportunityStatusSchema.optional(),
+    contactedAt: nullableDateSchema.optional(),
+    dismissedAt: nullableDateSchema.optional(),
   }).partial();
   const agreementStatusSchema = z.enum(["ACTIVE", "PAUSED", "CANCELLED"]);
   const recurrenceUnitSchema = z.enum(["MONTH", "QUARTER", "YEAR", "CUSTOM"]);
@@ -836,9 +843,41 @@ export async function registerRoutes(
     res.json(data);
   });
 
+  app.get("/api/opportunities", async (req, res) => {
+    const data = await storage.getOpportunities({
+      status: typeof req.query.status === "string" && req.query.status !== "ALL" ? req.query.status : undefined,
+      dueFrom: typeof req.query.dueFrom === "string" ? req.query.dueFrom : undefined,
+      dueTo: typeof req.query.dueTo === "string" ? req.query.dueTo : undefined,
+      serviceTypeId: typeof req.query.serviceTypeId === "string" && req.query.serviceTypeId !== "ALL" ? req.query.serviceTypeId : undefined,
+    });
+    res.json(data);
+  });
+
   app.get("/api/opportunities/by-location/:locationId", async (req, res) => {
     const data = await storage.getOpportunitiesByLocation(req.params.locationId);
     res.json(data);
+  });
+
+  app.patch("/api/opportunities/:id", async (req, res) => {
+    try {
+      const validated = opportunityUpdateSchema.parse(req.body);
+      const data = await storage.updateOpportunity(req.params.id, validated);
+      if (!data) return res.status(404).json({ message: "Opportunity not found" });
+      res.json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/opportunities/:id/convert", async (req, res) => {
+    try {
+      const data = await storage.convertOpportunityToService(req.params.id);
+      if (!data) return res.status(404).json({ message: "Opportunity not found" });
+      res.status(201).json(data);
+    } catch (e: any) {
+      res.status(400).json({ message: e.message });
+    }
   });
 
   app.post("/api/services", async (req, res) => {

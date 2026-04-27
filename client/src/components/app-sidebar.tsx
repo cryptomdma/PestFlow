@@ -9,6 +9,7 @@ import {
   BarChart3,
   Settings,
   Bug,
+  Target,
 } from "lucide-react";
 import {
   Sidebar,
@@ -28,6 +29,7 @@ const mainNav = [
   { title: "Customers", url: "/customers", icon: Users },
   { title: "Schedule", url: "/schedule", icon: Calendar },
   { title: "Service History", url: "/services", icon: ClipboardList },
+  { title: "Opportunities", url: "/opportunities", icon: Target },
 ];
 
 const operationsNav = [
