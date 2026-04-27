@@ -14,6 +14,7 @@ import Customers from "@/pages/customers";
 import CustomerDetail from "@/pages/customer-detail";
 import Schedule from "@/pages/schedule";
 import Services from "@/pages/services";
+import Opportunities from "@/pages/opportunities";
 import Invoices from "@/pages/invoices";
 import Communications from "@/pages/communications";
 import Reports from "@/pages/reports";
@@ -28,6 +29,7 @@ function Router() {
       <Route path="/customers/:id" component={CustomerDetail} />
       <Route path="/schedule" component={Schedule} />
       <Route path="/services" component={Services} />
+      <Route path="/opportunities" component={Opportunities} />
       <Route path="/invoices" component={Invoices} />
       <Route path="/communications" component={Communications} />
       <Route path="/reports" component={Reports} />

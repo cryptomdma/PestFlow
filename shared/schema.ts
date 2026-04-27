@@ -260,6 +260,10 @@ export const opportunities = pgTable("opportunities", {
   dueDate: date("due_date").notNull(),
   status: text("status").notNull().default("OPEN"),
   notes: text("notes"),
+  convertedServiceId: varchar("converted_service_id").references(() => services.id),
+  contactedAt: timestamp("contacted_at"),
+  dismissedAt: timestamp("dismissed_at"),
+  dismissedReason: text("dismissed_reason"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
