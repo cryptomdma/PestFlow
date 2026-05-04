@@ -16,6 +16,7 @@ export async function bootstrapAgreements(): Promise<void> {
       default_recurrence_interval integer NOT NULL DEFAULT 1,
       default_generation_lead_days integer NOT NULL DEFAULT 14,
       default_service_window_days integer,
+      default_scheduling_mode text NOT NULL DEFAULT 'MANUAL',
       default_service_type_id varchar REFERENCES service_types(id),
       default_service_template_name text,
       default_duration_minutes integer,
@@ -52,6 +53,7 @@ export async function bootstrapAgreements(): Promise<void> {
       recurrence_interval integer NOT NULL DEFAULT 1,
       generation_lead_days integer NOT NULL DEFAULT 14,
       service_window_days integer,
+      scheduling_mode text NOT NULL DEFAULT 'MANUAL',
       service_type_id varchar REFERENCES service_types(id),
       service_template_name text,
       default_duration_minutes integer,
@@ -74,8 +76,12 @@ export async function bootstrapAgreements(): Promise<void> {
   await db.execute(sql`ALTER TABLE agreements ADD COLUMN IF NOT EXISTS start_date_source text NOT NULL DEFAULT 'MANUAL'`);
   await db.execute(sql`ALTER TABLE agreements ADD COLUMN IF NOT EXISTS term_unit text NOT NULL DEFAULT 'YEAR'`);
   await db.execute(sql`ALTER TABLE agreements ADD COLUMN IF NOT EXISTS term_interval integer NOT NULL DEFAULT 1`);
+  await db.execute(sql`ALTER TABLE agreements ADD COLUMN IF NOT EXISTS scheduling_mode text NOT NULL DEFAULT 'MANUAL'`);
   await db.execute(sql`ALTER TABLE agreement_templates ADD COLUMN IF NOT EXISTS default_term_unit text NOT NULL DEFAULT 'YEAR'`);
   await db.execute(sql`ALTER TABLE agreement_templates ADD COLUMN IF NOT EXISTS default_term_interval integer NOT NULL DEFAULT 1`);
+  await db.execute(sql`ALTER TABLE agreement_templates ADD COLUMN IF NOT EXISTS default_scheduling_mode text NOT NULL DEFAULT 'MANUAL'`);
+  await db.execute(sql`UPDATE agreement_templates SET default_scheduling_mode = 'AUTO_ELIGIBLE' WHERE internal_code IN ('CONTROL_PLUS', 'MOSQUITO_SEASONAL') AND default_scheduling_mode = 'MANUAL'`);
+  await db.execute(sql`UPDATE agreement_templates SET default_scheduling_mode = 'CONTACT_REQUIRED' WHERE internal_code = 'SENTRICON_RENEWAL' AND default_scheduling_mode = 'MANUAL'`);
 
   await db.execute(sql`ALTER TABLE appointments ADD COLUMN IF NOT EXISTS agreement_id varchar`);
   await db.execute(sql`ALTER TABLE appointments ADD COLUMN IF NOT EXISTS source text DEFAULT 'MANUAL'`);

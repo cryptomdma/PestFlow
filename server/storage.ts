@@ -84,8 +84,8 @@ export interface UpdateLocationProfileInput {
   actor?: AuditActor;
 }
 
-export interface GenerateAgreementAppointmentsResult {
-  createdAppointments: Appointment[];
+export interface GenerateAgreementServicesResult {
+  createdServices: Service[];
 }
 
 export interface DispatchBoardWindow {
@@ -198,7 +198,7 @@ export interface IStorage {
   createAgreement(data: InsertAgreement, actor?: AuditActor): Promise<Agreement>;
   updateAgreement(id: string, data: Partial<InsertAgreement>, actor?: AuditActor): Promise<Agreement | undefined>;
   linkAgreementInitialAppointment(input: LinkAgreementInitialAppointmentInput): Promise<Agreement | undefined>;
-  generateAgreementAppointmentsForLocation(locationId: string): Promise<GenerateAgreementAppointmentsResult>;
+  generateAgreementServicesForLocation(locationId: string): Promise<GenerateAgreementServicesResult>;
 
   getAppointments(): Promise<Appointment[]>;
   getAppointmentsByLocation(locationId: string): Promise<Appointment[]>;
@@ -287,19 +287,6 @@ function resolveAgreementStartDateFromValues(
     startDate: dateOnly,
     renewalDate: advanceAgreementDate(dateOnly, termUnit, termInterval),
     nextServiceDate: advanceAgreementDate(dateOnly, recurrenceUnit, recurrenceInterval),
-  };
-}
-
-function buildAppointmentSchedule(dateOnly: string, defaultDurationMinutes?: number | null) {
-  const scheduledDate = new Date(`${dateOnly}T14:00:00.000Z`);
-  const durationMinutes = defaultDurationMinutes && defaultDurationMinutes > 0 ? defaultDurationMinutes : null;
-  const scheduledEndDate = durationMinutes
-    ? new Date(scheduledDate.getTime() + durationMinutes * 60 * 1000)
-    : null;
-
-  return {
-    scheduledDate,
-    scheduledEndDate,
   };
 }
 
@@ -395,6 +382,7 @@ export class DatabaseStorage implements IStorage {
       recurrenceInterval: Math.max(data.recurrenceInterval || 1, 1),
       generationLeadDays: Math.max(data.generationLeadDays || 0, 0),
       serviceWindowDays: data.serviceWindowDays ?? null,
+      schedulingMode: data.schedulingMode || "MANUAL",
       serviceTypeId: data.serviceTypeId || null,
       serviceTemplateName: data.serviceTemplateName?.trim() || null,
       defaultDurationMinutes: data.defaultDurationMinutes ?? null,
@@ -425,8 +413,14 @@ export class DatabaseStorage implements IStorage {
     if (data.renewalDate !== undefined) payload.renewalDate = normalizeDateOnly(data.renewalDate as any) as any;
     if (data.nextServiceDate !== undefined) payload.nextServiceDate = normalizeDateOnly(data.nextServiceDate as any) as any;
     if (data.billingFrequency !== undefined) payload.billingFrequency = data.billingFrequency?.trim() || null;
+    if (data.recurrenceUnit !== undefined) payload.recurrenceUnit = data.recurrenceUnit || "MONTH";
     if (data.recurrenceInterval !== undefined) payload.recurrenceInterval = Math.max(data.recurrenceInterval || 1, 1);
     if (data.generationLeadDays !== undefined) payload.generationLeadDays = Math.max(data.generationLeadDays || 0, 0);
+    if (data.serviceWindowDays !== undefined) payload.serviceWindowDays = data.serviceWindowDays ?? null;
+    if (data.schedulingMode !== undefined) payload.schedulingMode = data.schedulingMode || "MANUAL";
+    if (data.serviceTypeId !== undefined) payload.serviceTypeId = data.serviceTypeId || null;
+    if (data.defaultDurationMinutes !== undefined) payload.defaultDurationMinutes = data.defaultDurationMinutes ?? null;
+    if (data.price !== undefined) payload.price = data.price || null;
     if (data.serviceTemplateName !== undefined) payload.serviceTemplateName = data.serviceTemplateName?.trim() || null;
     if (data.serviceInstructions !== undefined) payload.serviceInstructions = data.serviceInstructions?.trim() || null;
     if (data.notes !== undefined) payload.notes = data.notes?.trim() || null;
@@ -452,6 +446,7 @@ export class DatabaseStorage implements IStorage {
       defaultRecurrenceInterval: Math.max(data.defaultRecurrenceInterval || 1, 1),
       defaultGenerationLeadDays: Math.max(data.defaultGenerationLeadDays || 0, 0),
       defaultServiceWindowDays: data.defaultServiceWindowDays ?? null,
+      defaultSchedulingMode: data.defaultSchedulingMode || "MANUAL",
       defaultServiceTypeId: data.defaultServiceTypeId || null,
       defaultServiceTemplateName: data.defaultServiceTemplateName?.trim() || null,
       defaultDurationMinutes: data.defaultDurationMinutes ?? null,
@@ -471,10 +466,14 @@ export class DatabaseStorage implements IStorage {
     if (data.defaultBillingFrequency !== undefined) payload.defaultBillingFrequency = data.defaultBillingFrequency?.trim() || null;
     if (data.defaultTermUnit !== undefined) payload.defaultTermUnit = data.defaultTermUnit || "YEAR";
     if (data.defaultTermInterval !== undefined) payload.defaultTermInterval = Math.max(data.defaultTermInterval || 1, 1);
+    if (data.defaultRecurrenceUnit !== undefined) payload.defaultRecurrenceUnit = data.defaultRecurrenceUnit || "MONTH";
     if (data.defaultRecurrenceInterval !== undefined) payload.defaultRecurrenceInterval = Math.max(data.defaultRecurrenceInterval || 1, 1);
     if (data.defaultGenerationLeadDays !== undefined) payload.defaultGenerationLeadDays = Math.max(data.defaultGenerationLeadDays || 0, 0);
+    if (data.defaultServiceWindowDays !== undefined) payload.defaultServiceWindowDays = data.defaultServiceWindowDays ?? null;
+    if (data.defaultSchedulingMode !== undefined) payload.defaultSchedulingMode = data.defaultSchedulingMode || "MANUAL";
     if (data.defaultServiceTypeId !== undefined) payload.defaultServiceTypeId = data.defaultServiceTypeId || null;
     if (data.defaultServiceTemplateName !== undefined) payload.defaultServiceTemplateName = data.defaultServiceTemplateName?.trim() || null;
+    if (data.defaultDurationMinutes !== undefined) payload.defaultDurationMinutes = data.defaultDurationMinutes ?? null;
     if (data.defaultPrice !== undefined) payload.defaultPrice = data.defaultPrice || null;
     if (data.defaultInstructions !== undefined) payload.defaultInstructions = data.defaultInstructions?.trim() || null;
     if (data.internalCode !== undefined) payload.internalCode = data.internalCode?.trim() || null;
@@ -512,12 +511,16 @@ export class DatabaseStorage implements IStorage {
       agreementId: data.agreementId || null,
       serviceTypeId: data.serviceTypeId || null,
       dueDate: normalizeDateOnly(data.dueDate),
+      generatedForDate: normalizeDateOnly(data.generatedForDate),
+      serviceWindowStart: normalizeDateOnly(data.serviceWindowStart),
+      serviceWindowEnd: normalizeDateOnly(data.serviceWindowEnd),
       timeWindow: data.timeWindow?.trim() || null,
       expectedDurationMinutes: data.expectedDurationMinutes ?? null,
       price: data.price || null,
       status: data.status || "PENDING_SCHEDULING",
       assignedTechnicianId: data.assignedTechnicianId || null,
       source: data.source || "MANUAL",
+      schedulingMode: data.schedulingMode || null,
       notes: data.notes?.trim() || null,
     };
   }
@@ -528,10 +531,14 @@ export class DatabaseStorage implements IStorage {
     if (data.agreementId !== undefined) payload.agreementId = data.agreementId || null;
     if (data.serviceTypeId !== undefined) payload.serviceTypeId = data.serviceTypeId || null;
     if (data.dueDate !== undefined) payload.dueDate = normalizeDateOnly(data.dueDate as any) as any;
+    if (data.generatedForDate !== undefined) payload.generatedForDate = normalizeDateOnly(data.generatedForDate as any) as any;
+    if (data.serviceWindowStart !== undefined) payload.serviceWindowStart = normalizeDateOnly(data.serviceWindowStart as any) as any;
+    if (data.serviceWindowEnd !== undefined) payload.serviceWindowEnd = normalizeDateOnly(data.serviceWindowEnd as any) as any;
     if (data.timeWindow !== undefined) payload.timeWindow = data.timeWindow?.trim() || null;
     if (data.expectedDurationMinutes !== undefined) payload.expectedDurationMinutes = data.expectedDurationMinutes ?? null;
     if (data.price !== undefined) payload.price = data.price || null;
     if (data.assignedTechnicianId !== undefined) payload.assignedTechnicianId = data.assignedTechnicianId || null;
+    if (data.schedulingMode !== undefined) payload.schedulingMode = data.schedulingMode || null;
     if (data.notes !== undefined) payload.notes = data.notes?.trim() || null;
     return payload;
   }
@@ -680,6 +687,7 @@ export class DatabaseStorage implements IStorage {
       recurrenceInterval: agreementData.recurrenceInterval ?? template?.defaultRecurrenceInterval ?? 1,
       generationLeadDays: agreementData.generationLeadDays ?? template?.defaultGenerationLeadDays ?? 14,
       serviceWindowDays: agreementData.serviceWindowDays ?? template?.defaultServiceWindowDays ?? null,
+      schedulingMode: agreementData.schedulingMode ?? template?.defaultSchedulingMode ?? "MANUAL",
       serviceTypeId: agreementData.serviceTypeId ?? template?.defaultServiceTypeId ?? null,
       serviceTemplateName: agreementData.serviceTemplateName ?? template?.defaultServiceTemplateName ?? null,
       defaultDurationMinutes: agreementData.defaultDurationMinutes ?? template?.defaultDurationMinutes ?? null,
@@ -746,10 +754,46 @@ export class DatabaseStorage implements IStorage {
     return updatedAgreement;
   }
 
-  private async generateAppointmentForAgreement(
+  private async ensureAgreementContactRequiredOpportunityTx(
     tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
     agreement: Agreement,
-  ): Promise<Appointment | null> {
+    service: Service,
+    cycleDate: string,
+  ) {
+    if (agreement.schedulingMode !== "CONTACT_REQUIRED") {
+      return;
+    }
+
+    const [existingOpportunity] = await tx
+      .select()
+      .from(opportunities)
+      .where(and(
+        eq(opportunities.sourceServiceId, service.id),
+        eq(opportunities.source, "AGREEMENT_CONTACT_REQUIRED"),
+      ));
+
+    if (existingOpportunity) {
+      return;
+    }
+
+    await tx.insert(opportunities).values({
+      locationId: agreement.locationId,
+      agreementId: agreement.id,
+      sourceServiceId: service.id,
+      serviceTypeId: agreement.serviceTypeId || null,
+      source: "AGREEMENT_CONTACT_REQUIRED",
+      opportunityType: agreement.serviceTemplateName || agreement.agreementName || "Agreement Service Contact",
+      dueDate: cycleDate as any,
+      nextActionDate: cycleDate as any,
+      status: "OPEN",
+      notes: [agreement.serviceInstructions, agreement.notes].filter((value): value is string => !!value?.trim()).join("\n\n") || null,
+    });
+  }
+
+  private async generateServiceForAgreement(
+    tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+    agreement: Agreement,
+  ): Promise<Service | null> {
     if (agreement.status !== "ACTIVE") {
       return null;
     }
@@ -765,57 +809,53 @@ export class DatabaseStorage implements IStorage {
       return null;
     }
 
-    const existingAppointments = await tx.select().from(appointments).where(eq(appointments.agreementId, agreement.id));
-    const existingForCycle = existingAppointments.find((appointment) => {
-      return appointment.generatedForDate === nextServiceDate && appointment.status !== "canceled";
+    const existingServices = await tx.select().from(services).where(eq(services.agreementId, agreement.id));
+    let serviceForCycle = existingServices.find((service) => {
+      const generatedForDate = normalizeDateOnly(service.generatedForDate) || normalizeDateOnly(service.dueDate);
+      return generatedForDate === nextServiceDate && service.status !== "CANCELLED";
     });
+    const serviceWindowStart = nextServiceDate;
+    const serviceWindowEnd = agreement.serviceWindowDays && agreement.serviceWindowDays > 0
+      ? addDays(nextServiceDate, agreement.serviceWindowDays)
+      : nextServiceDate;
 
-    if (existingForCycle) {
+    if (serviceForCycle) {
+      const [updatedServiceForCycle] = await tx
+        .update(services)
+        .set({
+          generatedForDate: (serviceForCycle.generatedForDate || nextServiceDate) as any,
+          serviceWindowStart: (serviceForCycle.serviceWindowStart || serviceWindowStart) as any,
+          serviceWindowEnd: (serviceForCycle.serviceWindowEnd || serviceWindowEnd) as any,
+          schedulingMode: serviceForCycle.schedulingMode || agreement.schedulingMode || "MANUAL",
+          updatedAt: new Date(),
+        })
+        .where(eq(services.id, serviceForCycle.id))
+        .returning();
+      serviceForCycle = updatedServiceForCycle ?? serviceForCycle;
+      await this.ensureAgreementContactRequiredOpportunityTx(tx, agreement, serviceForCycle, nextServiceDate);
       return null;
     }
 
-    const existingServices = await tx.select().from(services).where(eq(services.agreementId, agreement.id));
-    let serviceForCycle = existingServices.find((service) => service.dueDate === nextServiceDate && service.status !== "CANCELLED");
-
-    if (!serviceForCycle) {
-      const [createdService] = await tx.insert(services).values({
-        customerId: agreement.customerId,
-        locationId: agreement.locationId,
-        agreementId: agreement.id,
-        serviceTypeId: agreement.serviceTypeId,
-        dueDate: nextServiceDate as any,
-        expectedDurationMinutes: agreement.defaultDurationMinutes ?? null,
-        price: agreement.price ?? null,
-        status: "SCHEDULED",
-        assignedTechnicianId: null,
-        source: "AGREEMENT_GENERATED",
-        notes: [agreement.serviceTemplateName, agreement.serviceInstructions, agreement.notes].filter((value): value is string => !!value?.trim()).join("\n\n") || null,
-      }).returning();
-      serviceForCycle = createdService;
-    }
-
-    const { scheduledDate, scheduledEndDate } = buildAppointmentSchedule(nextServiceDate, agreement.defaultDurationMinutes);
-    const notes = [agreement.serviceInstructions, agreement.notes]
-      .filter((value): value is string => !!value?.trim())
-      .join("\n\n");
-
-    const [createdAppointment] = await tx.insert(appointments).values({
+    const [createdService] = await tx.insert(services).values({
       customerId: agreement.customerId,
       locationId: agreement.locationId,
-      serviceId: serviceForCycle.id,
       agreementId: agreement.id,
       serviceTypeId: agreement.serviceTypeId,
-      assignedTechnicianId: serviceForCycle.assignedTechnicianId,
-      source: "AGREEMENT_GENERATED",
+      dueDate: nextServiceDate as any,
       generatedForDate: nextServiceDate as any,
-      scheduledDate,
-      scheduledEndDate,
-      status: "scheduled",
-      assignedTo: null,
-      notes: notes || null,
+      serviceWindowStart: serviceWindowStart as any,
+      serviceWindowEnd: serviceWindowEnd as any,
+      expectedDurationMinutes: agreement.defaultDurationMinutes ?? null,
+      price: agreement.price ?? null,
+      status: "PENDING_SCHEDULING",
+      assignedTechnicianId: null,
+      source: "AGREEMENT_GENERATED",
+      schedulingMode: agreement.schedulingMode || "MANUAL",
+      notes: [agreement.serviceTemplateName, agreement.serviceInstructions, agreement.notes].filter((value): value is string => !!value?.trim()).join("\n\n") || null,
     }).returning();
 
-    return createdAppointment;
+    await this.ensureAgreementContactRequiredOpportunityTx(tx, agreement, createdService, nextServiceDate);
+    return createdService;
   }
 
   private async advanceAgreementForCompletedAppointment(
@@ -845,7 +885,38 @@ export class DatabaseStorage implements IStorage {
 
     const [updatedAgreement] = await tx.select().from(agreements).where(eq(agreements.id, agreement.id));
     if (updatedAgreement) {
-      await this.generateAppointmentForAgreement(tx, updatedAgreement);
+      await this.generateServiceForAgreement(tx, updatedAgreement);
+    }
+  }
+
+  private async advanceAgreementForCompletedService(
+    tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+    service: Service,
+  ) {
+    if (!service.agreementId || service.source !== "AGREEMENT_GENERATED") {
+      return;
+    }
+
+    const [agreement] = await tx.select().from(agreements).where(eq(agreements.id, service.agreementId));
+    if (!agreement) {
+      return;
+    }
+
+    const cycleDate = normalizeDateOnly(service.generatedForDate) || normalizeDateOnly(service.dueDate) || normalizeDateOnly(agreement.nextServiceDate);
+    if (!cycleDate || normalizeDateOnly(agreement.nextServiceDate) !== cycleDate) {
+      return;
+    }
+
+    const nextServiceDate = advanceAgreementDate(cycleDate, agreement.recurrenceUnit, agreement.recurrenceInterval);
+
+    await tx.update(agreements).set({
+      nextServiceDate: nextServiceDate as any,
+      updatedAt: new Date(),
+    }).where(eq(agreements.id, agreement.id));
+
+    const [updatedAgreement] = await tx.select().from(agreements).where(eq(agreements.id, agreement.id));
+    if (updatedAgreement) {
+      await this.generateServiceForAgreement(tx, updatedAgreement);
     }
   }
 
@@ -1726,17 +1797,23 @@ export class DatabaseStorage implements IStorage {
         .from(opportunityDispositions)
         .where(eq(opportunityDispositions.key, "CONVERTED_TO_SERVICE"));
 
-      const [service] = await tx.insert(services).values({
-        customerId: location.customerId,
-        locationId: location.id,
-        serviceTypeId: opportunity.serviceTypeId || null,
-        dueDate: opportunity.dueDate,
-        expectedDurationMinutes: serviceType?.estimatedDuration ?? null,
-        price: serviceType?.defaultPrice ?? null,
-        status: "PENDING_SCHEDULING",
-        source: "MANUAL",
-        notes: opportunity.notes || `Converted from opportunity: ${opportunity.opportunityType || serviceType?.name || "Opportunity"}`,
-      }).returning();
+      const [linkedGeneratedService] = opportunity.sourceServiceId
+        ? await tx.select().from(services).where(eq(services.id, opportunity.sourceServiceId))
+        : [undefined];
+
+      const service = linkedGeneratedService?.source === "AGREEMENT_GENERATED"
+        ? linkedGeneratedService
+        : (await tx.insert(services).values({
+            customerId: location.customerId,
+            locationId: location.id,
+            serviceTypeId: opportunity.serviceTypeId || null,
+            dueDate: opportunity.dueDate,
+            expectedDurationMinutes: serviceType?.estimatedDuration ?? null,
+            price: serviceType?.defaultPrice ?? null,
+            status: "PENDING_SCHEDULING",
+            source: "MANUAL",
+            notes: opportunity.notes || `Converted from opportunity: ${opportunity.opportunityType || serviceType?.name || "Opportunity"}`,
+          }).returning())[0];
 
       const [updatedOpportunity] = await tx
         .update(opportunities)
@@ -1830,7 +1907,7 @@ export class DatabaseStorage implements IStorage {
       return createdAgreement;
     });
 
-    await this.generateAgreementAppointmentsForLocation(agreement.locationId);
+    await this.generateAgreementServicesForLocation(agreement.locationId);
     return agreement;
   }
 
@@ -1860,7 +1937,7 @@ export class DatabaseStorage implements IStorage {
       return undefined;
     }
 
-    await this.generateAgreementAppointmentsForLocation(agreement.locationId);
+    await this.generateAgreementServicesForLocation(agreement.locationId);
     return agreement;
   }
 
@@ -1901,23 +1978,23 @@ export class DatabaseStorage implements IStorage {
       return undefined;
     }
 
-    await this.generateAgreementAppointmentsForLocation(agreement.locationId);
+    await this.generateAgreementServicesForLocation(agreement.locationId);
     return agreement;
   }
 
-  async generateAgreementAppointmentsForLocation(locationId: string): Promise<GenerateAgreementAppointmentsResult> {
+  async generateAgreementServicesForLocation(locationId: string): Promise<GenerateAgreementServicesResult> {
     return db.transaction(async (tx) => {
       const locationAgreements = await tx.select().from(agreements).where(eq(agreements.locationId, locationId));
-      const createdAppointments: Appointment[] = [];
+      const createdServices: Service[] = [];
 
       for (const agreement of locationAgreements) {
-        const createdAppointment = await this.generateAppointmentForAgreement(tx, agreement);
-        if (createdAppointment) {
-          createdAppointments.push(createdAppointment);
+        const createdService = await this.generateServiceForAgreement(tx, agreement);
+        if (createdService) {
+          createdServices.push(createdService);
         }
       }
 
-      return { createdAppointments };
+      return { createdServices };
     });
   }
 
@@ -2022,14 +2099,18 @@ export class DatabaseStorage implements IStorage {
       }).returning();
 
       if (sr.serviceId) {
-        await tx
+        const [completedService] = await tx
           .update(services)
           .set({
             status: "COMPLETED",
             assignedTechnicianId: sr.technicianId || null,
             updatedAt: new Date(),
           })
-          .where(eq(services.id, sr.serviceId));
+          .where(eq(services.id, sr.serviceId))
+          .returning();
+        if (completedService) {
+          await this.advanceAgreementForCompletedService(tx, completedService);
+        }
       }
 
       if (sr.appointmentId) {
@@ -2062,14 +2143,18 @@ export class DatabaseStorage implements IStorage {
       }).where(eq(serviceRecords.id, id)).returning();
 
       if (sr.serviceId) {
-        await tx
+        const [completedService] = await tx
           .update(services)
           .set({
             status: "COMPLETED",
             assignedTechnicianId: sr.technicianId || null,
             updatedAt: new Date(),
           })
-          .where(eq(services.id, sr.serviceId));
+          .where(eq(services.id, sr.serviceId))
+          .returning();
+        if (completedService) {
+          await this.advanceAgreementForCompletedService(tx, completedService);
+        }
       }
 
       if (sr.appointmentId) {

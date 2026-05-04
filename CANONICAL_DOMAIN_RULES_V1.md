@@ -443,6 +443,27 @@ The service plan or agreement for a location.
 * support e-sign
 * drive scheduling and billing behavior
 
+### Recurring generation rule
+
+Agreements generate pending Services, not Appointments.
+
+The generated Service is the queueable unit of work for the agreement cycle. It must remain linked to the Location and Agreement, and it becomes an Appointment only when dispatch places it on the schedule board or a future auto-scheduling layer places it.
+
+Canonical timing fields:
+
+* `generationLeadDays` means generate the pending Service X days before `nextServiceDate`
+* `serviceWindowDays` means the service window starts on `nextServiceDate` and ends `serviceWindowDays` later
+* generated agreement Services use `source = AGREEMENT_GENERATED`
+* generated agreement Services start as pending scheduling work
+
+Agreement scheduling modes:
+
+* `AUTO_ELIGIBLE` - generated Services can enter a future auto-scheduling pool, but are still pending Services until placed
+* `CONTACT_REQUIRED` - generated Services require office/customer contact and create linked Opportunities
+* `MANUAL` - generated Services are manually scheduled without contact automation assumptions
+
+Contact-required agreement Opportunities are distinct from non-contract follow-up Opportunities. They must link back to the generated Service and Agreement cycle where possible.
+
 ### Required fields
 
 * id
@@ -457,6 +478,9 @@ The service plan or agreement for a location.
 * startDate
 * endDate nullable
 * nextServiceDate nullable
+* generationLeadDays
+* serviceWindowDays nullable
+* schedulingMode (`AUTO_ELIGIBLE` | `CONTACT_REQUIRED` | `MANUAL`)
 * notes nullable
 * createdAt
 * updatedAt
@@ -470,11 +494,45 @@ The service plan or agreement for a location.
 
 ---
 
-## 10. Appointment
+## 10. Service
 
 ### Definition
 
-A scheduled service event.
+An individual unit of work for a Location.
+
+### Canonical rule
+
+A Service may exist before it is scheduled. Services are the queueable work units shown in location service history and pending dispatch queues.
+
+### Required fields
+
+* id
+* locationId
+* agreementId nullable
+* serviceTypeId nullable
+* dueDate nullable
+* generatedForDate nullable
+* serviceWindowStart nullable
+* serviceWindowEnd nullable
+* status (`DRAFT` | `PENDING_SCHEDULING` | `SCHEDULED` | `COMPLETED` | `CANCELLED`)
+* source (`MANUAL` | `AGREEMENT_GENERATED` | `AGREEMENT_INITIAL`)
+* schedulingMode nullable
+* createdAt
+* updatedAt
+
+### Notes
+
+* Manual and one-time Services may be created outside Agreements
+* Agreement-generated Services do not imply an Appointment exists
+* One Appointment may contain multiple Services
+
+---
+
+## 11. Appointment
+
+### Definition
+
+A scheduled dispatch placement for one or more Services.
 
 ### Required fields
 
@@ -506,9 +564,11 @@ A scheduled service event.
 
 Appointments should ideally be created from a selected location context so core values are already known.
 
+Appointments are scheduling placements. They are not the canonical work history object and should not be created by recurring agreement generation until work is actually placed on the board.
+
 ---
 
-## 11. ServiceVisit
+## 12. ServiceVisit
 
 ### Definition
 
@@ -584,7 +644,18 @@ Weather should be optional and default-hidden/collapsed in the UI.
 
 ---
 
-## 12. Invoice
+## Opportunities
+
+Opportunities represent human follow-up/action work. They can come from:
+
+* non-contract completed-service follow-up
+* agreement contact-required generated Services
+* cancellation recovery
+* future retention-risk workflows
+
+Opportunities are not Appointments and do not automatically schedule work. They may convert to or link to Services depending on their source.
+
+## 13. Invoice
 
 ### Definition
 
@@ -610,7 +681,7 @@ Billing output generated from service or manual billing actions.
 
 ---
 
-## 13. Payment
+## 14. Payment
 
 ### Definition
 
@@ -639,7 +710,7 @@ Money collection or recorded payment event.
 
 ---
 
-## 14. Asset / Device
+## 15. Asset / Device
 
 ### Definition
 
@@ -680,7 +751,7 @@ Room should be left for:
 
 ---
 
-## 15. User
+## 16. User
 
 ### Definition
 
@@ -720,7 +791,7 @@ Examples:
 
 ---
 
-## 16. AuditLog
+## 17. AuditLog
 
 ### Definition
 

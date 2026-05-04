@@ -111,6 +111,7 @@ export async function registerRoutes(
   const technicianStatusSchema = z.enum(["ACTIVE", "INACTIVE", "TERMINATED"]);
   const serviceStatusSchema = z.enum(["DRAFT", "PENDING_SCHEDULING", "SCHEDULED", "COMPLETED", "CANCELLED"]);
   const serviceSourceSchema = z.enum(["MANUAL", "AGREEMENT_GENERATED", "AGREEMENT_INITIAL"]);
+  const agreementSchedulingModeSchema = z.enum(["AUTO_ELIGIBLE", "CONTACT_REQUIRED", "MANUAL"]);
   const technicianSchema = insertTechnicianSchema.extend({
     status: technicianStatusSchema,
   }).superRefine((value, ctx) => {
@@ -128,6 +129,10 @@ export async function registerRoutes(
     status: serviceStatusSchema,
     source: serviceSourceSchema,
     dueDate: z.string().nullable().optional(),
+    generatedForDate: z.string().nullable().optional(),
+    serviceWindowStart: z.string().nullable().optional(),
+    serviceWindowEnd: z.string().nullable().optional(),
+    schedulingMode: agreementSchedulingModeSchema.nullable().optional(),
   }).superRefine((value, ctx) => {
     if (!value.customerId) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["customerId"], message: "customerId is required" });
     if (!value.locationId) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["locationId"], message: "locationId is required" });
@@ -137,6 +142,10 @@ export async function registerRoutes(
     status: serviceStatusSchema.optional(),
     source: serviceSourceSchema.optional(),
     dueDate: z.string().nullable().optional(),
+    generatedForDate: z.string().nullable().optional(),
+    serviceWindowStart: z.string().nullable().optional(),
+    serviceWindowEnd: z.string().nullable().optional(),
+    schedulingMode: agreementSchedulingModeSchema.nullable().optional(),
   }).partial();
   const appointmentSchema = insertAppointmentSchema.extend({
     generatedForDate: nullableDateSchema.optional(),
@@ -179,6 +188,7 @@ export async function registerRoutes(
   const agreementTemplateSchema = insertAgreementTemplateSchema.extend({
     defaultTermUnit: recurrenceUnitSchema,
     defaultRecurrenceUnit: recurrenceUnitSchema,
+    defaultSchedulingMode: agreementSchedulingModeSchema,
   }).superRefine((value, ctx) => {
     if (!value.name?.trim()) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["name"], message: "name is required" });
@@ -199,11 +209,13 @@ export async function registerRoutes(
   const updateAgreementTemplateSchema = insertAgreementTemplateSchema.extend({
     defaultTermUnit: recurrenceUnitSchema.optional(),
     defaultRecurrenceUnit: recurrenceUnitSchema.optional(),
+    defaultSchedulingMode: agreementSchedulingModeSchema.optional(),
   }).partial();
   const agreementBaseSchema = insertAgreementSchema.extend({
     status: agreementStatusSchema,
     termUnit: recurrenceUnitSchema,
     recurrenceUnit: recurrenceUnitSchema,
+    schedulingMode: agreementSchedulingModeSchema,
   });
   const agreementSchema = agreementBaseSchema.superRefine((value, ctx) => {
     if (!value.locationId) {
@@ -754,14 +766,14 @@ export async function registerRoutes(
 
   // Location-scoped counts
   app.get("/api/location-counts/:locationId", async (req, res) => {
-    await storage.generateAgreementAppointmentsForLocation(req.params.locationId);
+    await storage.generateAgreementServicesForLocation(req.params.locationId);
     const data = await storage.getLocationScopedCounts(req.params.locationId);
     res.json(data);
   });
 
   // Location-scoped data endpoints
   app.get("/api/appointments/by-location/:locationId", async (req, res) => {
-    await storage.generateAgreementAppointmentsForLocation(req.params.locationId);
+    await storage.generateAgreementServicesForLocation(req.params.locationId);
     const data = await storage.getAppointmentsByLocation(req.params.locationId);
     res.json(data);
   });
@@ -1023,7 +1035,7 @@ export async function registerRoutes(
 
   // Agreements
   app.get("/api/agreements/location/:locationId", async (req, res) => {
-    await storage.generateAgreementAppointmentsForLocation(req.params.locationId);
+    await storage.generateAgreementServicesForLocation(req.params.locationId);
     const data = await storage.getAgreementsByLocation(req.params.locationId);
     res.json(data);
   });

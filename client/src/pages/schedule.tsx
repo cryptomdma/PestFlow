@@ -553,7 +553,7 @@ export default function Schedule() {
         assignedTechnicianId: technician.id,
         assignedTo: technician.displayName,
         source: service.source,
-        generatedForDate: service.source === "AGREEMENT_GENERATED" ? service.dueDate || null : null,
+        generatedForDate: service.source === "AGREEMENT_GENERATED" ? service.generatedForDate || service.dueDate || null : null,
         scheduledDate: slotDate.toISOString(),
         scheduledEndDate: endDate ? endDate.toISOString() : null,
         status: "scheduled",
@@ -1038,9 +1038,17 @@ export default function Schedule() {
                       <div className="flex items-center gap-2 flex-wrap">
                         <p className="text-sm font-medium">{getCustomerLabel(customer, location)}</p>
                         <Badge variant="outline" className="text-xs">{service.status}</Badge>
+                        {service.source === "AGREEMENT_GENERATED" ? <Badge variant="secondary" className="text-xs">Agreement</Badge> : null}
+                        {service.schedulingMode ? <Badge variant="outline" className="text-xs">{service.schedulingMode}</Badge> : null}
                       </div>
                       <p className="mt-1 text-xs text-muted-foreground">{serviceTypeNameById.get(service.serviceTypeId || "") || "Service"} | {service.expectedDurationMinutes ? `${service.expectedDurationMinutes} min` : "Duration not set"} | Due {service.dueDate || "Not set"}</p>
+                      {service.serviceWindowStart ? (
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          Service window: {service.serviceWindowStart}{service.serviceWindowEnd ? ` to ${service.serviceWindowEnd}` : ""}
+                        </p>
+                      ) : null}
                       {service.timeWindow ? <p className="mt-1 text-xs text-muted-foreground">Time window: {service.timeWindow}</p> : null}
+                      {service.agreementId ? <p className="mt-1 text-xs text-muted-foreground">Agreement: {service.agreementId.slice(0, 8)}</p> : null}
                       <p className="mt-1 text-xs text-muted-foreground">{getLocationLabel(location)}</p>
                     </div>
                     <div className="shrink-0 text-right">
