@@ -309,6 +309,7 @@ function AgreementTemplateForm({
     defaultRecurrenceInterval: template?.defaultRecurrenceInterval ? String(template.defaultRecurrenceInterval) : "1",
     defaultGenerationLeadDays: template?.defaultGenerationLeadDays ? String(template.defaultGenerationLeadDays) : "14",
     defaultServiceWindowDays: template?.defaultServiceWindowDays ? String(template.defaultServiceWindowDays) : "",
+    defaultSchedulingMode: template?.defaultSchedulingMode ?? "MANUAL",
     defaultServiceTypeId: template?.defaultServiceTypeId ?? "",
     defaultServiceTemplateName: template?.defaultServiceTemplateName ?? "",
     defaultDurationMinutes: template?.defaultDurationMinutes ? String(template.defaultDurationMinutes) : "",
@@ -332,6 +333,7 @@ function AgreementTemplateForm({
         defaultRecurrenceInterval: parseInt(data.defaultRecurrenceInterval, 10),
         defaultGenerationLeadDays: parseInt(data.defaultGenerationLeadDays, 10),
         defaultServiceWindowDays: data.defaultServiceWindowDays.trim() ? parseInt(data.defaultServiceWindowDays, 10) : null,
+        defaultSchedulingMode: data.defaultSchedulingMode,
         defaultServiceTypeId: data.defaultServiceTypeId || null,
         defaultServiceTemplateName: data.defaultServiceTemplateName.trim() || null,
         defaultDurationMinutes: data.defaultDurationMinutes.trim() ? parseInt(data.defaultDurationMinutes, 10) : null,
@@ -417,6 +419,17 @@ function AgreementTemplateForm({
       <div className="grid gap-3 sm:grid-cols-2">
         <div className="space-y-1.5"><Label>Generation Lead Days</Label><Input type="number" min="0" value={form.defaultGenerationLeadDays} onChange={(e) => setForm((prev) => ({ ...prev, defaultGenerationLeadDays: e.target.value }))} /></div>
         <div className="space-y-1.5"><Label>Service Window Days</Label><Input type="number" min="0" value={form.defaultServiceWindowDays} onChange={(e) => setForm((prev) => ({ ...prev, defaultServiceWindowDays: e.target.value }))} /></div>
+      </div>
+      <div className="space-y-1.5">
+        <Label>Scheduling Mode</Label>
+        <Select value={form.defaultSchedulingMode} onValueChange={(value) => setForm((prev) => ({ ...prev, defaultSchedulingMode: value }))}>
+          <SelectTrigger><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="AUTO_ELIGIBLE">Auto Eligible</SelectItem>
+            <SelectItem value="CONTACT_REQUIRED">Contact Required</SelectItem>
+            <SelectItem value="MANUAL">Manual</SelectItem>
+          </SelectContent>
+        </Select>
       </div>
       <div className="space-y-1">
         <h3 className="text-sm font-semibold">Service Defaults</h3>
@@ -672,7 +685,7 @@ export default function Settings() {
                           {template.internalCode && <Badge variant="outline" className="text-xs">{template.internalCode}</Badge>}
                         </div>
                         <p className="text-xs text-muted-foreground mt-0.5">
-                          {formatTemplateRecurrence(template)} | {formatTemplateTerm(template)} | {template.defaultBillingFrequency || "No billing frequency"} | {serviceType?.name || "No service type"}
+                          {formatTemplateRecurrence(template)} | {formatTemplateTerm(template)} | {template.defaultSchedulingMode || "MANUAL"} | {template.defaultBillingFrequency || "No billing frequency"} | {serviceType?.name || "No service type"}
                         </p>
                         {template.description && <p className="text-xs text-muted-foreground mt-1">{template.description}</p>}
                       </div>

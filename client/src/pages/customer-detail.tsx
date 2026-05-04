@@ -239,6 +239,7 @@ function buildAgreementFormState(agreement?: Agreement | null, template?: Agreem
     recurrenceInterval,
     generationLeadDays: agreement?.generationLeadDays ? String(agreement.generationLeadDays) : template?.defaultGenerationLeadDays ? String(template.defaultGenerationLeadDays) : "14",
     serviceWindowDays: agreement?.serviceWindowDays ? String(agreement.serviceWindowDays) : template?.defaultServiceWindowDays ? String(template.defaultServiceWindowDays) : "",
+    schedulingMode: agreement?.schedulingMode ?? template?.defaultSchedulingMode ?? "MANUAL",
     serviceTypeId: agreement?.serviceTypeId ?? template?.defaultServiceTypeId ?? "",
     serviceTemplateName: agreement?.serviceTemplateName ?? template?.defaultServiceTemplateName ?? "",
     defaultDurationMinutes: agreement?.defaultDurationMinutes ? String(agreement.defaultDurationMinutes) : template?.defaultDurationMinutes ? String(template.defaultDurationMinutes) : "",
@@ -1413,6 +1414,7 @@ function AgreementForm({
     recurrenceInterval: parseInt(data.recurrenceInterval, 10),
     generationLeadDays: parseInt(data.generationLeadDays, 10),
     serviceWindowDays: data.serviceWindowDays.trim() ? parseInt(data.serviceWindowDays, 10) : null,
+    schedulingMode: data.schedulingMode,
     serviceTypeId: data.serviceTypeId || null,
     serviceTemplateName: data.serviceTemplateName.trim() || null,
     defaultDurationMinutes: data.defaultDurationMinutes.trim() ? parseInt(data.defaultDurationMinutes, 10) : null,
@@ -1425,6 +1427,8 @@ function AgreementForm({
   const invalidateAgreementQueries = () => {
     queryClient.invalidateQueries({ queryKey: ["/api/agreements/location", locationId] });
     queryClient.invalidateQueries({ queryKey: ["/api/appointments/by-location", locationId] });
+    queryClient.invalidateQueries({ queryKey: ["/api/services/by-location", locationId] });
+    queryClient.invalidateQueries({ queryKey: ["/api/services/pending"] });
     queryClient.invalidateQueries({ queryKey: ["/api/location-counts", locationId] });
   };
 
@@ -1736,6 +1740,17 @@ function AgreementForm({
               <div className="space-y-1.5"><Label>Generation Lead Days</Label><Input type="number" min="0" value={form.generationLeadDays} onChange={(e) => setForm((prev) => ({ ...prev, generationLeadDays: e.target.value }))} /></div>
               <div className="space-y-1.5"><Label>Service Window Days</Label><Input type="number" min="0" value={form.serviceWindowDays} onChange={(e) => setForm((prev) => ({ ...prev, serviceWindowDays: e.target.value }))} /></div>
             </div>
+            <div className="space-y-1.5">
+              <Label>Scheduling Mode</Label>
+              <Select value={form.schedulingMode} onValueChange={(value) => setForm((prev) => ({ ...prev, schedulingMode: value }))}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="AUTO_ELIGIBLE">Auto Eligible</SelectItem>
+                  <SelectItem value="CONTACT_REQUIRED">Contact Required</SelectItem>
+                  <SelectItem value="MANUAL">Manual</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="space-y-1.5"><Label>Billing Frequency Override</Label><Input value={form.billingFrequency} onChange={(e) => setForm((prev) => ({ ...prev, billingFrequency: e.target.value }))} /></div>
               <div className="space-y-1.5"><Label>Agreement Type Override</Label><Input value={form.agreementType} onChange={(e) => setForm((prev) => ({ ...prev, agreementType: e.target.value }))} /></div>
@@ -1788,6 +1803,7 @@ function AgreementsTab({
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingAgreement, setEditingAgreement] = useState<Agreement | null>(null);
   const { data: agreements } = useQuery<Agreement[]>({ queryKey: ["/api/agreements/location", locationId], enabled: !!locationId });
+  const { data: services } = useQuery<Service[]>({ queryKey: ["/api/services/by-location", locationId], enabled: !!locationId });
   const { data: serviceTypes } = useQuery<ServiceType[]>({ queryKey: ["/api/service-types"] });
   const { data: agreementTemplates } = useQuery<AgreementTemplate[]>({ queryKey: ["/api/agreement-templates"] });
 
@@ -1814,6 +1830,18 @@ function AgreementsTab({
     }
     return grouped;
   }, [agreementAppointments]);
+  const servicesByAgreementId = useMemo(() => {
+    const grouped = new Map<string, Service[]>();
+    for (const service of services ?? []) {
+      if (!service.agreementId || service.source !== "AGREEMENT_GENERATED") {
+        continue;
+      }
+      const items = grouped.get(service.agreementId) ?? [];
+      items.push(service);
+      grouped.set(service.agreementId, items);
+    }
+    return grouped;
+  }, [services]);
   const appointmentById = useMemo(() => {
     return new Map((appointments ?? []).map((appointment) => [appointment.id, appointment]));
   }, [appointments]);
@@ -1867,6 +1895,9 @@ function AgreementsTab({
             const linkedAppointments = (appointmentsByAgreementId.get(agreement.id) ?? [])
               .sort((a, b) => new Date(a.scheduledDate).getTime() - new Date(b.scheduledDate).getTime());
             const nextGeneratedAppointment = linkedAppointments.find((appointment) => appointment.status !== "completed" && appointment.status !== "canceled");
+            const linkedServices = (servicesByAgreementId.get(agreement.id) ?? [])
+              .sort((a, b) => (a.generatedForDate || a.dueDate || "").localeCompare(b.generatedForDate || b.dueDate || ""));
+            const nextGeneratedService = linkedServices.find((service) => service.status !== "COMPLETED" && service.status !== "CANCELLED");
             const serviceTypeLabel = serviceTypeNameById.get(agreement.serviceTypeId || "") || agreement.serviceTemplateName || "Service not set";
             const initialAppointment = agreement.initialAppointmentId ? appointmentById.get(agreement.initialAppointmentId) ?? null : null;
 
@@ -1908,20 +1939,21 @@ function AgreementsTab({
                       <p className="mt-1">{agreement.generationLeadDays} day{agreement.generationLeadDays === 1 ? "" : "s"}</p>
                     </div>
                     <div>
-                      <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Generated Orders</p>
-                      <p className="mt-1">{linkedAppointments.length} total</p>
+                      <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Scheduling Mode</p>
+                      <p className="mt-1">{agreement.schedulingMode || "MANUAL"}</p>
                     </div>
                   </div>
-                  {nextGeneratedAppointment ? (
+                  {nextGeneratedService ? (
                     <div className="rounded-md border bg-muted/20 px-3 py-2 text-sm">
-                      <p className="font-medium">Upcoming generated service order</p>
+                      <p className="font-medium">Pending generated service</p>
                       <p className="text-muted-foreground mt-1">
-                        {new Date(nextGeneratedAppointment.scheduledDate).toLocaleString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" })} • {nextGeneratedAppointment.status}
+                        Due {formatDateOnly(nextGeneratedService.dueDate)} | {nextGeneratedService.status}
+                        {nextGeneratedService.serviceWindowStart ? ` | Window ${formatDateOnly(nextGeneratedService.serviceWindowStart)}-${formatDateOnly(nextGeneratedService.serviceWindowEnd)}` : ""}
                       </p>
                     </div>
                   ) : (
                     <div className="rounded-md border border-dashed px-3 py-2 text-sm text-muted-foreground">
-                      No upcoming generated service order yet.
+                      No pending generated service yet.
                     </div>
                   )}
                 </CardContent>
