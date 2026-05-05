@@ -30,6 +30,18 @@
 - Opportunities can represent non-contract follow-up, agreement contact-required work, cancellation recovery, and future retention-risk workflows.
 - Auto-scheduling and route optimization are future layers, not part of the current agreement generation pass.
 
+## Agreement Roadmap Direction
+- Cancellation Policies are reusable Settings-level templates selected by Agreement Templates and inherited by Location Agreements.
+- Agreement cancellation must be a policy-driven workflow with impact preview, not a simple status flip.
+- Agreement cancellation and service/appointment cancellation are separate workflows with different recovery behavior.
+- Terms & Conditions are future Settings-level templates used with Agreement Templates, Cancellation Policies, pricing, and warranty/scope language to generate customer-facing contracts.
+- Signed contracts should be immutable historical records with rendered text, terms version, cancellation policy snapshot/version, pricing snapshot, and signature metadata.
+- Agreement changes after signing should use amendments, versions, replacements, upgrades, downgrades, renewals, or cancellation workflows.
+- Bundles are a billing/pricing/grouping layer above independent agreements. Use `bundles` and `bundle_agreements` rather than a simple nullable agreement `bundleId`.
+- Bundles should not control scheduling, generate Services, replace Agreements, or hide individual agreement lifecycle.
+- Recommended build order: cancellation policies, contract snapshot/versioning, amendment lifecycle, bundles/unified billing, billing enforcement/proration/payment collection.
+- Immediate next implementation priority: Agreement Cancellation Policies.
+
 ## Environment
 Required env vars:
 - `DATABASE_URL`

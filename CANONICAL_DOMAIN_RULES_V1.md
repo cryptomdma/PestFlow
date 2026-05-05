@@ -464,6 +464,142 @@ Agreement scheduling modes:
 
 Contact-required agreement Opportunities are distinct from non-contract follow-up Opportunities. They must link back to the generated Service and Agreement cycle where possible.
 
+### Cancellation policies
+
+Cancellation Policies are reusable Settings-level templates. Agreement Templates select the policy that applies to Location Agreements created from that template.
+
+Examples:
+
+* Annual Quarterly Service Cancellation Policy
+* Mosquito Seasonal Cancellation Policy
+* Termite Agreement Cancellation Policy
+* No-Fee / Custom Cancellation Policy
+
+When a Location Agreement is created from an Agreement Template, it should inherit the selected cancellation policy. Future implementation should snapshot policy terms or policy version onto the Location Agreement so signed historical terms remain stable.
+
+Cancellation policy should define:
+
+* cancellation terms
+* cancellation fees if applicable
+* notice requirements
+* effective-date behavior
+* impact on pending generated Services
+* impact on scheduled Appointments
+* impact on open Opportunities
+* whether to create retention/recovery Opportunity
+* whether charges are due immediately
+* whether card-on-file collection or manual collection is required
+* whether manager/admin override is allowed
+
+Agreement cancellation is not a simple status flip. It is a policy-driven workflow with confirmation and impact preview.
+
+Manager/admin override belongs inside the cancellation modal and should be role-gated. Override may allow:
+
+* waive cancellation fee
+* change effective date
+* cancel outside normal policy terms
+* keep/cancel pending Services
+* keep/cancel scheduled Appointments
+* suppress/create retention Opportunity
+* add required override reason
+
+### Agreement cancellation vs service cancellation
+
+Agreement cancellation means the customer plan is ending, pausing, or being replaced. It is governed by cancellation policy and may affect future Services, pending generated Services, Appointments, billing, Opportunities, and contract status.
+
+Service or Appointment cancellation means one visit or Service is being canceled. It should route to recovery/reschedule logic based on the source:
+
+* non-agreement one-time work generally prompts the user to create or reopen an Opportunity
+* agreement-generated work should prioritize reschedule, return to agreement scheduling queue, or snooze/retry inside the agreement service window
+* agreement-generated work should create retention/contact Opportunities only when appropriate
+* opportunity-converted work should preserve its Opportunity linkage where relevant
+
+Do not flatten all cancellation scenarios into generic Opportunity logic.
+
+### Terms, contracts, and versioning
+
+Terms & Conditions are future Settings-level templates that will combine with Agreement Template, Cancellation Policy, pricing/billing rules, and warranty/service scope language to generate the customer-facing service contract.
+
+Signed contracts are immutable historical records. Do not directly edit signed contract text in place.
+
+When an agreement is created and signed, the system should eventually store:
+
+* rendered contract text
+* terms template version
+* cancellation policy version/snapshot
+* pricing snapshot
+* signed date/signature metadata
+
+If terms change after signing, use an amendment, agreement version, replacement agreement, or cancel/recreate flow instead of mutating the signed contract.
+
+### Amendments, upgrades, and downgrades
+
+Agreement changes after signing are controlled lifecycle events, not silent edits.
+
+Future workflows:
+
+* Amend Agreement
+* Upgrade Agreement
+* Downgrade Agreement
+* Replace Agreement
+* Cancel Agreement
+* Renew Agreement
+
+Future model may include:
+
+* replacesAgreementId
+* replacedByAgreementId
+* currentVersionId
+* agreement version records
+* amendment records
+
+### Bundles
+
+Bundles are a billing/pricing/grouping layer above agreements. They are not mega-agreements.
+
+Agreements remain independent for scheduling, service generation, agreement lifecycle, cancellation, and service records.
+
+Bundle examples:
+
+* Quarterly Pest + Seasonal Mosquito
+* Pest + Termite Monitoring
+* Pest + Mosquito + Termite Protection
+
+Use a join table approach:
+
+* bundles
+* bundle_agreements
+
+Do not rely on a simple nullable `bundleId` field on agreements as the primary long-term model.
+
+Bundles should:
+
+* group multiple agreements
+* support unified billing
+* support bundle pricing/discounts
+* optionally show one bundled customer-facing price
+* optionally support internal/detail line-item breakdown
+
+Bundles should not control scheduling, generate Services, replace underlying Agreements, or hide agreement lifecycle complexity.
+
+Bundling should be explicit and user-initiated. The system may suggest bundling when multiple active agreements exist, but should not automatically bundle agreements.
+
+Future invoice display options:
+
+* bundled summary price
+* line-item breakdown
+* commercial/detail mode
+
+### Recommended agreement build order
+
+1. Agreement cancellation policies and cancellation workflow
+2. Terms & Conditions / contract snapshot/versioning
+3. Agreement amendment/upgrade/downgrade lifecycle
+4. Bundles / unified billing layer
+5. Billing enforcement, proration, and payment collection logic
+
+Immediate next implementation priority: Agreement Cancellation Policies.
+
 ### Required fields
 
 * id

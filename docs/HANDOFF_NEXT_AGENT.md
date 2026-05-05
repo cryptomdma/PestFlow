@@ -6,23 +6,25 @@ Before changing anything, read these repository documents and treat them as cano
 
 * `docs/PRODUCT_ROADMAP.md`
 * `docs/CODEX_RULES.md`
-* the canonical domain rules document if present in the repo
+* `CANONICAL_DOMAIN_RULES_V1.md`
 
 ## Current project context
 
-PestFlow began as a Replit-exported prototype and later received hybrid UI work from another AI-generated build. The current strategy is **not** to chase mockup polish first. The strategy is to preserve working functionality, align the architecture to the canonical domain model, and then standardize UI around real workflows.
+PestFlow began as a Replit-exported prototype and later received hybrid UI work from another AI-generated build. The current strategy is to preserve working functionality, align the architecture to the canonical domain model, and standardize UI around real workflows.
 
 ## Canonical product truth
 
-* Every customer is a **Location**.
-* **Account** is a lightweight grouping context for one or more locations.
-* The **primary location** acts as the customer identity in the UI.
+* Every customer is a Location.
+* Account is a lightweight grouping context for one or more locations.
+* The primary location acts as the customer identity in the UI.
 * Operational records should generally be location-scoped.
 * Account-level data must survive primary-location changes.
+* Agreement generation creates pending Services, not Appointments.
+* Agreement cancellation should be policy-driven, not a simple status flip.
 
 ## Current status
 
-Already completed:
+Already completed or underway:
 
 * accounts/grouping layer introduced
 * compatibility read projection added for customer detail
@@ -30,6 +32,7 @@ Already completed:
 * customer create flow updated so a new customer creates a primary location transactionally
 * dashboard demo shell reduced toward a truthful baseline
 * schedule status labels normalized
+* agreements, agreement templates, agreement-generated pending services, opportunities, and dispatch foundations are underway
 
 Still transitional:
 
@@ -37,26 +40,29 @@ Still transitional:
 * contacts still need full normalization
 * notes still need canonical account-vs-location split
 * flags/holds not implemented yet
-* service agreements not implemented yet
-* payments/users/audit logging not implemented yet
+* service agreements exist, but cancellation policies, contract versioning, amendment lifecycle, bundles, and billing enforcement remain roadmap work
+* payments/users/audit logging not fully implemented yet
 
 ## Immediate next priority
 
-### Phase 2A — Contacts normalization
+### Agreement Cancellation Policies
 
-Your first target should be making contacts fully canonical and location-scoped.
+Build reusable Settings-level Cancellation Policies selected by Agreement Templates and inherited by Location Agreements.
 
 ### Requirements
 
-* move toward `locationId`-required contact ownership
-* do not introduce a permanent dual-scope contact model
-* preserve migration safety
-* update any affected create/edit/detail flows
+* cancellation is a policy-driven workflow with impact preview
+* cancellation policy defines terms, fees, notice requirements, effective-date behavior, and effects on pending Services, scheduled Appointments, open Opportunities, billing, and retention/recovery
+* manager/admin override belongs in the cancellation modal and should be role-gated
+* agreement cancellation and service/appointment cancellation are distinct workflows
+* signed agreement terms should not be mutated directly; future work should snapshot contract terms and policy versions
+* bundles are future billing/pricing groups above independent agreements, not mega-agreements
 * return a concise implementation summary with files changed, edge cases, and known follow-up work
 
 ## Constraints
 
-* Do not broaden scope into notes/service agreements unless explicitly asked.
+* Do not build SMS/Twilio/AI automation.
+* Do not implement bundles before cancellation policy and contract snapshot/versioning.
 * Do not redesign the whole UI.
 * Do not add fake widgets or dead controls.
 * Keep the app functional at every step.

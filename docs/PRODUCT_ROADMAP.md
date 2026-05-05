@@ -29,7 +29,7 @@ Still transitional / not yet canonical:
 * contacts are not yet fully normalized to location-only ownership everywhere
 * notes still use legacy scope semantics
 * no flags/holds yet
-* no service agreements yet
+* service agreements exist, but cancellation policy, contract versioning, amendment lifecycle, bundle, and billing enforcement work remains future roadmap
 * no payments yet
 * no user/permission system yet
 * no audit logging yet
@@ -145,6 +145,38 @@ Create the recurring-service backbone that pest control operations actually need
 
 * do not overbuild route optimization yet
 * keep appointment and service visit separate
+
+### Current canonical direction
+
+Agreement generation creates pending Services, not Appointments. Appointments are scheduled dispatch placements created when work is placed on the board or by a future auto-scheduling layer.
+
+Agreement scheduling modes:
+
+* `AUTO_ELIGIBLE`
+* `CONTACT_REQUIRED`
+* `MANUAL`
+
+`generationLeadDays` means generate pending agreement work X days before `nextServiceDate`.
+
+`serviceWindowDays` means the generated Service window starts on `nextServiceDate` and ends `serviceWindowDays` later.
+
+### Agreement roadmap
+
+Immediate next priority: Agreement Cancellation Policies.
+
+Recommended sequencing:
+
+1. Agreement cancellation policies and cancellation workflow
+2. Terms & Conditions / contract snapshot/versioning
+3. Agreement amendment/upgrade/downgrade lifecycle
+4. Bundles / unified billing layer
+5. Billing enforcement, proration, and payment collection logic
+
+Cancellation Policies are reusable Settings-level templates selected by Agreement Templates and inherited by Location Agreements. Cancellation is a policy-driven workflow with impact preview and role-gated manager/admin override, not a simple status flip.
+
+Terms & Conditions are future Settings-level templates that combine with Agreement Templates, Cancellation Policies, pricing/billing rules, and warranty/service scope language to render customer-facing contracts. Signed contracts are immutable historical records and should be changed only through amendments, versions, replacements, upgrades/downgrades, renewals, or cancellation/recreate workflows.
+
+Bundles are a billing/pricing/grouping layer above independent agreements. They should use a join table approach (`bundles`, `bundle_agreements`) and should not control scheduling, generate Services, replace Agreements, or hide agreement lifecycle complexity.
 
 ---
 
