@@ -9,6 +9,7 @@ import {
   insertBillingProfileSchema,
   insertAgreementSchema,
   insertAgreementTemplateSchema,
+  insertAgreementCancellationPolicySchema,
   insertOpportunitySchema,
   insertOpportunityDispositionSchema,
 } from "@shared/schema";
@@ -185,6 +186,38 @@ export async function registerRoutes(
   });
   const agreementStatusSchema = z.enum(["ACTIVE", "PAUSED", "CANCELLED"]);
   const recurrenceUnitSchema = z.enum(["MONTH", "QUARTER", "YEAR", "CUSTOM"]);
+  const cancellationFeeTypeSchema = z.enum(["NONE", "FLAT", "MANUAL"]);
+  const cancellationEffectiveDateModeSchema = z.enum(["IMMEDIATE", "END_OF_TERM", "CUSTOM"]);
+  const agreementCancellationPolicySchema = insertAgreementCancellationPolicySchema.extend({
+    cancellationFeeType: cancellationFeeTypeSchema,
+    effectiveDateMode: cancellationEffectiveDateModeSchema,
+  }).superRefine((value, ctx) => {
+    if (!value.name?.trim()) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["name"], message: "name is required" });
+    }
+    if ((value.noticeDays || 0) < 0) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["noticeDays"], message: "noticeDays cannot be negative" });
+    }
+    if ((value.defaultRetentionFollowUpDays ?? 0) < 0) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["defaultRetentionFollowUpDays"], message: "defaultRetentionFollowUpDays cannot be negative" });
+    }
+  });
+  const updateAgreementCancellationPolicySchema = insertAgreementCancellationPolicySchema.extend({
+    cancellationFeeType: cancellationFeeTypeSchema.optional(),
+    effectiveDateMode: cancellationEffectiveDateModeSchema.optional(),
+  }).partial();
+  const cancelAgreementSchema = z.object({
+    reason: z.string().min(1),
+    effectiveDate: z.string().nullable().optional(),
+    notes: z.string().nullable().optional(),
+    cancelPendingServices: z.boolean().optional(),
+    cancelScheduledAppointments: z.boolean().optional(),
+    closeOpenOpportunities: z.boolean().optional(),
+    createRetentionOpportunity: z.boolean().optional(),
+    overrideApplied: z.boolean().optional(),
+    overrideReason: z.string().nullable().optional(),
+    cancellationFeeAmount: z.string().nullable().optional(),
+  });
   const agreementTemplateSchema = insertAgreementTemplateSchema.extend({
     defaultTermUnit: recurrenceUnitSchema,
     defaultRecurrenceUnit: recurrenceUnitSchema,
@@ -1004,6 +1037,36 @@ export async function registerRoutes(
     }
   });
 
+  // Agreement Cancellation Policies
+  app.get("/api/agreement-cancellation-policies", async (req, res) => {
+    const includeInactive = req.query.includeInactive === "true";
+    const data = await storage.getAgreementCancellationPolicies(includeInactive);
+    res.json(data);
+  });
+
+  app.post("/api/agreement-cancellation-policies", async (req, res) => {
+    try {
+      const validated = agreementCancellationPolicySchema.parse(req.body);
+      const data = await storage.createAgreementCancellationPolicy(validated);
+      res.status(201).json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.patch("/api/agreement-cancellation-policies/:id", async (req, res) => {
+    try {
+      const validated = updateAgreementCancellationPolicySchema.parse(req.body);
+      const data = await storage.updateAgreementCancellationPolicy(req.params.id, validated);
+      if (!data) return res.status(404).json({ message: "Cancellation policy not found" });
+      res.json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
   // Agreement Templates
   app.get("/api/agreement-templates", async (_req, res) => {
     const data = await storage.getAgreementTemplates();
@@ -1059,6 +1122,22 @@ export async function registerRoutes(
     try {
       const validated = updateAgreementSchema.parse(req.body);
       const data = await storage.updateAgreement(req.params.id, validated, getAuditActor(req));
+      if (!data) return res.status(404).json({ message: "Agreement not found" });
+      res.json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/agreements/:id/cancel", async (req, res) => {
+    try {
+      const validated = cancelAgreementSchema.parse(req.body);
+      const data = await storage.cancelAgreement({
+        agreementId: req.params.id,
+        ...validated,
+        actor: getAuditActor(req),
+      });
       if (!data) return res.status(404).json({ message: "Agreement not found" });
       res.json(data);
     } catch (e: any) {

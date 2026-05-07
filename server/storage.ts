@@ -9,6 +9,7 @@ import {
   opportunityDispositions,
   agreements,
   agreementTemplates,
+  agreementCancellationPolicies,
   serviceRecords, productApplications, invoices, communications,
   billingProfiles, customerNotes,
   noteRevisions,
@@ -20,6 +21,7 @@ import {
   type Technician, type InsertTechnician,
   type Service, type InsertService,
   type Appointment, type InsertAppointment,
+  type AgreementCancellationPolicy, type InsertAgreementCancellationPolicy,
   type Agreement, type InsertAgreement,
   type AgreementTemplate, type InsertAgreementTemplate,
   type ServiceRecord, type InsertServiceRecord,
@@ -105,6 +107,21 @@ export interface LinkAgreementInitialAppointmentInput {
   actor?: AuditActor;
 }
 
+export interface CancelAgreementInput {
+  agreementId: string;
+  reason: string;
+  effectiveDate?: string | null;
+  notes?: string | null;
+  cancelPendingServices?: boolean;
+  cancelScheduledAppointments?: boolean;
+  closeOpenOpportunities?: boolean;
+  createRetentionOpportunity?: boolean;
+  overrideApplied?: boolean;
+  overrideReason?: string | null;
+  cancellationFeeAmount?: string | null;
+  actor?: AuditActor;
+}
+
 export interface OpportunityFilters {
   status?: string;
   dueFrom?: string;
@@ -187,6 +204,11 @@ export interface IStorage {
   getOpportunityActivitiesByOpportunity(opportunityId: string): Promise<OpportunityActivity[]>;
   applyOpportunityDisposition(input: ApplyOpportunityDispositionInput): Promise<Opportunity | undefined>;
 
+  getAgreementCancellationPolicies(includeInactive?: boolean): Promise<AgreementCancellationPolicy[]>;
+  getAgreementCancellationPolicy(id: string): Promise<AgreementCancellationPolicy | undefined>;
+  createAgreementCancellationPolicy(data: InsertAgreementCancellationPolicy): Promise<AgreementCancellationPolicy>;
+  updateAgreementCancellationPolicy(id: string, data: Partial<InsertAgreementCancellationPolicy>): Promise<AgreementCancellationPolicy | undefined>;
+
   getAgreementTemplates(): Promise<AgreementTemplate[]>;
   getAgreementTemplate(id: string): Promise<AgreementTemplate | undefined>;
   createAgreementTemplate(data: InsertAgreementTemplate): Promise<AgreementTemplate>;
@@ -197,6 +219,7 @@ export interface IStorage {
   createAgreementFromTemplate(input: CreateAgreementFromTemplateInput): Promise<Agreement>;
   createAgreement(data: InsertAgreement, actor?: AuditActor): Promise<Agreement>;
   updateAgreement(id: string, data: Partial<InsertAgreement>, actor?: AuditActor): Promise<Agreement | undefined>;
+  cancelAgreement(input: CancelAgreementInput): Promise<Agreement | undefined>;
   linkAgreementInitialAppointment(input: LinkAgreementInitialAppointmentInput): Promise<Agreement | undefined>;
   generateAgreementServicesForLocation(locationId: string): Promise<GenerateAgreementServicesResult>;
 
@@ -367,6 +390,8 @@ export class DatabaseStorage implements IStorage {
     return {
       ...data,
       agreementTemplateId: data.agreementTemplateId || null,
+      cancellationPolicyId: data.cancellationPolicyId || null,
+      cancellationPolicySnapshot: data.cancellationPolicySnapshot ?? null,
       initialAppointmentId: data.initialAppointmentId || null,
       startDateSource: data.startDateSource || "MANUAL",
       agreementName: data.agreementName.trim(),
@@ -391,6 +416,17 @@ export class DatabaseStorage implements IStorage {
       contractUploadedAt: contractUrl ? data.contractUploadedAt ?? new Date() : null,
       contractSignedAt: data.contractSignedAt ?? null,
       notes: data.notes?.trim() || null,
+      cancelledAt: data.cancelledAt ?? null,
+      cancellationReason: data.cancellationReason?.trim() || null,
+      cancellationNotes: data.cancellationNotes?.trim() || null,
+      cancellationEffectiveDate: normalizeDateOnly(data.cancellationEffectiveDate),
+      cancellationFeeType: data.cancellationFeeType || null,
+      cancellationFeeAmount: data.cancellationFeeAmount || null,
+      cancellationOverrideApplied: data.cancellationOverrideApplied ?? false,
+      cancellationOverrideReason: data.cancellationOverrideReason?.trim() || null,
+      cancellationOverrideByUserId: data.cancellationOverrideByUserId || null,
+      cancellationOverrideByLabel: data.cancellationOverrideByLabel?.trim() || null,
+      cancellationOverrideAt: data.cancellationOverrideAt ?? null,
       createdByUserId: actor?.userId || data.createdByUserId || null,
       updatedByUserId: actor?.userId || data.updatedByUserId || null,
     };
@@ -404,6 +440,8 @@ export class DatabaseStorage implements IStorage {
 
     if (data.agreementName !== undefined) payload.agreementName = data.agreementName.trim();
     if (data.agreementTemplateId !== undefined) payload.agreementTemplateId = data.agreementTemplateId || null;
+    if (data.cancellationPolicyId !== undefined) payload.cancellationPolicyId = data.cancellationPolicyId || null;
+    if (data.cancellationPolicySnapshot !== undefined) payload.cancellationPolicySnapshot = data.cancellationPolicySnapshot ?? null;
     if (data.initialAppointmentId !== undefined) payload.initialAppointmentId = data.initialAppointmentId || null;
     if (data.startDateSource !== undefined) payload.startDateSource = data.startDateSource || "MANUAL";
     if (data.agreementType !== undefined) payload.agreementType = data.agreementType?.trim() || null;
@@ -424,6 +462,17 @@ export class DatabaseStorage implements IStorage {
     if (data.serviceTemplateName !== undefined) payload.serviceTemplateName = data.serviceTemplateName?.trim() || null;
     if (data.serviceInstructions !== undefined) payload.serviceInstructions = data.serviceInstructions?.trim() || null;
     if (data.notes !== undefined) payload.notes = data.notes?.trim() || null;
+    if (data.cancelledAt !== undefined) payload.cancelledAt = data.cancelledAt ?? null;
+    if (data.cancellationReason !== undefined) payload.cancellationReason = data.cancellationReason?.trim() || null;
+    if (data.cancellationNotes !== undefined) payload.cancellationNotes = data.cancellationNotes?.trim() || null;
+    if (data.cancellationEffectiveDate !== undefined) payload.cancellationEffectiveDate = normalizeDateOnly(data.cancellationEffectiveDate as any) as any;
+    if (data.cancellationFeeType !== undefined) payload.cancellationFeeType = data.cancellationFeeType || null;
+    if (data.cancellationFeeAmount !== undefined) payload.cancellationFeeAmount = data.cancellationFeeAmount || null;
+    if (data.cancellationOverrideApplied !== undefined) payload.cancellationOverrideApplied = data.cancellationOverrideApplied ?? false;
+    if (data.cancellationOverrideReason !== undefined) payload.cancellationOverrideReason = data.cancellationOverrideReason?.trim() || null;
+    if (data.cancellationOverrideByUserId !== undefined) payload.cancellationOverrideByUserId = data.cancellationOverrideByUserId || null;
+    if (data.cancellationOverrideByLabel !== undefined) payload.cancellationOverrideByLabel = data.cancellationOverrideByLabel?.trim() || null;
+    if (data.cancellationOverrideAt !== undefined) payload.cancellationOverrideAt = data.cancellationOverrideAt ?? null;
     if (data.contractUrl !== undefined) {
       const contractUrl = data.contractUrl?.trim() || null;
       payload.contractUrl = contractUrl;
@@ -438,6 +487,7 @@ export class DatabaseStorage implements IStorage {
       ...data,
       name: data.name.trim(),
       description: data.description?.trim() || null,
+      cancellationPolicyId: data.cancellationPolicyId || null,
       defaultAgreementType: data.defaultAgreementType?.trim() || null,
       defaultBillingFrequency: data.defaultBillingFrequency?.trim() || null,
       defaultTermUnit: data.defaultTermUnit || "YEAR",
@@ -462,6 +512,7 @@ export class DatabaseStorage implements IStorage {
     const payload: Partial<InsertAgreementTemplate> = { ...data };
     if (data.name !== undefined) payload.name = data.name.trim();
     if (data.description !== undefined) payload.description = data.description?.trim() || null;
+    if (data.cancellationPolicyId !== undefined) payload.cancellationPolicyId = data.cancellationPolicyId || null;
     if (data.defaultAgreementType !== undefined) payload.defaultAgreementType = data.defaultAgreementType?.trim() || null;
     if (data.defaultBillingFrequency !== undefined) payload.defaultBillingFrequency = data.defaultBillingFrequency?.trim() || null;
     if (data.defaultTermUnit !== undefined) payload.defaultTermUnit = data.defaultTermUnit || "YEAR";
@@ -478,6 +529,61 @@ export class DatabaseStorage implements IStorage {
     if (data.defaultInstructions !== undefined) payload.defaultInstructions = data.defaultInstructions?.trim() || null;
     if (data.internalCode !== undefined) payload.internalCode = data.internalCode?.trim() || null;
     return payload;
+  }
+
+  private normalizeAgreementCancellationPolicyInsert(data: InsertAgreementCancellationPolicy): InsertAgreementCancellationPolicy {
+    return {
+      ...data,
+      name: data.name.trim(),
+      description: data.description?.trim() || null,
+      isActive: data.isActive ?? true,
+      cancellationFeeType: data.cancellationFeeType || "NONE",
+      cancellationFeeAmount: data.cancellationFeeType === "FLAT" || data.cancellationFeeType === "MANUAL" ? data.cancellationFeeAmount || null : null,
+      noticeDays: Math.max(data.noticeDays || 0, 0),
+      effectiveDateMode: data.effectiveDateMode || "IMMEDIATE",
+      cancelPendingServicesDefault: data.cancelPendingServicesDefault ?? true,
+      cancelScheduledAppointmentsDefault: data.cancelScheduledAppointmentsDefault ?? false,
+      closeOpenOpportunitiesDefault: data.closeOpenOpportunitiesDefault ?? false,
+      createRetentionOpportunityDefault: data.createRetentionOpportunityDefault ?? false,
+      defaultRetentionFollowUpDays: data.defaultRetentionFollowUpDays ?? null,
+      allowManagerOverride: data.allowManagerOverride ?? false,
+      requiresOverrideReason: data.requiresOverrideReason ?? false,
+      termsSummary: data.termsSummary?.trim() || null,
+    };
+  }
+
+  private normalizeAgreementCancellationPolicyUpdate(data: Partial<InsertAgreementCancellationPolicy>): Partial<InsertAgreementCancellationPolicy> {
+    const payload: Partial<InsertAgreementCancellationPolicy> = { ...data };
+    if (data.name !== undefined) payload.name = data.name.trim();
+    if (data.description !== undefined) payload.description = data.description?.trim() || null;
+    if (data.cancellationFeeType !== undefined) payload.cancellationFeeType = data.cancellationFeeType || "NONE";
+    if (data.cancellationFeeAmount !== undefined) payload.cancellationFeeAmount = data.cancellationFeeAmount || null;
+    if (data.noticeDays !== undefined) payload.noticeDays = Math.max(data.noticeDays || 0, 0);
+    if (data.effectiveDateMode !== undefined) payload.effectiveDateMode = data.effectiveDateMode || "IMMEDIATE";
+    if (data.defaultRetentionFollowUpDays !== undefined) payload.defaultRetentionFollowUpDays = data.defaultRetentionFollowUpDays ?? null;
+    if (data.termsSummary !== undefined) payload.termsSummary = data.termsSummary?.trim() || null;
+    return payload;
+  }
+
+  private buildCancellationPolicySnapshot(policy?: AgreementCancellationPolicy | null) {
+    if (!policy) return null;
+    return {
+      policyId: policy.id,
+      name: policy.name,
+      cancellationFeeType: policy.cancellationFeeType,
+      cancellationFeeAmount: policy.cancellationFeeAmount,
+      noticeDays: policy.noticeDays,
+      effectiveDateMode: policy.effectiveDateMode,
+      cancelPendingServicesDefault: policy.cancelPendingServicesDefault,
+      cancelScheduledAppointmentsDefault: policy.cancelScheduledAppointmentsDefault,
+      closeOpenOpportunitiesDefault: policy.closeOpenOpportunitiesDefault,
+      createRetentionOpportunityDefault: policy.createRetentionOpportunityDefault,
+      defaultRetentionFollowUpDays: policy.defaultRetentionFollowUpDays,
+      allowManagerOverride: policy.allowManagerOverride,
+      requiresOverrideReason: policy.requiresOverrideReason,
+      termsSummary: policy.termsSummary,
+      snapshottedAt: new Date().toISOString(),
+    };
   }
 
   private normalizeTechnicianInsert(data: InsertTechnician): InsertTechnician {
@@ -665,12 +771,16 @@ export class DatabaseStorage implements IStorage {
 
   private async buildAgreementInsertFromTemplate(input: CreateAgreementFromTemplateInput): Promise<InsertAgreement> {
     const template = input.agreementTemplateId ? await this.getAgreementTemplate(input.agreementTemplateId) : undefined;
+    const policyId = input.agreement.cancellationPolicyId ?? template?.cancellationPolicyId ?? null;
+    const policy = policyId ? await this.getAgreementCancellationPolicy(policyId) : undefined;
     const agreementData = input.agreement;
 
     return {
       customerId: agreementData.customerId,
       locationId: agreementData.locationId,
       agreementTemplateId: template?.id ?? agreementData.agreementTemplateId ?? null,
+      cancellationPolicyId: policy?.id ?? policyId ?? null,
+      cancellationPolicySnapshot: agreementData.cancellationPolicySnapshot ?? this.buildCancellationPolicySnapshot(policy),
       initialAppointmentId: agreementData.initialAppointmentId ?? null,
       startDateSource: agreementData.startDateSource ?? "MANUAL",
       agreementName: agreementData.agreementName ?? template?.name ?? "Agreement",
@@ -1852,6 +1962,34 @@ export class DatabaseStorage implements IStorage {
     });
   }
 
+  async getAgreementCancellationPolicies(includeInactive = false): Promise<AgreementCancellationPolicy[]> {
+    const rows = includeInactive
+      ? await db.select().from(agreementCancellationPolicies)
+      : await db.select().from(agreementCancellationPolicies).where(eq(agreementCancellationPolicies.isActive, true));
+    return rows.sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  async getAgreementCancellationPolicy(id: string): Promise<AgreementCancellationPolicy | undefined> {
+    const [policy] = await db.select().from(agreementCancellationPolicies).where(eq(agreementCancellationPolicies.id, id));
+    return policy;
+  }
+
+  async createAgreementCancellationPolicy(data: InsertAgreementCancellationPolicy): Promise<AgreementCancellationPolicy> {
+    const payload = this.normalizeAgreementCancellationPolicyInsert(data);
+    const [policy] = await db.insert(agreementCancellationPolicies).values(payload).returning();
+    return policy;
+  }
+
+  async updateAgreementCancellationPolicy(id: string, data: Partial<InsertAgreementCancellationPolicy>): Promise<AgreementCancellationPolicy | undefined> {
+    const payload = this.normalizeAgreementCancellationPolicyUpdate(data);
+    const [policy] = await db
+      .update(agreementCancellationPolicies)
+      .set({ ...payload, updatedAt: new Date() })
+      .where(eq(agreementCancellationPolicies.id, id))
+      .returning();
+    return policy;
+  }
+
   async getAgreementTemplates(): Promise<AgreementTemplate[]> {
     return db.select().from(agreementTemplates);
   }
@@ -1939,6 +2077,151 @@ export class DatabaseStorage implements IStorage {
 
     await this.generateAgreementServicesForLocation(agreement.locationId);
     return agreement;
+  }
+
+  async cancelAgreement(input: CancelAgreementInput): Promise<Agreement | undefined> {
+    return db.transaction(async (tx) => {
+      const [agreement] = await tx.select().from(agreements).where(eq(agreements.id, input.agreementId));
+      if (!agreement) return undefined;
+
+      const policy = agreement.cancellationPolicyId
+        ? (await tx.select().from(agreementCancellationPolicies).where(eq(agreementCancellationPolicies.id, agreement.cancellationPolicyId)))[0]
+        : undefined;
+      const snapshot = agreement.cancellationPolicySnapshot ?? this.buildCancellationPolicySnapshot(policy);
+      const effectiveDate = normalizeDateOnly(input.effectiveDate) || normalizeDateOnly(new Date())!;
+      const cancelPendingServices = input.cancelPendingServices ?? policy?.cancelPendingServicesDefault ?? false;
+      const cancelScheduledAppointments = input.cancelScheduledAppointments ?? policy?.cancelScheduledAppointmentsDefault ?? false;
+      const closeOpenOpportunities = input.closeOpenOpportunities ?? policy?.closeOpenOpportunitiesDefault ?? false;
+      const createRetentionOpportunity = input.createRetentionOpportunity ?? policy?.createRetentionOpportunityDefault ?? false;
+      const overrideApplied = input.overrideApplied ?? false;
+      const cancellationFeeAmount = input.cancellationFeeAmount !== undefined
+        ? input.cancellationFeeAmount || null
+        : policy?.cancellationFeeAmount || null;
+      const cancelledAt = new Date();
+
+      if (overrideApplied && policy?.requiresOverrideReason && !input.overrideReason?.trim()) {
+        throw new Error("Override reason is required by this cancellation policy");
+      }
+
+      const [updatedAgreement] = await tx
+        .update(agreements)
+        .set({
+          status: "CANCELLED",
+          cancelledAt,
+          cancellationReason: input.reason.trim(),
+          cancellationNotes: input.notes?.trim() || null,
+          cancellationEffectiveDate: effectiveDate as any,
+          cancellationPolicyId: agreement.cancellationPolicyId || policy?.id || null,
+          cancellationPolicySnapshot: snapshot,
+          cancellationFeeType: policy?.cancellationFeeType || "NONE",
+          cancellationFeeAmount,
+          cancellationOverrideApplied: overrideApplied,
+          cancellationOverrideReason: input.overrideReason?.trim() || null,
+          cancellationOverrideByUserId: overrideApplied ? input.actor?.userId || null : null,
+          cancellationOverrideByLabel: overrideApplied ? input.actor?.actorLabel || null : null,
+          cancellationOverrideAt: overrideApplied ? cancelledAt : null,
+          updatedAt: cancelledAt,
+          updatedByUserId: input.actor?.userId || agreement.updatedByUserId || null,
+        })
+        .where(eq(agreements.id, agreement.id))
+        .returning();
+
+      const agreementServices = await tx.select().from(services).where(eq(services.agreementId, agreement.id));
+
+      if (cancelPendingServices) {
+        await tx
+          .update(services)
+          .set({ status: "CANCELLED", updatedAt: cancelledAt })
+          .where(and(
+            eq(services.agreementId, agreement.id),
+            eq(services.source, "AGREEMENT_GENERATED"),
+            eq(services.status, "PENDING_SCHEDULING"),
+          ));
+      }
+
+      if (cancelScheduledAppointments) {
+        const scheduledAppointments = await tx.select().from(appointments).where(eq(appointments.agreementId, agreement.id));
+        for (const appointment of scheduledAppointments) {
+          if (appointment.status === "completed" || appointment.status === "canceled") continue;
+          await tx.update(appointments).set({ status: "canceled" }).where(eq(appointments.id, appointment.id));
+        }
+
+        for (const service of agreementServices) {
+          if (!service.appointmentId || service.status === "COMPLETED" || service.status === "CANCELLED") continue;
+          await tx.update(appointments).set({ status: "canceled" }).where(eq(appointments.id, service.appointmentId));
+          await tx.update(services).set({ status: "CANCELLED", updatedAt: cancelledAt }).where(eq(services.id, service.id));
+        }
+      }
+
+      if (closeOpenOpportunities) {
+        await tx
+          .update(opportunities)
+          .set({
+            status: "DISMISSED",
+            dismissedAt: cancelledAt,
+            dismissedReason: "Agreement cancelled",
+            lastDispositionKey: "AGREEMENT_CANCELLED",
+            lastDispositionLabel: "Agreement Cancelled",
+            lastDispositionAt: cancelledAt,
+            nextActionDate: null,
+            updatedAt: cancelledAt,
+          })
+          .where(and(eq(opportunities.agreementId, agreement.id), eq(opportunities.status, "OPEN")));
+      }
+
+      if (createRetentionOpportunity) {
+        const followUpDays = policy?.defaultRetentionFollowUpDays ?? 7;
+        const nextActionDate = addDays(effectiveDate, Math.max(followUpDays, 0));
+        const [existingRetentionOpportunity] = await tx
+          .select()
+          .from(opportunities)
+          .where(and(
+            eq(opportunities.agreementId, agreement.id),
+            eq(opportunities.source, "AGREEMENT_CANCELLATION_RETENTION"),
+            eq(opportunities.status, "OPEN"),
+          ));
+
+        if (!existingRetentionOpportunity) {
+          const [retentionOpportunity] = await tx.insert(opportunities).values({
+            locationId: agreement.locationId,
+            agreementId: agreement.id,
+            serviceTypeId: agreement.serviceTypeId || null,
+            source: "AGREEMENT_CANCELLATION_RETENTION",
+            opportunityType: "Agreement Cancellation Retention",
+            dueDate: nextActionDate as any,
+            nextActionDate: nextActionDate as any,
+            status: "OPEN",
+            notes: `Retention follow-up for cancelled agreement: ${agreement.agreementName}`,
+          }).returning();
+
+          const activity = await this.createOpportunityActivityTx(tx, {
+            opportunityId: retentionOpportunity.id,
+            dispositionKey: "AGREEMENT_CANCELLATION_RETENTION",
+            dispositionLabel: "Agreement Cancellation Retention",
+            notes: input.notes?.trim() || input.reason.trim(),
+            nextActionDate,
+            createdByUserId: input.actor?.userId || null,
+            createdByLabel: input.actor?.actorLabel || null,
+          });
+
+          await this.createOpportunityCommunicationTx(tx, {
+            opportunity: retentionOpportunity,
+            activity,
+            subject: "Agreement Cancellation Retention",
+            body: [
+              `Agreement cancelled: ${agreement.agreementName}`,
+              `Reason: ${input.reason.trim()}`,
+              input.notes?.trim() ? `Notes: ${input.notes.trim()}` : null,
+              `Next Action: ${nextActionDate}`,
+            ].filter(Boolean).join("\n"),
+            nextActionDate,
+            actorLabel: input.actor?.actorLabel || null,
+          });
+        }
+      }
+
+      return updatedAgreement;
+    });
   }
 
   async linkAgreementInitialAppointment(input: LinkAgreementInitialAppointmentInput): Promise<Agreement | undefined> {

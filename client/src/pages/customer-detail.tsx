@@ -40,7 +40,7 @@ import {
   History,
   CreditCard, KeyRound, Ruler, ChevronUp, Check, Link2, Target,
 } from "lucide-react";
-import type { Customer, Contact, Location, Appointment, Invoice, Service, ServiceRecord, Communication, CustomerNote, BillingProfile, NoteRevision, Agreement, AgreementTemplate, ServiceType, Technician, Opportunity, OpportunityDisposition } from "@shared/schema";
+import type { Customer, Contact, Location, Appointment, Invoice, Service, ServiceRecord, Communication, CustomerNote, BillingProfile, NoteRevision, Agreement, AgreementCancellationPolicy, AgreementTemplate, ServiceType, Technician, Opportunity, OpportunityDisposition } from "@shared/schema";
 
 interface CustomerDetailCompatResponse {
   legacyCustomer: Customer;
@@ -1791,6 +1791,159 @@ function AgreementForm({
   );
 }
 
+function formatCancellationFeeDisplay(policy?: AgreementCancellationPolicy | null, agreement?: Agreement | null) {
+  const feeType = policy?.cancellationFeeType || agreement?.cancellationFeeType || "NONE";
+  const feeAmount = policy?.cancellationFeeAmount || agreement?.cancellationFeeAmount;
+  if (feeType === "NONE") return "No cancellation fee";
+  if (feeType === "FLAT") return `$${Number(feeAmount || 0).toFixed(2)} flat cancellation fee`;
+  return feeAmount ? `$${Number(feeAmount).toFixed(2)} manual cancellation fee` : "Manual fee review";
+}
+
+function CancelAgreementDialog({
+  agreement,
+  locationId,
+  open,
+  onOpenChange,
+}: {
+  agreement: Agreement | null;
+  locationId: string;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const { toast } = useToast();
+  const { data: policies } = useQuery<AgreementCancellationPolicy[]>({ queryKey: ["/api/agreement-cancellation-policies?includeInactive=true"], enabled: open });
+  const policy = useMemo(() => policies?.find((item) => item.id === agreement?.cancellationPolicyId) ?? null, [agreement?.cancellationPolicyId, policies]);
+  const [form, setForm] = useState({
+    reason: "",
+    effectiveDate: getTodayDateInputValue(),
+    notes: "",
+    cancelPendingServices: false,
+    cancelScheduledAppointments: false,
+    closeOpenOpportunities: false,
+    createRetentionOpportunity: false,
+    overrideApplied: false,
+    overrideReason: "",
+    cancellationFeeAmount: "",
+    confirmed: false,
+  });
+
+  useEffect(() => {
+    if (!open) return;
+    setForm({
+      reason: "",
+      effectiveDate: getTodayDateInputValue(),
+      notes: "",
+      cancelPendingServices: policy?.cancelPendingServicesDefault ?? false,
+      cancelScheduledAppointments: policy?.cancelScheduledAppointmentsDefault ?? false,
+      closeOpenOpportunities: policy?.closeOpenOpportunitiesDefault ?? false,
+      createRetentionOpportunity: policy?.createRetentionOpportunityDefault ?? false,
+      overrideApplied: false,
+      overrideReason: "",
+      cancellationFeeAmount: policy?.cancellationFeeAmount ?? "",
+      confirmed: false,
+    });
+  }, [open, policy]);
+
+  const mutation = useMutation({
+    mutationFn: async () => {
+      if (!agreement) throw new Error("Agreement is required");
+      const response = await apiRequest("POST", `/api/agreements/${agreement.id}/cancel`, {
+        reason: form.reason,
+        effectiveDate: form.effectiveDate || null,
+        notes: form.notes || null,
+        cancelPendingServices: form.cancelPendingServices,
+        cancelScheduledAppointments: form.cancelScheduledAppointments,
+        closeOpenOpportunities: form.closeOpenOpportunities,
+        createRetentionOpportunity: form.createRetentionOpportunity,
+        overrideApplied: form.overrideApplied,
+        overrideReason: form.overrideReason || null,
+        cancellationFeeAmount: form.cancellationFeeAmount || null,
+      });
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/agreements/location", locationId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/services/by-location", locationId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/appointments/by-location", locationId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/opportunities/by-location", locationId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/communications/by-location", locationId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/all-communications"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/location-counts", locationId] });
+      toast({ title: "Agreement cancelled" });
+      onOpenChange(false);
+    },
+    onError: (err: Error) => {
+      toast({ title: "Error cancelling agreement", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const updateFlag = (key: "cancelPendingServices" | "cancelScheduledAppointments" | "closeOpenOpportunities" | "createRetentionOpportunity" | "overrideApplied" | "confirmed", checked: boolean) => {
+    setForm((prev) => ({ ...prev, [key]: checked }));
+  };
+
+  if (!agreement) return null;
+
+  const overrideAllowed = policy?.allowManagerOverride ?? true;
+  const overrideReasonRequired = form.overrideApplied && (policy?.requiresOverrideReason ?? false);
+  const canSubmit = form.reason.trim() && form.effectiveDate && form.confirmed && (!overrideReasonRequired || form.overrideReason.trim());
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>Cancel Agreement</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-4">
+          <div className="rounded-md border p-3">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-sm font-medium">{policy?.name || "No cancellation policy assigned"}</p>
+                <p className="text-xs text-muted-foreground mt-1">{policy ? `${formatCancellationFeeDisplay(policy, agreement)} - ${policy.noticeDays} day notice - ${policy.effectiveDateMode.replaceAll("_", " ").toLowerCase()}` : "Legacy/manual cancellation path. Review impacts before confirming."}</p>
+              </div>
+              <Badge variant={policy ? "secondary" : "outline"}>{policy ? "Policy" : "Fallback"}</Badge>
+            </div>
+            {policy?.termsSummary && <p className="text-sm text-muted-foreground mt-3 whitespace-pre-wrap">{policy.termsSummary}</p>}
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="space-y-1.5"><Label>Cancellation Reason</Label><Input value={form.reason} onChange={(e) => setForm((p) => ({ ...p, reason: e.target.value }))} placeholder="Customer requested cancellation" /></div>
+            <div className="space-y-1.5"><Label>Effective Date</Label><Input type="date" value={form.effectiveDate} onChange={(e) => setForm((p) => ({ ...p, effectiveDate: e.target.value }))} /></div>
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2">
+            <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.cancelPendingServices} onChange={(e) => updateFlag("cancelPendingServices", e.target.checked)} /> Cancel pending generated services</label>
+            <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.cancelScheduledAppointments} onChange={(e) => updateFlag("cancelScheduledAppointments", e.target.checked)} /> Cancel scheduled appointments</label>
+            <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.closeOpenOpportunities} onChange={(e) => updateFlag("closeOpenOpportunities", e.target.checked)} /> Close open opportunities</label>
+            <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.createRetentionOpportunity} onChange={(e) => updateFlag("createRetentionOpportunity", e.target.checked)} /> Create retention opportunity</label>
+          </div>
+          <div className="space-y-1.5"><Label>Notes</Label><Textarea value={form.notes} onChange={(e) => setForm((p) => ({ ...p, notes: e.target.value }))} className="resize-none" /></div>
+          <div className="rounded-md border p-3 space-y-3">
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={form.overrideApplied} onChange={(e) => updateFlag("overrideApplied", e.target.checked)} disabled={!overrideAllowed} />
+              Manager/Admin override
+            </label>
+            {!overrideAllowed && <p className="text-xs text-muted-foreground">This policy does not allow manager override.</p>}
+            {form.overrideApplied && (
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="space-y-1.5"><Label>Fee Override</Label><Input type="number" step="0.01" value={form.cancellationFeeAmount} onChange={(e) => setForm((p) => ({ ...p, cancellationFeeAmount: e.target.value }))} /></div>
+                <div className="space-y-1.5"><Label>Override Reason{overrideReasonRequired ? " *" : ""}</Label><Input value={form.overrideReason} onChange={(e) => setForm((p) => ({ ...p, overrideReason: e.target.value }))} /></div>
+              </div>
+            )}
+          </div>
+          <label className="flex items-start gap-2 text-sm">
+            <input type="checkbox" checked={form.confirmed} onChange={(e) => updateFlag("confirmed", e.target.checked)} />
+            <span>I understand this will cancel the agreement and apply the selected policy impact actions.</span>
+          </label>
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Back</Button>
+            <Button type="button" variant="destructive" disabled={mutation.isPending || !canSubmit} onClick={() => mutation.mutate()}>
+              {mutation.isPending ? "Cancelling..." : "Confirm Cancellation"}
+            </Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function AgreementsTab({
   customerId,
   locationId,
@@ -1802,6 +1955,7 @@ function AgreementsTab({
 }) {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingAgreement, setEditingAgreement] = useState<Agreement | null>(null);
+  const [cancellingAgreement, setCancellingAgreement] = useState<Agreement | null>(null);
   const { data: agreements } = useQuery<Agreement[]>({ queryKey: ["/api/agreements/location", locationId], enabled: !!locationId });
   const { data: services } = useQuery<Service[]>({ queryKey: ["/api/services/by-location", locationId], enabled: !!locationId });
   const { data: serviceTypes } = useQuery<ServiceType[]>({ queryKey: ["/api/service-types"] });
@@ -1879,6 +2033,12 @@ function AgreementsTab({
             <AgreementForm customerId={customerId} locationId={locationId} agreement={editingAgreement} appointments={appointments} onClose={() => closeDialog(false)} />
           </DialogContent>
         </Dialog>
+        <CancelAgreementDialog
+          agreement={cancellingAgreement}
+          locationId={locationId}
+          open={!!cancellingAgreement}
+          onOpenChange={(open) => { if (!open) setCancellingAgreement(null); }}
+        />
       </div>
       {!agreements || agreements.length === 0 ? (
         <Card>
@@ -1914,16 +2074,23 @@ function AgreementsTab({
                         </Badge>
                         {agreement.contractUrl && <Badge variant="outline" className="text-xs"><Link2 className="h-3 w-3 mr-1" /> Contract</Badge>}
                       </div>
-                      <p className="text-xs text-muted-foreground">{formatAgreementRecurrence(agreement)} • Next due {formatDateOnly(agreement.nextServiceDate)}</p>
+                      <p className="text-xs text-muted-foreground">{formatAgreementRecurrence(agreement)} - Next due {formatDateOnly(agreement.nextServiceDate)}</p>
                       {initialAppointment && (
                         <p className="text-xs text-muted-foreground">
                           Initial service linked for {new Date(initialAppointment.scheduledDate).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}.
                         </p>
                       )}
                     </div>
-                    <Button variant="outline" size="sm" onClick={() => openEdit(agreement)} data-testid={`button-edit-agreement-${agreement.id}`}>
-                      Edit
-                    </Button>
+                    <div className="flex items-center gap-2">
+                      {agreement.status !== "CANCELLED" && (
+                        <Button variant="outline" size="sm" onClick={() => setCancellingAgreement(agreement)}>
+                          Cancel Agreement
+                        </Button>
+                      )}
+                      <Button variant="outline" size="sm" onClick={() => openEdit(agreement)} data-testid={`button-edit-agreement-${agreement.id}`}>
+                        Edit
+                      </Button>
+                    </div>
                   </div>
                   <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 text-sm">
                     <div>

@@ -1,5 +1,5 @@
 import { db } from "./db";
-import { customers, contacts, locations, serviceTypes, technicians, services, appointments, serviceRecords, productApplications, invoices, communications, billingProfiles, customerNotes, agreementTemplates } from "@shared/schema";
+import { customers, contacts, locations, serviceTypes, technicians, services, appointments, serviceRecords, productApplications, invoices, communications, billingProfiles, customerNotes, agreementTemplates, agreementCancellationPolicies } from "@shared/schema";
 import { eq } from "drizzle-orm";
 
 export async function seedDatabase() {
@@ -63,11 +63,80 @@ export async function seedDatabase() {
     { displayName: "Sam Torres", licenseId: "TX-PCO-1002", status: "ACTIVE", email: "sam@pestflow.local", color: "#16a34a" },
   ]).returning();
 
+  const [noFeePolicy, annualPolicy, seasonalPolicy, termitePolicy] = await db.insert(agreementCancellationPolicies).values([
+    {
+      name: "No Fee Cancellation",
+      description: "No cancellation fee. Used for custom or goodwill cancellation handling.",
+      isActive: true,
+      cancellationFeeType: "NONE",
+      noticeDays: 0,
+      effectiveDateMode: "IMMEDIATE",
+      cancelPendingServicesDefault: true,
+      cancelScheduledAppointmentsDefault: false,
+      closeOpenOpportunitiesDefault: false,
+      createRetentionOpportunityDefault: false,
+      allowManagerOverride: true,
+      requiresOverrideReason: true,
+      termsSummary: "No fee is charged. Review pending services, scheduled appointments, and opportunities before confirming cancellation.",
+    },
+    {
+      name: "Annual Agreement Cancellation",
+      description: "Standard annual recurring service cancellation terms.",
+      isActive: true,
+      cancellationFeeType: "FLAT",
+      cancellationFeeAmount: "99.00",
+      noticeDays: 30,
+      effectiveDateMode: "CUSTOM",
+      cancelPendingServicesDefault: true,
+      cancelScheduledAppointmentsDefault: true,
+      closeOpenOpportunitiesDefault: true,
+      createRetentionOpportunityDefault: true,
+      defaultRetentionFollowUpDays: 7,
+      allowManagerOverride: true,
+      requiresOverrideReason: true,
+      termsSummary: "Annual agreements require notice. Cancellation may include a flat fee and review of pending generated services and scheduled appointments.",
+    },
+    {
+      name: "Seasonal Service Cancellation",
+      description: "Seasonal agreement cancellation terms.",
+      isActive: true,
+      cancellationFeeType: "NONE",
+      noticeDays: 0,
+      effectiveDateMode: "IMMEDIATE",
+      cancelPendingServicesDefault: true,
+      cancelScheduledAppointmentsDefault: true,
+      closeOpenOpportunitiesDefault: true,
+      createRetentionOpportunityDefault: false,
+      allowManagerOverride: true,
+      requiresOverrideReason: true,
+      termsSummary: "Seasonal service can be cancelled immediately. Pending generated services and scheduled appointments should generally be cancelled.",
+    },
+    {
+      name: "Termite Agreement Cancellation",
+      description: "Termite monitoring and renewal cancellation terms.",
+      isActive: true,
+      cancellationFeeType: "MANUAL",
+      noticeDays: 30,
+      effectiveDateMode: "CUSTOM",
+      cancelPendingServicesDefault: true,
+      cancelScheduledAppointmentsDefault: false,
+      closeOpenOpportunitiesDefault: true,
+      createRetentionOpportunityDefault: true,
+      defaultRetentionFollowUpDays: 14,
+      allowManagerOverride: true,
+      requiresOverrideReason: true,
+      termsSummary: "Termite cancellations require review because monitoring, renewal status, and customer retention risk may vary by property.",
+    },
+  ]).returning();
+
+  void noFeePolicy;
+
   await db.insert(agreementTemplates).values([
     {
       name: "Control Plus",
       description: "Standard recurring residential pest prevention agreement.",
       isActive: true,
+      cancellationPolicyId: annualPolicy.id,
       defaultAgreementType: "Residential Recurring",
       defaultBillingFrequency: "Quarterly",
       defaultTermUnit: "YEAR",
@@ -89,6 +158,7 @@ export async function seedDatabase() {
       name: "Sentricon Renewal",
       description: "Annual termite monitoring and renewal agreement.",
       isActive: true,
+      cancellationPolicyId: termitePolicy.id,
       defaultAgreementType: "Termite Renewal",
       defaultBillingFrequency: "Annual",
       defaultTermUnit: "YEAR",
@@ -110,6 +180,7 @@ export async function seedDatabase() {
       name: "Mosquito Seasonal",
       description: "Warm-season mosquito reduction service template.",
       isActive: true,
+      cancellationPolicyId: seasonalPolicy.id,
       defaultAgreementType: "Seasonal Mosquito",
       defaultBillingFrequency: "Monthly",
       defaultTermUnit: "YEAR",

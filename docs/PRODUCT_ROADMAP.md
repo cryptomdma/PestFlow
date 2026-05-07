@@ -29,7 +29,7 @@ Still transitional / not yet canonical:
 * contacts are not yet fully normalized to location-only ownership everywhere
 * notes still use legacy scope semantics
 * no flags/holds yet
-* service agreements exist, but cancellation policy, contract versioning, amendment lifecycle, bundle, and billing enforcement work remains future roadmap
+* service agreements exist, and cancellation policy MVP work is underway; contract versioning, amendment lifecycle, bundle, and billing enforcement work remains future roadmap
 * no payments yet
 * no user/permission system yet
 * no audit logging yet
@@ -162,7 +162,7 @@ Agreement scheduling modes:
 
 ### Agreement roadmap
 
-Immediate next priority: Agreement Cancellation Policies.
+Immediate next priority: verify and harden Agreement Cancellation Policies.
 
 Recommended sequencing:
 
@@ -172,7 +172,9 @@ Recommended sequencing:
 4. Bundles / unified billing layer
 5. Billing enforcement, proration, and payment collection logic
 
-Cancellation Policies are reusable Settings-level templates selected by Agreement Templates and inherited by Location Agreements. Cancellation is a policy-driven workflow with impact preview and role-gated manager/admin override, not a simple status flip.
+Cancellation Policies are reusable Settings-level templates selected by Agreement Templates and inherited/snapshotted by Location Agreements. Cancellation is a policy-driven workflow with impact preview and staged manager/admin override metadata, not a simple status flip.
+
+The cancellation MVP should manage pending generated Services, scheduled agreement Appointments, open agreement Opportunities, and optional retention Opportunities. Full payment collection and contract rendering remain future layers.
 
 Terms & Conditions are future Settings-level templates that combine with Agreement Templates, Cancellation Policies, pricing/billing rules, and warranty/service scope language to render customer-facing contracts. Signed contracts are immutable historical records and should be changed only through amendments, versions, replacements, upgrades/downgrades, renewals, or cancellation/recreate workflows.
 
