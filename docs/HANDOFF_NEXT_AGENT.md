@@ -20,7 +20,7 @@ PestFlow began as a Replit-exported prototype and later received hybrid UI work 
 * Operational records should generally be location-scoped.
 * Account-level data must survive primary-location changes.
 * Agreement generation creates pending Services, not Appointments.
-* Agreement cancellation should be policy-driven, not a simple status flip.
+* Agreement cancellation is policy-driven, not a simple status flip.
 
 ## Current status
 
@@ -40,20 +40,20 @@ Still transitional:
 * contacts still need full normalization
 * notes still need canonical account-vs-location split
 * flags/holds not implemented yet
-* service agreements exist, but cancellation policies, contract versioning, amendment lifecycle, bundles, and billing enforcement remain roadmap work
+* service agreements exist, and cancellation policy MVP work is underway; contract versioning, amendment lifecycle, bundles, and billing enforcement remain roadmap work
 * payments/users/audit logging not fully implemented yet
 
 ## Immediate next priority
 
 ### Agreement Cancellation Policies
 
-Build reusable Settings-level Cancellation Policies selected by Agreement Templates and inherited by Location Agreements.
+Verify and harden reusable Settings-level Cancellation Policies selected by Agreement Templates and inherited/snapshotted by Location Agreements.
 
 ### Requirements
 
 * cancellation is a policy-driven workflow with impact preview
 * cancellation policy defines terms, fees, notice requirements, effective-date behavior, and effects on pending Services, scheduled Appointments, open Opportunities, billing, and retention/recovery
-* manager/admin override belongs in the cancellation modal and should be role-gated
+* manager/admin override belongs in the cancellation modal and should be role-gated; the MVP stores override metadata while full permission enforcement awaits user/roles hardening
 * agreement cancellation and service/appointment cancellation are distinct workflows
 * signed agreement terms should not be mutated directly; future work should snapshot contract terms and policy versions
 * bundles are future billing/pricing groups above independent agreements, not mega-agreements

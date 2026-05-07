@@ -174,11 +174,34 @@ export const appointments = pgTable("appointments", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
+export const agreementCancellationPolicies = pgTable("agreement_cancellation_policies", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  name: text("name").notNull(),
+  description: text("description"),
+  isActive: boolean("is_active").notNull().default(true),
+  cancellationFeeType: text("cancellation_fee_type").notNull().default("NONE"),
+  cancellationFeeAmount: decimal("cancellation_fee_amount", { precision: 10, scale: 2 }),
+  noticeDays: integer("notice_days").notNull().default(0),
+  effectiveDateMode: text("effective_date_mode").notNull().default("IMMEDIATE"),
+  cancelPendingServicesDefault: boolean("cancel_pending_services_default").notNull().default(true),
+  cancelScheduledAppointmentsDefault: boolean("cancel_scheduled_appointments_default").notNull().default(false),
+  closeOpenOpportunitiesDefault: boolean("close_open_opportunities_default").notNull().default(false),
+  createRetentionOpportunityDefault: boolean("create_retention_opportunity_default").notNull().default(false),
+  defaultRetentionFollowUpDays: integer("default_retention_follow_up_days"),
+  allowManagerOverride: boolean("allow_manager_override").notNull().default(false),
+  requiresOverrideReason: boolean("requires_override_reason").notNull().default(false),
+  termsSummary: text("terms_summary"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
 export const agreements = pgTable("agreements", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   customerId: varchar("customer_id").notNull().references(() => customers.id),
   locationId: varchar("location_id").notNull().references(() => locations.id),
   agreementTemplateId: varchar("agreement_template_id"),
+  cancellationPolicyId: varchar("cancellation_policy_id").references(() => agreementCancellationPolicies.id),
+  cancellationPolicySnapshot: jsonb("cancellation_policy_snapshot"),
   initialAppointmentId: varchar("initial_appointment_id").references(() => appointments.id),
   startDateSource: text("start_date_source").notNull().default("MANUAL"),
   agreementName: text("agreement_name").notNull(),
@@ -204,6 +227,17 @@ export const agreements = pgTable("agreements", {
   contractUploadedAt: timestamp("contract_uploaded_at"),
   contractSignedAt: timestamp("contract_signed_at"),
   notes: text("notes"),
+  cancelledAt: timestamp("cancelled_at"),
+  cancellationReason: text("cancellation_reason"),
+  cancellationNotes: text("cancellation_notes"),
+  cancellationEffectiveDate: date("cancellation_effective_date"),
+  cancellationFeeType: text("cancellation_fee_type"),
+  cancellationFeeAmount: decimal("cancellation_fee_amount", { precision: 10, scale: 2 }),
+  cancellationOverrideApplied: boolean("cancellation_override_applied").notNull().default(false),
+  cancellationOverrideReason: text("cancellation_override_reason"),
+  cancellationOverrideByUserId: varchar("cancellation_override_by_user_id"),
+  cancellationOverrideByLabel: text("cancellation_override_by_label"),
+  cancellationOverrideAt: timestamp("cancellation_override_at"),
   createdByUserId: varchar("created_by_user_id"),
   updatedByUserId: varchar("updated_by_user_id"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
@@ -215,6 +249,7 @@ export const agreementTemplates = pgTable("agreement_templates", {
   name: text("name").notNull(),
   description: text("description"),
   isActive: boolean("is_active").notNull().default(true),
+  cancellationPolicyId: varchar("cancellation_policy_id").references(() => agreementCancellationPolicies.id),
   defaultAgreementType: text("default_agreement_type"),
   defaultBillingFrequency: text("default_billing_frequency"),
   defaultTermUnit: text("default_term_unit").notNull().default("YEAR"),
@@ -376,6 +411,7 @@ export const insertServiceTypeSchema = createInsertSchema(serviceTypes).omit({ i
 export const insertTechnicianSchema = createInsertSchema(technicians).omit({ id: true, createdAt: true, updatedAt: true });
 export const insertServiceSchema = createInsertSchema(services).omit({ id: true, createdAt: true, updatedAt: true });
 export const insertAppointmentSchema = createInsertSchema(appointments).omit({ id: true, createdAt: true });
+export const insertAgreementCancellationPolicySchema = createInsertSchema(agreementCancellationPolicies).omit({ id: true, createdAt: true, updatedAt: true });
 export const insertAgreementSchema = createInsertSchema(agreements).omit({ id: true, createdAt: true, updatedAt: true });
 export const insertAgreementTemplateSchema = createInsertSchema(agreementTemplates).omit({ id: true, createdAt: true, updatedAt: true });
 export const insertServiceRecordSchema = createInsertSchema(serviceRecords).omit({ id: true, createdAt: true });
@@ -409,6 +445,8 @@ export type Service = typeof services.$inferSelect;
 export type InsertService = z.infer<typeof insertServiceSchema>;
 export type Appointment = typeof appointments.$inferSelect;
 export type InsertAppointment = z.infer<typeof insertAppointmentSchema>;
+export type AgreementCancellationPolicy = typeof agreementCancellationPolicies.$inferSelect;
+export type InsertAgreementCancellationPolicy = z.infer<typeof insertAgreementCancellationPolicySchema>;
 export type Agreement = typeof agreements.$inferSelect;
 export type InsertAgreement = z.infer<typeof insertAgreementSchema>;
 export type AgreementTemplate = typeof agreementTemplates.$inferSelect;

@@ -475,12 +475,12 @@ Examples:
 * Termite Agreement Cancellation Policy
 * No-Fee / Custom Cancellation Policy
 
-When a Location Agreement is created from an Agreement Template, it should inherit the selected cancellation policy. Future implementation should snapshot policy terms or policy version onto the Location Agreement so signed historical terms remain stable.
+When a Location Agreement is created from an Agreement Template, it inherits the selected cancellation policy and snapshots key policy terms onto the Location Agreement. This snapshot is the MVP bridge toward future signed contract immutability and policy versioning.
 
 Cancellation policy should define:
 
 * cancellation terms
-* cancellation fees if applicable
+* cancellation fees if applicable, including no fee, flat fee, manual review, percentage of full contract price, or percentage of remaining balance
 * notice requirements
 * effective-date behavior
 * impact on pending generated Services
@@ -491,9 +491,9 @@ Cancellation policy should define:
 * whether card-on-file collection or manual collection is required
 * whether manager/admin override is allowed
 
-Agreement cancellation is not a simple status flip. It is a policy-driven workflow with confirmation and impact preview.
+Agreement cancellation is not a simple status flip. It is a policy-driven workflow with confirmation and impact preview. The MVP cancellation workflow stores cancellation metadata on the agreement and can apply policy defaults to pending generated Services, scheduled agreement Appointments, open agreement Opportunities, and retention Opportunity creation.
 
-Manager/admin override belongs inside the cancellation modal and should be role-gated. Override may allow:
+Manager/admin override belongs inside the cancellation modal and should be role-gated. The MVP stores override metadata and keeps full permission enforcement as a user/roles hardening concern. Override may allow:
 
 * waive cancellation fee
 * change effective date
@@ -592,13 +592,13 @@ Future invoice display options:
 
 ### Recommended agreement build order
 
-1. Agreement cancellation policies and cancellation workflow
+1. Finish Agreement cancellation policy MVP verification and hardening
 2. Terms & Conditions / contract snapshot/versioning
 3. Agreement amendment/upgrade/downgrade lifecycle
 4. Bundles / unified billing layer
 5. Billing enforcement, proration, and payment collection logic
 
-Immediate next implementation priority: Agreement Cancellation Policies.
+Immediate next implementation priority after cancellation policy MVP verification: Terms & Conditions / contract snapshot/versioning.
 
 ### Required fields
 

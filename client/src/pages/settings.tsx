@@ -23,8 +23,8 @@ import {
 } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { Plus, Settings as SettingsIcon, Wrench, FileText, Users } from "lucide-react";
-import type { AgreementTemplate, OpportunityDisposition, ServiceType, Technician } from "@shared/schema";
+import { Plus, Settings as SettingsIcon, Wrench, FileText, Users, ShieldCheck } from "lucide-react";
+import type { AgreementCancellationPolicy, AgreementTemplate, OpportunityDisposition, ServiceType, Technician } from "@shared/schema";
 
 function formatTemplateRecurrence(template: AgreementTemplate) {
   const interval = template.defaultRecurrenceInterval || 1;
@@ -51,6 +51,14 @@ function formatTemplateTerm(template: AgreementTemplate) {
   };
   const unitLabel = unitMap[template.defaultTermUnit] || template.defaultTermUnit.toLowerCase();
   return `Renews every ${interval} ${interval === 1 ? unitLabel : `${unitLabel}s`}`;
+}
+
+function formatCancellationFee(policy: AgreementCancellationPolicy) {
+  if (policy.cancellationFeeType === "NONE") return "No fee";
+  if (policy.cancellationFeeType === "FLAT") return `$${Number(policy.cancellationFeeAmount || 0).toFixed(2)} flat`;
+  if (policy.cancellationFeeType === "PERCENT_CONTRACT") return `${Number(policy.cancellationFeeAmount || 0).toFixed(2)}% of contract`;
+  if (policy.cancellationFeeType === "PERCENT_REMAINING") return `${Number(policy.cancellationFeeAmount || 0).toFixed(2)}% of remaining balance`;
+  return "Manual fee review";
 }
 
 function ServiceTypeForm({ serviceType, onClose }: { serviceType?: ServiceType | null; onClose: () => void }) {
@@ -286,12 +294,113 @@ function TechnicianForm({ technician, onClose }: { technician?: Technician | nul
   );
 }
 
+function AgreementCancellationPolicyForm({ policy, onClose }: { policy?: AgreementCancellationPolicy | null; onClose: () => void }) {
+  const { toast } = useToast();
+  const isEditMode = !!policy;
+  const [form, setForm] = useState({
+    name: policy?.name ?? "",
+    description: policy?.description ?? "",
+    isActive: policy?.isActive ?? true,
+    cancellationFeeType: policy?.cancellationFeeType ?? "NONE",
+    cancellationFeeAmount: policy?.cancellationFeeAmount ?? "",
+    noticeDays: policy?.noticeDays !== undefined ? String(policy.noticeDays) : "0",
+    effectiveDateMode: policy?.effectiveDateMode ?? "IMMEDIATE",
+    cancelPendingServicesDefault: policy?.cancelPendingServicesDefault ?? true,
+    cancelScheduledAppointmentsDefault: policy?.cancelScheduledAppointmentsDefault ?? false,
+    closeOpenOpportunitiesDefault: policy?.closeOpenOpportunitiesDefault ?? false,
+    createRetentionOpportunityDefault: policy?.createRetentionOpportunityDefault ?? false,
+    defaultRetentionFollowUpDays: policy?.defaultRetentionFollowUpDays !== null && policy?.defaultRetentionFollowUpDays !== undefined ? String(policy.defaultRetentionFollowUpDays) : "",
+    allowManagerOverride: policy?.allowManagerOverride ?? false,
+    requiresOverrideReason: policy?.requiresOverrideReason ?? false,
+    termsSummary: policy?.termsSummary ?? "",
+  });
+
+  const mutation = useMutation({
+    mutationFn: (data: typeof form) => {
+      const payload = {
+        ...data,
+        description: data.description || null,
+        cancellationFeeAmount: data.cancellationFeeAmount || null,
+        noticeDays: data.noticeDays ? parseInt(data.noticeDays) : 0,
+        defaultRetentionFollowUpDays: data.defaultRetentionFollowUpDays ? parseInt(data.defaultRetentionFollowUpDays) : null,
+        termsSummary: data.termsSummary || null,
+      };
+      return isEditMode
+        ? apiRequest("PATCH", `/api/agreement-cancellation-policies/${policy.id}`, payload)
+        : apiRequest("POST", "/api/agreement-cancellation-policies", payload);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/agreement-cancellation-policies"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/agreement-cancellation-policies?includeInactive=true"] });
+      toast({ title: isEditMode ? "Cancellation policy updated" : "Cancellation policy created" });
+      onClose();
+    },
+  });
+
+  const updateFlag = (key: keyof typeof form, checked: boolean) => setForm((prev) => ({ ...prev, [key]: checked }));
+
+  return (
+    <form onSubmit={(e) => { e.preventDefault(); mutation.mutate(form); }} className="space-y-4">
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="space-y-1.5"><Label>Name</Label><Input value={form.name} onChange={(e) => setForm((p) => ({ ...p, name: e.target.value }))} required /></div>
+        <div className="space-y-1.5">
+          <Label>Status</Label>
+          <Select value={form.isActive ? "active" : "inactive"} onValueChange={(value) => setForm((p) => ({ ...p, isActive: value === "active" }))}>
+            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectContent><SelectItem value="active">Active</SelectItem><SelectItem value="inactive">Inactive</SelectItem></SelectContent>
+          </Select>
+        </div>
+      </div>
+      <div className="space-y-1.5"><Label>Description</Label><Textarea value={form.description} onChange={(e) => setForm((p) => ({ ...p, description: e.target.value }))} className="resize-none" /></div>
+      <div className="grid gap-3 sm:grid-cols-3">
+        <div className="space-y-1.5">
+          <Label>Fee Type</Label>
+          <Select value={form.cancellationFeeType} onValueChange={(value) => setForm((p) => ({ ...p, cancellationFeeType: value, cancellationFeeAmount: value === "NONE" ? "" : p.cancellationFeeAmount }))}>
+            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="NONE">None</SelectItem>
+              <SelectItem value="FLAT">Flat</SelectItem>
+              <SelectItem value="PERCENT_CONTRACT">Percent of Contract Price</SelectItem>
+              <SelectItem value="PERCENT_REMAINING">Percent of Remaining Balance</SelectItem>
+              <SelectItem value="MANUAL">Manual Review</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="space-y-1.5"><Label>{form.cancellationFeeType.startsWith("PERCENT") ? "Fee Percent" : "Fee Amount"}</Label><Input type="number" step="0.01" value={form.cancellationFeeAmount} onChange={(e) => setForm((p) => ({ ...p, cancellationFeeAmount: e.target.value }))} disabled={form.cancellationFeeType === "NONE"} /></div>
+        <div className="space-y-1.5"><Label>Notice Days</Label><Input type="number" value={form.noticeDays} onChange={(e) => setForm((p) => ({ ...p, noticeDays: e.target.value }))} /></div>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="space-y-1.5">
+          <Label>Effective Date</Label>
+          <Select value={form.effectiveDateMode} onValueChange={(value) => setForm((p) => ({ ...p, effectiveDateMode: value }))}>
+            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectContent><SelectItem value="IMMEDIATE">Immediate</SelectItem><SelectItem value="END_OF_TERM">End of Term</SelectItem><SelectItem value="CUSTOM">Custom</SelectItem></SelectContent>
+          </Select>
+        </div>
+        <div className="space-y-1.5"><Label>Retention Follow-up Days</Label><Input type="number" value={form.defaultRetentionFollowUpDays} onChange={(e) => setForm((p) => ({ ...p, defaultRetentionFollowUpDays: e.target.value }))} /></div>
+      </div>
+      <div className="grid gap-2 sm:grid-cols-2">
+        <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.cancelPendingServicesDefault} onChange={(e) => updateFlag("cancelPendingServicesDefault", e.target.checked)} /> Cancel pending generated services</label>
+        <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.cancelScheduledAppointmentsDefault} onChange={(e) => updateFlag("cancelScheduledAppointmentsDefault", e.target.checked)} /> Cancel scheduled appointments</label>
+        <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.closeOpenOpportunitiesDefault} onChange={(e) => updateFlag("closeOpenOpportunitiesDefault", e.target.checked)} /> Close open opportunities</label>
+        <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.createRetentionOpportunityDefault} onChange={(e) => updateFlag("createRetentionOpportunityDefault", e.target.checked)} /> Create retention opportunity</label>
+        <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.allowManagerOverride} onChange={(e) => updateFlag("allowManagerOverride", e.target.checked)} /> Allow manager override</label>
+        <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.requiresOverrideReason} onChange={(e) => updateFlag("requiresOverrideReason", e.target.checked)} /> Require override reason</label>
+      </div>
+      <div className="space-y-1.5"><Label>Terms Summary</Label><Textarea value={form.termsSummary} onChange={(e) => setForm((p) => ({ ...p, termsSummary: e.target.value }))} className="resize-none" rows={4} /></div>
+      <div className="flex justify-end gap-2"><Button type="button" variant="outline" onClick={onClose}>Cancel</Button><Button type="submit" disabled={mutation.isPending}>{mutation.isPending ? "Saving..." : isEditMode ? "Save Policy" : "Create Policy"}</Button></div>
+    </form>
+  );
+}
+
 function AgreementTemplateForm({
   serviceTypes,
+  cancellationPolicies,
   template,
   onClose,
 }: {
   serviceTypes?: ServiceType[];
+  cancellationPolicies?: AgreementCancellationPolicy[];
   template?: AgreementTemplate | null;
   onClose: () => void;
 }) {
@@ -301,6 +410,7 @@ function AgreementTemplateForm({
     name: template?.name ?? "",
     description: template?.description ?? "",
     isActive: template?.isActive ?? true,
+    cancellationPolicyId: template?.cancellationPolicyId ?? "",
     defaultAgreementType: template?.defaultAgreementType ?? "",
     defaultBillingFrequency: template?.defaultBillingFrequency ?? "",
     defaultTermUnit: template?.defaultTermUnit ?? "YEAR",
@@ -325,6 +435,7 @@ function AgreementTemplateForm({
         name: data.name.trim(),
         description: data.description.trim() || null,
         isActive: data.isActive,
+        cancellationPolicyId: data.cancellationPolicyId || null,
         defaultAgreementType: data.defaultAgreementType.trim() || null,
         defaultBillingFrequency: data.defaultBillingFrequency.trim() || null,
         defaultTermUnit: data.defaultTermUnit,
@@ -379,6 +490,19 @@ function AgreementTemplateForm({
         </div>
       </div>
       <div className="space-y-1.5"><Label>Description</Label><Textarea value={form.description} onChange={(e) => setForm((prev) => ({ ...prev, description: e.target.value }))} className="resize-none" /></div>
+      <div className="space-y-1.5">
+        <Label>Cancellation Policy</Label>
+        <Select value={form.cancellationPolicyId || "NONE"} onValueChange={(value) => setForm((prev) => ({ ...prev, cancellationPolicyId: value === "NONE" ? "" : value }))}>
+          <SelectTrigger><SelectValue placeholder="Select cancellation policy" /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="NONE">No policy assigned</SelectItem>
+            {cancellationPolicies?.map((policy) => (
+              <SelectItem key={policy.id} value={policy.id}>{policy.name} - {formatCancellationFee(policy)}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <p className="text-xs text-muted-foreground">New location agreements snapshot the selected policy at creation.</p>
+      </div>
       <div className="grid gap-3 sm:grid-cols-2">
         <div className="space-y-1.5"><Label>Agreement Type</Label><Input value={form.defaultAgreementType} onChange={(e) => setForm((prev) => ({ ...prev, defaultAgreementType: e.target.value }))} /></div>
         <div className="space-y-1.5"><Label>Billing Frequency</Label><Input value={form.defaultBillingFrequency} onChange={(e) => setForm((prev) => ({ ...prev, defaultBillingFrequency: e.target.value }))} /></div>
@@ -477,11 +601,14 @@ export default function Settings() {
   const [editingTechnician, setEditingTechnician] = useState<Technician | null>(null);
   const [templateDialogOpen, setTemplateDialogOpen] = useState(false);
   const [editingTemplate, setEditingTemplate] = useState<AgreementTemplate | null>(null);
+  const [policyDialogOpen, setPolicyDialogOpen] = useState(false);
+  const [editingPolicy, setEditingPolicy] = useState<AgreementCancellationPolicy | null>(null);
   const [dispositionDialogOpen, setDispositionDialogOpen] = useState(false);
   const [editingDisposition, setEditingDisposition] = useState<OpportunityDisposition | null>(null);
   const { data: serviceTypes, isLoading } = useQuery<ServiceType[]>({ queryKey: ["/api/service-types"] });
   const { data: technicians, isLoading: techniciansLoading } = useQuery<Technician[]>({ queryKey: ["/api/technicians?includeInactive=true"] });
   const { data: agreementTemplates, isLoading: templatesLoading } = useQuery<AgreementTemplate[]>({ queryKey: ["/api/agreement-templates"] });
+  const { data: cancellationPolicies, isLoading: policiesLoading } = useQuery<AgreementCancellationPolicy[]>({ queryKey: ["/api/agreement-cancellation-policies?includeInactive=true"] });
   const { data: opportunityDispositions, isLoading: dispositionsLoading } = useQuery<OpportunityDisposition[]>({ queryKey: ["/api/opportunity-dispositions?includeInactive=true"] });
 
   const openCreateTemplate = () => {
@@ -503,6 +630,13 @@ export default function Settings() {
     setTemplateDialogOpen(open);
     if (!open) {
       setEditingTemplate(null);
+    }
+  };
+
+  const closePolicyDialog = (open: boolean) => {
+    setPolicyDialogOpen(open);
+    if (!open) {
+      setEditingPolicy(null);
     }
   };
 
@@ -647,12 +781,50 @@ export default function Settings() {
 
       <Card>
         <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
+          <CardTitle className="text-base font-semibold flex items-center gap-2"><ShieldCheck className="h-4 w-4" /> Agreement Cancellation Policies</CardTitle>
+          <Dialog open={policyDialogOpen} onOpenChange={closePolicyDialog}>
+            <DialogTrigger asChild><Button size="sm" onClick={() => { setEditingPolicy(null); setPolicyDialogOpen(true); }}><Plus className="h-3 w-3 mr-1" /> Add Policy</Button></DialogTrigger>
+            <DialogContent className="max-w-2xl">
+              <DialogHeader><DialogTitle>{editingPolicy ? "Edit Cancellation Policy" : "New Cancellation Policy"}</DialogTitle></DialogHeader>
+              <AgreementCancellationPolicyForm policy={editingPolicy} onClose={() => closePolicyDialog(false)} />
+            </DialogContent>
+          </Dialog>
+        </CardHeader>
+        <CardContent>
+          {policiesLoading ? (
+            <div className="space-y-2">{[1, 2, 3].map((i) => <Skeleton key={i} className="h-16" />)}</div>
+          ) : !cancellationPolicies?.length ? (
+            <div className="text-center py-8">
+              <ShieldCheck className="h-8 w-8 mx-auto text-muted-foreground/30 mb-2" />
+              <p className="text-sm text-muted-foreground">No cancellation policies configured</p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {cancellationPolicies.map((policy) => (
+                <div key={policy.id} className="flex items-center justify-between gap-3 rounded-md bg-muted/50 p-3">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <p className="text-sm font-medium truncate">{policy.name}</p>
+                      <Badge variant={policy.isActive ? "default" : "secondary"}>{policy.isActive ? "Active" : "Inactive"}</Badge>
+                    </div>
+                    <p className="text-xs text-muted-foreground">{formatCancellationFee(policy)} - {policy.noticeDays} day notice - {policy.effectiveDateMode.replaceAll("_", " ").toLowerCase()}</p>
+                  </div>
+                  <Button variant="outline" size="sm" onClick={() => { setEditingPolicy(policy); setPolicyDialogOpen(true); }}>Edit</Button>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
           <CardTitle className="text-base font-semibold flex items-center gap-2"><FileText className="h-4 w-4" /> Agreement Templates</CardTitle>
           <Dialog open={templateDialogOpen} onOpenChange={closeTemplateDialog}>
             <DialogTrigger asChild><Button size="sm" data-testid="button-add-agreement-template" onClick={openCreateTemplate}><Plus className="h-3 w-3 mr-1" /> Add Template</Button></DialogTrigger>
             <DialogContent className="max-w-2xl">
               <DialogHeader><DialogTitle>{editingTemplate ? "Edit Agreement Template" : "New Agreement Template"}</DialogTitle></DialogHeader>
-              <AgreementTemplateForm serviceTypes={serviceTypes} template={editingTemplate} onClose={() => closeTemplateDialog(false)} />
+              <AgreementTemplateForm serviceTypes={serviceTypes} cancellationPolicies={cancellationPolicies} template={editingTemplate} onClose={() => closeTemplateDialog(false)} />
             </DialogContent>
           </Dialog>
         </CardHeader>
@@ -676,6 +848,7 @@ export default function Settings() {
                 })
                 .map((template) => {
                   const serviceType = serviceTypes?.find((serviceType) => serviceType.id === template.defaultServiceTypeId);
+                  const cancellationPolicy = cancellationPolicies?.find((policy) => policy.id === template.cancellationPolicyId);
                   return (
                     <div key={template.id} className="flex items-center justify-between gap-3 p-3 rounded-md bg-muted/50" data-testid={`card-agreement-template-${template.id}`}>
                       <div className="min-w-0">
@@ -686,6 +859,9 @@ export default function Settings() {
                         </div>
                         <p className="text-xs text-muted-foreground mt-0.5">
                           {formatTemplateRecurrence(template)} | {formatTemplateTerm(template)} | {template.defaultSchedulingMode || "MANUAL"} | {template.defaultBillingFrequency || "No billing frequency"} | {serviceType?.name || "No service type"}
+                        </p>
+                        <p className="text-xs text-muted-foreground mt-0.5">
+                          Cancellation: {cancellationPolicy ? `${cancellationPolicy.name} (${formatCancellationFee(cancellationPolicy)})` : "No policy assigned"}
                         </p>
                         {template.description && <p className="text-xs text-muted-foreground mt-1">{template.description}</p>}
                       </div>

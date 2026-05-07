@@ -496,6 +496,9 @@ export default function Schedule() {
       const customerId = params.get("customerId");
       const locationId = params.get("locationId");
       const serviceTypeId = params.get("serviceTypeId");
+      const expectedDurationMinutes = params.get("expectedDurationMinutes");
+      const price = params.get("price");
+      const serviceTemplateName = params.get("serviceTemplateName");
       if (!customerId || !locationId || !serviceTypeId) {
         throw new Error("Missing context to create the pending service");
       }
@@ -506,12 +509,12 @@ export default function Schedule() {
         agreementId: params.get("agreementId") || null,
         serviceTypeId,
         dueDate,
-        expectedDurationMinutes: null,
-        price: null,
+        expectedDurationMinutes: expectedDurationMinutes ? parseInt(expectedDurationMinutes, 10) : null,
+        price: price || null,
         status: "PENDING_SCHEDULING",
         assignedTechnicianId: null,
         source: params.get("agreementId") ? "AGREEMENT_INITIAL" : "MANUAL",
-        notes: params.get("agreementName") ? `Agreement: ${params.get("agreementName")}` : null,
+        notes: [params.get("agreementName") ? `Agreement: ${params.get("agreementName")}` : null, serviceTemplateName].filter(Boolean).join("\n") || null,
       });
       return response.json() as Promise<Service>;
     },
