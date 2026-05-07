@@ -32,6 +32,7 @@
 - Agreement Cancellation Policies now exist as Settings-level templates for the MVP cancellation workflow.
 - Agreement Templates select a Cancellation Policy, and Location Agreements snapshot policy terms when created from a template.
 - Agreement cancellation is policy-driven and can affect pending generated Services, scheduled Appointments, open Opportunities, and retention Opportunity creation.
+- Cancellation policy fee types support none, flat, percentage of full contract price, percentage of remaining balance, and manual review.
 - Billing collection and contract rendering are future layers, not part of the cancellation policy MVP.
 
 ## Agreement Roadmap Direction

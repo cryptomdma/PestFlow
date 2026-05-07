@@ -172,7 +172,7 @@ Recommended sequencing:
 4. Bundles / unified billing layer
 5. Billing enforcement, proration, and payment collection logic
 
-Cancellation Policies are reusable Settings-level templates selected by Agreement Templates and inherited/snapshotted by Location Agreements. Cancellation is a policy-driven workflow with impact preview and staged manager/admin override metadata, not a simple status flip.
+Cancellation Policies are reusable Settings-level templates selected by Agreement Templates and inherited/snapshotted by Location Agreements. Cancellation is a policy-driven workflow with impact preview and staged manager/admin override metadata, not a simple status flip. Fee types should support none, flat, percentage of full contract price, percentage of remaining balance, and manual review.
 
 The cancellation MVP should manage pending generated Services, scheduled agreement Appointments, open agreement Opportunities, and optional retention Opportunities. Full payment collection and contract rendering remain future layers.
 

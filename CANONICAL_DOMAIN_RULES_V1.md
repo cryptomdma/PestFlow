@@ -480,7 +480,7 @@ When a Location Agreement is created from an Agreement Template, it inherits the
 Cancellation policy should define:
 
 * cancellation terms
-* cancellation fees if applicable
+* cancellation fees if applicable, including no fee, flat fee, manual review, percentage of full contract price, or percentage of remaining balance
 * notice requirements
 * effective-date behavior
 * impact on pending generated Services

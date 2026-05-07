@@ -1519,6 +1519,9 @@ function AgreementForm({
         scheduledDate,
         returnTo,
       });
+      if (form.defaultDurationMinutes.trim()) params.set("expectedDurationMinutes", form.defaultDurationMinutes.trim());
+      if (form.price.trim()) params.set("price", form.price.trim());
+      if (form.serviceTemplateName.trim()) params.set("serviceTemplateName", form.serviceTemplateName.trim());
       setLocation(`/schedule?${params.toString()}`);
     } catch (error) {
       toast({ title: "Unable to prepare initial service scheduling", description: (error as Error).message, variant: "destructive" });
@@ -1796,6 +1799,8 @@ function formatCancellationFeeDisplay(policy?: AgreementCancellationPolicy | nul
   const feeAmount = policy?.cancellationFeeAmount || agreement?.cancellationFeeAmount;
   if (feeType === "NONE") return "No cancellation fee";
   if (feeType === "FLAT") return `$${Number(feeAmount || 0).toFixed(2)} flat cancellation fee`;
+  if (feeType === "PERCENT_CONTRACT") return `${Number(feeAmount || 0).toFixed(2)}% of contract price`;
+  if (feeType === "PERCENT_REMAINING") return `${Number(feeAmount || 0).toFixed(2)}% of remaining balance`;
   return feeAmount ? `$${Number(feeAmount).toFixed(2)} manual cancellation fee` : "Manual fee review";
 }
 

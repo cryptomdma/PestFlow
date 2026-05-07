@@ -186,9 +186,12 @@ export async function registerRoutes(
   });
   const agreementStatusSchema = z.enum(["ACTIVE", "PAUSED", "CANCELLED"]);
   const recurrenceUnitSchema = z.enum(["MONTH", "QUARTER", "YEAR", "CUSTOM"]);
-  const cancellationFeeTypeSchema = z.enum(["NONE", "FLAT", "MANUAL"]);
+  const cancellationFeeTypeSchema = z.enum(["NONE", "FLAT", "PERCENT_CONTRACT", "PERCENT_REMAINING", "MANUAL"]);
   const cancellationEffectiveDateModeSchema = z.enum(["IMMEDIATE", "END_OF_TERM", "CUSTOM"]);
-  const agreementCancellationPolicySchema = insertAgreementCancellationPolicySchema.extend({
+  const agreementCancellationPolicySchema = insertAgreementCancellationPolicySchema.omit({
+    cancellationFeeType: true,
+    effectiveDateMode: true,
+  }).extend({
     cancellationFeeType: cancellationFeeTypeSchema,
     effectiveDateMode: cancellationEffectiveDateModeSchema,
   }).superRefine((value, ctx) => {
@@ -202,7 +205,10 @@ export async function registerRoutes(
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["defaultRetentionFollowUpDays"], message: "defaultRetentionFollowUpDays cannot be negative" });
     }
   });
-  const updateAgreementCancellationPolicySchema = insertAgreementCancellationPolicySchema.extend({
+  const updateAgreementCancellationPolicySchema = insertAgreementCancellationPolicySchema.omit({
+    cancellationFeeType: true,
+    effectiveDateMode: true,
+  }).extend({
     cancellationFeeType: cancellationFeeTypeSchema.optional(),
     effectiveDateMode: cancellationEffectiveDateModeSchema.optional(),
   }).partial();

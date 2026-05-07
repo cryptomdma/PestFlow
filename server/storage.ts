@@ -538,7 +538,7 @@ export class DatabaseStorage implements IStorage {
       description: data.description?.trim() || null,
       isActive: data.isActive ?? true,
       cancellationFeeType: data.cancellationFeeType || "NONE",
-      cancellationFeeAmount: data.cancellationFeeType === "FLAT" || data.cancellationFeeType === "MANUAL" ? data.cancellationFeeAmount || null : null,
+      cancellationFeeAmount: data.cancellationFeeType === "NONE" ? null : data.cancellationFeeAmount || null,
       noticeDays: Math.max(data.noticeDays || 0, 0),
       effectiveDateMode: data.effectiveDateMode || "IMMEDIATE",
       cancelPendingServicesDefault: data.cancelPendingServicesDefault ?? true,
@@ -558,6 +558,7 @@ export class DatabaseStorage implements IStorage {
     if (data.description !== undefined) payload.description = data.description?.trim() || null;
     if (data.cancellationFeeType !== undefined) payload.cancellationFeeType = data.cancellationFeeType || "NONE";
     if (data.cancellationFeeAmount !== undefined) payload.cancellationFeeAmount = data.cancellationFeeAmount || null;
+    if (data.cancellationFeeType === "NONE" && data.cancellationFeeAmount === undefined) payload.cancellationFeeAmount = null;
     if (data.noticeDays !== undefined) payload.noticeDays = Math.max(data.noticeDays || 0, 0);
     if (data.effectiveDateMode !== undefined) payload.effectiveDateMode = data.effectiveDateMode || "IMMEDIATE";
     if (data.defaultRetentionFollowUpDays !== undefined) payload.defaultRetentionFollowUpDays = data.defaultRetentionFollowUpDays ?? null;

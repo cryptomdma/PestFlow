@@ -56,6 +56,8 @@ function formatTemplateTerm(template: AgreementTemplate) {
 function formatCancellationFee(policy: AgreementCancellationPolicy) {
   if (policy.cancellationFeeType === "NONE") return "No fee";
   if (policy.cancellationFeeType === "FLAT") return `$${Number(policy.cancellationFeeAmount || 0).toFixed(2)} flat`;
+  if (policy.cancellationFeeType === "PERCENT_CONTRACT") return `${Number(policy.cancellationFeeAmount || 0).toFixed(2)}% of contract`;
+  if (policy.cancellationFeeType === "PERCENT_REMAINING") return `${Number(policy.cancellationFeeAmount || 0).toFixed(2)}% of remaining balance`;
   return "Manual fee review";
 }
 
@@ -353,12 +355,18 @@ function AgreementCancellationPolicyForm({ policy, onClose }: { policy?: Agreeme
       <div className="grid gap-3 sm:grid-cols-3">
         <div className="space-y-1.5">
           <Label>Fee Type</Label>
-          <Select value={form.cancellationFeeType} onValueChange={(value) => setForm((p) => ({ ...p, cancellationFeeType: value }))}>
+          <Select value={form.cancellationFeeType} onValueChange={(value) => setForm((p) => ({ ...p, cancellationFeeType: value, cancellationFeeAmount: value === "NONE" ? "" : p.cancellationFeeAmount }))}>
             <SelectTrigger><SelectValue /></SelectTrigger>
-            <SelectContent><SelectItem value="NONE">None</SelectItem><SelectItem value="FLAT">Flat</SelectItem><SelectItem value="MANUAL">Manual Review</SelectItem></SelectContent>
+            <SelectContent>
+              <SelectItem value="NONE">None</SelectItem>
+              <SelectItem value="FLAT">Flat</SelectItem>
+              <SelectItem value="PERCENT_CONTRACT">Percent of Contract Price</SelectItem>
+              <SelectItem value="PERCENT_REMAINING">Percent of Remaining Balance</SelectItem>
+              <SelectItem value="MANUAL">Manual Review</SelectItem>
+            </SelectContent>
           </Select>
         </div>
-        <div className="space-y-1.5"><Label>Fee Amount</Label><Input type="number" step="0.01" value={form.cancellationFeeAmount} onChange={(e) => setForm((p) => ({ ...p, cancellationFeeAmount: e.target.value }))} disabled={form.cancellationFeeType === "NONE"} /></div>
+        <div className="space-y-1.5"><Label>{form.cancellationFeeType.startsWith("PERCENT") ? "Fee Percent" : "Fee Amount"}</Label><Input type="number" step="0.01" value={form.cancellationFeeAmount} onChange={(e) => setForm((p) => ({ ...p, cancellationFeeAmount: e.target.value }))} disabled={form.cancellationFeeType === "NONE"} /></div>
         <div className="space-y-1.5"><Label>Notice Days</Label><Input type="number" value={form.noticeDays} onChange={(e) => setForm((p) => ({ ...p, noticeDays: e.target.value }))} /></div>
       </div>
       <div className="grid gap-3 sm:grid-cols-2">
