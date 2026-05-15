@@ -2052,6 +2052,13 @@ export class DatabaseStorage implements IStorage {
 
   async updateAgreement(id: string, data: Partial<InsertAgreement>, actor?: AuditActor): Promise<Agreement | undefined> {
     const agreement = await db.transaction(async (tx) => {
+      const [existingAgreement] = await tx.select().from(agreements).where(eq(agreements.id, id));
+      if (!existingAgreement) {
+        return undefined;
+      }
+      if (data.status === "CANCELLED" && existingAgreement.status !== "CANCELLED") {
+        throw new Error("Use the agreement cancellation workflow to cancel agreements");
+      }
       const payload = this.normalizeAgreementUpdate(data, actor);
       const [updatedAgreement] = await tx.update(agreements).set({ ...payload, updatedAt: new Date() }).where(eq(agreements.id, id)).returning();
       if (!updatedAgreement) {
