@@ -1617,7 +1617,7 @@ function AgreementForm({
             <SelectContent>
               <SelectItem value="ACTIVE">Active</SelectItem>
               <SelectItem value="PAUSED">Paused</SelectItem>
-              <SelectItem value="CANCELLED">Cancelled</SelectItem>
+              {currentAgreement?.status === "CANCELLED" && <SelectItem value="CANCELLED" disabled>Cancelled</SelectItem>}
             </SelectContent>
           </Select>
         </div>
@@ -1868,7 +1868,10 @@ function CancelAgreementDialog({
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/agreements/location", locationId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/services"] });
       queryClient.invalidateQueries({ queryKey: ["/api/services/by-location", locationId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/services/pending"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/appointments"] });
       queryClient.invalidateQueries({ queryKey: ["/api/appointments/by-location", locationId] });
       queryClient.invalidateQueries({ queryKey: ["/api/opportunities/by-location", locationId] });
       queryClient.invalidateQueries({ queryKey: ["/api/communications/by-location", locationId] });
@@ -2079,7 +2082,20 @@ function AgreementsTab({
                         </Badge>
                         {agreement.contractUrl && <Badge variant="outline" className="text-xs"><Link2 className="h-3 w-3 mr-1" /> Contract</Badge>}
                       </div>
-                      <p className="text-xs text-muted-foreground">{formatAgreementRecurrence(agreement)} - Next due {formatDateOnly(agreement.nextServiceDate)}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {agreement.status === "CANCELLED"
+                          ? `Cancelled ${agreement.cancelledAt ? new Date(agreement.cancelledAt).toLocaleDateString() : ""}${agreement.cancellationEffectiveDate ? ` - Effective ${formatDateOnly(agreement.cancellationEffectiveDate)}` : ""}`
+                          : `${formatAgreementRecurrence(agreement)} - Next due ${formatDateOnly(agreement.nextServiceDate)}`}
+                      </p>
+                      {agreement.status === "CANCELLED" && (
+                        <div className="mt-2 rounded-md border border-destructive/20 bg-destructive/5 px-3 py-2 text-xs text-muted-foreground">
+                          <p className="font-medium text-foreground">Cancellation details</p>
+                          <p>Reason: {agreement.cancellationReason || "Not recorded"}</p>
+                          {agreement.cancellationNotes ? <p>Notes: {agreement.cancellationNotes}</p> : null}
+                          <p>Fee: {formatCancellationFeeDisplay(null, agreement)}</p>
+                          {agreement.cancellationOverrideApplied ? <p>Override: {agreement.cancellationOverrideReason || "Applied"}</p> : null}
+                        </div>
+                      )}
                       {initialAppointment && (
                         <p className="text-xs text-muted-foreground">
                           Initial service linked for {new Date(initialAppointment.scheduledDate).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}.
@@ -2115,7 +2131,11 @@ function AgreementsTab({
                       <p className="mt-1">{agreement.schedulingMode || "MANUAL"}</p>
                     </div>
                   </div>
-                  {nextGeneratedService ? (
+                  {agreement.status === "CANCELLED" ? (
+                    <div className="rounded-md border border-dashed px-3 py-2 text-sm text-muted-foreground">
+                      Cancelled agreements do not generate new pending services.
+                    </div>
+                  ) : nextGeneratedService ? (
                     <div className="rounded-md border bg-muted/20 px-3 py-2 text-sm">
                       <p className="font-medium">Pending generated service</p>
                       <p className="text-muted-foreground mt-1">
