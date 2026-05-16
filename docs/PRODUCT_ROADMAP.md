@@ -30,6 +30,7 @@ Still transitional / not yet canonical:
 * notes still use legacy scope semantics
 * no flags/holds yet
 * service agreements exist, and cancellation policy MVP work is underway; contract versioning, amendment lifecycle, bundle, and billing enforcement work remains future roadmap
+* Service Completion / Technician Work MVP is underway as a mobile-first web/PWA workflow
 * no payments yet
 * no user/permission system yet
 * no audit logging yet
@@ -177,6 +178,30 @@ Cancellation Policies are reusable Settings-level templates selected by Agreemen
 The cancellation MVP should manage pending generated Services, scheduled agreement Appointments, open agreement Opportunities, and optional retention Opportunities. Full payment collection and contract rendering remain future layers.
 
 Terms & Conditions are future Settings-level templates that combine with Agreement Templates, Cancellation Policies, pricing/billing rules, and warranty/service scope language to render customer-facing contracts. Signed contracts are immutable historical records and should be changed only through amendments, versions, replacements, upgrades/downgrades, renewals, or cancellation/recreate workflows.
+
+### Service completion and technician workflow
+
+Current implementation priority: mobile-first Service Completion / Technician Work foundation.
+
+Canonical direction:
+
+* Technician Work is a web/PWA route first; native mobile apps are future work.
+* Technicians view assigned scheduled Appointments by technician and day.
+* One Appointment may contain multiple Services, and each Service is completed independently.
+* Service Record is the completion/compliance truth layer tied to a Service.
+* Service Records snapshot technician name and license number at completion time.
+* Materials/chemicals are captured as child Product Application records for MVP compliance capture.
+* Appointment status should become completed only after all linked Services are completed.
+* Agreement-generated Service completion advances the Agreement recurrence cycle.
+* Non-agreement Service completion may generate Opportunities according to Service Type follow-up settings.
+
+Next after completion MVP:
+
+1. richer service record review/detail workflow
+2. invoice draft generation from completed billable Service Records
+3. customer signature/photo/file capture
+4. inventory-integrated material usage
+5. authenticated technician binding and role-aware tech access
 
 Bundles are a billing/pricing/grouping layer above independent agreements. They should use a join table approach (`bundles`, `bundle_agreements`) and should not control scheduling, generate Services, replace Agreements, or hide agreement lifecycle complexity.
 

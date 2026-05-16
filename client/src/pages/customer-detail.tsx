@@ -33,6 +33,7 @@ import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/
 import { OpportunityDispositionDialog } from "@/components/opportunity-disposition-dialog";
 import { OpportunityHistoryDialog } from "@/components/opportunity-history-dialog";
 import { OpportunityConvertDialog } from "@/components/opportunity-convert-dialog";
+import { ServiceCompletionDialog } from "@/components/service-completion-dialog";
 import { formatPhoneDisplay } from "@shared/phone";
 import {
   ArrowLeft, Mail, Phone, MapPin, Plus, Calendar, FileText, MessageSquare,
@@ -40,7 +41,7 @@ import {
   History,
   CreditCard, KeyRound, Ruler, ChevronUp, Check, Link2, Target,
 } from "lucide-react";
-import type { Customer, Contact, Location, Appointment, Invoice, Service, ServiceRecord, Communication, CustomerNote, BillingProfile, NoteRevision, Agreement, AgreementCancellationPolicy, AgreementTemplate, ServiceType, Technician, Opportunity, OpportunityDisposition } from "@shared/schema";
+import type { Customer, Contact, Location, Appointment, Invoice, Service, ServiceRecord, ProductApplication, Communication, CustomerNote, BillingProfile, NoteRevision, Agreement, AgreementCancellationPolicy, AgreementTemplate, ServiceType, Technician, Opportunity, OpportunityDisposition } from "@shared/schema";
 
 interface CustomerDetailCompatResponse {
   legacyCustomer: Customer;
@@ -2430,18 +2431,22 @@ function ServiceDetailModal({
   technicianName,
   appointment,
   serviceRecord,
+  productApplications,
   invoice,
   siblingServices,
   serviceTypeNameById,
+  onCompleteService,
 }: {
   service: Service;
   serviceTypeName: string;
   technicianName: string;
   appointment?: Appointment | null;
   serviceRecord?: ServiceRecord | null;
+  productApplications?: ProductApplication[];
   invoice?: Invoice | null;
   siblingServices?: Service[];
   serviceTypeNameById: Map<string, string>;
+  onCompleteService?: (service: Service) => void;
 }) {
   const displayDate = getServiceDisplayDate(service, appointment, serviceRecord);
   const siblingCount = Math.max((siblingServices?.length ?? 1) - 1, 0);
@@ -2487,6 +2492,28 @@ function ServiceDetailModal({
           {serviceRecord.recommendations && <p><span className="font-medium">Recommendations:</span> {serviceRecord.recommendations}</p>}
         </div>
       )}
+      {productApplications && productApplications.length > 0 && (
+        <div className="space-y-2">
+          <p className="text-xs uppercase tracking-wide text-muted-foreground">Materials / Chemicals</p>
+          <div className="space-y-1">
+            {productApplications.map((application) => (
+              <div key={application.id} className="rounded-md border bg-muted/20 px-3 py-2">
+                <p className="font-medium">{application.productName}</p>
+                <p className="text-xs text-muted-foreground">
+                  {[application.amountApplied, application.applicationLocation, application.applicationMethod, application.epaRegNumber ? `EPA ${application.epaRegNumber}` : null].filter(Boolean).join(" - ")}
+                </p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {!serviceRecord && service.status !== "CANCELLED" && (
+        <div className="flex justify-end">
+          <Button type="button" onClick={() => onCompleteService?.(service)}>
+            Complete Service
+          </Button>
+        </div>
+      )}
       {appointment && siblingServices && siblingServices.length > 1 && (
         <div className="space-y-2">
           <p className="text-xs uppercase tracking-wide text-muted-foreground">Other Services In This Visit</p>
@@ -2523,9 +2550,11 @@ function ServicesTab({
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingService, setEditingService] = useState<Service | null>(null);
   const [detailService, setDetailService] = useState<Service | null>(null);
+  const [completionService, setCompletionService] = useState<Service | null>(null);
   const { data: services } = useQuery<Service[]>({ queryKey: ["/api/services/by-location", locationId], enabled: !!locationId });
   const { data: serviceTypes } = useQuery<ServiceType[]>({ queryKey: ["/api/service-types"] });
   const { data: technicians } = useQuery<Technician[]>({ queryKey: ["/api/technicians?includeInactive=true"] });
+  const { data: productApplications } = useQuery<ProductApplication[]>({ queryKey: ["/api/product-applications"] });
   const [, setLocation] = useLocation();
 
   const serviceTypeNameById = useMemo(() => new Map((serviceTypes ?? []).map((serviceType) => [serviceType.id, serviceType.name])), [serviceTypes]);
@@ -2560,6 +2589,15 @@ function ServicesTab({
     }
     return map;
   }, [invoices, serviceRecords]);
+  const productApplicationsByServiceRecordId = useMemo(() => {
+    const map = new Map<string, ProductApplication[]>();
+    for (const application of productApplications ?? []) {
+      const existing = map.get(application.serviceRecordId) ?? [];
+      existing.push(application);
+      map.set(application.serviceRecordId, existing);
+    }
+    return map;
+  }, [productApplications]);
   const siblingServicesByAppointmentId = useMemo(() => {
     const map = new Map<string, Service[]>();
     for (const service of services ?? []) {
@@ -2702,13 +2740,31 @@ function ServicesTab({
               technicianName={technicianNameById.get(detailService.assignedTechnicianId || "") || serviceRecordByServiceId.get(detailService.id)?.technicianName || "Unassigned"}
               appointment={appointmentByServiceId.get(detailService.id) ?? null}
               serviceRecord={serviceRecordByServiceId.get(detailService.id) ?? null}
+              productApplications={(() => {
+                const record = serviceRecordByServiceId.get(detailService.id);
+                return record ? productApplicationsByServiceRecordId.get(record.id) ?? [] : [];
+              })()}
               invoice={invoiceByServiceId.get(detailService.id) ?? null}
               siblingServices={(appointmentByServiceId.get(detailService.id) ? siblingServicesByAppointmentId.get(appointmentByServiceId.get(detailService.id)!.id) : undefined) ?? [detailService]}
               serviceTypeNameById={serviceTypeNameById}
+              onCompleteService={(service) => setCompletionService(service)}
             />
           )}
         </DialogContent>
       </Dialog>
+      <ServiceCompletionDialog
+        open={!!completionService}
+        onOpenChange={(open) => !open && setCompletionService(null)}
+        service={completionService}
+        appointment={completionService ? appointmentByServiceId.get(completionService.id) ?? null : null}
+        technicians={technicians}
+        serviceTypes={serviceTypes}
+        defaultTechnicianId={completionService?.assignedTechnicianId ?? null}
+        onCompleted={() => {
+          setCompletionService(null);
+          setDetailService(null);
+        }}
+      />
     </div>
   );
 }

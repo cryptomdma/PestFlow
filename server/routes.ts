@@ -164,6 +164,19 @@ export async function registerRoutes(
   const updateServiceRecordSchema = insertServiceRecordSchema.omit({ serviceDate: true }).extend({
     serviceDate: z.coerce.date().optional(),
   }).partial();
+  const completeServiceSchema = z.object({
+    appointmentId: z.string().nullable().optional(),
+    technicianId: z.string().nullable().optional(),
+    serviceDate: z.coerce.date(),
+    notes: z.string().nullable().optional(),
+    targetPests: z.array(z.string()).nullable().optional(),
+    areasServiced: z.string().nullable().optional(),
+    conditionsFound: z.string().nullable().optional(),
+    recommendations: z.string().nullable().optional(),
+    customerSignature: z.boolean().nullable().optional(),
+    confirmed: z.boolean().nullable().optional(),
+    productApplications: z.array(insertProductApplicationSchema.omit({ serviceRecordId: true })).optional(),
+  });
   const opportunityStatusSchema = z.enum(["OPEN", "CONTACTED", "CONVERTED", "DISMISSED"]);
   const opportunityUpdateSchema = insertOpportunitySchema.extend({
     status: opportunityStatusSchema.optional(),
@@ -896,6 +909,18 @@ export async function registerRoutes(
     }
   });
 
+  app.get("/api/technicians/:id/work", async (req, res) => {
+    try {
+      const date = typeof req.query.date === "string" && req.query.date
+        ? req.query.date
+        : new Date().toISOString().slice(0, 10);
+      const data = await storage.getTechnicianWork(req.params.id, date);
+      res.json(data);
+    } catch (e: any) {
+      res.status(400).json({ message: e.message });
+    }
+  });
+
   // Services
   app.get("/api/services", async (_req, res) => {
     const data = await storage.getServices();
@@ -1039,6 +1064,21 @@ export async function registerRoutes(
       if (!deleted) return res.status(404).json({ message: "Service not found" });
       res.status(204).send();
     } catch (e: any) {
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/services/:id/complete", async (req, res) => {
+    try {
+      const validated = completeServiceSchema.parse(req.body);
+      const data = await storage.completeService({
+        serviceId: req.params.id,
+        ...validated,
+      });
+      if (!data) return res.status(404).json({ message: "Service not found" });
+      res.status(201).json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
       res.status(400).json({ message: e.message });
     }
   });

@@ -702,51 +702,60 @@ Appointments should ideally be created from a selected location context so core 
 
 Appointments are scheduling placements. They are not the canonical work history object and should not be created by recurring agreement generation until work is actually placed on the board.
 
+One Appointment may contain multiple Services. Each linked Service remains independently visible and independently completed.
+
 ---
 
-## 12. ServiceVisit
+## 12. Service Record
 
 ### Definition
 
-The actual record of performed service.
+The compliance and completion record for one performed Service.
 
 ### Purpose
 
 * permanent operational history
 * office review / staging / posting
 * technician completion record
+* compliance snapshot for technician name/license and materials
 
 ### Required fields
 
 * id
+* serviceId
 * appointmentId nullable
 * accountId
 * locationId
 * serviceAgreementId nullable
 * serviceTypeId nullable
 * technicianId
-* arrivalTime nullable
-* departureTime nullable
-* completedAt nullable
-* serviceStatus (`open` | `pending_review` | `confirmed` | `sent_back` | `void`)
-* summary nullable
-* detailedNotes nullable
-* followUpRequired boolean nullable
-* followUpReason nullable
-* customerPresent boolean nullable
-* customerSignatureId nullable
-* paymentStatus nullable
-* invoiceStatus nullable
-* pestType nullable
-* pestSubtype nullable
-* areaText nullable
-* areaFavorite nullable
+* technicianName
+* technicianLicenseNumber
+* serviceDate
+* completion status/result
+* notes nullable
+* areas serviced nullable
+* conditions found nullable
+* recommendations nullable
+* customerSignature nullable
 * createdAt
 * updatedAt
+
+### Canonical rule
+
+Service Records are tied to Services. Completing one Service in a multi-service Appointment should not automatically complete sibling Services.
+
+When a Service Record is created, the system must copy the technician display name and license number onto the Service Record. Historical compliance rendering must not rely only on live Technician profile joins because technician profiles can change later.
+
+An Appointment can be marked completed only when all Services linked to that Appointment are completed, unless a future explicit close/exception workflow is built.
+
+Agreement-generated Services advance agreement recurrence when the generated Service is completed. Non-agreement completed Services may generate future Opportunities according to Service Type follow-up rules.
 
 ### Materials support
 
 Materials should be modeled as child records, not stuffed into one field.
+
+The MVP may capture lightweight Product Application rows without full inventory deduction. Full inventory, billing, invoice posting, and payment collection are future layers built from completed/billable Service Records.
 
 #### ServiceVisitMaterial
 

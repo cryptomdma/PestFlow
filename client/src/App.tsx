@@ -13,6 +13,7 @@ import MobileDashboard from "@/pages/mobile-dashboard";
 import Customers from "@/pages/customers";
 import CustomerDetail from "@/pages/customer-detail";
 import Schedule from "@/pages/schedule";
+import TechnicianWork from "@/pages/technician-work";
 import Services from "@/pages/services";
 import Opportunities from "@/pages/opportunities";
 import Invoices from "@/pages/invoices";
@@ -28,6 +29,7 @@ function Router() {
       <Route path="/customers" component={Customers} />
       <Route path="/customers/:id" component={CustomerDetail} />
       <Route path="/schedule" component={Schedule} />
+      <Route path="/tech" component={TechnicianWork} />
       <Route path="/services" component={Services} />
       <Route path="/opportunities" component={Opportunities} />
       <Route path="/invoices" component={Invoices} />

@@ -1,40 +1,41 @@
 # Current Focus
 
 ## Active Goal
-Implement the MVP foundation for Agreement Cancellation Policies.
+Implement the MVP foundation for Service Completion and the mobile-first Technician Work view.
 
 ## Current branch
-`feature/agreement-cancellation-policies`
+`feature/service-completion-tech-view`
 
 ## Constraints
-- Location remains the canonical customer/service record
-- Cancellation Policies are reusable Settings-level templates
-- Agreement Templates select a Cancellation Policy
-- Location Agreements inherit and snapshot policy context at creation
-- Cancellation must be policy-driven with an impact preview, not a simple status flip
-- Do not build full billing/payment collection, contract generation, bundles, SMS/Twilio, or AI automation in this pass
+- Location remains the canonical customer/service record.
+- Service remains the individual work unit.
+- Appointment remains the scheduled dispatch placement for one or more Services.
+- Service Record is the compliance/completion truth layer tied to a Service.
+- Technicians are real entities with required license IDs and statuses.
+- Agreements generate pending Services first; Appointments are created only when work is scheduled.
+- Do not build invoicing, payments, full inventory, QuickBooks, Stripe, or native mobile apps in this pass.
+
+## Current implementation direction
+- Add `/tech` as a mobile-first web/PWA technician work view.
+- Show selected technician and day with scheduled appointment visit cards.
+- Show each linked Service independently inside a visit so multi-service Appointments can be completed service-by-service.
+- Create or update Service Records from completion, copying technician name and license number at completion time.
+- Capture lightweight materials/chemicals as Product Application rows.
+- Mark the Appointment completed only after all linked Services are completed.
+- Advance agreement `nextServiceDate` when an agreement-generated Service is completed.
+- Preserve non-agreement Opportunity generation from completed Services.
 
 ## Next tasks
-1. Verify Settings can create, edit, activate, and deactivate Cancellation Policies
-2. Verify Agreement Templates can select a Cancellation Policy
-3. Verify new Location Agreements copy policy ID and snapshot terms
-4. Verify Cancel Agreement modal applies policy defaults to pending services, scheduled appointments, and open opportunities
-5. Verify retention opportunities are created when the selected policy requires them
+1. Verify technicians can select a date and see scheduled visits in `/tech`.
+2. Verify completing one Service in a multi-service Appointment does not complete sibling Services.
+3. Verify Appointment status becomes completed only after all linked Services are completed.
+4. Verify completed Service Records display technician name, license number, notes, and materials.
+5. Verify agreement-generated Service completion advances the Agreement next service date.
 
-## Agreement roadmap after generation cleanup
-1. Finish Agreement Cancellation Policies and cancellation workflow
-2. Terms & Conditions / contract snapshot/versioning
-3. Agreement amendment, upgrade, downgrade, replacement, renewal lifecycle
-4. Bundles / unified billing layer
-5. Billing enforcement, proration, and payment collection logic
-
-## Next implementation priority
-Terms & Conditions / contract snapshot/versioning after cancellation policy MVP verification.
-
-Cancellation policy MVP behavior:
-- policies live in Settings
-- Agreement Templates select a Cancellation Policy
-- Location Agreements inherit policy ID and snapshot policy terms
-- cancellation stores cancellation metadata on the agreement
-- cancellation can cancel pending agreement-generated Services, cancel scheduled agreement Appointments, close open agreement Opportunities, and create retention Opportunities
-- billing collection and signed contract rendering remain future layers
+## Recommended next implementation priority
+Richer service completion workflow and billing readiness:
+- fuller service record detail/review workflow
+- invoice draft generation from completed billable Service Records
+- customer signature/photo/file capture
+- inventory-integrated material usage
+- technician authentication binding instead of admin/testing technician selector

@@ -10,6 +10,7 @@ import {
   Settings,
   Bug,
   Target,
+  Wrench,
 } from "lucide-react";
 import {
   Sidebar,
@@ -28,6 +29,7 @@ const mainNav = [
   { title: "Dashboard", url: "/", icon: LayoutDashboard },
   { title: "Customers", url: "/customers", icon: Users },
   { title: "Schedule", url: "/schedule", icon: Calendar },
+  { title: "Tech View", url: "/tech", icon: Wrench },
   { title: "Service History", url: "/services", icon: ClipboardList },
   { title: "Opportunities", url: "/opportunities", icon: Target },
 ];

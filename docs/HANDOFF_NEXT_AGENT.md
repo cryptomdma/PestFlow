@@ -21,6 +21,9 @@ PestFlow began as a Replit-exported prototype and later received hybrid UI work 
 * Account-level data must survive primary-location changes.
 * Agreement generation creates pending Services, not Appointments.
 * Agreement cancellation is policy-driven, not a simple status flip.
+* Service Record is the compliance/completion truth layer tied to a Service.
+* Technician completion must snapshot technician name and license number.
+* One Appointment may contain multiple Services, and Services are completed independently.
 
 ## Current status
 
@@ -32,7 +35,7 @@ Already completed or underway:
 * customer create flow updated so a new customer creates a primary location transactionally
 * dashboard demo shell reduced toward a truthful baseline
 * schedule status labels normalized
-* agreements, agreement templates, agreement-generated pending services, opportunities, and dispatch foundations are underway
+* agreements, agreement templates, agreement-generated pending services, opportunities, dispatch foundations, and Service Completion / Technician Work foundations are underway
 
 Still transitional:
 
@@ -45,18 +48,20 @@ Still transitional:
 
 ## Immediate next priority
 
-### Agreement Cancellation Policies
+### Service Completion / Technician Work
 
-Verify and harden reusable Settings-level Cancellation Policies selected by Agreement Templates and inherited/snapshotted by Location Agreements.
+Build and verify the mobile-first web/PWA technician work route and Service Record completion flow.
 
 ### Requirements
 
-* cancellation is a policy-driven workflow with impact preview
-* cancellation policy defines terms, fees, notice requirements, effective-date behavior, and effects on pending Services, scheduled Appointments, open Opportunities, billing, and retention/recovery
-* manager/admin override belongs in the cancellation modal and should be role-gated; the MVP stores override metadata while full permission enforcement awaits user/roles hardening
-* agreement cancellation and service/appointment cancellation are distinct workflows
-* signed agreement terms should not be mutated directly; future work should snapshot contract terms and policy versions
-* bundles are future billing/pricing groups above independent agreements, not mega-agreements
+* technicians can view assigned scheduled Appointments by day
+* multi-service Appointments show each linked Service independently
+* completing one Service creates or updates one Service Record
+* Service Record snapshots technician name and license number
+* materials/chemicals are captured without full inventory integration
+* Appointment status completes only after all linked Services complete
+* agreement-generated Service completion advances agreement recurrence
+* non-agreement Service completion preserves Opportunity generation behavior
 * return a concise implementation summary with files changed, edge cases, and known follow-up work
 
 ## Constraints
