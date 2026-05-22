@@ -2436,6 +2436,8 @@ function ServiceDetailModal({
   siblingServices,
   serviceTypeNameById,
   onCompleteService,
+  onFinalizeTicket,
+  onReopenTicket,
 }: {
   service: Service;
   serviceTypeName: string;
@@ -2447,6 +2449,8 @@ function ServiceDetailModal({
   siblingServices?: Service[];
   serviceTypeNameById: Map<string, string>;
   onCompleteService?: (service: Service) => void;
+  onFinalizeTicket?: (serviceRecord: ServiceRecord) => void;
+  onReopenTicket?: (serviceRecord: ServiceRecord) => void;
 }) {
   const displayDate = getServiceDisplayDate(service, appointment, serviceRecord);
   const siblingCount = Math.max((siblingServices?.length ?? 1) - 1, 0);
@@ -2483,13 +2487,23 @@ function ServiceDetailModal({
       )}
       {serviceRecord && (
         <div className="space-y-2">
-          <p className="text-xs uppercase tracking-wide text-muted-foreground">Completion Details</p>
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-xs uppercase tracking-wide text-muted-foreground">Service Ticket</p>
+            <Badge variant={serviceRecord.confirmed ? "default" : "secondary"}>{serviceRecord.confirmed ? "Finalized" : serviceRecord.ticketStatus?.replaceAll("_", " ") || "Office Review Pending"}</Badge>
+          </div>
           {serviceRecord.technicianName && <p><span className="font-medium">Technician:</span> {serviceRecord.technicianName}</p>}
           {serviceRecord.technicianLicenseNumber && <p><span className="font-medium">License #:</span> {serviceRecord.technicianLicenseNumber}</p>}
           {serviceRecord.notes && <p><span className="font-medium">Notes:</span> {serviceRecord.notes}</p>}
-          {serviceRecord.areasServiced && <p><span className="font-medium">Areas:</span> {serviceRecord.areasServiced}</p>}
+          {serviceRecord.areasServiced && <p><span className="font-medium">Derived Areas:</span> {serviceRecord.areasServiced}</p>}
           {serviceRecord.conditionsFound && <p><span className="font-medium">Conditions:</span> {serviceRecord.conditionsFound}</p>}
           {serviceRecord.recommendations && <p><span className="font-medium">Recommendations:</span> {serviceRecord.recommendations}</p>}
+          <div className="flex justify-end gap-2">
+            {serviceRecord.confirmed ? (
+              <Button type="button" variant="outline" size="sm" onClick={() => onReopenTicket?.(serviceRecord)}>Reopen Ticket</Button>
+            ) : (
+              <Button type="button" size="sm" onClick={() => onFinalizeTicket?.(serviceRecord)}>Finalize Ticket</Button>
+            )}
+          </div>
         </div>
       )}
       {productApplications && productApplications.length > 0 && (
@@ -2510,7 +2524,7 @@ function ServiceDetailModal({
       {!serviceRecord && service.status !== "CANCELLED" && (
         <div className="flex justify-end">
           <Button type="button" onClick={() => onCompleteService?.(service)}>
-            Complete Service
+            Create Service Ticket
           </Button>
         </div>
       )}
@@ -2551,6 +2565,7 @@ function ServicesTab({
   const [editingService, setEditingService] = useState<Service | null>(null);
   const [detailService, setDetailService] = useState<Service | null>(null);
   const [completionService, setCompletionService] = useState<Service | null>(null);
+  const { toast } = useToast();
   const { data: services } = useQuery<Service[]>({ queryKey: ["/api/services/by-location", locationId], enabled: !!locationId });
   const { data: serviceTypes } = useQuery<ServiceType[]>({ queryKey: ["/api/service-types"] });
   const { data: technicians } = useQuery<Technician[]>({ queryKey: ["/api/technicians?includeInactive=true"] });
@@ -2647,6 +2662,32 @@ function ServicesTab({
     if (service.dueDate) params.set("date", service.dueDate);
     setLocation(`/schedule?${params.toString()}`);
   };
+
+  const finalizeTicketMutation = useMutation({
+    mutationFn: async (serviceRecord: ServiceRecord) => {
+      const response = await apiRequest("POST", `/api/service-records/${serviceRecord.id}/finalize`);
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/service-records/by-location", locationId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/service-records"] });
+      toast({ title: "Service ticket finalized" });
+    },
+    onError: (error: Error) => toast({ title: "Unable to finalize ticket", description: error.message, variant: "destructive" }),
+  });
+
+  const reopenTicketMutation = useMutation({
+    mutationFn: async (serviceRecord: ServiceRecord) => {
+      const response = await apiRequest("POST", `/api/service-records/${serviceRecord.id}/reopen`);
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/service-records/by-location", locationId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/service-records"] });
+      toast({ title: "Service ticket reopened" });
+    },
+    onError: (error: Error) => toast({ title: "Unable to reopen ticket", description: error.message, variant: "destructive" }),
+  });
 
   return (
     <div className="space-y-3">
@@ -2748,6 +2789,8 @@ function ServicesTab({
               siblingServices={(appointmentByServiceId.get(detailService.id) ? siblingServicesByAppointmentId.get(appointmentByServiceId.get(detailService.id)!.id) : undefined) ?? [detailService]}
               serviceTypeNameById={serviceTypeNameById}
               onCompleteService={(service) => setCompletionService(service)}
+              onFinalizeTicket={(serviceRecord) => finalizeTicketMutation.mutate(serviceRecord)}
+              onReopenTicket={(serviceRecord) => reopenTicketMutation.mutate(serviceRecord)}
             />
           )}
         </DialogContent>

@@ -10,7 +10,7 @@ import {
   agreements,
   agreementTemplates,
   agreementCancellationPolicies,
-  serviceRecords, productApplications, invoices, communications,
+  serviceRecords, productApplications, materialProducts, invoices, communications,
   billingProfiles, customerNotes,
   noteRevisions,
   type Account,
@@ -29,6 +29,7 @@ import {
   type OpportunityActivity, type InsertOpportunityActivity,
   type OpportunityDisposition, type InsertOpportunityDisposition,
   type ProductApplication, type InsertProductApplication,
+  type MaterialProduct, type InsertMaterialProduct,
   type Invoice, type InsertInvoice,
   type Communication, type InsertCommunication,
   type BillingProfile, type InsertBillingProfile,
@@ -270,7 +271,12 @@ export interface IStorage {
   createServiceRecord(data: InsertServiceRecord): Promise<ServiceRecord>;
   updateServiceRecord(id: string, data: Partial<InsertServiceRecord>): Promise<ServiceRecord | undefined>;
   completeService(input: CompleteServiceInput): Promise<CompleteServiceResult | undefined>;
+  finalizeServiceRecord(id: string): Promise<ServiceRecord | undefined>;
+  reopenServiceRecord(id: string): Promise<ServiceRecord | undefined>;
 
+  getMaterialProducts(includeInactive?: boolean): Promise<MaterialProduct[]>;
+  createMaterialProduct(data: InsertMaterialProduct): Promise<MaterialProduct>;
+  updateMaterialProduct(id: string, data: Partial<InsertMaterialProduct>): Promise<MaterialProduct | undefined>;
   getProductApplications(): Promise<ProductApplication[]>;
   getProductApplicationsByServiceRecord(serviceRecordId: string): Promise<ProductApplication[]>;
   createProductApplication(data: InsertProductApplication): Promise<ProductApplication>;
@@ -2570,7 +2576,11 @@ export class DatabaseStorage implements IStorage {
         conditionsFound: input.conditionsFound?.trim() || null,
         recommendations: input.recommendations?.trim() || null,
         customerSignature: input.customerSignature ?? false,
-        confirmed: input.confirmed ?? true,
+        confirmed: false,
+        ticketStatus: "OFFICE_REVIEW_PENDING",
+        postedAt: new Date(),
+        finalizedAt: null,
+        reopenedAt: null,
       };
       const technicianSnapshot = await this.resolveServiceRecordTechnicianSnapshot(tx, recordPayload, existingRecord);
 
@@ -2602,6 +2612,7 @@ export class DatabaseStorage implements IStorage {
         .map((application) => ({
           ...application,
           productName: application.productName?.trim() ?? "",
+          notes: application.notes?.trim() || null,
           serviceRecordId: serviceRecord.id,
         }))
         .filter((application) => application.productName);
@@ -2660,6 +2671,53 @@ export class DatabaseStorage implements IStorage {
 
   async getProductApplications(): Promise<ProductApplication[]> {
     return db.select().from(productApplications);
+  }
+
+  async finalizeServiceRecord(id: string): Promise<ServiceRecord | undefined> {
+    const [record] = await db
+      .update(serviceRecords)
+      .set({
+        confirmed: true,
+        ticketStatus: "FINALIZED",
+        finalizedAt: new Date(),
+      })
+      .where(eq(serviceRecords.id, id))
+      .returning();
+    return record;
+  }
+
+  async reopenServiceRecord(id: string): Promise<ServiceRecord | undefined> {
+    const [record] = await db
+      .update(serviceRecords)
+      .set({
+        confirmed: false,
+        ticketStatus: "REOPENED",
+        reopenedAt: new Date(),
+      })
+      .where(eq(serviceRecords.id, id))
+      .returning();
+    return record;
+  }
+
+  async getMaterialProducts(includeInactive = false): Promise<MaterialProduct[]> {
+    if (includeInactive) {
+      return db.select().from(materialProducts).orderBy(asc(materialProducts.name));
+    }
+    return db.select().from(materialProducts).where(eq(materialProducts.isActive, true)).orderBy(asc(materialProducts.name));
+  }
+
+  async createMaterialProduct(data: InsertMaterialProduct): Promise<MaterialProduct> {
+    const [product] = await db.insert(materialProducts).values(data).returning();
+    return product;
+  }
+
+  async updateMaterialProduct(id: string, data: Partial<InsertMaterialProduct>): Promise<MaterialProduct | undefined> {
+    const [product] = await db
+      .update(materialProducts)
+      .set({ ...data, updatedAt: new Date() })
+      .where(eq(materialProducts.id, id))
+      .returning();
+    return product;
   }
 
   async getProductApplicationsByServiceRecord(serviceRecordId: string): Promise<ProductApplication[]> {

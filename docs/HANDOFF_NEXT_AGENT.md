@@ -21,9 +21,10 @@ PestFlow began as a Replit-exported prototype and later received hybrid UI work 
 * Account-level data must survive primary-location changes.
 * Agreement generation creates pending Services, not Appointments.
 * Agreement cancellation is policy-driven, not a simple status flip.
-* Service Record is the compliance/completion truth layer tied to a Service.
-* Technician completion must snapshot technician name and license number.
-* One Appointment may contain multiple Services, and Services are completed independently.
+* Service Record is the compliance/ticket truth layer tied to a Service.
+* Technician-posted Service Tickets must snapshot technician name and license number.
+* One Appointment may contain multiple Services, and Services get independent Service Tickets.
+* Office finalization is separate from technician posting.
 
 ## Current status
 
@@ -35,7 +36,7 @@ Already completed or underway:
 * customer create flow updated so a new customer creates a primary location transactionally
 * dashboard demo shell reduced toward a truthful baseline
 * schedule status labels normalized
-* agreements, agreement templates, agreement-generated pending services, opportunities, dispatch foundations, and Service Completion / Technician Work foundations are underway
+* agreements, agreement templates, agreement-generated pending services, opportunities, dispatch foundations, and Service Ticket / Technician Work foundations are underway
 
 Still transitional:
 
@@ -48,20 +49,24 @@ Still transitional:
 
 ## Immediate next priority
 
-### Service Completion / Technician Work
+### Service Ticket / Technician Work
 
-Build and verify the mobile-first web/PWA technician work route and Service Record completion flow.
+Build and verify the mobile-first web/PWA technician work route, structured material logging, and office review/finalization foundation.
 
 ### Requirements
 
 * technicians can view assigned scheduled Appointments by day
+* compact appointment cards open detail views
 * multi-service Appointments show each linked Service independently
-* completing one Service creates or updates one Service Record
+* posting one Service Ticket creates or updates one Service Record
 * Service Record snapshots technician name and license number
-* materials/chemicals are captured without full inventory integration
-* Appointment status completes only after all linked Services complete
-* agreement-generated Service completion advances agreement recurrence
-* non-agreement Service completion preserves Opportunity generation behavior
+* local drafts protect same-device interruption with localStorage
+* structured material rows use Material Product definitions where available
+* active ingredient amount is captured on Product Application rows
+* office finalization/reopen is staged separately from technician posting
+* Appointment status completes only after all linked Services have posted tickets
+* agreement-generated Service ticket posting advances agreement recurrence
+* non-agreement Service ticket posting preserves Opportunity generation behavior
 * return a concise implementation summary with files changed, edge cases, and known follow-up work
 
 ## Constraints
