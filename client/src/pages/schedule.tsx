@@ -25,7 +25,7 @@ import {
   Settings2,
   Users,
 } from "lucide-react";
-import type { Appointment, Customer, Location, Service, ServiceType, Technician } from "@shared/schema";
+import type { Appointment, Customer, Location, Service, ServiceRecord, ServiceType, Technician } from "@shared/schema";
 
 const VIEW_OPTIONS = [
   { value: "day", label: "1 Day", step: 1 },
@@ -424,6 +424,7 @@ export default function Schedule() {
   const { data: technicians, isLoading: techniciansLoading } = useQuery<Technician[]>({ queryKey: ["/api/technicians?includeInactive=true"] });
   const { data: appointments, isLoading: appointmentsLoading } = useQuery<Appointment[]>({ queryKey: ["/api/appointments"] });
   const { data: allServices, isLoading: servicesLoading } = useQuery<Service[]>({ queryKey: ["/api/services"] });
+  const { data: serviceRecords } = useQuery<ServiceRecord[]>({ queryKey: ["/api/service-records"] });
   const { data: pendingServices, isLoading: pendingLoading } = useQuery<Service[]>({ queryKey: ["/api/services/pending"] });
   const { data: serviceTypes } = useQuery<ServiceType[]>({ queryKey: ["/api/service-types"] });
   const { data: customers } = useQuery<Customer[]>({ queryKey: ["/api/customers"] });
@@ -434,6 +435,13 @@ export default function Schedule() {
   const locationById = useMemo(() => new Map((locations ?? []).map((location) => [location.id, location])), [locations]);
   const serviceById = useMemo(() => new Map((allServices ?? []).map((service) => [service.id, service])), [allServices]);
   const technicianById = useMemo(() => new Map((technicians ?? []).map((technician) => [technician.id, technician])), [technicians]);
+  const serviceRecordByServiceId = useMemo(() => {
+    const map = new Map<string, ServiceRecord>();
+    for (const serviceRecord of serviceRecords ?? []) {
+      if (serviceRecord.serviceId) map.set(serviceRecord.serviceId, serviceRecord);
+    }
+    return map;
+  }, [serviceRecords]);
   const servicesByAppointmentId = useMemo(() => {
     const map = new Map<string, Service[]>();
     for (const service of allServices ?? []) {
@@ -944,16 +952,22 @@ export default function Schedule() {
                               const isSelected = selectedAppointmentId === appointment.id;
                               const hasLocks = appointment.lockTime || appointment.lockTechnician;
                               const siblingCount = Math.max(linkedServices.length - 1, 0);
-                              const anyTicketPosted = linkedServices.some((service) => service.status === "COMPLETED");
-                              const isCompletedAppointment = appointment.status === "completed";
-                              const statusTone = appointment.status === "completed"
+                              const linkedServiceRecords = linkedServices
+                                .map((service) => serviceRecordByServiceId.get(service.id))
+                                .filter((record): record is ServiceRecord => !!record);
+                              const anyTicketPosted = linkedServiceRecords.length > 0 || linkedServices.some((service) => service.status === "COMPLETED");
+                              const allTicketsFinalized = linkedServices.length > 0
+                                && linkedServices.every((service) => serviceRecordByServiceId.get(service.id)?.confirmed);
+                              const isCompletedAppointment = appointment.status === "completed" && allTicketsFinalized;
+                              const isPendingOfficeReview = anyTicketPosted && !allTicketsFinalized;
+                              const statusTone = isCompletedAppointment
                                 ? "border-green-600 bg-green-100 text-green-950"
-                                : anyTicketPosted
+                                : isPendingOfficeReview
                                   ? "border-yellow-500 bg-yellow-50 text-yellow-950"
                                   : appointment.status === "in_progress"
                                     ? "border-yellow-500"
                                     : "bg-background";
-                              const mutedTextTone = isCompletedAppointment ? "text-green-900" : anyTicketPosted ? "text-yellow-900" : "text-muted-foreground";
+                              const mutedTextTone = isCompletedAppointment ? "text-green-900" : isPendingOfficeReview ? "text-yellow-900" : "text-muted-foreground";
                               const locationHref = location ? `/customers/${appointment.customerId}?locationId=${location.id}` : `/customers/${appointment.customerId}`;
 
                               return (
