@@ -25,7 +25,7 @@ import {
   Settings2,
   Users,
 } from "lucide-react";
-import type { Appointment, Customer, Location, Service, ServiceType, Technician } from "@shared/schema";
+import type { Appointment, Customer, Location, Service, ServiceRecord, ServiceType, Technician } from "@shared/schema";
 
 const VIEW_OPTIONS = [
   { value: "day", label: "1 Day", step: 1 },
@@ -424,6 +424,7 @@ export default function Schedule() {
   const { data: technicians, isLoading: techniciansLoading } = useQuery<Technician[]>({ queryKey: ["/api/technicians?includeInactive=true"] });
   const { data: appointments, isLoading: appointmentsLoading } = useQuery<Appointment[]>({ queryKey: ["/api/appointments"] });
   const { data: allServices, isLoading: servicesLoading } = useQuery<Service[]>({ queryKey: ["/api/services"] });
+  const { data: serviceRecords } = useQuery<ServiceRecord[]>({ queryKey: ["/api/service-records"] });
   const { data: pendingServices, isLoading: pendingLoading } = useQuery<Service[]>({ queryKey: ["/api/services/pending"] });
   const { data: serviceTypes } = useQuery<ServiceType[]>({ queryKey: ["/api/service-types"] });
   const { data: customers } = useQuery<Customer[]>({ queryKey: ["/api/customers"] });
@@ -434,6 +435,13 @@ export default function Schedule() {
   const locationById = useMemo(() => new Map((locations ?? []).map((location) => [location.id, location])), [locations]);
   const serviceById = useMemo(() => new Map((allServices ?? []).map((service) => [service.id, service])), [allServices]);
   const technicianById = useMemo(() => new Map((technicians ?? []).map((technician) => [technician.id, technician])), [technicians]);
+  const serviceRecordByServiceId = useMemo(() => {
+    const map = new Map<string, ServiceRecord>();
+    for (const serviceRecord of serviceRecords ?? []) {
+      if (serviceRecord.serviceId) map.set(serviceRecord.serviceId, serviceRecord);
+    }
+    return map;
+  }, [serviceRecords]);
   const servicesByAppointmentId = useMemo(() => {
     const map = new Map<string, Service[]>();
     for (const service of allServices ?? []) {
@@ -944,12 +952,29 @@ export default function Schedule() {
                               const isSelected = selectedAppointmentId === appointment.id;
                               const hasLocks = appointment.lockTime || appointment.lockTechnician;
                               const siblingCount = Math.max(linkedServices.length - 1, 0);
+                              const linkedServiceRecords = linkedServices
+                                .map((service) => serviceRecordByServiceId.get(service.id))
+                                .filter((record): record is ServiceRecord => !!record);
+                              const anyTicketPosted = linkedServiceRecords.length > 0 || linkedServices.some((service) => service.status === "COMPLETED");
+                              const allTicketsFinalized = linkedServices.length > 0
+                                && linkedServices.every((service) => serviceRecordByServiceId.get(service.id)?.confirmed);
+                              const isCompletedAppointment = appointment.status === "completed" && allTicketsFinalized;
+                              const isPendingOfficeReview = anyTicketPosted && !allTicketsFinalized;
+                              const statusTone = isCompletedAppointment
+                                ? "border-green-600 bg-green-100 text-green-950"
+                                : isPendingOfficeReview
+                                  ? "border-yellow-500 bg-yellow-50 text-yellow-950"
+                                  : appointment.status === "in_progress"
+                                    ? "border-yellow-500"
+                                    : "bg-background";
+                              const mutedTextTone = isCompletedAppointment ? "text-green-900" : isPendingOfficeReview ? "text-yellow-900" : "text-muted-foreground";
+                              const locationHref = location ? `/customers/${appointment.customerId}?locationId=${location.id}` : `/customers/${appointment.customerId}`;
 
                               return (
                                 <HoverCard key={appointment.id} openDelay={150}>
                                   <HoverCardTrigger asChild>
                                     <div
-                                      className={`rounded-md border bg-background px-2 py-2 text-xs shadow-sm transition-colors ${isSelected ? "border-primary ring-1 ring-primary" : ""}`}
+                                      className={`rounded-md border px-2 py-2 text-xs shadow-sm transition-colors ${statusTone} ${isSelected ? "border-primary ring-1 ring-primary" : ""}`}
                                       onClick={(event) => {
                                         event.stopPropagation();
                                         handleAppointmentCardClick(appointment);
@@ -957,22 +982,22 @@ export default function Schedule() {
                                     >
                                       <div className="flex items-start justify-between gap-2">
                                         <div className="min-w-0">
-                                          <button type="button" className="truncate text-left font-medium underline-offset-2 hover:underline" onClick={(event) => { event.stopPropagation(); if (linkedService?.id) setDetailServiceId(linkedService.id); }}>
+                                          <button type="button" className="truncate text-left font-medium underline-offset-2 hover:underline" onClick={(event) => { event.stopPropagation(); setLocation(locationHref); }}>
                                             {customerLabel}
                                           </button>
-                                          <button type="button" className="mt-0.5 block truncate text-left text-muted-foreground underline-offset-2 hover:underline" onClick={(event) => { event.stopPropagation(); if (linkedService?.id) setDetailServiceId(linkedService.id); }}>
+                                          <button type="button" className={`mt-0.5 block truncate text-left underline-offset-2 hover:underline ${mutedTextTone}`} onClick={(event) => { event.stopPropagation(); if (linkedService?.id) setDetailServiceId(linkedService.id); }}>
                                             {serviceTypeName}
                                           </button>
-                                          {siblingCount > 0 ? <p className="mt-1 text-[11px] text-muted-foreground">+ {siblingCount} other service{siblingCount === 1 ? "" : "s"}</p> : null}
+                                          {siblingCount > 0 ? <p className={`mt-1 text-[11px] ${mutedTextTone}`}>+ {siblingCount} other service{siblingCount === 1 ? "" : "s"}</p> : null}
                                         </div>
                                         <div className="flex items-center gap-1">
-                                          {hasLocks ? <Lock className="h-3.5 w-3.5 text-muted-foreground" /> : null}
-                                          <button type="button" className="rounded p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground" onClick={(event) => { event.stopPropagation(); setEditingAppointmentId(appointment.id); }} aria-label="Edit appointment">
+                                          {hasLocks ? <Lock className={`h-3.5 w-3.5 ${mutedTextTone}`} /> : null}
+                                          <button type="button" className={`rounded p-1 transition-colors hover:bg-muted hover:text-foreground ${mutedTextTone}`} onClick={(event) => { event.stopPropagation(); setEditingAppointmentId(appointment.id); }} aria-label="Edit appointment">
                                             <Settings2 className="h-3.5 w-3.5" />
                                           </button>
                                         </div>
                                       </div>
-                                      <div className="mt-2 flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
+                                      <div className={`mt-2 flex items-center justify-between gap-2 text-[11px] ${mutedTextTone}`}>
                                         <span>{new Date(appointment.scheduledDate).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}</span>
                                         {durationMinutes ? <span>{durationMinutes} min</span> : null}
                                       </div>

@@ -30,7 +30,7 @@ Still transitional / not yet canonical:
 * notes still use legacy scope semantics
 * no flags/holds yet
 * service agreements exist, and cancellation policy MVP work is underway; contract versioning, amendment lifecycle, bundle, and billing enforcement work remains future roadmap
-* Service Completion / Technician Work MVP is underway as a mobile-first web/PWA workflow
+* Service Ticket / Technician Work MVP is underway as a mobile-first web/PWA workflow
 * no payments yet
 * no user/permission system yet
 * no audit logging yet
@@ -179,25 +179,29 @@ The cancellation MVP should manage pending generated Services, scheduled agreeme
 
 Terms & Conditions are future Settings-level templates that combine with Agreement Templates, Cancellation Policies, pricing/billing rules, and warranty/service scope language to render customer-facing contracts. Signed contracts are immutable historical records and should be changed only through amendments, versions, replacements, upgrades/downgrades, renewals, or cancellation/recreate workflows.
 
-### Service completion and technician workflow
+### Service ticket and technician workflow
 
-Current implementation priority: mobile-first Service Completion / Technician Work foundation.
+Current implementation priority: mobile-first Service Ticket / Technician Work hardening.
 
 Canonical direction:
 
 * Technician Work is a web/PWA route first; native mobile apps are future work.
 * Technicians view assigned scheduled Appointments by technician and day.
-* One Appointment may contain multiple Services, and each Service is completed independently.
+* One Appointment may contain multiple Services, and each Service gets its own posted Service Ticket.
 * Service Record is the completion/compliance truth layer tied to a Service.
-* Service Records snapshot technician name and license number at completion time.
-* Materials/chemicals are captured as child Product Application records for MVP compliance capture.
-* Appointment status should become completed only after all linked Services are completed.
-* Agreement-generated Service completion advances the Agreement recurrence cycle.
-* Non-agreement Service completion may generate Opportunities according to Service Type follow-up settings.
+* Service Records snapshot technician name and license number when the ticket is posted.
+* Technician-posted tickets enter office review pending; office finalization is separate.
+* Material Products define compliance-aware defaults for Product Application rows.
+* Product Applications capture EPA number, dilution, amount/unit, method, equipment/device, area, notes, and active ingredient amount.
+* Areas serviced should be derived from structured application areas where practical.
+* Local Service Ticket drafts use browser localStorage as same-device interruption protection; full offline sync is future work.
+* Appointment status should become completed only after all linked Services have posted tickets.
+* Agreement-generated Service ticket posting advances the Agreement recurrence cycle.
+* Non-agreement Service ticket posting may generate Opportunities according to Service Type follow-up settings.
 
 Next after completion MVP:
 
-1. richer service record review/detail workflow
+1. role-gated office finalization/reopen workflow
 2. invoice draft generation from completed billable Service Records
 3. customer signature/photo/file capture
 4. inventory-integrated material usage

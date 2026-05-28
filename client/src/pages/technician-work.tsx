@@ -3,13 +3,14 @@ import { useQuery } from "@tanstack/react-query";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ServiceCompletionDialog } from "@/components/service-completion-dialog";
 import { queryClient } from "@/lib/queryClient";
-import { CalendarDays, CheckCircle2, ClipboardList, MapPin } from "lucide-react";
+import { CalendarDays, CheckCircle2, ClipboardList, MapPin, Navigation } from "lucide-react";
 import type { Appointment, Customer, Location, Service, ServiceRecord, ServiceType, Technician } from "@shared/schema";
 
 interface TechnicianWorkService {
@@ -53,6 +54,7 @@ export default function TechnicianWork() {
   const [selectedDate, setSelectedDate] = useState(formatDateInputValue(new Date()));
   const [selectedTechnicianId, setSelectedTechnicianId] = useState("");
   const [completionContext, setCompletionContext] = useState<{ service: Service; appointment: Appointment } | null>(null);
+  const [detailVisit, setDetailVisit] = useState<TechnicianWorkVisit | null>(null);
 
   const { data: technicians, isLoading: techniciansLoading } = useQuery<Technician[]>({ queryKey: ["/api/technicians?includeInactive=true"] });
   const { data: serviceTypes } = useQuery<ServiceType[]>({ queryKey: ["/api/service-types"] });
@@ -121,9 +123,12 @@ export default function TechnicianWork() {
         </Card>
       ) : (
         <div className="space-y-3">
-          {visits.map((visit) => (
-            <Card key={visit.appointment.id} className="overflow-hidden">
-              <CardHeader className="border-b bg-muted/20 p-4">
+          {visits.map((visit) => {
+            const completedCount = visit.services.filter(({ service, serviceRecord }) => service.status === "COMPLETED" || !!serviceRecord).length;
+            const serviceLabels = visit.services.map(({ service }) => serviceTypeNameById.get(service.serviceTypeId || "") || "Service");
+            return (
+            <Card key={visit.appointment.id} className="overflow-hidden transition-colors hover:bg-muted/10" onClick={() => setDetailVisit(visit)}>
+              <CardHeader className="p-4">
                 <div className="flex items-start justify-between gap-3">
                   <div>
                     <CardTitle className="text-base">{formatTimeRange(visit.appointment)}</CardTitle>
@@ -132,18 +137,55 @@ export default function TechnicianWork() {
                       <MapPin className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                       <span>{getAddress(visit.location)}</span>
                     </p>
+                    <p className="mt-2 text-sm text-muted-foreground">{serviceLabels.join(", ")}</p>
                   </div>
-                  <Badge variant={visit.appointment.status === "completed" ? "default" : "secondary"}>{visit.appointment.status}</Badge>
+                  <div className="flex flex-col items-end gap-2">
+                    <Badge variant={visit.appointment.status === "completed" ? "default" : "secondary"}>{visit.appointment.status}</Badge>
+                    <span className="text-xs text-muted-foreground">{completedCount}/{visit.services.length} posted</span>
+                  </div>
                 </div>
               </CardHeader>
-              <CardContent className="space-y-3 p-4">
-                {visit.appointment.notes && (
-                  <div className="rounded-lg border bg-background p-3 text-sm text-muted-foreground">
-                    {visit.appointment.notes}
-                  </div>
+            </Card>
+          );})}
+        </div>
+      )}
+
+      <Dialog open={!!detailVisit} onOpenChange={(open) => !open && setDetailVisit(null)}>
+        <DialogContent className="max-h-[92vh] overflow-y-auto sm:max-w-2xl">
+          <DialogHeader><DialogTitle>Appointment Details</DialogTitle></DialogHeader>
+          {detailVisit && (
+            <div className="space-y-4">
+              <div className="rounded-lg border bg-muted/20 p-3">
+                <p className="font-medium">{getCustomerLabel(detailVisit.customer, detailVisit.location)}</p>
+                <p className="text-sm text-muted-foreground">{formatTimeRange(detailVisit.appointment)}</p>
+                <p className="mt-1 text-sm text-muted-foreground">{getAddress(detailVisit.location)}</p>
+                {detailVisit.location && (
+                  <a
+                    className="mt-3 inline-flex items-center gap-2 text-sm text-primary underline"
+                    href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(getAddress(detailVisit.location))}`}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    <Navigation className="h-3.5 w-3.5" /> Open in Google Maps
+                  </a>
                 )}
-                {visit.services.map(({ service, serviceRecord }) => {
-                  const completed = service.status === "COMPLETED" || !!serviceRecord;
+              </div>
+              {detailVisit.appointment.notes && (
+                <div className="rounded-lg border p-3">
+                  <p className="text-xs uppercase tracking-wide text-muted-foreground">Appointment Notes</p>
+                  <p className="mt-1 whitespace-pre-wrap text-sm">{detailVisit.appointment.notes}</p>
+                </div>
+              )}
+              {detailVisit.location?.notes && (
+                <div className="rounded-lg border p-3">
+                  <p className="text-xs uppercase tracking-wide text-muted-foreground">Location Notes</p>
+                  <p className="mt-1 whitespace-pre-wrap text-sm">{detailVisit.location.notes}</p>
+                </div>
+              )}
+              <div className="space-y-3">
+                <p className="text-sm font-medium">Linked Services</p>
+                {detailVisit.services.map(({ service, serviceRecord }) => {
+                  const posted = service.status === "COMPLETED" || !!serviceRecord;
                   return (
                     <div key={service.id} className="rounded-lg border p-3">
                       <div className="flex items-start justify-between gap-3">
@@ -151,11 +193,11 @@ export default function TechnicianWork() {
                           <p className="font-medium">{serviceTypeNameById.get(service.serviceTypeId || "") || "Service"}</p>
                           <p className="mt-1 text-sm text-muted-foreground">{service.notes || "No service instructions."}</p>
                         </div>
-                        <Badge variant={completed ? "default" : "outline"}>{completed ? "Completed" : service.status}</Badge>
+                        <Badge variant={posted ? "default" : "outline"}>{posted ? "Ticket Posted" : service.status}</Badge>
                       </div>
                       {serviceRecord && (
                         <div className="mt-3 rounded-md bg-muted/30 p-2 text-xs text-muted-foreground">
-                          <div className="flex items-center gap-1 font-medium text-foreground"><CheckCircle2 className="h-3.5 w-3.5" /> Completed {new Date(serviceRecord.serviceDate).toLocaleString()}</div>
+                          <div className="flex items-center gap-1 font-medium text-foreground"><CheckCircle2 className="h-3.5 w-3.5" /> Posted {new Date(serviceRecord.serviceDate).toLocaleString()}</div>
                           {serviceRecord.technicianLicenseNumber && <div>License #{serviceRecord.technicianLicenseNumber}</div>}
                           {serviceRecord.notes && <div className="mt-1 whitespace-pre-wrap">{serviceRecord.notes}</div>}
                         </div>
@@ -163,19 +205,22 @@ export default function TechnicianWork() {
                       <Button
                         type="button"
                         className="mt-3 h-11 w-full"
-                        variant={completed ? "outline" : "default"}
-                        onClick={() => setCompletionContext({ service, appointment: visit.appointment })}
+                        variant={posted ? "outline" : "default"}
+                        onClick={() => setCompletionContext({ service, appointment: detailVisit.appointment })}
                       >
-                        {completed ? "Edit Completion" : "Complete Service"}
+                        {posted ? "Edit Service Ticket" : "Create Service Ticket"}
                       </Button>
                     </div>
                   );
                 })}
-              </CardContent>
-            </Card>
-          ))}
-        </div>
-      )}
+              </div>
+              <div className="rounded-lg border border-dashed p-3 text-sm text-muted-foreground">
+                Street View and service device visibility are staged here for a later mapping/device-tracking pass.
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
 
       <ServiceCompletionDialog
         open={!!completionContext}

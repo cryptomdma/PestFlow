@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -8,14 +9,21 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import type { Appointment, Service, ServiceType, Technician } from "@shared/schema";
+import type { Appointment, MaterialProduct, Service, ServiceType, Technician } from "@shared/schema";
 
 interface MaterialLine {
+  materialProductId: string;
   productName: string;
   amountApplied: string;
+  unit: string;
+  dilutionLabel: string;
+  dilutionRate: string;
+  applicationMethod: string;
+  device: string;
   applicationLocation: string;
   epaRegNumber: string;
-  applicationMethod: string;
+  activeIngredientAmount: string;
+  notes: string;
 }
 
 interface ServiceCompletionDialogProps {
@@ -29,6 +37,29 @@ interface ServiceCompletionDialogProps {
   onCompleted?: () => void;
 }
 
+type DilutionOption = {
+  label?: string;
+  ratio?: string;
+  activeIngredientConcentration?: string | number | null;
+};
+
+function emptyMaterial(): MaterialLine {
+  return {
+    materialProductId: "",
+    productName: "",
+    amountApplied: "",
+    unit: "",
+    dilutionLabel: "",
+    dilutionRate: "",
+    applicationMethod: "",
+    device: "",
+    applicationLocation: "",
+    epaRegNumber: "",
+    activeIngredientAmount: "",
+    notes: "",
+  };
+}
+
 function formatDateTimeLocalValue(value: Date | string | null | undefined) {
   const date = value ? new Date(value) : new Date();
   const year = date.getFullYear();
@@ -37,6 +68,41 @@ function formatDateTimeLocalValue(value: Date | string | null | undefined) {
   const hours = String(date.getHours()).padStart(2, "0");
   const minutes = String(date.getMinutes()).padStart(2, "0");
   return `${year}-${month}-${day}T${hours}:${minutes}`;
+}
+
+function parseDilutionOptions(value: unknown): DilutionOption[] {
+  if (!value) return [];
+  if (Array.isArray(value)) return value as DilutionOption[];
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
+function uniqueValues(values: Array<string | null | undefined>) {
+  return Array.from(new Set(values.map((value) => value?.trim()).filter((value): value is string => !!value)));
+}
+
+function getConcentration(product?: MaterialProduct, dilution?: DilutionOption) {
+  const dilutionConcentration = Number(dilution?.activeIngredientConcentration ?? "");
+  if (Number.isFinite(dilutionConcentration) && dilutionConcentration > 0) return dilutionConcentration;
+  const productConcentration = Number(product?.activeIngredientPercent ?? "");
+  return Number.isFinite(productConcentration) && productConcentration > 0 ? productConcentration : null;
+}
+
+function calculateActiveIngredientAmount(amount: string, concentration: number | null) {
+  const numericAmount = Number(amount);
+  if (!Number.isFinite(numericAmount) || numericAmount <= 0 || !concentration) return "";
+  return (numericAmount * (concentration / 100)).toFixed(4);
+}
+
+function getDraftKey(serviceId?: string | null) {
+  return serviceId ? `pestflow.service-ticket-draft.${serviceId}` : null;
 }
 
 export function ServiceCompletionDialog({
@@ -54,56 +120,107 @@ export function ServiceCompletionDialog({
   const [serviceDate, setServiceDate] = useState(formatDateTimeLocalValue(new Date()));
   const [notes, setNotes] = useState("");
   const [targetPests, setTargetPests] = useState("");
-  const [areasServiced, setAreasServiced] = useState("");
   const [conditionsFound, setConditionsFound] = useState("");
   const [recommendations, setRecommendations] = useState("");
-  const [materials, setMaterials] = useState<MaterialLine[]>([
-    { productName: "", amountApplied: "", applicationLocation: "", epaRegNumber: "", applicationMethod: "" },
-  ]);
+  const [deviceNotes, setDeviceNotes] = useState("");
+  const [materials, setMaterials] = useState<MaterialLine[]>([emptyMaterial()]);
+
+  const { data: materialProducts } = useQuery<MaterialProduct[]>({ queryKey: ["/api/material-products"] });
 
   const serviceTypeName = useMemo(() => {
     return serviceTypes?.find((serviceType) => serviceType.id === service?.serviceTypeId)?.name ?? "Service";
   }, [service?.serviceTypeId, serviceTypes]);
 
+  const selectedTechnician = useMemo(() => {
+    return technicians?.find((technician) => technician.id === technicianId) ?? null;
+  }, [technicianId, technicians]);
+
+  const draftKey = getDraftKey(service?.id);
+
   useEffect(() => {
     if (!open || !service) return;
-    setTechnicianId(defaultTechnicianId || service.assignedTechnicianId || appointment?.assignedTechnicianId || "");
-    setServiceDate(formatDateTimeLocalValue(appointment?.scheduledDate ?? new Date()));
+    const nextTechnicianId = defaultTechnicianId || service.assignedTechnicianId || appointment?.assignedTechnicianId || "";
+    const nextServiceDate = formatDateTimeLocalValue(appointment?.scheduledDate ?? new Date());
+    const cachedDraft = draftKey ? localStorage.getItem(draftKey) : null;
+
+    if (cachedDraft) {
+      try {
+        const parsed = JSON.parse(cachedDraft);
+        setTechnicianId(parsed.technicianId || nextTechnicianId);
+        setServiceDate(parsed.serviceDate || nextServiceDate);
+        setNotes(parsed.notes || "");
+        setTargetPests(parsed.targetPests || "");
+        setConditionsFound(parsed.conditionsFound || "");
+        setRecommendations(parsed.recommendations || "");
+        setDeviceNotes(parsed.deviceNotes || "");
+        setMaterials(Array.isArray(parsed.materials) && parsed.materials.length ? parsed.materials : [emptyMaterial()]);
+        return;
+      } catch {
+        if (draftKey) localStorage.removeItem(draftKey);
+      }
+    }
+
+    setTechnicianId(nextTechnicianId);
+    setServiceDate(nextServiceDate);
     setNotes("");
     setTargetPests("");
-    setAreasServiced("");
     setConditionsFound("");
     setRecommendations("");
-    setMaterials([{ productName: "", amountApplied: "", applicationLocation: "", epaRegNumber: "", applicationMethod: "" }]);
-  }, [appointment?.assignedTechnicianId, appointment?.scheduledDate, defaultTechnicianId, open, service]);
+    setDeviceNotes("");
+    setMaterials([emptyMaterial()]);
+  }, [appointment?.assignedTechnicianId, appointment?.scheduledDate, defaultTechnicianId, draftKey, open, service]);
+
+  useEffect(() => {
+    if (!open || !draftKey || !service) return;
+    localStorage.setItem(draftKey, JSON.stringify({
+      technicianId,
+      serviceDate,
+      notes,
+      targetPests,
+      conditionsFound,
+      recommendations,
+      deviceNotes,
+      materials,
+      savedAt: new Date().toISOString(),
+    }));
+  }, [conditionsFound, deviceNotes, draftKey, materials, notes, open, recommendations, service, serviceDate, targetPests, technicianId]);
 
   const completeMutation = useMutation({
     mutationFn: async () => {
       if (!service) throw new Error("Service is required");
+      const derivedAreas = uniqueValues(materials.map((material) => material.applicationLocation)).join(", ");
       const response = await apiRequest("POST", `/api/services/${service.id}/complete`, {
         appointmentId: appointment?.id ?? service.appointmentId ?? null,
         technicianId: technicianId || null,
         serviceDate,
-        notes,
+        notes: [notes, deviceNotes ? `Device notes: ${deviceNotes}` : null].filter(Boolean).join("\n\n"),
         targetPests: targetPests.split(",").map((value) => value.trim()).filter(Boolean),
-        areasServiced,
+        areasServiced: derivedAreas || null,
         conditionsFound,
         recommendations,
-        confirmed: true,
+        confirmed: false,
         productApplications: materials
           .filter((material) => material.productName.trim())
           .map((material) => ({
+            materialProductId: material.materialProductId || null,
             productName: material.productName,
-            amountApplied: material.amountApplied || null,
-            applicationLocation: material.applicationLocation || null,
             epaRegNumber: material.epaRegNumber || null,
+            dilutionLabel: material.dilutionLabel || null,
+            dilutionRate: material.dilutionRate || null,
+            amountApplied: material.amountApplied || null,
+            unit: material.unit || null,
+            activeIngredientAmount: material.activeIngredientAmount || null,
             applicationMethod: material.applicationMethod || null,
+            device: material.device || null,
+            applicationLocation: material.applicationLocation || null,
+            notes: material.notes || null,
           })),
       });
       return response.json();
     },
     onSuccess: () => {
-      toast({ title: "Service completed" });
+      if (draftKey) localStorage.removeItem(draftKey);
+      toast({ title: "Service ticket posted", description: "Office review is pending." });
       queryClient.invalidateQueries({ queryKey: ["/api/services"] });
       queryClient.invalidateQueries({ queryKey: ["/api/services/by-location"] });
       queryClient.invalidateQueries({ queryKey: ["/api/service-records"] });
@@ -116,50 +233,82 @@ export function ServiceCompletionDialog({
       onCompleted?.();
       onOpenChange(false);
     },
-    onError: (error: Error) => toast({ title: "Unable to complete service", description: error.message, variant: "destructive" }),
+    onError: (error: Error) => toast({ title: "Unable to post service ticket", description: error.message, variant: "destructive" }),
   });
 
   const updateMaterial = (index: number, key: keyof MaterialLine, value: string) => {
-    setMaterials((current) => current.map((material, currentIndex) => currentIndex === index ? { ...material, [key]: value } : material));
+    setMaterials((current) => current.map((material, currentIndex) => {
+      if (currentIndex !== index) return material;
+      const next = { ...material, [key]: value };
+      const selectedProduct = materialProducts?.find((product) => product.id === next.materialProductId);
+      const dilution = parseDilutionOptions(selectedProduct?.dilutionOptions).find((option) => option.label === next.dilutionLabel);
+      return {
+        ...next,
+        activeIngredientAmount: calculateActiveIngredientAmount(next.amountApplied, getConcentration(selectedProduct, dilution)),
+      };
+    }));
+  };
+
+  const selectProduct = (index: number, productId: string) => {
+    const product = materialProducts?.find((item) => item.id === productId);
+    setMaterials((current) => current.map((material, currentIndex) => {
+      if (currentIndex !== index || !product) return material;
+      const dilution = parseDilutionOptions(product.dilutionOptions).find((option) => option.label === product.defaultDilutionLabel)
+        ?? parseDilutionOptions(product.dilutionOptions)[0];
+      const next = {
+        ...material,
+        materialProductId: product.id,
+        productName: product.name,
+        epaRegNumber: product.epaRegNumber || "",
+        dilutionLabel: dilution?.label || product.defaultDilutionLabel || "",
+        dilutionRate: dilution?.ratio || "",
+        unit: product.defaultUnit || material.unit || "",
+        applicationMethod: product.defaultApplicationMethod || "",
+        device: product.defaultEquipment || "",
+        applicationLocation: product.defaultApplicationArea || "",
+      };
+      return {
+        ...next,
+        activeIngredientAmount: calculateActiveIngredientAmount(next.amountApplied, getConcentration(product, dilution)),
+      };
+    }));
   };
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[92vh] overflow-y-auto sm:max-w-2xl">
         <DialogHeader>
-          <DialogTitle>Complete Service</DialogTitle>
+          <DialogTitle>Create Service Ticket</DialogTitle>
         </DialogHeader>
         {service && (
           <div className="space-y-5">
             <div className="rounded-lg border bg-muted/20 p-3 text-sm">
-              <p className="font-medium">{serviceTypeName}</p>
-              {appointment?.scheduledDate && <p className="text-muted-foreground">Scheduled {new Date(appointment.scheduledDate).toLocaleString()}</p>}
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="font-medium">{serviceTypeName}</p>
+                  {appointment?.scheduledDate && <p className="text-muted-foreground">Scheduled {new Date(appointment.scheduledDate).toLocaleString()}</p>}
+                  <p className="text-xs text-muted-foreground">Ticket drafts autosave locally on this device.</p>
+                </div>
+                <Badge variant="outline">Office review pending after post</Badge>
+              </div>
             </div>
 
             <div className="grid gap-4 sm:grid-cols-2">
-              <div className="space-y-2">
-                <Label>Technician</Label>
-                <Select value={technicianId || "UNASSIGNED"} onValueChange={(value) => setTechnicianId(value === "UNASSIGNED" ? "" : value)}>
-                  <SelectTrigger><SelectValue placeholder="Select technician" /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="UNASSIGNED">Unassigned</SelectItem>
-                    {(technicians ?? []).map((technician) => (
-                      <SelectItem key={technician.id} value={technician.id}>
-                        {technician.displayName} ({technician.licenseId})
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+              <div className="rounded-md border p-3">
+                <p className="text-xs uppercase tracking-wide text-muted-foreground">Technician</p>
+                <p className="mt-1 font-medium">{selectedTechnician?.displayName || "Unassigned"}</p>
+                {selectedTechnician?.licenseId && <p className="text-xs text-muted-foreground">License #{selectedTechnician.licenseId}</p>}
               </div>
-              <div className="space-y-2">
-                <Label>Service Date</Label>
-                <Input type="datetime-local" value={serviceDate} onChange={(event) => setServiceDate(event.target.value)} />
+              <div className="rounded-md border p-3">
+                <p className="text-xs uppercase tracking-wide text-muted-foreground">Service Date / Time</p>
+                <p className="mt-1 font-medium">{new Date(serviceDate).toLocaleString()}</p>
+                <p className="text-xs text-muted-foreground">Locked when ticket is started.</p>
               </div>
             </div>
 
             <div className="space-y-2">
-              <Label>Completion Notes</Label>
-              <Textarea value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="What was completed?" />
+              <Label>Ticket Notes</Label>
+              <Textarea value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="What was performed?" />
             </div>
 
             <div className="grid gap-4 sm:grid-cols-2">
@@ -168,8 +317,8 @@ export function ServiceCompletionDialog({
                 <Input value={targetPests} onChange={(event) => setTargetPests(event.target.value)} placeholder="Ants, roaches, spiders" />
               </div>
               <div className="space-y-2">
-                <Label>Areas Serviced</Label>
-                <Input value={areasServiced} onChange={(event) => setAreasServiced(event.target.value)} placeholder="Exterior perimeter, garage" />
+                <Label>Device Notes</Label>
+                <Input value={deviceNotes} onChange={(event) => setDeviceNotes(event.target.value)} placeholder="Device IDs/types staged for future tracking" />
               </div>
             </div>
 
@@ -186,26 +335,132 @@ export function ServiceCompletionDialog({
 
             <div className="space-y-3">
               <div className="flex items-center justify-between">
-                <Label>Materials / Chemicals Used</Label>
-                <Button type="button" variant="outline" size="sm" onClick={() => setMaterials((current) => [...current, { productName: "", amountApplied: "", applicationLocation: "", epaRegNumber: "", applicationMethod: "" }])}>
+                <div>
+                  <Label>Structured Materials / Chemicals</Label>
+                  <p className="text-xs text-muted-foreground">Areas serviced are derived from application areas.</p>
+                </div>
+                <Button type="button" variant="outline" size="sm" onClick={() => setMaterials((current) => [...current, emptyMaterial()])}>
                   Add Material
                 </Button>
               </div>
-              {materials.map((material, index) => (
-                <div key={index} className="grid gap-2 rounded-lg border p-3 sm:grid-cols-2">
-                  <Input placeholder="Product/material" value={material.productName} onChange={(event) => updateMaterial(index, "productName", event.target.value)} />
-                  <Input placeholder="Amount" value={material.amountApplied} onChange={(event) => updateMaterial(index, "amountApplied", event.target.value)} />
-                  <Input placeholder="Application location" value={material.applicationLocation} onChange={(event) => updateMaterial(index, "applicationLocation", event.target.value)} />
-                  <Input placeholder="EPA reg #" value={material.epaRegNumber} onChange={(event) => updateMaterial(index, "epaRegNumber", event.target.value)} />
-                  <Input className="sm:col-span-2" placeholder="Application method" value={material.applicationMethod} onChange={(event) => updateMaterial(index, "applicationMethod", event.target.value)} />
-                </div>
-              ))}
+              {materials.map((material, index) => {
+                const selectedProduct = materialProducts?.find((product) => product.id === material.materialProductId);
+                const dilutionOptions = parseDilutionOptions(selectedProduct?.dilutionOptions);
+                const methodOptions = uniqueValues(selectedProduct?.allowedApplicationMethods ?? []);
+                const equipmentOptions = uniqueValues(selectedProduct?.allowedEquipment ?? []);
+                const areaOptions = uniqueValues(selectedProduct?.allowedApplicationAreas ?? []);
+
+                return (
+                  <div key={index} className="space-y-3 rounded-lg border p-3">
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      <div className="space-y-1.5">
+                        <Label>Product</Label>
+                        <Select value={material.materialProductId || "CUSTOM"} onValueChange={(value) => value === "CUSTOM" ? updateMaterial(index, "materialProductId", "") : selectProduct(index, value)}>
+                          <SelectTrigger><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="CUSTOM">Custom / Unlisted</SelectItem>
+                            {(materialProducts ?? []).map((product) => (
+                              <SelectItem key={product.id} value={product.id}>{product.name}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="space-y-1.5">
+                        <Label>Product Name</Label>
+                        <Input value={material.productName} onChange={(event) => updateMaterial(index, "productName", event.target.value)} disabled={!!material.materialProductId && !selectedProduct?.allowTechnicianOverride} />
+                      </div>
+                      <div className="space-y-1.5">
+                        <Label>EPA #</Label>
+                        <Input value={material.epaRegNumber} onChange={(event) => updateMaterial(index, "epaRegNumber", event.target.value)} disabled={!!material.materialProductId && !selectedProduct?.allowTechnicianOverride} />
+                      </div>
+                      <div className="space-y-1.5">
+                        <Label>Dilution</Label>
+                        {dilutionOptions.length ? (
+                          <Select value={material.dilutionLabel || "NONE"} onValueChange={(value) => {
+                            const dilution = dilutionOptions.find((option) => option.label === value);
+                            updateMaterial(index, "dilutionLabel", value === "NONE" ? "" : value);
+                            updateMaterial(index, "dilutionRate", dilution?.ratio || "");
+                          }}>
+                            <SelectTrigger><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="NONE">No dilution</SelectItem>
+                              {dilutionOptions.map((option, optionIndex) => {
+                                const optionValue = option.label || option.ratio || `Dilution ${optionIndex + 1}`;
+                                return <SelectItem key={optionValue} value={optionValue}>{optionValue}</SelectItem>;
+                              })}
+                            </SelectContent>
+                          </Select>
+                        ) : (
+                          <Input value={material.dilutionLabel} onChange={(event) => updateMaterial(index, "dilutionLabel", event.target.value)} placeholder="Label / ratio" />
+                        )}
+                      </div>
+                      <div className="space-y-1.5">
+                        <Label>Amount</Label>
+                        <Input value={material.amountApplied} onChange={(event) => updateMaterial(index, "amountApplied", event.target.value)} placeholder="0.5" />
+                      </div>
+                      <div className="space-y-1.5">
+                        <Label>Unit</Label>
+                        <Input value={material.unit} onChange={(event) => updateMaterial(index, "unit", event.target.value)} placeholder="oz, gal, lb" />
+                      </div>
+                      <div className="space-y-1.5">
+                        <Label>Application Method</Label>
+                        {methodOptions.length ? (
+                          <Select value={material.applicationMethod || "NONE"} onValueChange={(value) => updateMaterial(index, "applicationMethod", value === "NONE" ? "" : value)}>
+                            <SelectTrigger><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="NONE">Select method</SelectItem>
+                              {methodOptions.map((value) => <SelectItem key={value} value={value}>{value}</SelectItem>)}
+                            </SelectContent>
+                          </Select>
+                        ) : <Input value={material.applicationMethod} onChange={(event) => updateMaterial(index, "applicationMethod", event.target.value)} />}
+                      </div>
+                      <div className="space-y-1.5">
+                        <Label>Equipment / Device</Label>
+                        {equipmentOptions.length ? (
+                          <Select value={material.device || "NONE"} onValueChange={(value) => updateMaterial(index, "device", value === "NONE" ? "" : value)}>
+                            <SelectTrigger><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="NONE">Select equipment</SelectItem>
+                              {equipmentOptions.map((value) => <SelectItem key={value} value={value}>{value}</SelectItem>)}
+                            </SelectContent>
+                          </Select>
+                        ) : <Input value={material.device} onChange={(event) => updateMaterial(index, "device", event.target.value)} />}
+                      </div>
+                      <div className="space-y-1.5">
+                        <Label>Application Area</Label>
+                        {areaOptions.length ? (
+                          <Select value={material.applicationLocation || "NONE"} onValueChange={(value) => updateMaterial(index, "applicationLocation", value === "NONE" ? "" : value)}>
+                            <SelectTrigger><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="NONE">Select area</SelectItem>
+                              {areaOptions.map((value) => <SelectItem key={value} value={value}>{value}</SelectItem>)}
+                            </SelectContent>
+                          </Select>
+                        ) : <Input value={material.applicationLocation} onChange={(event) => updateMaterial(index, "applicationLocation", event.target.value)} />}
+                      </div>
+                      <div className="space-y-1.5">
+                        <Label>Active Ingredient Applied</Label>
+                        <Input value={material.activeIngredientAmount} onChange={(event) => updateMaterial(index, "activeIngredientAmount", event.target.value)} placeholder="Calculated" />
+                      </div>
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label>Material Notes</Label>
+                      <Input value={material.notes} onChange={(event) => updateMaterial(index, "notes", event.target.value)} />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="rounded-lg border bg-muted/20 p-3">
+              <p className="text-sm font-medium">Future-ready device section</p>
+              <p className="text-xs text-muted-foreground">RBS/TBS IDs, GPS locations, and inspection history are staged for a later device-tracking pass.</p>
             </div>
 
             <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-              <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
+              <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Close</Button>
               <Button type="button" onClick={() => completeMutation.mutate()} disabled={completeMutation.isPending || !serviceDate}>
-                {completeMutation.isPending ? "Completing..." : "Complete Service"}
+                {completeMutation.isPending ? "Posting..." : "Post Service Ticket"}
               </Button>
             </div>
           </div>

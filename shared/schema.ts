@@ -288,6 +288,10 @@ export const serviceRecords = pgTable("service_records", {
   recommendations: text("recommendations"),
   customerSignature: boolean("customer_signature").default(false),
   confirmed: boolean("confirmed").default(false),
+  ticketStatus: text("ticket_status").notNull().default("OFFICE_REVIEW_PENDING"),
+  postedAt: timestamp("posted_at"),
+  finalizedAt: timestamp("finalized_at"),
+  reopenedAt: timestamp("reopened_at"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
@@ -347,13 +351,42 @@ export const opportunityActivities = pgTable("opportunity_activities", {
 export const productApplications = pgTable("product_applications", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   serviceRecordId: varchar("service_record_id").notNull().references(() => serviceRecords.id),
+  materialProductId: varchar("material_product_id"),
   productName: text("product_name").notNull(),
   epaRegNumber: text("epa_reg_number"),
+  dilutionLabel: text("dilution_label"),
   dilutionRate: text("dilution_rate"),
   amountApplied: text("amount_applied"),
+  unit: text("unit"),
+  activeIngredientAmount: text("active_ingredient_amount"),
   applicationMethod: text("application_method"),
   device: text("device"),
   applicationLocation: text("application_location"),
+  notes: text("notes"),
+});
+
+export const materialProducts = pgTable("material_products", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  name: text("name").notNull(),
+  epaRegNumber: text("epa_reg_number"),
+  manufacturer: text("manufacturer"),
+  formulationType: text("formulation_type"),
+  activeIngredientPercent: decimal("active_ingredient_percent", { precision: 10, scale: 4 }),
+  restrictedUse: boolean("restricted_use").notNull().default(false),
+  dilutionOptions: jsonb("dilution_options"),
+  allowedApplicationMethods: text("allowed_application_methods").array(),
+  allowedEquipment: text("allowed_equipment").array(),
+  allowedApplicationAreas: text("allowed_application_areas").array(),
+  defaultDilutionLabel: text("default_dilution_label"),
+  defaultApplicationMethod: text("default_application_method"),
+  defaultEquipment: text("default_equipment"),
+  defaultUnit: text("default_unit"),
+  defaultApplicationArea: text("default_application_area"),
+  allowTechnicianOverride: boolean("allow_technician_override").notNull().default(false),
+  isActive: boolean("is_active").notNull().default(true),
+  notes: text("notes"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
 export const invoices = pgTable("invoices", {
@@ -419,6 +452,7 @@ export const insertOpportunitySchema = createInsertSchema(opportunities).omit({ 
 export const insertOpportunityDispositionSchema = createInsertSchema(opportunityDispositions).omit({ id: true, createdAt: true, updatedAt: true });
 export const insertOpportunityActivitySchema = createInsertSchema(opportunityActivities).omit({ id: true, createdAt: true });
 export const insertProductApplicationSchema = createInsertSchema(productApplications).omit({ id: true });
+export const insertMaterialProductSchema = createInsertSchema(materialProducts).omit({ id: true, createdAt: true, updatedAt: true });
 export const insertInvoiceSchema = createInsertSchema(invoices).omit({ id: true, createdAt: true });
 export const insertCommunicationSchema = createInsertSchema(communications).omit({ id: true });
 export const insertAuditLogSchema = createInsertSchema(auditLogs).omit({ id: true, createdAt: true });
@@ -461,6 +495,8 @@ export type OpportunityActivity = typeof opportunityActivities.$inferSelect;
 export type InsertOpportunityActivity = z.infer<typeof insertOpportunityActivitySchema>;
 export type ProductApplication = typeof productApplications.$inferSelect;
 export type InsertProductApplication = z.infer<typeof insertProductApplicationSchema>;
+export type MaterialProduct = typeof materialProducts.$inferSelect;
+export type InsertMaterialProduct = z.infer<typeof insertMaterialProductSchema>;
 export type Invoice = typeof invoices.$inferSelect;
 export type InsertInvoice = z.infer<typeof insertInvoiceSchema>;
 export type Communication = typeof communications.$inferSelect;

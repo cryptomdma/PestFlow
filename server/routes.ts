@@ -5,7 +5,7 @@ import {
   insertCustomerSchema, insertContactSchema, insertLocationSchema,
   insertServiceTypeSchema, insertAppointmentSchema, insertServiceRecordSchema,
   insertTechnicianSchema, insertServiceSchema,
-  insertProductApplicationSchema, insertInvoiceSchema, insertCommunicationSchema,
+  insertProductApplicationSchema, insertMaterialProductSchema, insertInvoiceSchema, insertCommunicationSchema,
   insertBillingProfileSchema,
   insertAgreementSchema,
   insertAgreementTemplateSchema,
@@ -177,6 +177,12 @@ export async function registerRoutes(
     confirmed: z.boolean().nullable().optional(),
     productApplications: z.array(insertProductApplicationSchema.omit({ serviceRecordId: true })).optional(),
   });
+  const materialProductSchema = insertMaterialProductSchema.extend({
+    activeIngredientPercent: z.union([z.string(), z.number()]).nullable().optional()
+      .transform((value) => value === undefined || value === null || value === "" ? null : String(value)),
+    dilutionOptions: z.any().nullable().optional(),
+  });
+  const updateMaterialProductSchema = materialProductSchema.partial();
   const opportunityStatusSchema = z.enum(["OPEN", "CONTACTED", "CONVERTED", "DISMISSED"]);
   const opportunityUpdateSchema = insertOpportunitySchema.extend({
     status: opportunityStatusSchema.optional(),
@@ -1275,6 +1281,56 @@ export async function registerRoutes(
       const validated = updateServiceRecordSchema.parse(req.body);
       const data = await storage.updateServiceRecord(req.params.id, validated);
       if (!data) return res.status(404).json({ message: "Service record not found" });
+      res.json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/service-records/:id/finalize", async (req, res) => {
+    try {
+      const data = await storage.finalizeServiceRecord(req.params.id);
+      if (!data) return res.status(404).json({ message: "Service record not found" });
+      res.json(data);
+    } catch (e: any) {
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/service-records/:id/reopen", async (req, res) => {
+    try {
+      const data = await storage.reopenServiceRecord(req.params.id);
+      if (!data) return res.status(404).json({ message: "Service record not found" });
+      res.json(data);
+    } catch (e: any) {
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  // Material Products
+  app.get("/api/material-products", async (req, res) => {
+    const includeInactive = req.query.includeInactive === "true";
+    const data = await storage.getMaterialProducts(includeInactive);
+    res.json(data);
+  });
+
+  app.post("/api/material-products", async (req, res) => {
+    try {
+      const validated = materialProductSchema.parse(req.body);
+      const data = await storage.createMaterialProduct(validated);
+      res.status(201).json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.patch("/api/material-products/:id", async (req, res) => {
+    try {
+      const validated = updateMaterialProductSchema.parse(req.body);
+      const data = await storage.updateMaterialProduct(req.params.id, validated);
+      if (!data) return res.status(404).json({ message: "Material product not found" });
       res.json(data);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);

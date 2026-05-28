@@ -743,11 +743,13 @@ The compliance and completion record for one performed Service.
 
 ### Canonical rule
 
-Service Records are tied to Services. Completing one Service in a multi-service Appointment should not automatically complete sibling Services.
+Service Records are tied to Services. Posting one Service Ticket in a multi-service Appointment should not automatically post or finalize sibling Services.
 
-When a Service Record is created, the system must copy the technician display name and license number onto the Service Record. Historical compliance rendering must not rely only on live Technician profile joins because technician profiles can change later.
+When a Service Ticket is posted, the system must copy the technician display name and license number onto the Service Record. Historical compliance rendering must not rely only on live Technician profile joins because technician profiles can change later.
 
-An Appointment can be marked completed only when all Services linked to that Appointment are completed, unless a future explicit close/exception workflow is built.
+An Appointment can be marked completed only when all Services linked to that Appointment have posted Service Records, unless a future explicit close/exception workflow is built.
+
+Technician posting and office finalization are distinct lifecycle steps. Technician posting creates the compliance record and sends it to office review. Office finalization confirms the ticket for downstream billing/review workflows. Reopen behavior should be role-gated when roles are available.
 
 Agreement-generated Services advance agreement recurrence when the generated Service is completed. Non-agreement completed Services may generate future Opportunities according to Service Type follow-up rules.
 
@@ -755,7 +757,19 @@ Agreement-generated Services advance agreement recurrence when the generated Ser
 
 Materials should be modeled as child records, not stuffed into one field.
 
-The MVP may capture lightweight Product Application rows without full inventory deduction. Full inventory, billing, invoice posting, and payment collection are future layers built from completed/billable Service Records.
+Material Products are reusable compliance-aware definitions. They should support product identity, EPA number, manufacturer, formulation, active ingredient percentage, restricted-use flag, allowed dilution options, allowed methods, allowed equipment/devices, allowed application areas, defaults, and technician override settings.
+
+Product Application rows should be product-driven and capture product, EPA number, dilution, amount/unit, application method, equipment/device, application area, notes, and active ingredient amount.
+
+Areas serviced should be derived from structured application areas where practical. Avoid duplicating application areas as a separate primary freeform field.
+
+The MVP may capture Product Application rows without full inventory deduction. Full inventory, billing, invoice posting, and payment collection are future layers built from finalized/billable Service Records.
+
+### Mobile technician workflow
+
+The technician workflow is mobile-first web/PWA. It is not a native app yet.
+
+Technician Service Ticket drafts may be protected locally with `localStorage`. This protects refresh/background/navigation interruptions on the same device, but it is not full offline sync.
 
 #### ServiceVisitMaterial
 

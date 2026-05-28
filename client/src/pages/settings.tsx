@@ -23,8 +23,8 @@ import {
 } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { Plus, Settings as SettingsIcon, Wrench, FileText, Users, ShieldCheck } from "lucide-react";
-import type { AgreementCancellationPolicy, AgreementTemplate, OpportunityDisposition, ServiceType, Technician } from "@shared/schema";
+import { Plus, Settings as SettingsIcon, Wrench, FileText, Users, ShieldCheck, FlaskConical } from "lucide-react";
+import type { AgreementCancellationPolicy, AgreementTemplate, MaterialProduct, OpportunityDisposition, ServiceType, Technician } from "@shared/schema";
 
 function formatTemplateRecurrence(template: AgreementTemplate) {
   const interval = template.defaultRecurrenceInterval || 1;
@@ -113,6 +113,121 @@ function ServiceTypeForm({ serviceType, onClose }: { serviceType?: ServiceType |
         <div className="space-y-1.5"><Label>Opportunity Label</Label><Input placeholder="e.g., Annual Renewal" value={form.opportunityLabel} onChange={(e) => setForm((p) => ({ ...p, opportunityLabel: e.target.value }))} /></div>
       </div>
       <div className="flex justify-end gap-2"><Button type="button" variant="outline" onClick={onClose}>Cancel</Button><Button type="submit" disabled={mutation.isPending || !form.name} data-testid="button-save-service-type">{mutation.isPending ? "Saving..." : isEditMode ? "Save Type" : "Create"}</Button></div>
+    </form>
+  );
+}
+
+function splitList(value: string) {
+  return value.split(",").map((item) => item.trim()).filter(Boolean);
+}
+
+function parseDilutions(value: string) {
+  return value
+    .split("\n")
+    .map((line) => {
+      const [label, ratio, activeIngredientConcentration] = line.split("|").map((part) => part?.trim());
+      return label ? { label, ratio: ratio || "", activeIngredientConcentration: activeIngredientConcentration || null } : null;
+    })
+    .filter(Boolean);
+}
+
+function stringifyDilutions(value: unknown) {
+  if (!Array.isArray(value)) return "";
+  return value
+    .map((option: any) => [option.label, option.ratio, option.activeIngredientConcentration].filter((part) => part !== undefined && part !== null && part !== "").join(" | "))
+    .join("\n");
+}
+
+function MaterialProductForm({ product, onClose }: { product?: MaterialProduct | null; onClose: () => void }) {
+  const { toast } = useToast();
+  const isEditMode = !!product;
+  const [form, setForm] = useState({
+    name: product?.name ?? "",
+    epaRegNumber: product?.epaRegNumber ?? "",
+    manufacturer: product?.manufacturer ?? "",
+    formulationType: product?.formulationType ?? "",
+    activeIngredientPercent: product?.activeIngredientPercent ?? "",
+    restrictedUse: product?.restrictedUse ?? false,
+    dilutionOptions: stringifyDilutions(product?.dilutionOptions),
+    allowedApplicationMethods: (product?.allowedApplicationMethods ?? []).join(", "),
+    allowedEquipment: (product?.allowedEquipment ?? []).join(", "),
+    allowedApplicationAreas: (product?.allowedApplicationAreas ?? []).join(", "),
+    defaultDilutionLabel: product?.defaultDilutionLabel ?? "",
+    defaultApplicationMethod: product?.defaultApplicationMethod ?? "",
+    defaultEquipment: product?.defaultEquipment ?? "",
+    defaultUnit: product?.defaultUnit ?? "",
+    defaultApplicationArea: product?.defaultApplicationArea ?? "",
+    allowTechnicianOverride: product?.allowTechnicianOverride ?? false,
+    isActive: product?.isActive ?? true,
+    notes: product?.notes ?? "",
+  });
+
+  const mutation = useMutation({
+    mutationFn: async (data: typeof form) => {
+      const payload = {
+        ...data,
+        epaRegNumber: data.epaRegNumber || null,
+        manufacturer: data.manufacturer || null,
+        formulationType: data.formulationType || null,
+        activeIngredientPercent: data.activeIngredientPercent || null,
+        dilutionOptions: parseDilutions(data.dilutionOptions),
+        allowedApplicationMethods: splitList(data.allowedApplicationMethods),
+        allowedEquipment: splitList(data.allowedEquipment),
+        allowedApplicationAreas: splitList(data.allowedApplicationAreas),
+        defaultDilutionLabel: data.defaultDilutionLabel || null,
+        defaultApplicationMethod: data.defaultApplicationMethod || null,
+        defaultEquipment: data.defaultEquipment || null,
+        defaultUnit: data.defaultUnit || null,
+        defaultApplicationArea: data.defaultApplicationArea || null,
+        notes: data.notes || null,
+      };
+      const response = isEditMode
+        ? await apiRequest("PATCH", `/api/material-products/${product.id}`, payload)
+        : await apiRequest("POST", "/api/material-products", payload);
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/material-products"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/material-products?includeInactive=true"] });
+      toast({ title: isEditMode ? "Material product updated" : "Material product created" });
+      onClose();
+    },
+    onError: (err: Error) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+  });
+
+  return (
+    <form onSubmit={(e) => { e.preventDefault(); mutation.mutate(form); }} className="space-y-4">
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="space-y-1.5"><Label>Name *</Label><Input value={form.name} onChange={(e) => setForm((p) => ({ ...p, name: e.target.value }))} /></div>
+        <div className="space-y-1.5"><Label>EPA Number</Label><Input value={form.epaRegNumber} onChange={(e) => setForm((p) => ({ ...p, epaRegNumber: e.target.value }))} /></div>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-3">
+        <div className="space-y-1.5"><Label>Manufacturer</Label><Input value={form.manufacturer} onChange={(e) => setForm((p) => ({ ...p, manufacturer: e.target.value }))} /></div>
+        <div className="space-y-1.5"><Label>Formulation</Label><Input value={form.formulationType} onChange={(e) => setForm((p) => ({ ...p, formulationType: e.target.value }))} /></div>
+        <div className="space-y-1.5"><Label>Active Ingredient %</Label><Input type="number" step="0.0001" value={form.activeIngredientPercent} onChange={(e) => setForm((p) => ({ ...p, activeIngredientPercent: e.target.value }))} /></div>
+      </div>
+      <div className="space-y-1.5">
+        <Label>Dilution Options</Label>
+        <Textarea value={form.dilutionOptions} onChange={(e) => setForm((p) => ({ ...p, dilutionOptions: e.target.value }))} placeholder={"Label | Ratio | AI%\n0.06% finished dilution | 1 oz/gal | 0.06"} />
+      </div>
+      <div className="grid gap-3 sm:grid-cols-3">
+        <div className="space-y-1.5"><Label>Allowed Methods</Label><Input value={form.allowedApplicationMethods} onChange={(e) => setForm((p) => ({ ...p, allowedApplicationMethods: e.target.value }))} placeholder="Crack & Crevice, Spot Treatment" /></div>
+        <div className="space-y-1.5"><Label>Allowed Equipment</Label><Input value={form.allowedEquipment} onChange={(e) => setForm((p) => ({ ...p, allowedEquipment: e.target.value }))} placeholder="B&G, FlowZone" /></div>
+        <div className="space-y-1.5"><Label>Allowed Areas</Label><Input value={form.allowedApplicationAreas} onChange={(e) => setForm((p) => ({ ...p, allowedApplicationAreas: e.target.value }))} placeholder="Exterior Perimeter, Garage" /></div>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-4">
+        <div className="space-y-1.5"><Label>Default Dilution</Label><Input value={form.defaultDilutionLabel} onChange={(e) => setForm((p) => ({ ...p, defaultDilutionLabel: e.target.value }))} /></div>
+        <div className="space-y-1.5"><Label>Default Method</Label><Input value={form.defaultApplicationMethod} onChange={(e) => setForm((p) => ({ ...p, defaultApplicationMethod: e.target.value }))} /></div>
+        <div className="space-y-1.5"><Label>Default Unit</Label><Input value={form.defaultUnit} onChange={(e) => setForm((p) => ({ ...p, defaultUnit: e.target.value }))} placeholder="oz" /></div>
+        <div className="space-y-1.5"><Label>Default Area</Label><Input value={form.defaultApplicationArea} onChange={(e) => setForm((p) => ({ ...p, defaultApplicationArea: e.target.value }))} /></div>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-3">
+        <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.restrictedUse} onChange={(e) => setForm((p) => ({ ...p, restrictedUse: e.target.checked }))} /> Restricted use</label>
+        <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.allowTechnicianOverride} onChange={(e) => setForm((p) => ({ ...p, allowTechnicianOverride: e.target.checked }))} /> Allow tech overrides</label>
+        <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.isActive} onChange={(e) => setForm((p) => ({ ...p, isActive: e.target.checked }))} /> Active</label>
+      </div>
+      <div className="space-y-1.5"><Label>Notes</Label><Textarea value={form.notes} onChange={(e) => setForm((p) => ({ ...p, notes: e.target.value }))} /></div>
+      <div className="flex justify-end gap-2"><Button type="button" variant="outline" onClick={onClose}>Cancel</Button><Button type="submit" disabled={mutation.isPending || !form.name.trim()}>{mutation.isPending ? "Saving..." : isEditMode ? "Save Product" : "Create Product"}</Button></div>
     </form>
   );
 }
@@ -605,8 +720,11 @@ export default function Settings() {
   const [editingPolicy, setEditingPolicy] = useState<AgreementCancellationPolicy | null>(null);
   const [dispositionDialogOpen, setDispositionDialogOpen] = useState(false);
   const [editingDisposition, setEditingDisposition] = useState<OpportunityDisposition | null>(null);
+  const [materialDialogOpen, setMaterialDialogOpen] = useState(false);
+  const [editingMaterialProduct, setEditingMaterialProduct] = useState<MaterialProduct | null>(null);
   const { data: serviceTypes, isLoading } = useQuery<ServiceType[]>({ queryKey: ["/api/service-types"] });
   const { data: technicians, isLoading: techniciansLoading } = useQuery<Technician[]>({ queryKey: ["/api/technicians?includeInactive=true"] });
+  const { data: materialProducts, isLoading: materialProductsLoading } = useQuery<MaterialProduct[]>({ queryKey: ["/api/material-products?includeInactive=true"] });
   const { data: agreementTemplates, isLoading: templatesLoading } = useQuery<AgreementTemplate[]>({ queryKey: ["/api/agreement-templates"] });
   const { data: cancellationPolicies, isLoading: policiesLoading } = useQuery<AgreementCancellationPolicy[]>({ queryKey: ["/api/agreement-cancellation-policies?includeInactive=true"] });
   const { data: opportunityDispositions, isLoading: dispositionsLoading } = useQuery<OpportunityDisposition[]>({ queryKey: ["/api/opportunity-dispositions?includeInactive=true"] });
@@ -684,6 +802,48 @@ export default function Settings() {
                       Edit
                     </Button>
                   </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
+          <CardTitle className="text-base font-semibold flex items-center gap-2"><FlaskConical className="h-4 w-4" /> Material Products</CardTitle>
+          <Dialog open={materialDialogOpen} onOpenChange={(open) => { setMaterialDialogOpen(open); if (!open) setEditingMaterialProduct(null); }}>
+            <DialogTrigger asChild><Button size="sm" onClick={() => setEditingMaterialProduct(null)}><Plus className="h-3 w-3 mr-1" /> Add Product</Button></DialogTrigger>
+            <DialogContent className="max-w-3xl">
+              <DialogHeader><DialogTitle>{editingMaterialProduct ? "Edit Material Product" : "New Material Product"}</DialogTitle></DialogHeader>
+              <MaterialProductForm product={editingMaterialProduct} onClose={() => { setMaterialDialogOpen(false); setEditingMaterialProduct(null); }} />
+            </DialogContent>
+          </Dialog>
+        </CardHeader>
+        <CardContent>
+          {materialProductsLoading ? (
+            <div className="space-y-2">{[1, 2, 3].map((i) => <Skeleton key={i} className="h-16" />)}</div>
+          ) : !materialProducts?.length ? (
+            <div className="text-center py-8">
+              <FlaskConical className="h-8 w-8 mx-auto text-muted-foreground/30 mb-2" />
+              <p className="text-sm text-muted-foreground">No material products configured</p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {materialProducts.map((product) => (
+                <div key={product.id} className="flex items-center justify-between gap-3 rounded-md bg-muted/50 p-3">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-sm font-medium">{product.name}</span>
+                      <Badge variant={product.isActive ? "secondary" : "outline"}>{product.isActive ? "Active" : "Inactive"}</Badge>
+                      {product.restrictedUse ? <Badge variant="outline">Restricted</Badge> : null}
+                      {product.epaRegNumber ? <Badge variant="outline">EPA {product.epaRegNumber}</Badge> : null}
+                    </div>
+                    <p className="mt-0.5 text-xs text-muted-foreground">
+                      {product.manufacturer || "No manufacturer"} | AI {product.activeIngredientPercent ?? "not set"}% | Default area: {product.defaultApplicationArea || "not set"}
+                    </p>
+                  </div>
+                  <Button variant="outline" size="sm" onClick={() => { setEditingMaterialProduct(product); setMaterialDialogOpen(true); }}>Edit</Button>
                 </div>
               ))}
             </div>

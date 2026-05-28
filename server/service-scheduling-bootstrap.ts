@@ -62,6 +62,42 @@ export async function bootstrapServiceSchedulingFoundation(): Promise<void> {
   await db.execute(sql`ALTER TABLE service_records ADD COLUMN IF NOT EXISTS technician_id varchar`);
   await db.execute(sql`ALTER TABLE service_records ADD COLUMN IF NOT EXISTS technician_license_number text`);
   await db.execute(sql`ALTER TABLE service_records ADD COLUMN IF NOT EXISTS notes text`);
+  await db.execute(sql`ALTER TABLE service_records ADD COLUMN IF NOT EXISTS ticket_status text NOT NULL DEFAULT 'OFFICE_REVIEW_PENDING'`);
+  await db.execute(sql`ALTER TABLE service_records ADD COLUMN IF NOT EXISTS posted_at timestamp`);
+  await db.execute(sql`ALTER TABLE service_records ADD COLUMN IF NOT EXISTS finalized_at timestamp`);
+  await db.execute(sql`ALTER TABLE service_records ADD COLUMN IF NOT EXISTS reopened_at timestamp`);
+
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS material_products (
+      id varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+      name text NOT NULL,
+      epa_reg_number text,
+      manufacturer text,
+      formulation_type text,
+      active_ingredient_percent numeric(10, 4),
+      restricted_use boolean NOT NULL DEFAULT false,
+      dilution_options jsonb,
+      allowed_application_methods text[],
+      allowed_equipment text[],
+      allowed_application_areas text[],
+      default_dilution_label text,
+      default_application_method text,
+      default_equipment text,
+      default_unit text,
+      default_application_area text,
+      allow_technician_override boolean NOT NULL DEFAULT false,
+      is_active boolean NOT NULL DEFAULT true,
+      notes text,
+      created_at timestamp NOT NULL DEFAULT now(),
+      updated_at timestamp NOT NULL DEFAULT now()
+    )
+  `);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS material_products_active_idx ON material_products (is_active)`);
+  await db.execute(sql`ALTER TABLE product_applications ADD COLUMN IF NOT EXISTS material_product_id varchar REFERENCES material_products(id)`);
+  await db.execute(sql`ALTER TABLE product_applications ADD COLUMN IF NOT EXISTS dilution_label text`);
+  await db.execute(sql`ALTER TABLE product_applications ADD COLUMN IF NOT EXISTS unit text`);
+  await db.execute(sql`ALTER TABLE product_applications ADD COLUMN IF NOT EXISTS active_ingredient_amount text`);
+  await db.execute(sql`ALTER TABLE product_applications ADD COLUMN IF NOT EXISTS notes text`);
 
   await db.execute(sql`
     CREATE TABLE IF NOT EXISTS opportunities (

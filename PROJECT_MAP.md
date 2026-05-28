@@ -26,6 +26,11 @@
 - Technician completion captures a historical technician name and license snapshot; do not rely only on live technician joins for compliance history.
 - The Technician Work MVP is a mobile-first web/PWA route, not a native app.
 - Multi-service Appointments are completed service-by-service; the Appointment should be completed only when all linked Services are completed.
+- Technicians post Service Tickets; office finalization/reopen is a separate review layer.
+- Material Products are reusable compliance-aware definitions used by Product Application rows on Service Tickets.
+- Product Applications should capture product, EPA number, dilution, amount/unit, method, equipment/device, application area, notes, and active ingredient amount.
+- Areas serviced should be derived from structured application areas where practical.
+- Technician ticket drafts are local-device `localStorage` protection only; full offline sync is future work.
 - Agreement generation creates pending Services only.
 - `generationLeadDays` means generate pending agreement work X days before `nextServiceDate`.
 - `serviceWindowDays` means the generated Service window starts on `nextServiceDate` and ends `serviceWindowDays` later.
@@ -72,3 +77,4 @@ Required env vars:
 - Do not invent new architecture without checking existing patterns
 - Follow existing Tailwind design language unless explicitly changing UI system
 - Do not build invoicing/payment behavior directly into Service completion; completed/billable Service Records are the future invoicing input.
+- Do not bypass office review by treating technician-posted tickets as fully finalized billing events.
