@@ -128,6 +128,8 @@ export interface CompleteServiceInput {
   appointmentId?: string | null;
   technicianId?: string | null;
   serviceDate: Date;
+  serviceTypeId?: string | null;
+  price?: string | null;
   notes?: string | null;
   targetPests?: string[] | null;
   areasServiced?: string | null;
@@ -2559,15 +2561,30 @@ export class DatabaseStorage implements IStorage {
         [appointment] = await tx.select().from(appointments).where(eq(appointments.serviceId, service.id));
       }
 
-      const [existingRecord] = await tx.select().from(serviceRecords).where(eq(serviceRecords.serviceId, service.id));
+      let effectiveService = service;
+      const allowFieldServiceOverride = !service.agreementId && service.source !== "AGREEMENT_GENERATED";
+      if (allowFieldServiceOverride && (input.serviceTypeId !== undefined || input.price !== undefined)) {
+        const [updatedService] = await tx
+          .update(services)
+          .set({
+            serviceTypeId: input.serviceTypeId ?? service.serviceTypeId ?? null,
+            price: input.price === undefined ? service.price : input.price || null,
+            updatedAt: new Date(),
+          })
+          .where(eq(services.id, service.id))
+          .returning();
+        effectiveService = updatedService ?? service;
+      }
+
+      const [existingRecord] = await tx.select().from(serviceRecords).where(eq(serviceRecords.serviceId, effectiveService.id));
       const recordPayload: InsertServiceRecord = {
-        serviceId: service.id,
-        appointmentId: appointment?.id ?? service.appointmentId ?? null,
-        customerId: service.customerId,
-        locationId: service.locationId,
-        serviceTypeId: service.serviceTypeId ?? null,
+        serviceId: effectiveService.id,
+        appointmentId: appointment?.id ?? effectiveService.appointmentId ?? null,
+        customerId: effectiveService.customerId,
+        locationId: effectiveService.locationId,
+        serviceTypeId: effectiveService.serviceTypeId ?? null,
         serviceDate: input.serviceDate,
-        technicianId: input.technicianId || service.assignedTechnicianId || appointment?.assignedTechnicianId || null,
+        technicianId: input.technicianId || effectiveService.assignedTechnicianId || appointment?.assignedTechnicianId || null,
         technicianName: null,
         technicianLicenseNumber: null,
         notes: input.notes?.trim() || null,
@@ -2625,7 +2642,7 @@ export class DatabaseStorage implements IStorage {
         .set({
           status: "COMPLETED",
           appointmentId: appointment?.id ?? service.appointmentId ?? null,
-          assignedTechnicianId: technicianSnapshot.technicianId || service.assignedTechnicianId || appointment?.assignedTechnicianId || null,
+          assignedTechnicianId: technicianSnapshot.technicianId || effectiveService.assignedTechnicianId || appointment?.assignedTechnicianId || null,
           updatedAt: new Date(),
         })
         .where(eq(services.id, service.id))
@@ -2661,7 +2678,7 @@ export class DatabaseStorage implements IStorage {
       await this.ensureOpportunityForServiceRecordTx(tx, serviceRecord);
 
       return {
-        service: completedService ?? service,
+        service: completedService ?? effectiveService,
         appointment: updatedAppointment ?? null,
         serviceRecord,
         productApplications: savedApplications,

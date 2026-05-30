@@ -168,6 +168,8 @@ export async function registerRoutes(
     appointmentId: z.string().nullable().optional(),
     technicianId: z.string().nullable().optional(),
     serviceDate: z.coerce.date(),
+    serviceTypeId: z.string().nullable().optional(),
+    price: z.string().nullable().optional(),
     notes: z.string().nullable().optional(),
     targetPests: z.array(z.string()).nullable().optional(),
     areasServiced: z.string().nullable().optional(),

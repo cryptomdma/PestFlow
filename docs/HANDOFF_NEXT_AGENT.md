@@ -61,7 +61,11 @@ Build and verify the mobile-first web/PWA technician work route, structured mate
 * posting one Service Ticket creates or updates one Service Record
 * Service Record snapshots technician name and license number
 * local drafts protect same-device interruption with localStorage
+* route date navigation supports Today, previous day, next day, and date picker
 * structured material rows use Material Product definitions where available
+* material cards add newest at top, allow removal, and collapse into summaries
+* target pests are internal Service Ticket treatment context, not warranted pests
+* non-agreement Services can be adjusted for service type/price in the ticket flow; agreement-generated Services are locked
 * active ingredient amount is captured on Product Application rows
 * office finalization/reopen is staged separately from technician posting
 * Appointment status completes only after all linked Services have posted tickets
