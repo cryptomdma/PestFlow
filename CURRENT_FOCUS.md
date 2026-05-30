@@ -24,13 +24,19 @@ Harden the Technician Work / Service Ticket workflow with structured material lo
 - Product Applications capture product, EPA number, dilution, amount/unit, method, equipment, application area, notes, and active ingredient amount.
 - Areas serviced should be derived from structured application areas instead of duplicated as a primary freeform field.
 - Posted tickets enter office review pending; office finalization is separate from technician posting.
+- Technician route view supports compact date navigation: Today, previous day, next day, and date picker.
+- Material cards add newest entries at the top, can be removed, and collapse into mobile-friendly summaries after Done.
+- Target pests are internal service-ticket treatment context and are captured separately from future customer-facing warranted pests.
+- Target pests are configurable in Settings with active/favorite/sort controls.
+- Non-agreement Services may have service type and price adjusted in the ticket flow; agreement-generated Services remain locked.
+- After posting a Service Ticket, the technician returns to the route/appointment list rather than remaining in a nested modal state.
 
 ## Next tasks
-1. Verify technician Service Ticket drafts restore after closing/reopening and clear after posting.
-2. Verify structured material rows populate from Material Product defaults and calculate active ingredient amount.
-3. Verify posted tickets show office review pending and can be finalized/reopened from service detail.
-4. Verify Appointment status becomes completed only after all linked Services have posted tickets.
-5. Verify agreement-generated Service ticket posting advances the Agreement next service date.
+1. Verify route date navigation updates visible appointments.
+2. Verify technician Service Ticket drafts restore after closing/reopening and clear after posting.
+3. Verify structured material cards add at top, collapse, remove, and calculate active ingredient amount.
+4. Verify target pest multi-select stores selected pests on the ticket.
+5. Verify non-agreement service type/price edits persist, while agreement-generated Services remain locked.
 
 ## Recommended next implementation priority
 Richer service ticket and review workflow:

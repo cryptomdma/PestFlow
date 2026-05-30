@@ -389,6 +389,17 @@ export const materialProducts = pgTable("material_products", {
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
+export const targetPests = pgTable("target_pests", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  label: text("label").notNull(),
+  isActive: boolean("is_active").notNull().default(true),
+  isFavorite: boolean("is_favorite").notNull().default(false),
+  sortOrder: integer("sort_order").notNull().default(0),
+  notes: text("notes"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
 export const invoices = pgTable("invoices", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   customerId: varchar("customer_id").notNull().references(() => customers.id),
@@ -453,6 +464,7 @@ export const insertOpportunityDispositionSchema = createInsertSchema(opportunity
 export const insertOpportunityActivitySchema = createInsertSchema(opportunityActivities).omit({ id: true, createdAt: true });
 export const insertProductApplicationSchema = createInsertSchema(productApplications).omit({ id: true });
 export const insertMaterialProductSchema = createInsertSchema(materialProducts).omit({ id: true, createdAt: true, updatedAt: true });
+export const insertTargetPestSchema = createInsertSchema(targetPests).omit({ id: true, createdAt: true, updatedAt: true });
 export const insertInvoiceSchema = createInsertSchema(invoices).omit({ id: true, createdAt: true });
 export const insertCommunicationSchema = createInsertSchema(communications).omit({ id: true });
 export const insertAuditLogSchema = createInsertSchema(auditLogs).omit({ id: true, createdAt: true });
@@ -497,6 +509,8 @@ export type ProductApplication = typeof productApplications.$inferSelect;
 export type InsertProductApplication = z.infer<typeof insertProductApplicationSchema>;
 export type MaterialProduct = typeof materialProducts.$inferSelect;
 export type InsertMaterialProduct = z.infer<typeof insertMaterialProductSchema>;
+export type TargetPest = typeof targetPests.$inferSelect;
+export type InsertTargetPest = z.infer<typeof insertTargetPestSchema>;
 export type Invoice = typeof invoices.$inferSelect;
 export type InsertInvoice = z.infer<typeof insertInvoiceSchema>;
 export type Communication = typeof communications.$inferSelect;

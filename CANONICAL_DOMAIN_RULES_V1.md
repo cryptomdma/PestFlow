@@ -771,6 +771,14 @@ The technician workflow is mobile-first web/PWA. It is not a native app yet.
 
 Technician Service Ticket drafts may be protected locally with `localStorage`. This protects refresh/background/navigation interruptions on the same device, but it is not full offline sync.
 
+Technician route view is day-driven and should support compact date navigation suitable for mobile field use.
+
+Target pests are Settings-managed reference data for internal treatment context on the Service Ticket. They are not the same as warranted pests or customer-facing warranty language, which are future contract/terms concepts.
+
+For non-agreement Services, technicians may adjust service type and price as a staged field workflow for evaluations, upgrades, or one-time scope changes. Agreement-generated Services should keep service type and price locked in the technician ticket flow.
+
+Material entry should remain mobile-manageable: new materials add at the top, empty material use is allowed, cards can be removed, and saved material rows collapse into summaries that can be expanded for review/edit.
+
 #### ServiceVisitMaterial
 
 * id

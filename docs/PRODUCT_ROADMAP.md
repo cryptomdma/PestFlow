@@ -195,6 +195,10 @@ Canonical direction:
 * Product Applications capture EPA number, dilution, amount/unit, method, equipment/device, area, notes, and active ingredient amount.
 * Areas serviced should be derived from structured application areas where practical.
 * Local Service Ticket drafts use browser localStorage as same-device interruption protection; full offline sync is future work.
+* Technician route view should remain day-driven with compact mobile date navigation.
+* Target pests are Settings-managed internal treatment context and distinct from future warranted-pest/customer-facing warranty language.
+* Non-agreement Services may support technician service type/price adjustment; agreement-generated Services remain locked in the ticket flow.
+* Material entry should be optimized for mobile with add-at-top, remove, Done/collapse, and expandable summary behavior.
 * Appointment status should become completed only after all linked Services have posted tickets.
 * Agreement-generated Service ticket posting advances the Agreement recurrence cycle.
 * Non-agreement Service ticket posting may generate Opportunities according to Service Type follow-up settings.

@@ -10,7 +10,7 @@ import {
   agreements,
   agreementTemplates,
   agreementCancellationPolicies,
-  serviceRecords, productApplications, materialProducts, invoices, communications,
+  serviceRecords, productApplications, materialProducts, targetPests, invoices, communications,
   billingProfiles, customerNotes,
   noteRevisions,
   type Account,
@@ -30,6 +30,7 @@ import {
   type OpportunityDisposition, type InsertOpportunityDisposition,
   type ProductApplication, type InsertProductApplication,
   type MaterialProduct, type InsertMaterialProduct,
+  type TargetPest, type InsertTargetPest,
   type Invoice, type InsertInvoice,
   type Communication, type InsertCommunication,
   type BillingProfile, type InsertBillingProfile,
@@ -128,6 +129,8 @@ export interface CompleteServiceInput {
   appointmentId?: string | null;
   technicianId?: string | null;
   serviceDate: Date;
+  serviceTypeId?: string | null;
+  price?: string | null;
   notes?: string | null;
   targetPests?: string[] | null;
   areasServiced?: string | null;
@@ -277,6 +280,9 @@ export interface IStorage {
   getMaterialProducts(includeInactive?: boolean): Promise<MaterialProduct[]>;
   createMaterialProduct(data: InsertMaterialProduct): Promise<MaterialProduct>;
   updateMaterialProduct(id: string, data: Partial<InsertMaterialProduct>): Promise<MaterialProduct | undefined>;
+  getTargetPests(includeInactive?: boolean): Promise<TargetPest[]>;
+  createTargetPest(data: InsertTargetPest): Promise<TargetPest>;
+  updateTargetPest(id: string, data: Partial<InsertTargetPest>): Promise<TargetPest | undefined>;
   getProductApplications(): Promise<ProductApplication[]>;
   getProductApplicationsByServiceRecord(serviceRecordId: string): Promise<ProductApplication[]>;
   createProductApplication(data: InsertProductApplication): Promise<ProductApplication>;
@@ -2559,15 +2565,30 @@ export class DatabaseStorage implements IStorage {
         [appointment] = await tx.select().from(appointments).where(eq(appointments.serviceId, service.id));
       }
 
-      const [existingRecord] = await tx.select().from(serviceRecords).where(eq(serviceRecords.serviceId, service.id));
+      let effectiveService = service;
+      const allowFieldServiceOverride = !service.agreementId && service.source !== "AGREEMENT_GENERATED";
+      if (allowFieldServiceOverride && (input.serviceTypeId !== undefined || input.price !== undefined)) {
+        const [updatedService] = await tx
+          .update(services)
+          .set({
+            serviceTypeId: input.serviceTypeId ?? service.serviceTypeId ?? null,
+            price: input.price === undefined ? service.price : input.price || null,
+            updatedAt: new Date(),
+          })
+          .where(eq(services.id, service.id))
+          .returning();
+        effectiveService = updatedService ?? service;
+      }
+
+      const [existingRecord] = await tx.select().from(serviceRecords).where(eq(serviceRecords.serviceId, effectiveService.id));
       const recordPayload: InsertServiceRecord = {
-        serviceId: service.id,
-        appointmentId: appointment?.id ?? service.appointmentId ?? null,
-        customerId: service.customerId,
-        locationId: service.locationId,
-        serviceTypeId: service.serviceTypeId ?? null,
+        serviceId: effectiveService.id,
+        appointmentId: appointment?.id ?? effectiveService.appointmentId ?? null,
+        customerId: effectiveService.customerId,
+        locationId: effectiveService.locationId,
+        serviceTypeId: effectiveService.serviceTypeId ?? null,
         serviceDate: input.serviceDate,
-        technicianId: input.technicianId || service.assignedTechnicianId || appointment?.assignedTechnicianId || null,
+        technicianId: input.technicianId || effectiveService.assignedTechnicianId || appointment?.assignedTechnicianId || null,
         technicianName: null,
         technicianLicenseNumber: null,
         notes: input.notes?.trim() || null,
@@ -2625,7 +2646,7 @@ export class DatabaseStorage implements IStorage {
         .set({
           status: "COMPLETED",
           appointmentId: appointment?.id ?? service.appointmentId ?? null,
-          assignedTechnicianId: technicianSnapshot.technicianId || service.assignedTechnicianId || appointment?.assignedTechnicianId || null,
+          assignedTechnicianId: technicianSnapshot.technicianId || effectiveService.assignedTechnicianId || appointment?.assignedTechnicianId || null,
           updatedAt: new Date(),
         })
         .where(eq(services.id, service.id))
@@ -2661,7 +2682,7 @@ export class DatabaseStorage implements IStorage {
       await this.ensureOpportunityForServiceRecordTx(tx, serviceRecord);
 
       return {
-        service: completedService ?? service,
+        service: completedService ?? effectiveService,
         appointment: updatedAppointment ?? null,
         serviceRecord,
         productApplications: savedApplications,
@@ -2718,6 +2739,27 @@ export class DatabaseStorage implements IStorage {
       .where(eq(materialProducts.id, id))
       .returning();
     return product;
+  }
+
+  async getTargetPests(includeInactive = false): Promise<TargetPest[]> {
+    if (includeInactive) {
+      return db.select().from(targetPests).orderBy(asc(targetPests.sortOrder), asc(targetPests.label));
+    }
+    return db.select().from(targetPests).where(eq(targetPests.isActive, true)).orderBy(asc(targetPests.sortOrder), asc(targetPests.label));
+  }
+
+  async createTargetPest(data: InsertTargetPest): Promise<TargetPest> {
+    const [pest] = await db.insert(targetPests).values(data).returning();
+    return pest;
+  }
+
+  async updateTargetPest(id: string, data: Partial<InsertTargetPest>): Promise<TargetPest | undefined> {
+    const [pest] = await db
+      .update(targetPests)
+      .set({ ...data, updatedAt: new Date() })
+      .where(eq(targetPests.id, id))
+      .returning();
+    return pest;
   }
 
   async getProductApplicationsByServiceRecord(serviceRecordId: string): Promise<ProductApplication[]> {

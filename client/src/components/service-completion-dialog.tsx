@@ -9,9 +9,11 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import type { Appointment, MaterialProduct, Service, ServiceType, Technician } from "@shared/schema";
+import type { Appointment, MaterialProduct, Service, ServiceRecord, ServiceType, TargetPest, Technician } from "@shared/schema";
 
 interface MaterialLine {
+  key: string;
+  collapsed: boolean;
   materialProductId: string;
   productName: string;
   amountApplied: string;
@@ -34,6 +36,7 @@ interface ServiceCompletionDialogProps {
   technicians?: Technician[];
   serviceTypes?: ServiceType[];
   defaultTechnicianId?: string | null;
+  existingServiceRecord?: ServiceRecord | null;
   onCompleted?: () => void;
 }
 
@@ -43,8 +46,14 @@ type DilutionOption = {
   activeIngredientConcentration?: string | number | null;
 };
 
+function createClientKey() {
+  return `material-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 function emptyMaterial(): MaterialLine {
   return {
+    key: createClientKey(),
+    collapsed: false,
     materialProductId: "",
     productName: "",
     amountApplied: "",
@@ -59,6 +68,21 @@ function emptyMaterial(): MaterialLine {
     notes: "",
   };
 }
+
+const FALLBACK_TARGET_PEST_OPTIONS = [
+  "Ants",
+  "Roaches",
+  "Spiders",
+  "Rodents",
+  "Mosquitoes",
+  "Fleas",
+  "Ticks",
+  "Wasps",
+  "Termites",
+  "Bed Bugs",
+  "Silverfish",
+  "Occasional Invaders",
+];
 
 function formatDateTimeLocalValue(value: Date | string | null | undefined) {
   const date = value ? new Date(value) : new Date();
@@ -113,6 +137,7 @@ export function ServiceCompletionDialog({
   technicians,
   serviceTypes,
   defaultTechnicianId,
+  existingServiceRecord,
   onCompleted,
 }: ServiceCompletionDialogProps) {
   const { toast } = useToast();
@@ -124,18 +149,29 @@ export function ServiceCompletionDialog({
   const [recommendations, setRecommendations] = useState("");
   const [deviceNotes, setDeviceNotes] = useState("");
   const [materials, setMaterials] = useState<MaterialLine[]>([emptyMaterial()]);
+  const [targetPestSearch, setTargetPestSearch] = useState("");
+  const [ticketServiceTypeId, setTicketServiceTypeId] = useState("");
+  const [ticketPrice, setTicketPrice] = useState("");
 
   const { data: materialProducts } = useQuery<MaterialProduct[]>({ queryKey: ["/api/material-products"] });
+  const { data: configuredTargetPests } = useQuery<TargetPest[]>({ queryKey: ["/api/target-pests"] });
 
   const serviceTypeName = useMemo(() => {
-    return serviceTypes?.find((serviceType) => serviceType.id === service?.serviceTypeId)?.name ?? "Service";
-  }, [service?.serviceTypeId, serviceTypes]);
+    return serviceTypes?.find((serviceType) => serviceType.id === ticketServiceTypeId || serviceType.id === service?.serviceTypeId)?.name ?? "Service";
+  }, [service?.serviceTypeId, serviceTypes, ticketServiceTypeId]);
 
   const selectedTechnician = useMemo(() => {
     return technicians?.find((technician) => technician.id === technicianId) ?? null;
   }, [technicianId, technicians]);
 
   const draftKey = getDraftKey(service?.id);
+  const allowServiceOverride = !!service && !service.agreementId && service.source !== "AGREEMENT_GENERATED";
+  const selectedTargetPests = useMemo(() => targetPests.split(",").map((value) => value.trim()).filter(Boolean), [targetPests]);
+  const targetPestOptions = useMemo(() => {
+    const configured = (configuredTargetPests ?? []).map((pest) => pest.label);
+    return configured.length ? configured : FALLBACK_TARGET_PEST_OPTIONS;
+  }, [configuredTargetPests]);
+  const filteredTargetPests = targetPestOptions.filter((pest) => pest.toLowerCase().includes(targetPestSearch.toLowerCase()));
 
   useEffect(() => {
     if (!open || !service) return;
@@ -153,6 +189,8 @@ export function ServiceCompletionDialog({
         setConditionsFound(parsed.conditionsFound || "");
         setRecommendations(parsed.recommendations || "");
         setDeviceNotes(parsed.deviceNotes || "");
+        setTicketServiceTypeId(parsed.ticketServiceTypeId || service.serviceTypeId || "");
+        setTicketPrice(parsed.ticketPrice ?? service.price ?? "");
         setMaterials(Array.isArray(parsed.materials) && parsed.materials.length ? parsed.materials : [emptyMaterial()]);
         return;
       } catch {
@@ -167,7 +205,9 @@ export function ServiceCompletionDialog({
     setConditionsFound("");
     setRecommendations("");
     setDeviceNotes("");
-    setMaterials([emptyMaterial()]);
+    setTicketServiceTypeId(service.serviceTypeId || "");
+    setTicketPrice(service.price || "");
+    setMaterials([]);
   }, [appointment?.assignedTechnicianId, appointment?.scheduledDate, defaultTechnicianId, draftKey, open, service]);
 
   useEffect(() => {
@@ -180,10 +220,12 @@ export function ServiceCompletionDialog({
       conditionsFound,
       recommendations,
       deviceNotes,
+      ticketServiceTypeId,
+      ticketPrice,
       materials,
       savedAt: new Date().toISOString(),
     }));
-  }, [conditionsFound, deviceNotes, draftKey, materials, notes, open, recommendations, service, serviceDate, targetPests, technicianId]);
+  }, [conditionsFound, deviceNotes, draftKey, materials, notes, open, recommendations, service, serviceDate, targetPests, technicianId, ticketPrice, ticketServiceTypeId]);
 
   const completeMutation = useMutation({
     mutationFn: async () => {
@@ -193,6 +235,8 @@ export function ServiceCompletionDialog({
         appointmentId: appointment?.id ?? service.appointmentId ?? null,
         technicianId: technicianId || null,
         serviceDate,
+        serviceTypeId: allowServiceOverride ? ticketServiceTypeId || null : undefined,
+        price: allowServiceOverride ? ticketPrice || null : undefined,
         notes: [notes, deviceNotes ? `Device notes: ${deviceNotes}` : null].filter(Boolean).join("\n\n"),
         targetPests: targetPests.split(",").map((value) => value.trim()).filter(Boolean),
         areasServiced: derivedAreas || null,
@@ -249,6 +293,21 @@ export function ServiceCompletionDialog({
     }));
   };
 
+  const toggleTargetPest = (pest: string) => {
+    const next = selectedTargetPests.includes(pest)
+      ? selectedTargetPests.filter((value) => value !== pest)
+      : [...selectedTargetPests, pest];
+    setTargetPests(next.join(", "));
+  };
+
+  const collapseMaterial = (index: number, collapsed: boolean) => {
+    setMaterials((current) => current.map((material, currentIndex) => currentIndex === index ? { ...material, collapsed } : material));
+  };
+
+  const removeMaterial = (index: number) => {
+    setMaterials((current) => current.filter((_, currentIndex) => currentIndex !== index));
+  };
+
   const selectProduct = (index: number, productId: string) => {
     const product = materialProducts?.find((item) => item.id === productId);
     setMaterials((current) => current.map((material, currentIndex) => {
@@ -278,7 +337,7 @@ export function ServiceCompletionDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[92vh] overflow-y-auto sm:max-w-2xl">
         <DialogHeader>
-          <DialogTitle>Create Service Ticket</DialogTitle>
+          <DialogTitle>{existingServiceRecord ? "Service Ticket" : "Create Service Ticket"}</DialogTitle>
         </DialogHeader>
         {service && (
           <div className="space-y-5">
@@ -306,6 +365,31 @@ export function ServiceCompletionDialog({
               </div>
             </div>
 
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="space-y-2">
+                <Label>Service Type</Label>
+                {allowServiceOverride ? (
+                  <Select value={ticketServiceTypeId || "NONE"} onValueChange={(value) => setTicketServiceTypeId(value === "NONE" ? "" : value)}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="NONE">Select service type</SelectItem>
+                      {(serviceTypes ?? []).map((serviceType) => <SelectItem key={serviceType.id} value={serviceType.id}>{serviceType.name}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <div className="rounded-md border bg-muted/20 px-3 py-2 text-sm">{serviceTypeName} <span className="text-xs text-muted-foreground">(agreement locked)</span></div>
+                )}
+              </div>
+              <div className="space-y-2">
+                <Label>Service Price</Label>
+                {allowServiceOverride ? (
+                  <Input type="number" min="0" step="0.01" value={ticketPrice} onChange={(event) => setTicketPrice(event.target.value)} />
+                ) : (
+                  <div className="rounded-md border bg-muted/20 px-3 py-2 text-sm">{service.price ? `$${Number(service.price).toFixed(2)}` : "Not set"} <span className="text-xs text-muted-foreground">(agreement locked)</span></div>
+                )}
+              </div>
+            </div>
+
             <div className="space-y-2">
               <Label>Ticket Notes</Label>
               <Textarea value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="What was performed?" />
@@ -314,7 +398,19 @@ export function ServiceCompletionDialog({
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="space-y-2">
                 <Label>Target Pests</Label>
-                <Input value={targetPests} onChange={(event) => setTargetPests(event.target.value)} placeholder="Ants, roaches, spiders" />
+                <Input value={targetPestSearch} onChange={(event) => setTargetPestSearch(event.target.value)} placeholder="Search pests" />
+                <div className="flex flex-wrap gap-2">
+                  {filteredTargetPests.map((pest) => (
+                    <button
+                      key={pest}
+                      type="button"
+                      className={`rounded-full border px-3 py-1 text-xs ${selectedTargetPests.includes(pest) ? "border-primary bg-primary text-primary-foreground" : "bg-background"}`}
+                      onClick={() => toggleTargetPest(pest)}
+                    >
+                      {pest}
+                    </button>
+                  ))}
+                </div>
               </div>
               <div className="space-y-2">
                 <Label>Device Notes</Label>
@@ -339,7 +435,7 @@ export function ServiceCompletionDialog({
                   <Label>Structured Materials / Chemicals</Label>
                   <p className="text-xs text-muted-foreground">Areas serviced are derived from application areas.</p>
                 </div>
-                <Button type="button" variant="outline" size="sm" onClick={() => setMaterials((current) => [...current, emptyMaterial()])}>
+                <Button type="button" variant="outline" size="sm" onClick={() => setMaterials((current) => [emptyMaterial(), ...current])}>
                   Add Material
                 </Button>
               </div>
@@ -351,7 +447,19 @@ export function ServiceCompletionDialog({
                 const areaOptions = uniqueValues(selectedProduct?.allowedApplicationAreas ?? []);
 
                 return (
-                  <div key={index} className="space-y-3 rounded-lg border p-3">
+                  <div key={material.key || index} className="space-y-3 rounded-lg border p-3">
+                    {material.collapsed ? (
+                      <button type="button" className="flex w-full items-start justify-between gap-3 text-left" onClick={() => collapseMaterial(index, false)}>
+                        <span>
+                          <span className="block font-medium">{material.productName || "Material"}</span>
+                          <span className="block text-xs text-muted-foreground">
+                            {[material.amountApplied && `${material.amountApplied} ${material.unit}`.trim(), material.dilutionLabel, material.applicationLocation, material.activeIngredientAmount && `AI ${material.activeIngredientAmount}`].filter(Boolean).join(" - ") || "Tap to edit"}
+                          </span>
+                        </span>
+                        <span className="text-xs text-primary">Edit</span>
+                      </button>
+                    ) : (
+                    <>
                     <div className="grid gap-2 sm:grid-cols-2">
                       <div className="space-y-1.5">
                         <Label>Product</Label>
@@ -447,6 +555,12 @@ export function ServiceCompletionDialog({
                       <Label>Material Notes</Label>
                       <Input value={material.notes} onChange={(event) => updateMaterial(index, "notes", event.target.value)} />
                     </div>
+                    <div className="flex justify-end gap-2">
+                      <Button type="button" variant="outline" size="sm" onClick={() => removeMaterial(index)}>Remove</Button>
+                      <Button type="button" size="sm" onClick={() => collapseMaterial(index, true)}>Done</Button>
+                    </div>
+                    </>
+                    )}
                   </div>
                 );
               })}

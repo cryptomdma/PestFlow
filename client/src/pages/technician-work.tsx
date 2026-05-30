@@ -32,6 +32,12 @@ function formatDateInputValue(date: Date) {
   return `${year}-${month}-${day}`;
 }
 
+function addDaysToInputDate(value: string, days: number) {
+  const date = value ? new Date(`${value}T00:00:00`) : new Date();
+  date.setDate(date.getDate() + days);
+  return formatDateInputValue(date);
+}
+
 function getCustomerLabel(customer?: Customer | null, location?: Location | null) {
   const fullName = `${customer?.firstName || ""} ${customer?.lastName || ""}`.trim();
   return fullName || customer?.companyName || location?.name || "Location";
@@ -48,6 +54,21 @@ function formatTimeRange(appointment: Appointment) {
   const startLabel = start.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
   const endLabel = end?.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
   return endLabel ? `${startLabel} - ${endLabel}` : startLabel;
+}
+
+function hasLocalTicketDraft(serviceId: string) {
+  return !!localStorage.getItem(`pestflow.service-ticket-draft.${serviceId}`);
+}
+
+function getTicketActionLabel(service: Service, serviceRecord?: ServiceRecord | null) {
+  if (!serviceRecord) return hasLocalTicketDraft(service.id) ? "Resume Service Ticket" : "Create Service Ticket";
+  if (serviceRecord.confirmed || serviceRecord.ticketStatus === "FINALIZED") return "View Finalized Ticket";
+  if (serviceRecord.ticketStatus === "REOPENED") return "Edit Service Ticket";
+  return "View Service Ticket";
+}
+
+function canOpenTicketEditor(serviceRecord?: ServiceRecord | null) {
+  return !serviceRecord || serviceRecord.ticketStatus === "REOPENED";
 }
 
 export default function TechnicianWork() {
@@ -97,7 +118,12 @@ export default function TechnicianWork() {
           </div>
           <div className="space-y-2">
             <Label>Date</Label>
-            <Input type="date" value={selectedDate} onChange={(event) => setSelectedDate(event.target.value)} />
+            <div className="flex gap-2">
+              <Button type="button" variant="outline" size="sm" onClick={() => setSelectedDate(addDaysToInputDate(selectedDate, -1))}>Prev</Button>
+              <Input type="date" value={selectedDate} onChange={(event) => setSelectedDate(event.target.value)} />
+              <Button type="button" variant="outline" size="sm" onClick={() => setSelectedDate(addDaysToInputDate(selectedDate, 1))}>Next</Button>
+            </div>
+            <Button type="button" variant="ghost" size="sm" className="h-7 px-2" onClick={() => setSelectedDate(formatDateInputValue(new Date()))}>Today</Button>
           </div>
         </CardContent>
       </Card>
@@ -206,9 +232,10 @@ export default function TechnicianWork() {
                         type="button"
                         className="mt-3 h-11 w-full"
                         variant={posted ? "outline" : "default"}
-                        onClick={() => setCompletionContext({ service, appointment: detailVisit.appointment })}
+                        onClick={() => canOpenTicketEditor(serviceRecord) && setCompletionContext({ service, appointment: detailVisit.appointment })}
+                        disabled={!canOpenTicketEditor(serviceRecord)}
                       >
-                        {posted ? "Edit Service Ticket" : "Create Service Ticket"}
+                        {getTicketActionLabel(service, serviceRecord)}
                       </Button>
                     </div>
                   );
@@ -230,9 +257,11 @@ export default function TechnicianWork() {
         technicians={technicians}
         serviceTypes={serviceTypes}
         defaultTechnicianId={selectedTechnicianId}
+        existingServiceRecord={completionContext ? detailVisit?.services.find(({ service }) => service.id === completionContext.service.id)?.serviceRecord ?? null : null}
         onCompleted={() => {
           queryClient.invalidateQueries({ queryKey: [`/api/technicians/${selectedTechnicianId}/work?date=${selectedDate}`] });
           setCompletionContext(null);
+          setDetailVisit(null);
         }}
       />
     </div>
