@@ -27,6 +27,7 @@ Harden the Technician Work / Service Ticket workflow with structured material lo
 - Technician route view supports compact date navigation: Today, previous day, next day, and date picker.
 - Material cards add newest entries at the top, can be removed, and collapse into mobile-friendly summaries after Done.
 - Target pests are internal service-ticket treatment context and are captured separately from future customer-facing warranted pests.
+- Target pests are configurable in Settings with active/favorite/sort controls.
 - Non-agreement Services may have service type and price adjusted in the ticket flow; agreement-generated Services remain locked.
 - After posting a Service Ticket, the technician returns to the route/appointment list rather than remaining in a nested modal state.
 

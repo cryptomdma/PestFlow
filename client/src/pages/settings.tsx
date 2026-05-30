@@ -23,8 +23,8 @@ import {
 } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { Plus, Settings as SettingsIcon, Wrench, FileText, Users, ShieldCheck, FlaskConical } from "lucide-react";
-import type { AgreementCancellationPolicy, AgreementTemplate, MaterialProduct, OpportunityDisposition, ServiceType, Technician } from "@shared/schema";
+import { Plus, Settings as SettingsIcon, Wrench, FileText, Users, ShieldCheck, FlaskConical, Bug } from "lucide-react";
+import type { AgreementCancellationPolicy, AgreementTemplate, MaterialProduct, OpportunityDisposition, ServiceType, TargetPest, Technician } from "@shared/schema";
 
 function formatTemplateRecurrence(template: AgreementTemplate) {
   const interval = template.defaultRecurrenceInterval || 1;
@@ -228,6 +228,56 @@ function MaterialProductForm({ product, onClose }: { product?: MaterialProduct |
       </div>
       <div className="space-y-1.5"><Label>Notes</Label><Textarea value={form.notes} onChange={(e) => setForm((p) => ({ ...p, notes: e.target.value }))} /></div>
       <div className="flex justify-end gap-2"><Button type="button" variant="outline" onClick={onClose}>Cancel</Button><Button type="submit" disabled={mutation.isPending || !form.name.trim()}>{mutation.isPending ? "Saving..." : isEditMode ? "Save Product" : "Create Product"}</Button></div>
+    </form>
+  );
+}
+
+function TargetPestForm({ pest, onClose }: { pest?: TargetPest | null; onClose: () => void }) {
+  const { toast } = useToast();
+  const isEditMode = !!pest;
+  const [form, setForm] = useState({
+    label: pest?.label ?? "",
+    isActive: pest?.isActive ?? true,
+    isFavorite: pest?.isFavorite ?? false,
+    sortOrder: pest?.sortOrder !== undefined ? String(pest.sortOrder) : "0",
+    notes: pest?.notes ?? "",
+  });
+
+  const mutation = useMutation({
+    mutationFn: async (data: typeof form) => {
+      const payload = {
+        label: data.label.trim(),
+        isActive: data.isActive,
+        isFavorite: data.isFavorite,
+        sortOrder: data.sortOrder.trim() ? parseInt(data.sortOrder, 10) : 0,
+        notes: data.notes.trim() || null,
+      };
+      const response = isEditMode
+        ? await apiRequest("PATCH", `/api/target-pests/${pest.id}`, payload)
+        : await apiRequest("POST", "/api/target-pests", payload);
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/target-pests"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/target-pests?includeInactive=true"] });
+      toast({ title: isEditMode ? "Target pest updated" : "Target pest created" });
+      onClose();
+    },
+    onError: (err: Error) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+  });
+
+  return (
+    <form onSubmit={(e) => { e.preventDefault(); mutation.mutate(form); }} className="space-y-4">
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="space-y-1.5"><Label>Label *</Label><Input value={form.label} onChange={(e) => setForm((p) => ({ ...p, label: e.target.value }))} /></div>
+        <div className="space-y-1.5"><Label>Sort Order</Label><Input type="number" value={form.sortOrder} onChange={(e) => setForm((p) => ({ ...p, sortOrder: e.target.value }))} /></div>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.isActive} onChange={(e) => setForm((p) => ({ ...p, isActive: e.target.checked }))} /> Active</label>
+        <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.isFavorite} onChange={(e) => setForm((p) => ({ ...p, isFavorite: e.target.checked }))} /> Favorite</label>
+      </div>
+      <div className="space-y-1.5"><Label>Notes</Label><Textarea value={form.notes} onChange={(e) => setForm((p) => ({ ...p, notes: e.target.value }))} /></div>
+      <div className="flex justify-end gap-2"><Button type="button" variant="outline" onClick={onClose}>Cancel</Button><Button type="submit" disabled={mutation.isPending || !form.label.trim()}>{mutation.isPending ? "Saving..." : isEditMode ? "Save Pest" : "Create Pest"}</Button></div>
     </form>
   );
 }
@@ -722,9 +772,12 @@ export default function Settings() {
   const [editingDisposition, setEditingDisposition] = useState<OpportunityDisposition | null>(null);
   const [materialDialogOpen, setMaterialDialogOpen] = useState(false);
   const [editingMaterialProduct, setEditingMaterialProduct] = useState<MaterialProduct | null>(null);
+  const [targetPestDialogOpen, setTargetPestDialogOpen] = useState(false);
+  const [editingTargetPest, setEditingTargetPest] = useState<TargetPest | null>(null);
   const { data: serviceTypes, isLoading } = useQuery<ServiceType[]>({ queryKey: ["/api/service-types"] });
   const { data: technicians, isLoading: techniciansLoading } = useQuery<Technician[]>({ queryKey: ["/api/technicians?includeInactive=true"] });
   const { data: materialProducts, isLoading: materialProductsLoading } = useQuery<MaterialProduct[]>({ queryKey: ["/api/material-products?includeInactive=true"] });
+  const { data: targetPests, isLoading: targetPestsLoading } = useQuery<TargetPest[]>({ queryKey: ["/api/target-pests?includeInactive=true"] });
   const { data: agreementTemplates, isLoading: templatesLoading } = useQuery<AgreementTemplate[]>({ queryKey: ["/api/agreement-templates"] });
   const { data: cancellationPolicies, isLoading: policiesLoading } = useQuery<AgreementCancellationPolicy[]>({ queryKey: ["/api/agreement-cancellation-policies?includeInactive=true"] });
   const { data: opportunityDispositions, isLoading: dispositionsLoading } = useQuery<OpportunityDisposition[]>({ queryKey: ["/api/opportunity-dispositions?includeInactive=true"] });
@@ -802,6 +855,45 @@ export default function Settings() {
                       Edit
                     </Button>
                   </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
+          <CardTitle className="text-base font-semibold flex items-center gap-2"><Bug className="h-4 w-4" /> Target Pests</CardTitle>
+          <Dialog open={targetPestDialogOpen} onOpenChange={(open) => { setTargetPestDialogOpen(open); if (!open) setEditingTargetPest(null); }}>
+            <DialogTrigger asChild><Button size="sm" onClick={() => setEditingTargetPest(null)}><Plus className="h-3 w-3 mr-1" /> Add Pest</Button></DialogTrigger>
+            <DialogContent>
+              <DialogHeader><DialogTitle>{editingTargetPest ? "Edit Target Pest" : "New Target Pest"}</DialogTitle></DialogHeader>
+              <TargetPestForm pest={editingTargetPest} onClose={() => { setTargetPestDialogOpen(false); setEditingTargetPest(null); }} />
+            </DialogContent>
+          </Dialog>
+        </CardHeader>
+        <CardContent>
+          {targetPestsLoading ? (
+            <div className="space-y-2">{[1, 2, 3].map((i) => <Skeleton key={i} className="h-14" />)}</div>
+          ) : !targetPests?.length ? (
+            <div className="text-center py-8">
+              <Bug className="h-8 w-8 mx-auto text-muted-foreground/30 mb-2" />
+              <p className="text-sm text-muted-foreground">No target pests configured</p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {targetPests.map((pest) => (
+                <div key={pest.id} className="flex items-center justify-between gap-3 rounded-md bg-muted/50 p-3">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-sm font-medium">{pest.label}</span>
+                      <Badge variant={pest.isActive ? "secondary" : "outline"}>{pest.isActive ? "Active" : "Inactive"}</Badge>
+                      {pest.isFavorite ? <Badge variant="outline">Favorite</Badge> : null}
+                    </div>
+                    <p className="mt-0.5 text-xs text-muted-foreground">Sort: {pest.sortOrder}{pest.notes ? ` | ${pest.notes}` : ""}</p>
+                  </div>
+                  <Button variant="outline" size="sm" onClick={() => { setEditingTargetPest(pest); setTargetPestDialogOpen(true); }}>Edit</Button>
                 </div>
               ))}
             </div>

@@ -100,6 +100,38 @@ export async function bootstrapServiceSchedulingFoundation(): Promise<void> {
   await db.execute(sql`ALTER TABLE product_applications ADD COLUMN IF NOT EXISTS notes text`);
 
   await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS target_pests (
+      id varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+      label text NOT NULL,
+      is_active boolean NOT NULL DEFAULT true,
+      is_favorite boolean NOT NULL DEFAULT false,
+      sort_order integer NOT NULL DEFAULT 0,
+      notes text,
+      created_at timestamp NOT NULL DEFAULT now(),
+      updated_at timestamp NOT NULL DEFAULT now()
+    )
+  `);
+  await db.execute(sql`CREATE UNIQUE INDEX IF NOT EXISTS target_pests_label_uidx ON target_pests (lower(label))`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS target_pests_active_idx ON target_pests (is_active)`);
+  await db.execute(sql`
+    INSERT INTO target_pests (label, is_active, is_favorite, sort_order)
+    VALUES
+      ('Ants', true, true, 10),
+      ('Roaches', true, true, 20),
+      ('Spiders', true, true, 30),
+      ('Rodents', true, true, 40),
+      ('Mosquitoes', true, false, 50),
+      ('Fleas', true, false, 60),
+      ('Ticks', true, false, 70),
+      ('Wasps', true, false, 80),
+      ('Termites', true, false, 90),
+      ('Bed Bugs', true, false, 100),
+      ('Silverfish', true, false, 110),
+      ('Occasional Invaders', true, false, 120)
+    ON CONFLICT DO NOTHING
+  `);
+
+  await db.execute(sql`
     CREATE TABLE IF NOT EXISTS opportunities (
       id varchar PRIMARY KEY DEFAULT gen_random_uuid(),
       location_id varchar NOT NULL REFERENCES locations(id),

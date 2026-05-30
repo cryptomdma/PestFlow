@@ -12,6 +12,7 @@ import {
   insertAgreementCancellationPolicySchema,
   insertOpportunitySchema,
   insertOpportunityDispositionSchema,
+  insertTargetPestSchema,
 } from "@shared/schema";
 import { normalizePhone } from "@shared/phone";
 import { ZodError, z } from "zod";
@@ -185,6 +186,10 @@ export async function registerRoutes(
     dilutionOptions: z.any().nullable().optional(),
   });
   const updateMaterialProductSchema = materialProductSchema.partial();
+  const targetPestSchema = insertTargetPestSchema.extend({
+    label: z.string().min(1),
+  });
+  const updateTargetPestSchema = targetPestSchema.partial();
   const opportunityStatusSchema = z.enum(["OPEN", "CONTACTED", "CONVERTED", "DISMISSED"]);
   const opportunityUpdateSchema = insertOpportunitySchema.extend({
     status: opportunityStatusSchema.optional(),
@@ -1333,6 +1338,36 @@ export async function registerRoutes(
       const validated = updateMaterialProductSchema.parse(req.body);
       const data = await storage.updateMaterialProduct(req.params.id, validated);
       if (!data) return res.status(404).json({ message: "Material product not found" });
+      res.json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  // Target Pests
+  app.get("/api/target-pests", async (req, res) => {
+    const includeInactive = req.query.includeInactive === "true";
+    const data = await storage.getTargetPests(includeInactive);
+    res.json(data);
+  });
+
+  app.post("/api/target-pests", async (req, res) => {
+    try {
+      const validated = targetPestSchema.parse(req.body);
+      const data = await storage.createTargetPest(validated);
+      res.status(201).json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.patch("/api/target-pests/:id", async (req, res) => {
+    try {
+      const validated = updateTargetPestSchema.parse(req.body);
+      const data = await storage.updateTargetPest(req.params.id, validated);
+      if (!data) return res.status(404).json({ message: "Target pest not found" });
       res.json(data);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);

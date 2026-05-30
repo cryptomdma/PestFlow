@@ -64,7 +64,7 @@ Build and verify the mobile-first web/PWA technician work route, structured mate
 * route date navigation supports Today, previous day, next day, and date picker
 * structured material rows use Material Product definitions where available
 * material cards add newest at top, allow removal, and collapse into summaries
-* target pests are internal Service Ticket treatment context, not warranted pests
+* target pests are Settings-managed internal Service Ticket treatment context, not warranted pests
 * non-agreement Services can be adjusted for service type/price in the ticket flow; agreement-generated Services are locked
 * active ingredient amount is captured on Product Application rows
 * office finalization/reopen is staged separately from technician posting

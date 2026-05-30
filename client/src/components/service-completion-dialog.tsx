@@ -9,7 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import type { Appointment, MaterialProduct, Service, ServiceRecord, ServiceType, Technician } from "@shared/schema";
+import type { Appointment, MaterialProduct, Service, ServiceRecord, ServiceType, TargetPest, Technician } from "@shared/schema";
 
 interface MaterialLine {
   key: string;
@@ -69,7 +69,7 @@ function emptyMaterial(): MaterialLine {
   };
 }
 
-const TARGET_PEST_OPTIONS = [
+const FALLBACK_TARGET_PEST_OPTIONS = [
   "Ants",
   "Roaches",
   "Spiders",
@@ -154,6 +154,7 @@ export function ServiceCompletionDialog({
   const [ticketPrice, setTicketPrice] = useState("");
 
   const { data: materialProducts } = useQuery<MaterialProduct[]>({ queryKey: ["/api/material-products"] });
+  const { data: configuredTargetPests } = useQuery<TargetPest[]>({ queryKey: ["/api/target-pests"] });
 
   const serviceTypeName = useMemo(() => {
     return serviceTypes?.find((serviceType) => serviceType.id === ticketServiceTypeId || serviceType.id === service?.serviceTypeId)?.name ?? "Service";
@@ -166,7 +167,11 @@ export function ServiceCompletionDialog({
   const draftKey = getDraftKey(service?.id);
   const allowServiceOverride = !!service && !service.agreementId && service.source !== "AGREEMENT_GENERATED";
   const selectedTargetPests = useMemo(() => targetPests.split(",").map((value) => value.trim()).filter(Boolean), [targetPests]);
-  const filteredTargetPests = TARGET_PEST_OPTIONS.filter((pest) => pest.toLowerCase().includes(targetPestSearch.toLowerCase()));
+  const targetPestOptions = useMemo(() => {
+    const configured = (configuredTargetPests ?? []).map((pest) => pest.label);
+    return configured.length ? configured : FALLBACK_TARGET_PEST_OPTIONS;
+  }, [configuredTargetPests]);
+  const filteredTargetPests = targetPestOptions.filter((pest) => pest.toLowerCase().includes(targetPestSearch.toLowerCase()));
 
   useEffect(() => {
     if (!open || !service) return;

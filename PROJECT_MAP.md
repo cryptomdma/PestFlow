@@ -33,6 +33,7 @@
 - Technician ticket drafts are local-device `localStorage` protection only; full offline sync is future work.
 - Technician route view is day-driven and should expose compact Today/Prev/Next/date-picker navigation.
 - Target pests are internal treatment context on Service Tickets; warranted pests/customer-facing warranty language is future work.
+- Target Pests are Settings-managed reference data for Service Ticket treatment context.
 - Field service type/price adjustment is allowed only for non-agreement Services. Agreement-generated Services remain locked in the technician ticket workflow.
 - Service Ticket material cards should be mobile-manageable: add newest at top, allow removal, and collapse into summary rows.
 - Agreement generation creates pending Services only.

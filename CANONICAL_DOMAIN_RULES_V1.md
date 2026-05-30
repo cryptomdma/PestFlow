@@ -773,7 +773,7 @@ Technician Service Ticket drafts may be protected locally with `localStorage`. T
 
 Technician route view is day-driven and should support compact date navigation suitable for mobile field use.
 
-Target pests are internal treatment context on the Service Ticket. They are not the same as warranted pests or customer-facing warranty language, which are future contract/terms concepts.
+Target pests are Settings-managed reference data for internal treatment context on the Service Ticket. They are not the same as warranted pests or customer-facing warranty language, which are future contract/terms concepts.
 
 For non-agreement Services, technicians may adjust service type and price as a staged field workflow for evaluations, upgrades, or one-time scope changes. Agreement-generated Services should keep service type and price locked in the technician ticket flow.
 

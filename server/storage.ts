@@ -10,7 +10,7 @@ import {
   agreements,
   agreementTemplates,
   agreementCancellationPolicies,
-  serviceRecords, productApplications, materialProducts, invoices, communications,
+  serviceRecords, productApplications, materialProducts, targetPests, invoices, communications,
   billingProfiles, customerNotes,
   noteRevisions,
   type Account,
@@ -30,6 +30,7 @@ import {
   type OpportunityDisposition, type InsertOpportunityDisposition,
   type ProductApplication, type InsertProductApplication,
   type MaterialProduct, type InsertMaterialProduct,
+  type TargetPest, type InsertTargetPest,
   type Invoice, type InsertInvoice,
   type Communication, type InsertCommunication,
   type BillingProfile, type InsertBillingProfile,
@@ -279,6 +280,9 @@ export interface IStorage {
   getMaterialProducts(includeInactive?: boolean): Promise<MaterialProduct[]>;
   createMaterialProduct(data: InsertMaterialProduct): Promise<MaterialProduct>;
   updateMaterialProduct(id: string, data: Partial<InsertMaterialProduct>): Promise<MaterialProduct | undefined>;
+  getTargetPests(includeInactive?: boolean): Promise<TargetPest[]>;
+  createTargetPest(data: InsertTargetPest): Promise<TargetPest>;
+  updateTargetPest(id: string, data: Partial<InsertTargetPest>): Promise<TargetPest | undefined>;
   getProductApplications(): Promise<ProductApplication[]>;
   getProductApplicationsByServiceRecord(serviceRecordId: string): Promise<ProductApplication[]>;
   createProductApplication(data: InsertProductApplication): Promise<ProductApplication>;
@@ -2735,6 +2739,27 @@ export class DatabaseStorage implements IStorage {
       .where(eq(materialProducts.id, id))
       .returning();
     return product;
+  }
+
+  async getTargetPests(includeInactive = false): Promise<TargetPest[]> {
+    if (includeInactive) {
+      return db.select().from(targetPests).orderBy(asc(targetPests.sortOrder), asc(targetPests.label));
+    }
+    return db.select().from(targetPests).where(eq(targetPests.isActive, true)).orderBy(asc(targetPests.sortOrder), asc(targetPests.label));
+  }
+
+  async createTargetPest(data: InsertTargetPest): Promise<TargetPest> {
+    const [pest] = await db.insert(targetPests).values(data).returning();
+    return pest;
+  }
+
+  async updateTargetPest(id: string, data: Partial<InsertTargetPest>): Promise<TargetPest | undefined> {
+    const [pest] = await db
+      .update(targetPests)
+      .set({ ...data, updatedAt: new Date() })
+      .where(eq(targetPests.id, id))
+      .returning();
+    return pest;
   }
 
   async getProductApplicationsByServiceRecord(serviceRecordId: string): Promise<ProductApplication[]> {
