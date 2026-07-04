@@ -153,6 +153,8 @@ export async function registerRoutes(
     generatedForDate: nullableDateSchema.optional(),
     scheduledDate: z.coerce.date(),
     scheduledEndDate: nullableDateSchema.optional(),
+    timeInAt: nullableDateSchema.optional(),
+    timeOutAt: nullableDateSchema.optional(),
   });
   const updateAppointmentSchema = appointmentSchema.partial();
   const serviceRecordSchema = insertServiceRecordSchema.omit({ serviceDate: true }).extend({
@@ -176,6 +178,8 @@ export async function registerRoutes(
     areasServiced: z.string().nullable().optional(),
     conditionsFound: z.string().nullable().optional(),
     recommendations: z.string().nullable().optional(),
+    followUpRequired: z.boolean().nullable().optional(),
+    followUpNotes: z.string().nullable().optional(),
     customerSignature: z.boolean().nullable().optional(),
     confirmed: z.boolean().nullable().optional(),
     productApplications: z.array(insertProductApplicationSchema.omit({ serviceRecordId: true })).optional(),
@@ -190,6 +194,20 @@ export async function registerRoutes(
     label: z.string().min(1),
   });
   const updateTargetPestSchema = targetPestSchema.partial();
+  const serviceTimeTrackingModeSchema = z.object({
+    mode: z.enum(["AUTO_TIMEOUT_ON_TICKET_POST", "PROMPT_FOR_TIMEOUT", "MANUAL_TIMEOUT"]),
+  });
+  const appointmentCancelReasonsSchema = z.object({
+    reasons: z.array(z.string().trim().min(1)).min(1),
+  });
+  const appointmentCancelRescheduleSchema = z.object({
+    reason: z.string().trim().min(1, "Reason is required"),
+    notes: z.string().nullable().optional(),
+    rescheduleRequested: z.boolean().optional(),
+  });
+  const reopenServiceRecordSchema = z.object({
+    reason: z.string().trim().min(1, "Reopen reason is required"),
+  });
   const opportunityStatusSchema = z.enum(["OPEN", "CONTACTED", "CONVERTED", "DISMISSED"]);
   const opportunityUpdateSchema = insertOpportunitySchema.extend({
     status: opportunityStatusSchema.optional(),
@@ -1260,6 +1278,44 @@ export async function registerRoutes(
     }
   });
 
+  app.post("/api/appointments/:id/time-in", async (req, res) => {
+    try {
+      const data = await storage.timeInAppointment(req.params.id);
+      if (!data) return res.status(404).json({ message: "Appointment not found" });
+      res.json(data);
+    } catch (e: any) {
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/appointments/:id/time-out", async (req, res) => {
+    try {
+      const data = await storage.timeOutAppointment(req.params.id);
+      if (!data) return res.status(404).json({ message: "Appointment not found" });
+      res.json(data);
+    } catch (e: any) {
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/appointments/:id/cancel-reschedule", async (req, res) => {
+    try {
+      const validated = appointmentCancelRescheduleSchema.parse(req.body);
+      const data = await storage.requestAppointmentCancelOrReschedule({
+        appointmentId: req.params.id,
+        reason: validated.reason,
+        notes: validated.notes,
+        rescheduleRequested: validated.rescheduleRequested,
+        actor: getAuditActor(req),
+      });
+      if (!data) return res.status(404).json({ message: "Appointment not found" });
+      res.json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
   // Service Records
   app.get("/api/service-records", async (_req, res) => {
     const data = await storage.getServiceRecords();
@@ -1297,7 +1353,7 @@ export async function registerRoutes(
 
   app.post("/api/service-records/:id/finalize", async (req, res) => {
     try {
-      const data = await storage.finalizeServiceRecord(req.params.id);
+      const data = await storage.finalizeServiceRecord(req.params.id, getAuditActor(req));
       if (!data) return res.status(404).json({ message: "Service record not found" });
       res.json(data);
     } catch (e: any) {
@@ -1307,10 +1363,44 @@ export async function registerRoutes(
 
   app.post("/api/service-records/:id/reopen", async (req, res) => {
     try {
-      const data = await storage.reopenServiceRecord(req.params.id);
+      const validated = reopenServiceRecordSchema.parse(req.body);
+      const data = await storage.reopenServiceRecord(req.params.id, validated.reason, getAuditActor(req));
       if (!data) return res.status(404).json({ message: "Service record not found" });
       res.json(data);
     } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.get("/api/settings/service-time-tracking", async (_req, res) => {
+    const mode = await storage.getServiceTimeTrackingMode();
+    res.json({ mode });
+  });
+
+  app.patch("/api/settings/service-time-tracking", async (req, res) => {
+    try {
+      const validated = serviceTimeTrackingModeSchema.parse(req.body);
+      const data = await storage.setServiceTimeTrackingMode(validated.mode);
+      res.json({ mode: data.value });
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.get("/api/settings/appointment-cancel-reasons", async (_req, res) => {
+    const reasons = await storage.getAppointmentCancelReasons();
+    res.json({ reasons });
+  });
+
+  app.patch("/api/settings/appointment-cancel-reasons", async (req, res) => {
+    try {
+      const validated = appointmentCancelReasonsSchema.parse(req.body);
+      const data = await storage.setAppointmentCancelReasons(validated.reasons);
+      res.json({ reasons: JSON.parse(data.value) });
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
       res.status(400).json({ message: e.message });
     }
   });

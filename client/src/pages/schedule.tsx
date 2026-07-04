@@ -264,6 +264,7 @@ function AppointmentSheet({
                 className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
               >
                 <option value="scheduled">Scheduled</option>
+                <option value="in_progress">In Progress</option>
                 <option value="completed">Completed</option>
                 <option value="canceled">Canceled</option>
                 <option value="pending">Pending</option>
@@ -960,14 +961,20 @@ export default function Schedule() {
                                 && linkedServices.every((service) => serviceRecordByServiceId.get(service.id)?.confirmed);
                               const isCompletedAppointment = appointment.status === "completed" && allTicketsFinalized;
                               const isPendingOfficeReview = anyTicketPosted && !allTicketsFinalized;
-                              const statusTone = isCompletedAppointment
-                                ? "border-green-600 bg-green-100 text-green-950"
-                                : isPendingOfficeReview
-                                  ? "border-yellow-500 bg-yellow-50 text-yellow-950"
-                                  : appointment.status === "in_progress"
-                                    ? "border-yellow-500"
-                                    : "bg-background";
-                              const mutedTextTone = isCompletedAppointment ? "text-green-900" : isPendingOfficeReview ? "text-yellow-900" : "text-muted-foreground";
+                              const statusTone = appointment.status === "canceled"
+                                ? "border-red-600 bg-red-50 text-red-950"
+                                : isCompletedAppointment
+                                  ? "border-green-600 bg-green-100 text-green-950"
+                                  : isPendingOfficeReview || appointment.status === "in_progress"
+                                    ? "border-yellow-500 bg-yellow-50 text-yellow-950"
+                                    : "border-blue-500 bg-blue-50 text-blue-950";
+                              const mutedTextTone = appointment.status === "canceled"
+                                ? "text-red-900"
+                                : isCompletedAppointment
+                                  ? "text-green-900"
+                                  : isPendingOfficeReview || appointment.status === "in_progress"
+                                    ? "text-yellow-900"
+                                    : "text-blue-900";
                               const locationHref = location ? `/customers/${appointment.customerId}?locationId=${location.id}` : `/customers/${appointment.customerId}`;
 
                               return (

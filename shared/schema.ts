@@ -166,7 +166,20 @@ export const appointments = pgTable("appointments", {
   generatedForDate: date("generated_for_date"),
   scheduledDate: timestamp("scheduled_date").notNull(),
   scheduledEndDate: timestamp("scheduled_end_date"),
+  timeInAt: timestamp("time_in_at"),
+  timeOutAt: timestamp("time_out_at"),
+  durationMinutes: integer("duration_minutes"),
+  timeInLat: decimal("time_in_lat", { precision: 10, scale: 7 }),
+  timeInLng: decimal("time_in_lng", { precision: 10, scale: 7 }),
+  timeOutLat: decimal("time_out_lat", { precision: 10, scale: 7 }),
+  timeOutLng: decimal("time_out_lng", { precision: 10, scale: 7 }),
   status: text("status").notNull().default("scheduled"),
+  cancelReason: text("cancel_reason"),
+  cancelNotes: text("cancel_notes"),
+  cancelRequestedAt: timestamp("cancel_requested_at"),
+  cancelRequestedByLabel: text("cancel_requested_by_label"),
+  rescheduleRequested: boolean("reschedule_requested").notNull().default(false),
+  rescheduleRequestedAt: timestamp("reschedule_requested_at"),
   lockTime: boolean("lock_time").notNull().default(false),
   lockTechnician: boolean("lock_technician").notNull().default(false),
   assignedTo: text("assigned_to"),
@@ -286,13 +299,27 @@ export const serviceRecords = pgTable("service_records", {
   areasServiced: text("areas_serviced"),
   conditionsFound: text("conditions_found"),
   recommendations: text("recommendations"),
+  followUpRequired: boolean("follow_up_required").notNull().default(false),
+  followUpNotes: text("follow_up_notes"),
   customerSignature: boolean("customer_signature").default(false),
   confirmed: boolean("confirmed").default(false),
   ticketStatus: text("ticket_status").notNull().default("OFFICE_REVIEW_PENDING"),
   postedAt: timestamp("posted_at"),
   finalizedAt: timestamp("finalized_at"),
+  finalizedByUserId: varchar("finalized_by_user_id"),
+  finalizedByLabel: text("finalized_by_label"),
   reopenedAt: timestamp("reopened_at"),
+  reopenedByUserId: varchar("reopened_by_user_id"),
+  reopenedByLabel: text("reopened_by_label"),
+  reopenReason: text("reopen_reason"),
+  readyForBilling: boolean("ready_for_billing").notNull().default(false),
   createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const appSettings = pgTable("app_settings", {
+  key: text("key").primaryKey(),
+  value: text("value").notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
 export const opportunities = pgTable("opportunities", {
@@ -459,6 +486,7 @@ export const insertAgreementCancellationPolicySchema = createInsertSchema(agreem
 export const insertAgreementSchema = createInsertSchema(agreements).omit({ id: true, createdAt: true, updatedAt: true });
 export const insertAgreementTemplateSchema = createInsertSchema(agreementTemplates).omit({ id: true, createdAt: true, updatedAt: true });
 export const insertServiceRecordSchema = createInsertSchema(serviceRecords).omit({ id: true, createdAt: true });
+export const insertAppSettingSchema = createInsertSchema(appSettings).omit({ updatedAt: true });
 export const insertOpportunitySchema = createInsertSchema(opportunities).omit({ id: true, createdAt: true, updatedAt: true });
 export const insertOpportunityDispositionSchema = createInsertSchema(opportunityDispositions).omit({ id: true, createdAt: true, updatedAt: true });
 export const insertOpportunityActivitySchema = createInsertSchema(opportunityActivities).omit({ id: true, createdAt: true });
@@ -499,6 +527,8 @@ export type AgreementTemplate = typeof agreementTemplates.$inferSelect;
 export type InsertAgreementTemplate = z.infer<typeof insertAgreementTemplateSchema>;
 export type ServiceRecord = typeof serviceRecords.$inferSelect;
 export type InsertServiceRecord = z.infer<typeof insertServiceRecordSchema>;
+export type AppSetting = typeof appSettings.$inferSelect;
+export type InsertAppSetting = z.infer<typeof insertAppSettingSchema>;
 export type Opportunity = typeof opportunities.$inferSelect;
 export type InsertOpportunity = z.infer<typeof insertOpportunitySchema>;
 export type OpportunityDisposition = typeof opportunityDispositions.$inferSelect;

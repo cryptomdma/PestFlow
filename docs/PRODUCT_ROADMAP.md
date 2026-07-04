@@ -197,16 +197,23 @@ Canonical direction:
 * Local Service Ticket drafts use browser localStorage as same-device interruption protection; full offline sync is future work.
 * Technician route view should remain day-driven with compact mobile date navigation.
 * Target pests are Settings-managed internal treatment context and distinct from future warranted-pest/customer-facing warranty language.
+* Technicians can flag Service Tickets as follow-up required with notes for office review/customer contact.
+* Technician route Appointment cancel/reschedule requests require Settings-configured reasons, requeue linked Services, and create open Opportunities for office follow-up. Full office reschedule prompts and route-optimized availability suggestions remain future work.
 * Non-agreement Services may support technician service type/price adjustment; agreement-generated Services remain locked in the ticket flow.
 * Material entry should be optimized for mobile with add-at-top, remove, Done/collapse, and expandable summary behavior.
-* Appointment status should become completed only after all linked Services have posted tickets.
-* Agreement-generated Service ticket posting advances the Agreement recurrence cycle.
-* Non-agreement Service ticket posting may generate Opportunities according to Service Type follow-up settings.
+* Appointment-level Time In / Time Out captures visit duration for office review and future route analytics.
+* Service Time Tracking Mode controls automatic, prompted, or manual time out after ticket posting.
+* `/service-ticket-review` is the office queue for posted tickets pending review.
+* Appointment status should become completed only after all linked Services are finalized.
+* Agreement-generated Service finalization advances the Agreement recurrence cycle.
+* Non-agreement Service finalization may generate Opportunities according to Service Type follow-up settings.
+* Finalized Service Records become billing-ready; posted tickets pending review are not billing events.
+* Technician-driven follow-up appointment selection should wait for route optimization and admin-configured follow-up availability settings.
 
 Next after completion MVP:
 
-1. role-gated office finalization/reopen workflow
-2. invoice draft generation from completed billable Service Records
+1. role-gated office finalization/reopen hardening
+2. invoice draft generation from finalized billable Service Records
 3. customer signature/photo/file capture
 4. inventory-integrated material usage
 5. authenticated technician binding and role-aware tech access

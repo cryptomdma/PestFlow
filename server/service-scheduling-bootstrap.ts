@@ -57,15 +57,57 @@ export async function bootstrapServiceSchedulingFoundation(): Promise<void> {
   await db.execute(sql`ALTER TABLE appointments ADD COLUMN IF NOT EXISTS assigned_technician_id varchar`);
   await db.execute(sql`ALTER TABLE appointments ADD COLUMN IF NOT EXISTS lock_time boolean NOT NULL DEFAULT false`);
   await db.execute(sql`ALTER TABLE appointments ADD COLUMN IF NOT EXISTS lock_technician boolean NOT NULL DEFAULT false`);
+  await db.execute(sql`ALTER TABLE appointments ADD COLUMN IF NOT EXISTS time_in_at timestamp`);
+  await db.execute(sql`ALTER TABLE appointments ADD COLUMN IF NOT EXISTS time_out_at timestamp`);
+  await db.execute(sql`ALTER TABLE appointments ADD COLUMN IF NOT EXISTS duration_minutes integer`);
+  await db.execute(sql`ALTER TABLE appointments ADD COLUMN IF NOT EXISTS time_in_lat numeric(10, 7)`);
+  await db.execute(sql`ALTER TABLE appointments ADD COLUMN IF NOT EXISTS time_in_lng numeric(10, 7)`);
+  await db.execute(sql`ALTER TABLE appointments ADD COLUMN IF NOT EXISTS time_out_lat numeric(10, 7)`);
+  await db.execute(sql`ALTER TABLE appointments ADD COLUMN IF NOT EXISTS time_out_lng numeric(10, 7)`);
+  await db.execute(sql`ALTER TABLE appointments ADD COLUMN IF NOT EXISTS cancel_reason text`);
+  await db.execute(sql`ALTER TABLE appointments ADD COLUMN IF NOT EXISTS cancel_notes text`);
+  await db.execute(sql`ALTER TABLE appointments ADD COLUMN IF NOT EXISTS cancel_requested_at timestamp`);
+  await db.execute(sql`ALTER TABLE appointments ADD COLUMN IF NOT EXISTS cancel_requested_by_label text`);
+  await db.execute(sql`ALTER TABLE appointments ADD COLUMN IF NOT EXISTS reschedule_requested boolean NOT NULL DEFAULT false`);
+  await db.execute(sql`ALTER TABLE appointments ADD COLUMN IF NOT EXISTS reschedule_requested_at timestamp`);
 
   await db.execute(sql`ALTER TABLE service_records ADD COLUMN IF NOT EXISTS service_id varchar`);
   await db.execute(sql`ALTER TABLE service_records ADD COLUMN IF NOT EXISTS technician_id varchar`);
   await db.execute(sql`ALTER TABLE service_records ADD COLUMN IF NOT EXISTS technician_license_number text`);
   await db.execute(sql`ALTER TABLE service_records ADD COLUMN IF NOT EXISTS notes text`);
+  await db.execute(sql`ALTER TABLE service_records ADD COLUMN IF NOT EXISTS follow_up_required boolean NOT NULL DEFAULT false`);
+  await db.execute(sql`ALTER TABLE service_records ADD COLUMN IF NOT EXISTS follow_up_notes text`);
   await db.execute(sql`ALTER TABLE service_records ADD COLUMN IF NOT EXISTS ticket_status text NOT NULL DEFAULT 'OFFICE_REVIEW_PENDING'`);
   await db.execute(sql`ALTER TABLE service_records ADD COLUMN IF NOT EXISTS posted_at timestamp`);
   await db.execute(sql`ALTER TABLE service_records ADD COLUMN IF NOT EXISTS finalized_at timestamp`);
+  await db.execute(sql`ALTER TABLE service_records ADD COLUMN IF NOT EXISTS finalized_by_user_id varchar`);
+  await db.execute(sql`ALTER TABLE service_records ADD COLUMN IF NOT EXISTS finalized_by_label text`);
   await db.execute(sql`ALTER TABLE service_records ADD COLUMN IF NOT EXISTS reopened_at timestamp`);
+  await db.execute(sql`ALTER TABLE service_records ADD COLUMN IF NOT EXISTS reopened_by_user_id varchar`);
+  await db.execute(sql`ALTER TABLE service_records ADD COLUMN IF NOT EXISTS reopened_by_label text`);
+  await db.execute(sql`ALTER TABLE service_records ADD COLUMN IF NOT EXISTS reopen_reason text`);
+  await db.execute(sql`ALTER TABLE service_records ADD COLUMN IF NOT EXISTS ready_for_billing boolean NOT NULL DEFAULT false`);
+
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS app_settings (
+      key text PRIMARY KEY,
+      value text NOT NULL,
+      updated_at timestamp NOT NULL DEFAULT now()
+    )
+  `);
+  await db.execute(sql`
+    INSERT INTO app_settings (key, value)
+    VALUES ('service_time_tracking_mode', 'AUTO_TIMEOUT_ON_TICKET_POST')
+    ON CONFLICT (key) DO NOTHING
+  `);
+  await db.execute(sql`
+    INSERT INTO app_settings (key, value)
+    VALUES (
+      'appointment_cancel_reschedule_reasons',
+      '["Weather","Gates locked","Schedule conflict","Customer not home","Canceled by company","Customer requested reschedule","Access issue","Other"]'
+    )
+    ON CONFLICT (key) DO NOTHING
+  `);
 
   await db.execute(sql`
     CREATE TABLE IF NOT EXISTS material_products (

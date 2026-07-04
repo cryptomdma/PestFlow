@@ -514,6 +514,8 @@ Service or Appointment cancellation means one visit or Service is being canceled
 * agreement-generated work should create retention/contact Opportunities only when appropriate
 * opportunity-converted work should preserve its Opportunity linkage where relevant
 
+Technician route cancel/reschedule requests are an office handoff, not full disposal of the work. The historical Appointment may be marked canceled with a required configured reason, but linked Services should return to pending scheduling and an open Opportunity should notify office staff to reschedule/contact the customer. For agreement-generated Services, the Service should remain tied to the Agreement and be recycled into the scheduling queue rather than advancing recurrence until office finalization/completion rules say so.
+
 Do not flatten all cancellation scenarios into generic Opportunity logic.
 
 ### Terms, contracts, and versioning
@@ -679,6 +681,9 @@ A scheduled dispatch placement for one or more Services.
 * serviceTypeId
 * scheduledStart
 * scheduledEnd nullable
+* timeInAt nullable
+* timeOutAt nullable
+* durationMinutes nullable
 * timeWindowStart nullable
 * timeWindowEnd nullable
 * assignedTechId nullable
@@ -703,6 +708,8 @@ Appointments should ideally be created from a selected location context so core 
 Appointments are scheduling placements. They are not the canonical work history object and should not be created by recurring agreement generation until work is actually placed on the board.
 
 One Appointment may contain multiple Services. Each linked Service remains independently visible and independently completed.
+
+Appointment timing is a scheduling/field-operations layer. Time In / Time Out is tracked on the Appointment because the visit may contain multiple Services. Duration supports future route analytics and billing review, but GPS capture is staged for later.
 
 ---
 
@@ -737,6 +744,8 @@ The compliance and completion record for one performed Service.
 * areas serviced nullable
 * conditions found nullable
 * recommendations nullable
+* followUpRequired boolean
+* followUpNotes nullable
 * customerSignature nullable
 * createdAt
 * updatedAt
@@ -749,9 +758,9 @@ When a Service Ticket is posted, the system must copy the technician display nam
 
 An Appointment can be marked completed only when all Services linked to that Appointment have posted Service Records, unless a future explicit close/exception workflow is built.
 
-Technician posting and office finalization are distinct lifecycle steps. Technician posting creates the compliance record and sends it to office review. Office finalization confirms the ticket for downstream billing/review workflows. Reopen behavior should be role-gated when roles are available.
+Technician posting and office finalization are distinct lifecycle steps. Technician posting creates the compliance record and sends it to office review. Office finalization is the authoritative completion event: it marks the Service completed, locks the ticket, makes the Service Record billing-ready, advances agreement recurrence when applicable, and allows downstream reporting/billing workflows. Reopen behavior should be role-gated when roles are available and must capture a reopen reason.
 
-Agreement-generated Services advance agreement recurrence when the generated Service is completed. Non-agreement completed Services may generate future Opportunities according to Service Type follow-up rules.
+Agreement-generated Services advance agreement recurrence when the generated Service is office-finalized. Non-agreement finalized Services may generate future Opportunities according to Service Type follow-up rules.
 
 ### Materials support
 
@@ -773,11 +782,15 @@ Technician Service Ticket drafts may be protected locally with `localStorage`. T
 
 Technician route view is day-driven and should support compact date navigation suitable for mobile field use.
 
+Technician route view supports Time In / Time Out on the Appointment. Service Time Tracking Mode in Settings controls whether ticket posting automatically times out, prompts the technician, or requires manual time out.
+
 Target pests are Settings-managed reference data for internal treatment context on the Service Ticket. They are not the same as warranted pests or customer-facing warranty language, which are future contract/terms concepts.
 
 For non-agreement Services, technicians may adjust service type and price as a staged field workflow for evaluations, upgrades, or one-time scope changes. Agreement-generated Services should keep service type and price locked in the technician ticket flow.
 
 Material entry should remain mobile-manageable: new materials add at the top, empty material use is allowed, cards can be removed, and saved material rows collapse into summaries that can be expanded for review/edit.
+
+Technicians may mark a Service Ticket as follow-up required and provide follow-up notes such as "2 weeks" or "30 days". Office review is responsible for customer contact and scheduling the follow-up. Technician-side follow-up appointment selection should wait until route optimization and admin-configured follow-up availability settings are implemented.
 
 #### ServiceVisitMaterial
 

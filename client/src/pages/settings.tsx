@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -760,6 +760,7 @@ function AgreementTemplateForm({
 }
 
 export default function Settings() {
+  const { toast } = useToast();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingServiceType, setEditingServiceType] = useState<ServiceType | null>(null);
   const [technicianDialogOpen, setTechnicianDialogOpen] = useState(false);
@@ -774,6 +775,7 @@ export default function Settings() {
   const [editingMaterialProduct, setEditingMaterialProduct] = useState<MaterialProduct | null>(null);
   const [targetPestDialogOpen, setTargetPestDialogOpen] = useState(false);
   const [editingTargetPest, setEditingTargetPest] = useState<TargetPest | null>(null);
+  const [appointmentCancelReasonsText, setAppointmentCancelReasonsText] = useState("");
   const { data: serviceTypes, isLoading } = useQuery<ServiceType[]>({ queryKey: ["/api/service-types"] });
   const { data: technicians, isLoading: techniciansLoading } = useQuery<Technician[]>({ queryKey: ["/api/technicians?includeInactive=true"] });
   const { data: materialProducts, isLoading: materialProductsLoading } = useQuery<MaterialProduct[]>({ queryKey: ["/api/material-products?includeInactive=true"] });
@@ -781,6 +783,39 @@ export default function Settings() {
   const { data: agreementTemplates, isLoading: templatesLoading } = useQuery<AgreementTemplate[]>({ queryKey: ["/api/agreement-templates"] });
   const { data: cancellationPolicies, isLoading: policiesLoading } = useQuery<AgreementCancellationPolicy[]>({ queryKey: ["/api/agreement-cancellation-policies?includeInactive=true"] });
   const { data: opportunityDispositions, isLoading: dispositionsLoading } = useQuery<OpportunityDisposition[]>({ queryKey: ["/api/opportunity-dispositions?includeInactive=true"] });
+  const { data: serviceTimeTracking } = useQuery<{ mode: string }>({ queryKey: ["/api/settings/service-time-tracking"] });
+  const { data: appointmentCancelReasons } = useQuery<{ reasons: string[] }>({ queryKey: ["/api/settings/appointment-cancel-reasons"] });
+  useEffect(() => {
+    if (appointmentCancelReasons?.reasons) {
+      setAppointmentCancelReasonsText(appointmentCancelReasons.reasons.join("\n"));
+    }
+  }, [appointmentCancelReasons]);
+  const updateServiceTimeTrackingMutation = useMutation({
+    mutationFn: async (mode: string) => {
+      const response = await apiRequest("PATCH", "/api/settings/service-time-tracking", { mode });
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/settings/service-time-tracking"] });
+      toast({ title: "Service time tracking updated" });
+    },
+    onError: (error: Error) => toast({ title: "Unable to update time tracking", description: error.message, variant: "destructive" }),
+  });
+  const updateAppointmentCancelReasonsMutation = useMutation({
+    mutationFn: async () => {
+      const reasons = appointmentCancelReasonsText
+        .split(/\r?\n/)
+        .map((reason) => reason.trim())
+        .filter(Boolean);
+      const response = await apiRequest("PATCH", "/api/settings/appointment-cancel-reasons", { reasons });
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/settings/appointment-cancel-reasons"] });
+      toast({ title: "Appointment reasons updated" });
+    },
+    onError: (error: Error) => toast({ title: "Unable to update appointment reasons", description: error.message, variant: "destructive" }),
+  });
 
   const openCreateTemplate = () => {
     setEditingTemplate(null);
@@ -1126,6 +1161,58 @@ export default function Settings() {
                 })}
             </div>
           )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base font-semibold flex items-center gap-2"><SettingsIcon className="h-4 w-4" /> Service Time Tracking</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="max-w-md space-y-2">
+            <Label>Service Time Tracking Mode</Label>
+            <Select
+              value={serviceTimeTracking?.mode || "AUTO_TIMEOUT_ON_TICKET_POST"}
+              onValueChange={(mode) => updateServiceTimeTrackingMutation.mutate(mode)}
+            >
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="AUTO_TIMEOUT_ON_TICKET_POST">Auto time out on ticket post</SelectItem>
+                <SelectItem value="PROMPT_FOR_TIMEOUT">Prompt tech after ticket post</SelectItem>
+                <SelectItem value="MANUAL_TIMEOUT">Manual time out only</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Controls appointment time-out behavior after technicians post service tickets. GPS fields are staged for a later route/field validation pass.
+          </p>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base font-semibold flex items-center gap-2"><SettingsIcon className="h-4 w-4" /> Appointment Cancel / Reschedule Reasons</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="max-w-xl space-y-2">
+            <Label>Reasons</Label>
+            <Textarea
+              value={appointmentCancelReasonsText}
+              onChange={(event) => setAppointmentCancelReasonsText(event.target.value)}
+              rows={8}
+              placeholder={"Weather\nGates locked\nSchedule conflict\nCustomer not home"}
+            />
+            <p className="text-xs text-muted-foreground">
+              One reason per line. Technicians must select one before canceling or requesting a reschedule from the route view.
+            </p>
+          </div>
+          <Button
+            type="button"
+            onClick={() => updateAppointmentCancelReasonsMutation.mutate()}
+            disabled={updateAppointmentCancelReasonsMutation.isPending || !appointmentCancelReasonsText.trim()}
+          >
+            {updateAppointmentCancelReasonsMutation.isPending ? "Saving..." : "Save Reasons"}
+          </Button>
         </CardContent>
       </Card>
 
