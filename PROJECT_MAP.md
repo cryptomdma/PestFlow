@@ -26,7 +26,10 @@
 - Technician completion captures a historical technician name and license snapshot; do not rely only on live technician joins for compliance history.
 - The Technician Work MVP is a mobile-first web/PWA route, not a native app.
 - Multi-service Appointments are completed service-by-service; the Appointment should be completed only when all linked Services are completed.
-- Technicians post Service Tickets; office finalization/reopen is a separate review layer.
+- Technicians post Service Tickets; office finalization/reopen is a separate review layer and finalization is the authoritative completion event.
+- Appointment-level time tracking uses `timeInAt`, `timeOutAt`, and `durationMinutes`; GPS timing fields are staged for later.
+- Service Time Tracking Mode lives in Settings and controls automatic, prompted, or manual time out.
+- `/service-ticket-review` is the office queue for posted tickets pending review.
 - Material Products are reusable compliance-aware definitions used by Product Application rows on Service Tickets.
 - Product Applications should capture product, EPA number, dilution, amount/unit, method, equipment/device, application area, notes, and active ingredient amount.
 - Areas serviced should be derived from structured application areas where practical.
@@ -34,6 +37,8 @@
 - Technician route view is day-driven and should expose compact Today/Prev/Next/date-picker navigation.
 - Target pests are internal treatment context on Service Tickets; warranted pests/customer-facing warranty language is future work.
 - Target Pests are Settings-managed reference data for Service Ticket treatment context.
+- Service Tickets can flag follow-up required with technician notes; office review owns customer contact and follow-up scheduling until route optimization/availability settings exist.
+- Technician route Appointment cancel/reschedule requests require Settings-configured reasons, cancel the historical Appointment, requeue linked Services as pending scheduling, and create an open Opportunity for office follow-up/rescheduling.
 - Field service type/price adjustment is allowed only for non-agreement Services. Agreement-generated Services remain locked in the technician ticket workflow.
 - Service Ticket material cards should be mobile-manageable: add newest at top, allow removal, and collapse into summary rows.
 - Agreement generation creates pending Services only.
@@ -81,5 +86,6 @@ Required env vars:
 - Prefer shared types in `shared/`
 - Do not invent new architecture without checking existing patterns
 - Follow existing Tailwind design language unless explicitly changing UI system
-- Do not build invoicing/payment behavior directly into Service completion; completed/billable Service Records are the future invoicing input.
+- Do not build invoicing/payment behavior directly into Service completion; finalized/billing-ready Service Records are the future invoicing input.
 - Do not bypass office review by treating technician-posted tickets as fully finalized billing events.
+- Do not add technician-driven follow-up appointment self-scheduling until route optimization and admin-configured follow-up availability are in place.

@@ -10,6 +10,7 @@ import {
   agreements,
   agreementTemplates,
   agreementCancellationPolicies,
+  appSettings,
   serviceRecords, productApplications, materialProducts, targetPests, invoices, communications,
   billingProfiles, customerNotes,
   noteRevisions,
@@ -25,6 +26,7 @@ import {
   type Agreement, type InsertAgreement,
   type AgreementTemplate, type InsertAgreementTemplate,
   type ServiceRecord, type InsertServiceRecord,
+  type AppSetting,
   type Opportunity, type InsertOpportunity,
   type OpportunityActivity, type InsertOpportunityActivity,
   type OpportunityDisposition, type InsertOpportunityDisposition,
@@ -38,7 +40,7 @@ import {
   type NoteRevision,
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, and, inArray, sql, gte, lte, asc, desc } from "drizzle-orm";
+import { eq, and, inArray, sql, gte, lte, asc, desc, ne } from "drizzle-orm";
 import { PLACEHOLDER_LOCATION_NAME, PLACEHOLDER_LOCATION_NOTE } from "./account-bootstrap";
 
 export interface CustomerDetailCompatProjection {
@@ -136,6 +138,8 @@ export interface CompleteServiceInput {
   areasServiced?: string | null;
   conditionsFound?: string | null;
   recommendations?: string | null;
+  followUpRequired?: boolean | null;
+  followUpNotes?: string | null;
   customerSignature?: boolean | null;
   confirmed?: boolean | null;
   productApplications?: Array<Omit<InsertProductApplication, "serviceRecordId">>;
@@ -146,6 +150,27 @@ export interface CompleteServiceResult {
   appointment?: Appointment | null;
   serviceRecord: ServiceRecord;
   productApplications: ProductApplication[];
+}
+
+export type ServiceTimeTrackingMode = "AUTO_TIMEOUT_ON_TICKET_POST" | "PROMPT_FOR_TIMEOUT" | "MANUAL_TIMEOUT";
+
+export const DEFAULT_APPOINTMENT_CANCEL_REASONS = [
+  "Weather",
+  "Gates locked",
+  "Schedule conflict",
+  "Customer not home",
+  "Canceled by company",
+  "Customer requested reschedule",
+  "Access issue",
+  "Other",
+];
+
+export interface AppointmentCancelRescheduleInput {
+  appointmentId: string;
+  reason: string;
+  notes?: string | null;
+  rescheduleRequested?: boolean;
+  actor?: AuditActor;
 }
 
 export interface TechnicianWorkService {
@@ -266,6 +291,9 @@ export interface IStorage {
   getAppointment(id: string): Promise<Appointment | undefined>;
   createAppointment(data: InsertAppointment): Promise<Appointment>;
   updateAppointment(id: string, data: Partial<InsertAppointment>): Promise<Appointment | undefined>;
+  requestAppointmentCancelOrReschedule(input: AppointmentCancelRescheduleInput): Promise<Appointment | undefined>;
+  timeInAppointment(id: string): Promise<Appointment | undefined>;
+  timeOutAppointment(id: string): Promise<Appointment | undefined>;
   getTechnicianWork(technicianId: string, date: string): Promise<TechnicianWorkVisit[]>;
 
   getServiceRecords(): Promise<ServiceRecord[]>;
@@ -274,8 +302,12 @@ export interface IStorage {
   createServiceRecord(data: InsertServiceRecord): Promise<ServiceRecord>;
   updateServiceRecord(id: string, data: Partial<InsertServiceRecord>): Promise<ServiceRecord | undefined>;
   completeService(input: CompleteServiceInput): Promise<CompleteServiceResult | undefined>;
-  finalizeServiceRecord(id: string): Promise<ServiceRecord | undefined>;
-  reopenServiceRecord(id: string): Promise<ServiceRecord | undefined>;
+  finalizeServiceRecord(id: string, actor?: AuditActor): Promise<ServiceRecord | undefined>;
+  reopenServiceRecord(id: string, reason: string, actor?: AuditActor): Promise<ServiceRecord | undefined>;
+  getServiceTimeTrackingMode(): Promise<ServiceTimeTrackingMode>;
+  setServiceTimeTrackingMode(mode: ServiceTimeTrackingMode): Promise<AppSetting>;
+  getAppointmentCancelReasons(): Promise<string[]>;
+  setAppointmentCancelReasons(reasons: string[]): Promise<AppSetting>;
 
   getMaterialProducts(includeInactive?: boolean): Promise<MaterialProduct[]>;
   createMaterialProduct(data: InsertMaterialProduct): Promise<MaterialProduct>;
@@ -317,6 +349,43 @@ function normalizeDateOnly(value: string | Date | null | undefined): string | nu
   }
 
   return value.toISOString().slice(0, 10);
+}
+
+function calculateDurationMinutes(start: Date | string | null | undefined, end: Date | string | null | undefined): number | null {
+  if (!start || !end) return null;
+  const startMs = new Date(start).getTime();
+  const endMs = new Date(end).getTime();
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs < startMs) return null;
+  return Math.max(Math.round((endMs - startMs) / 60000), 0);
+}
+
+function normalizeServiceTimeTrackingMode(value: string | null | undefined): ServiceTimeTrackingMode {
+  if (value === "PROMPT_FOR_TIMEOUT" || value === "MANUAL_TIMEOUT" || value === "AUTO_TIMEOUT_ON_TICKET_POST") {
+    return value;
+  }
+  return "AUTO_TIMEOUT_ON_TICKET_POST";
+}
+
+function normalizeAppointmentCancelReasons(value: string | null | undefined): string[] {
+  if (!value) return DEFAULT_APPOINTMENT_CANCEL_REASONS;
+
+  try {
+    const parsed = JSON.parse(value);
+    if (Array.isArray(parsed)) {
+      const reasons = parsed
+        .map((reason) => String(reason || "").trim())
+        .filter(Boolean);
+      return reasons.length ? Array.from(new Set(reasons)) : DEFAULT_APPOINTMENT_CANCEL_REASONS;
+    }
+  } catch {
+    const reasons = value
+      .split(/\r?\n|,/)
+      .map((reason) => reason.trim())
+      .filter(Boolean);
+    return reasons.length ? Array.from(new Set(reasons)) : DEFAULT_APPOINTMENT_CANCEL_REASONS;
+  }
+
+  return DEFAULT_APPOINTMENT_CANCEL_REASONS;
 }
 
 function addDays(dateOnly: string, days: number) {
@@ -726,9 +795,7 @@ export class DatabaseStorage implements IStorage {
       return;
     }
 
-    const nextStatus = appointment.status === "completed"
-      ? "COMPLETED"
-      : appointment.status === "canceled"
+    const nextStatus = appointment.status === "canceled"
         ? "CANCELLED"
         : "SCHEDULED";
 
@@ -2367,6 +2434,48 @@ export class DatabaseStorage implements IStorage {
 
       await this.syncServicesForAppointmentTx(tx, appt);
 
+      if (appt.serviceId) {
+        const resolvedAt = new Date();
+        const resolvedOpportunities = await tx
+          .update(opportunities)
+          .set({
+            status: "CONVERTED",
+            convertedServiceId: appt.serviceId,
+            nextActionDate: null,
+            lastDispositionKey: "RESCHEDULED",
+            lastDispositionLabel: "Rescheduled",
+            lastDispositionAt: resolvedAt,
+            updatedAt: resolvedAt,
+          })
+          .where(and(
+            eq(opportunities.sourceServiceId, appt.serviceId),
+            eq(opportunities.status, "OPEN"),
+            inArray(opportunities.source, ["APPOINTMENT_RESCHEDULE_REQUIRED", "APPOINTMENT_CANCELLATION_REVIEW"]),
+          ))
+          .returning();
+
+        for (const opportunity of resolvedOpportunities) {
+          const activity = await this.createOpportunityActivityTx(tx, {
+            opportunityId: opportunity.id,
+            dispositionKey: "RESCHEDULED",
+            dispositionLabel: "Rescheduled",
+            notes: `Service scheduled on appointment ${appt.id}`,
+            nextActionDate: null,
+            createdByUserId: null,
+            createdByLabel: "System",
+          });
+
+          await this.createOpportunityCommunicationTx(tx, {
+            opportunity,
+            activity,
+            subject: "Opportunity Call - Rescheduled",
+            body: `Disposition: Rescheduled\nService scheduled on appointment ${appt.id}`,
+            nextActionDate: null,
+            actorLabel: "System",
+          });
+        }
+      }
+
       if (appt.agreementId && appt.source === "AGREEMENT_INITIAL") {
         await tx
           .update(agreements)
@@ -2400,16 +2509,143 @@ export class DatabaseStorage implements IStorage {
 
       await this.syncServicesForAppointmentTx(tx, updatedAppointment);
 
-      if (existingAppointment.status !== "completed" && updatedAppointment.status === "completed") {
-        await this.advanceAgreementForCompletedAppointment(tx, updatedAppointment);
-      }
-
       const [linkedAgreement] = await tx.select().from(agreements).where(eq(agreements.initialAppointmentId, updatedAppointment.id));
       if (linkedAgreement?.startDateSource === "INITIAL_APPOINTMENT") {
         await this.syncAgreementInitialAppointmentDates(tx, linkedAgreement.id);
       }
 
       return updatedAppointment;
+    });
+  }
+
+  async requestAppointmentCancelOrReschedule(input: AppointmentCancelRescheduleInput): Promise<Appointment | undefined> {
+    const reason = input.reason.trim();
+    if (!reason) {
+      throw new Error("Cancellation or reschedule reason is required");
+    }
+
+    return db.transaction(async (tx) => {
+      const [existingAppointment] = await tx.select().from(appointments).where(eq(appointments.id, input.appointmentId));
+      if (!existingAppointment) return undefined;
+
+      const now = new Date();
+      const today = normalizeDateOnly(now)!;
+      const notes = input.notes?.trim() || null;
+      const source = input.rescheduleRequested ? "APPOINTMENT_RESCHEDULE_REQUIRED" : "APPOINTMENT_CANCELLATION_REVIEW";
+      const actionLabel = input.rescheduleRequested ? "Reschedule requested" : "Appointment canceled";
+
+      const [updatedAppointment] = await tx
+        .update(appointments)
+        .set({
+          status: "canceled",
+          cancelReason: reason,
+          cancelNotes: notes,
+          cancelRequestedAt: now,
+          cancelRequestedByLabel: input.actor?.actorLabel || null,
+          rescheduleRequested: input.rescheduleRequested ?? false,
+          rescheduleRequestedAt: input.rescheduleRequested ? now : null,
+        })
+        .where(eq(appointments.id, existingAppointment.id))
+        .returning();
+
+      const linkedServices = await this.getLinkedServicesForAppointmentTx(tx, existingAppointment.id, existingAppointment.serviceId);
+
+      for (const service of linkedServices) {
+        let serviceWindowStart: string | null | undefined = undefined;
+        let serviceWindowEnd: string | null | undefined = undefined;
+        let dueDate: string | null | undefined = service.dueDate ?? today;
+
+        if (service.agreementId) {
+          const [agreement] = await tx.select().from(agreements).where(eq(agreements.id, service.agreementId));
+          const windowDays = agreement?.serviceWindowDays && agreement.serviceWindowDays > 0 ? agreement.serviceWindowDays : null;
+          dueDate = today;
+          serviceWindowStart = today;
+          serviceWindowEnd = windowDays ? addDays(today, windowDays) : today;
+        }
+
+        await tx
+          .update(services)
+          .set({
+            status: "PENDING_SCHEDULING",
+            appointmentId: null,
+            assignedTechnicianId: null,
+            dueDate: dueDate as any,
+            serviceWindowStart: serviceWindowStart === undefined ? service.serviceWindowStart : serviceWindowStart as any,
+            serviceWindowEnd: serviceWindowEnd === undefined ? service.serviceWindowEnd : serviceWindowEnd as any,
+            updatedAt: now,
+          })
+          .where(eq(services.id, service.id));
+
+        const [serviceType] = service.serviceTypeId
+          ? await tx.select().from(serviceTypes).where(eq(serviceTypes.id, service.serviceTypeId))
+          : [undefined];
+        const [existingOpenOpportunity] = await tx
+          .select()
+          .from(opportunities)
+          .where(and(
+            eq(opportunities.sourceServiceId, service.id),
+            eq(opportunities.source, source),
+            eq(opportunities.status, "OPEN"),
+          ));
+
+        if (!existingOpenOpportunity) {
+          await tx.insert(opportunities).values({
+            locationId: service.locationId,
+            agreementId: service.agreementId || null,
+            sourceServiceId: service.id,
+            serviceTypeId: service.serviceTypeId || null,
+            opportunityType: input.rescheduleRequested ? "Appointment Reschedule" : "Canceled Appointment Review",
+            source,
+            dueDate: today,
+            nextActionDate: today,
+            status: "OPEN",
+            notes: [
+              `${actionLabel}: ${serviceType?.name || "Service"}`,
+              `Reason: ${reason}`,
+              notes ? `Notes: ${notes}` : null,
+              service.agreementId ? "Agreement service requeued for office scheduling." : "Service returned to pending scheduling.",
+            ].filter(Boolean).join("\n"),
+          });
+        }
+      }
+
+      return updatedAppointment;
+    });
+  }
+
+  async timeInAppointment(id: string): Promise<Appointment | undefined> {
+    return db.transaction(async (tx) => {
+      const [existingAppointment] = await tx.select().from(appointments).where(eq(appointments.id, id));
+      if (!existingAppointment) return undefined;
+
+      const [appointment] = await tx
+        .update(appointments)
+        .set({
+          timeInAt: existingAppointment.timeInAt ?? new Date(),
+          status: existingAppointment.status === "completed" ? existingAppointment.status : "in_progress",
+        })
+        .where(eq(appointments.id, id))
+        .returning();
+      return appointment;
+    });
+  }
+
+  async timeOutAppointment(id: string): Promise<Appointment | undefined> {
+    return db.transaction(async (tx) => {
+      const [existingAppointment] = await tx.select().from(appointments).where(eq(appointments.id, id));
+      if (!existingAppointment) return undefined;
+
+      const timeOutAt = existingAppointment.timeOutAt ?? new Date();
+      const durationMinutes = calculateDurationMinutes(existingAppointment.timeInAt, timeOutAt);
+      const [appointment] = await tx
+        .update(appointments)
+        .set({
+          timeOutAt,
+          durationMinutes,
+        })
+        .where(eq(appointments.id, id))
+        .returning();
+      return appointment;
     });
   }
 
@@ -2423,6 +2659,7 @@ export class DatabaseStorage implements IStorage {
         eq(appointments.assignedTechnicianId, technicianId),
         gte(appointments.scheduledDate, dayStart),
         lte(appointments.scheduledDate, dayEnd),
+        ne(appointments.status, "canceled"),
       ))
       .orderBy(asc(appointments.scheduledDate));
 
@@ -2479,18 +2716,14 @@ export class DatabaseStorage implements IStorage {
       }).returning();
 
       if (sr.serviceId) {
-        const [completedService] = await tx
+        await tx
           .update(services)
           .set({
-            status: "COMPLETED",
+            status: "SCHEDULED",
             assignedTechnicianId: sr.technicianId || null,
             updatedAt: new Date(),
           })
           .where(eq(services.id, sr.serviceId))
-          .returning();
-        if (completedService) {
-          await this.advanceAgreementForCompletedService(tx, completedService);
-        }
       }
 
       if (sr.appointmentId) {
@@ -2499,8 +2732,6 @@ export class DatabaseStorage implements IStorage {
           await this.syncAgreementInitialAppointmentDates(tx, linkedAgreement.id);
         }
       }
-
-      await this.ensureOpportunityForServiceRecordTx(tx, sr);
 
       return sr;
     });
@@ -2523,18 +2754,14 @@ export class DatabaseStorage implements IStorage {
       }).where(eq(serviceRecords.id, id)).returning();
 
       if (sr.serviceId) {
-        const [completedService] = await tx
+        await tx
           .update(services)
           .set({
-            status: "COMPLETED",
+            status: sr.confirmed ? "COMPLETED" : "SCHEDULED",
             assignedTechnicianId: sr.technicianId || null,
             updatedAt: new Date(),
           })
           .where(eq(services.id, sr.serviceId))
-          .returning();
-        if (completedService) {
-          await this.advanceAgreementForCompletedService(tx, completedService);
-        }
       }
 
       if (sr.appointmentId) {
@@ -2543,8 +2770,6 @@ export class DatabaseStorage implements IStorage {
           await this.syncAgreementInitialAppointmentDates(tx, linkedAgreement.id);
         }
       }
-
-      await this.ensureOpportunityForServiceRecordTx(tx, sr);
 
       return sr;
     });
@@ -2596,12 +2821,20 @@ export class DatabaseStorage implements IStorage {
         areasServiced: input.areasServiced?.trim() || null,
         conditionsFound: input.conditionsFound?.trim() || null,
         recommendations: input.recommendations?.trim() || null,
+        followUpRequired: input.followUpRequired ?? false,
+        followUpNotes: input.followUpRequired ? input.followUpNotes?.trim() || null : null,
         customerSignature: input.customerSignature ?? false,
         confirmed: false,
         ticketStatus: "OFFICE_REVIEW_PENDING",
         postedAt: new Date(),
         finalizedAt: null,
+        finalizedByUserId: null,
+        finalizedByLabel: null,
         reopenedAt: null,
+        reopenedByUserId: null,
+        reopenedByLabel: null,
+        reopenReason: null,
+        readyForBilling: false,
       };
       const technicianSnapshot = await this.resolveServiceRecordTechnicianSnapshot(tx, recordPayload, existingRecord);
 
@@ -2641,10 +2874,10 @@ export class DatabaseStorage implements IStorage {
         ? await tx.insert(productApplications).values(validApplications).returning()
         : [];
 
-      const [completedService] = await tx
+      const [postedService] = await tx
         .update(services)
         .set({
-          status: "COMPLETED",
+          status: service.status === "CANCELLED" ? "CANCELLED" : "SCHEDULED",
           appointmentId: appointment?.id ?? service.appointmentId ?? null,
           assignedTechnicianId: technicianSnapshot.technicianId || effectiveService.assignedTechnicianId || appointment?.assignedTechnicianId || null,
           updatedAt: new Date(),
@@ -2652,26 +2885,22 @@ export class DatabaseStorage implements IStorage {
         .where(eq(services.id, service.id))
         .returning();
 
-      if (completedService) {
-        await this.advanceAgreementForCompletedService(tx, completedService);
-      }
-
       let updatedAppointment: Appointment | undefined | null = appointment ?? null;
       if (appointment) {
-        const linkedServices = await this.getLinkedServicesForAppointmentTx(tx, appointment.id, appointment.serviceId);
-        const latestServices = linkedServices.length
-          ? await tx.select().from(services).where(inArray(services.id, linkedServices.map((linkedService) => linkedService.id)))
-          : [];
-        const allLinkedServicesCompleted = latestServices.length > 0
-          && latestServices.every((linkedService) => linkedService.status === "COMPLETED");
+        const trackingMode = await this.getServiceTimeTrackingMode();
+        const timeOutAt = trackingMode === "AUTO_TIMEOUT_ON_TICKET_POST" && !appointment.timeOutAt ? new Date() : appointment.timeOutAt ?? null;
+        const durationMinutes = timeOutAt ? calculateDurationMinutes(appointment.timeInAt, timeOutAt) : appointment.durationMinutes ?? null;
+        const nextAppointmentStatus = appointment.status === "scheduled" ? "in_progress" : appointment.status;
 
-        if (allLinkedServicesCompleted && appointment.status !== "completed") {
-          [updatedAppointment] = await tx
-            .update(appointments)
-            .set({ status: "completed" })
-            .where(eq(appointments.id, appointment.id))
-            .returning();
-        }
+        [updatedAppointment] = await tx
+          .update(appointments)
+          .set({
+            status: nextAppointmentStatus,
+            timeOutAt,
+            durationMinutes,
+          })
+          .where(eq(appointments.id, appointment.id))
+          .returning();
 
         const [linkedAgreement] = await tx.select().from(agreements).where(eq(agreements.initialAppointmentId, appointment.id));
         if (linkedAgreement?.startDateSource === "INITIAL_APPOINTMENT") {
@@ -2679,10 +2908,8 @@ export class DatabaseStorage implements IStorage {
         }
       }
 
-      await this.ensureOpportunityForServiceRecordTx(tx, serviceRecord);
-
       return {
-        service: completedService ?? effectiveService,
+        service: postedService ?? effectiveService,
         appointment: updatedAppointment ?? null,
         serviceRecord,
         productApplications: savedApplications,
@@ -2694,30 +2921,109 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(productApplications);
   }
 
-  async finalizeServiceRecord(id: string): Promise<ServiceRecord | undefined> {
-    const [record] = await db
-      .update(serviceRecords)
-      .set({
-        confirmed: true,
-        ticketStatus: "FINALIZED",
-        finalizedAt: new Date(),
-      })
-      .where(eq(serviceRecords.id, id))
-      .returning();
-    return record;
+  async finalizeServiceRecord(id: string, actor?: AuditActor): Promise<ServiceRecord | undefined> {
+    return db.transaction(async (tx) => {
+      const [existingRecord] = await tx.select().from(serviceRecords).where(eq(serviceRecords.id, id));
+      if (!existingRecord) return undefined;
+
+      const now = new Date();
+      const [record] = await tx
+        .update(serviceRecords)
+        .set({
+          confirmed: true,
+          ticketStatus: "FINALIZED",
+          finalizedAt: now,
+          finalizedByUserId: actor?.userId ?? null,
+          finalizedByLabel: actor?.actorLabel ?? "Office",
+          readyForBilling: true,
+        })
+        .where(eq(serviceRecords.id, id))
+        .returning();
+
+      let completedService: Service | undefined;
+      if (record.serviceId) {
+        [completedService] = await tx
+          .update(services)
+          .set({
+            status: "COMPLETED",
+            assignedTechnicianId: record.technicianId || null,
+            updatedAt: now,
+          })
+          .where(eq(services.id, record.serviceId))
+          .returning();
+
+        if (completedService && !existingRecord.confirmed) {
+          await this.advanceAgreementForCompletedService(tx, completedService);
+        }
+      }
+
+      if (!existingRecord.confirmed) {
+        await this.ensureOpportunityForServiceRecordTx(tx, record);
+      }
+
+      if (record.appointmentId) {
+        const [appointment] = await tx.select().from(appointments).where(eq(appointments.id, record.appointmentId));
+        if (appointment) {
+          const linkedServices = await this.getLinkedServicesForAppointmentTx(tx, appointment.id, appointment.serviceId);
+          const serviceIds = linkedServices.map((service) => service.id);
+          const linkedRecords = serviceIds.length
+            ? await tx.select().from(serviceRecords).where(inArray(serviceRecords.serviceId, serviceIds))
+            : [];
+          const finalizedServiceIds = new Set(linkedRecords.filter((serviceRecord) => serviceRecord.confirmed).map((serviceRecord) => serviceRecord.serviceId));
+          const allFinalized = serviceIds.length > 0 && serviceIds.every((serviceId) => finalizedServiceIds.has(serviceId));
+          if (allFinalized) {
+            const timeOutAt = appointment.timeOutAt ?? now;
+            await tx.update(appointments).set({
+              status: "completed",
+              timeOutAt,
+              durationMinutes: calculateDurationMinutes(appointment.timeInAt, timeOutAt) ?? appointment.durationMinutes ?? null,
+            }).where(eq(appointments.id, appointment.id));
+          }
+        }
+      }
+
+      return record;
+    });
   }
 
-  async reopenServiceRecord(id: string): Promise<ServiceRecord | undefined> {
-    const [record] = await db
-      .update(serviceRecords)
-      .set({
-        confirmed: false,
-        ticketStatus: "REOPENED",
-        reopenedAt: new Date(),
-      })
-      .where(eq(serviceRecords.id, id))
-      .returning();
-    return record;
+  async reopenServiceRecord(id: string, reason: string, actor?: AuditActor): Promise<ServiceRecord | undefined> {
+    return db.transaction(async (tx) => {
+      const [existingRecord] = await tx.select().from(serviceRecords).where(eq(serviceRecords.id, id));
+      if (!existingRecord) return undefined;
+
+      const [record] = await tx
+        .update(serviceRecords)
+        .set({
+          confirmed: false,
+          ticketStatus: "REOPENED",
+          reopenedAt: new Date(),
+          reopenedByUserId: actor?.userId ?? null,
+          reopenedByLabel: actor?.actorLabel ?? "Office",
+          reopenReason: reason.trim(),
+          readyForBilling: false,
+        })
+        .where(eq(serviceRecords.id, id))
+        .returning();
+
+      if (record.serviceId) {
+        await tx
+          .update(services)
+          .set({
+            status: "SCHEDULED",
+            updatedAt: new Date(),
+          })
+          .where(eq(services.id, record.serviceId));
+      }
+
+      if (record.appointmentId) {
+        const [appointment] = await tx.select().from(appointments).where(eq(appointments.id, record.appointmentId));
+        if (appointment?.status === "completed") {
+          await tx.update(appointments).set({ status: appointment.timeInAt ? "in_progress" : "scheduled" }).where(eq(appointments.id, appointment.id));
+        }
+      }
+
+      return record;
+    });
   }
 
   async getMaterialProducts(includeInactive = false): Promise<MaterialProduct[]> {
@@ -2760,6 +3066,45 @@ export class DatabaseStorage implements IStorage {
       .where(eq(targetPests.id, id))
       .returning();
     return pest;
+  }
+
+  async getServiceTimeTrackingMode(): Promise<ServiceTimeTrackingMode> {
+    const [setting] = await db.select().from(appSettings).where(eq(appSettings.key, "service_time_tracking_mode"));
+    return normalizeServiceTimeTrackingMode(setting?.value);
+  }
+
+  async setServiceTimeTrackingMode(mode: ServiceTimeTrackingMode): Promise<AppSetting> {
+    const [setting] = await db
+      .insert(appSettings)
+      .values({ key: "service_time_tracking_mode", value: mode })
+      .onConflictDoUpdate({
+        target: appSettings.key,
+        set: { value: mode, updatedAt: new Date() },
+      })
+      .returning();
+    return setting;
+  }
+
+  async getAppointmentCancelReasons(): Promise<string[]> {
+    const [setting] = await db.select().from(appSettings).where(eq(appSettings.key, "appointment_cancel_reschedule_reasons"));
+    return normalizeAppointmentCancelReasons(setting?.value);
+  }
+
+  async setAppointmentCancelReasons(reasons: string[]): Promise<AppSetting> {
+    const normalized = Array.from(new Set(reasons.map((reason) => reason.trim()).filter(Boolean)));
+    if (!normalized.length) {
+      throw new Error("At least one appointment cancellation reason is required");
+    }
+    const value = JSON.stringify(normalized);
+    const [setting] = await db
+      .insert(appSettings)
+      .values({ key: "appointment_cancel_reschedule_reasons", value })
+      .onConflictDoUpdate({
+        target: appSettings.key,
+        set: { value, updatedAt: new Date() },
+      })
+      .returning();
+    return setting;
   }
 
   async getProductApplicationsByServiceRecord(serviceRecordId: string): Promise<ProductApplication[]> {

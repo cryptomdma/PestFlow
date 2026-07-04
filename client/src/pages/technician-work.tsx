@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -8,9 +8,10 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Textarea } from "@/components/ui/textarea";
 import { ServiceCompletionDialog } from "@/components/service-completion-dialog";
-import { queryClient } from "@/lib/queryClient";
-import { CalendarDays, CheckCircle2, ClipboardList, MapPin, Navigation } from "lucide-react";
+import { apiRequest, queryClient } from "@/lib/queryClient";
+import { AlertTriangle, CalendarDays, CheckCircle2, ClipboardList, Clock3, MapPin, Navigation } from "lucide-react";
 import type { Appointment, Customer, Location, Service, ServiceRecord, ServiceType, Technician } from "@shared/schema";
 
 interface TechnicianWorkService {
@@ -56,6 +57,14 @@ function formatTimeRange(appointment: Appointment) {
   return endLabel ? `${startLabel} - ${endLabel}` : startLabel;
 }
 
+function formatDuration(minutes: number | null | undefined) {
+  if (minutes === null || minutes === undefined) return "Not tracked";
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  const remaining = minutes % 60;
+  return remaining ? `${hours}h ${remaining}m` : `${hours}h`;
+}
+
 function hasLocalTicketDraft(serviceId: string) {
   return !!localStorage.getItem(`pestflow.service-ticket-draft.${serviceId}`);
 }
@@ -76,9 +85,13 @@ export default function TechnicianWork() {
   const [selectedTechnicianId, setSelectedTechnicianId] = useState("");
   const [completionContext, setCompletionContext] = useState<{ service: Service; appointment: Appointment } | null>(null);
   const [detailVisit, setDetailVisit] = useState<TechnicianWorkVisit | null>(null);
+  const [cancelAction, setCancelAction] = useState<"cancel" | "reschedule" | null>(null);
+  const [cancelReason, setCancelReason] = useState("");
+  const [cancelNotes, setCancelNotes] = useState("");
 
   const { data: technicians, isLoading: techniciansLoading } = useQuery<Technician[]>({ queryKey: ["/api/technicians?includeInactive=true"] });
   const { data: serviceTypes } = useQuery<ServiceType[]>({ queryKey: ["/api/service-types"] });
+  const { data: cancelReasonSettings } = useQuery<{ reasons: string[] }>({ queryKey: ["/api/settings/appointment-cancel-reasons"] });
   const { data: visits, isLoading: visitsLoading } = useQuery<TechnicianWorkVisit[]>({
     queryKey: [`/api/technicians/${selectedTechnicianId}/work?date=${selectedDate}`],
     enabled: !!selectedTechnicianId && !!selectedDate,
@@ -88,6 +101,52 @@ export default function TechnicianWork() {
   const serviceTypeNameById = useMemo(() => new Map((serviceTypes ?? []).map((serviceType) => [serviceType.id, serviceType.name])), [serviceTypes]);
 
   const selectedTechnician = technicians?.find((technician) => technician.id === selectedTechnicianId) ?? null;
+  const cancelReasons = cancelReasonSettings?.reasons?.length ? cancelReasonSettings.reasons : ["Weather", "Gates locked", "Schedule conflict", "Customer not home", "Canceled by company", "Customer requested reschedule", "Access issue", "Other"];
+  const refreshWork = () => {
+    queryClient.invalidateQueries({ queryKey: [`/api/technicians/${selectedTechnicianId}/work?date=${selectedDate}`] });
+    queryClient.invalidateQueries({ queryKey: ["/api/appointments"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/service-records"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/services/pending"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/opportunities"] });
+  };
+  const timeInMutation = useMutation({
+    mutationFn: async (appointmentId: string) => {
+      const response = await apiRequest("POST", `/api/appointments/${appointmentId}/time-in`, {});
+      return response.json();
+    },
+    onSuccess: refreshWork,
+  });
+  const cancelRescheduleMutation = useMutation({
+    mutationFn: async () => {
+      if (!detailVisit || !cancelAction) throw new Error("Appointment is not selected");
+      const response = await apiRequest("POST", `/api/appointments/${detailVisit.appointment.id}/cancel-reschedule`, {
+        reason: cancelReason,
+        notes: cancelNotes,
+        rescheduleRequested: cancelAction === "reschedule",
+      });
+      return response.json();
+    },
+    onSuccess: () => {
+      refreshWork();
+      setCancelAction(null);
+      setCancelReason("");
+      setCancelNotes("");
+      setDetailVisit(null);
+    },
+  });
+
+  const openCancelAction = (action: "cancel" | "reschedule") => {
+    setCancelAction(action);
+    setCancelReason("");
+    setCancelNotes("");
+  };
+  const timeOutMutation = useMutation({
+    mutationFn: async (appointmentId: string) => {
+      const response = await apiRequest("POST", `/api/appointments/${appointmentId}/time-out`, {});
+      return response.json();
+    },
+    onSuccess: refreshWork,
+  });
 
   return (
     <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 p-4 sm:p-6">
@@ -185,6 +244,50 @@ export default function TechnicianWork() {
                 <p className="font-medium">{getCustomerLabel(detailVisit.customer, detailVisit.location)}</p>
                 <p className="text-sm text-muted-foreground">{formatTimeRange(detailVisit.appointment)}</p>
                 <p className="mt-1 text-sm text-muted-foreground">{getAddress(detailVisit.location)}</p>
+                <div className="mt-3 grid gap-2 rounded-md border bg-background p-2 text-xs sm:grid-cols-3">
+                  <div>
+                    <p className="text-muted-foreground">Time In</p>
+                    <p className="font-medium">{detailVisit.appointment.timeInAt ? new Date(detailVisit.appointment.timeInAt).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }) : "Not started"}</p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">Time Out</p>
+                    <p className="font-medium">{detailVisit.appointment.timeOutAt ? new Date(detailVisit.appointment.timeOutAt).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }) : "Not timed out"}</p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">Duration</p>
+                    <p className="font-medium">{formatDuration(detailVisit.appointment.durationMinutes)}</p>
+                  </div>
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {!detailVisit.appointment.timeInAt ? (
+                    <Button type="button" size="sm" onClick={() => timeInMutation.mutate(detailVisit.appointment.id)} disabled={timeInMutation.isPending}>
+                      <Clock3 className="mr-1 h-3.5 w-3.5" /> Time In
+                    </Button>
+                  ) : null}
+                  {detailVisit.appointment.timeInAt && !detailVisit.appointment.timeOutAt ? (
+                    <Button type="button" size="sm" variant="outline" onClick={() => timeOutMutation.mutate(detailVisit.appointment.id)} disabled={timeOutMutation.isPending}>
+                      Time Out
+                    </Button>
+                  ) : null}
+                  {detailVisit.appointment.status !== "canceled" && detailVisit.appointment.status !== "completed" ? (
+                    <>
+                      <Button type="button" size="sm" variant="outline" onClick={() => openCancelAction("reschedule")}>
+                        Request Reschedule
+                      </Button>
+                      <Button type="button" size="sm" variant="destructive" onClick={() => openCancelAction("cancel")}>
+                        Cancel Appointment
+                      </Button>
+                    </>
+                  ) : null}
+                </div>
+                {detailVisit.appointment.status === "canceled" && (
+                  <div className="mt-3 rounded-md border border-destructive/30 bg-destructive/10 p-2 text-sm">
+                    <p className="font-medium text-destructive">Appointment canceled</p>
+                    {"cancelReason" in detailVisit.appointment && detailVisit.appointment.cancelReason ? (
+                      <p className="mt-1 text-muted-foreground">Reason: {detailVisit.appointment.cancelReason}</p>
+                    ) : null}
+                  </div>
+                )}
                 {detailVisit.location && (
                   <a
                     className="mt-3 inline-flex items-center gap-2 text-sm text-primary underline"
@@ -249,6 +352,56 @@ export default function TechnicianWork() {
         </DialogContent>
       </Dialog>
 
+      <Dialog open={!!cancelAction} onOpenChange={(open) => !open && setCancelAction(null)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>{cancelAction === "reschedule" ? "Request Reschedule" : "Cancel Appointment"}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950">
+              <div className="flex gap-2">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                <p>
+                  This sends the linked services back to the office scheduling queue and creates an open opportunity for office follow-up.
+                </p>
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label>Reason</Label>
+              <Select value={cancelReason || "NONE"} onValueChange={(value) => setCancelReason(value === "NONE" ? "" : value)}>
+                <SelectTrigger><SelectValue placeholder="Select reason" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="NONE">Select reason</SelectItem>
+                  {cancelReasons.map((reason) => (
+                    <SelectItem key={reason} value={reason}>{reason}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label>Notes</Label>
+              <Textarea
+                value={cancelNotes}
+                onChange={(event) => setCancelNotes(event.target.value)}
+                placeholder="Add gate code details, customer context, access issue, or office instructions."
+                rows={4}
+              />
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button type="button" variant="outline" onClick={() => setCancelAction(null)}>Back</Button>
+              <Button
+                type="button"
+                variant={cancelAction === "cancel" ? "destructive" : "default"}
+                disabled={!cancelReason || cancelRescheduleMutation.isPending}
+                onClick={() => cancelRescheduleMutation.mutate()}
+              >
+                {cancelRescheduleMutation.isPending ? "Sending..." : cancelAction === "reschedule" ? "Send to Office" : "Cancel and Send to Office"}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
       <ServiceCompletionDialog
         open={!!completionContext}
         onOpenChange={(open) => !open && setCompletionContext(null)}
@@ -259,7 +412,7 @@ export default function TechnicianWork() {
         defaultTechnicianId={selectedTechnicianId}
         existingServiceRecord={completionContext ? detailVisit?.services.find(({ service }) => service.id === completionContext.service.id)?.serviceRecord ?? null : null}
         onCompleted={() => {
-          queryClient.invalidateQueries({ queryKey: [`/api/technicians/${selectedTechnicianId}/work?date=${selectedDate}`] });
+          refreshWork();
           setCompletionContext(null);
           setDetailVisit(null);
         }}

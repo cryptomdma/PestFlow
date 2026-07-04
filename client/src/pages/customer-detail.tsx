@@ -124,6 +124,14 @@ function formatDateTimeValue(value: string | Date | null | undefined) {
   });
 }
 
+function formatDuration(minutes: number | null | undefined) {
+  if (minutes === null || minutes === undefined) return "Not tracked";
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  const remaining = minutes % 60;
+  return remaining ? `${hours}h ${remaining}m` : `${hours}h`;
+}
+
 function getServiceDisplayDate(service: Service, appointment?: Appointment | null, serviceRecord?: ServiceRecord | null) {
   if (serviceRecord?.serviceDate) {
     return {
@@ -2493,10 +2501,21 @@ function ServiceDetailModal({
           </div>
           {serviceRecord.technicianName && <p><span className="font-medium">Technician:</span> {serviceRecord.technicianName}</p>}
           {serviceRecord.technicianLicenseNumber && <p><span className="font-medium">License #:</span> {serviceRecord.technicianLicenseNumber}</p>}
+          {appointment && <p><span className="font-medium">Duration:</span> {formatDuration(appointment.durationMinutes)}</p>}
+          {serviceRecord.finalizedAt && <p><span className="font-medium">Finalized:</span> {formatDateTimeValue(serviceRecord.finalizedAt)}{serviceRecord.finalizedByLabel ? ` by ${serviceRecord.finalizedByLabel}` : ""}</p>}
+          {serviceRecord.reopenedAt && <p><span className="font-medium">Reopened:</span> {formatDateTimeValue(serviceRecord.reopenedAt)}{serviceRecord.reopenedByLabel ? ` by ${serviceRecord.reopenedByLabel}` : ""}</p>}
+          {serviceRecord.reopenReason && <p><span className="font-medium">Reopen Reason:</span> {serviceRecord.reopenReason}</p>}
+          <p><span className="font-medium">Billing Readiness:</span> {serviceRecord.readyForBilling ? "Ready for billing" : "Not billing-ready"}</p>
           {serviceRecord.notes && <p><span className="font-medium">Notes:</span> {serviceRecord.notes}</p>}
           {serviceRecord.areasServiced && <p><span className="font-medium">Derived Areas:</span> {serviceRecord.areasServiced}</p>}
           {serviceRecord.conditionsFound && <p><span className="font-medium">Conditions:</span> {serviceRecord.conditionsFound}</p>}
           {serviceRecord.recommendations && <p><span className="font-medium">Recommendations:</span> {serviceRecord.recommendations}</p>}
+          {serviceRecord.followUpRequired && (
+            <div className="rounded-md border border-red-300 bg-red-50 p-3 text-red-950">
+              <p className="font-bold">Follow-up Required</p>
+              <p className="mt-1 whitespace-pre-wrap font-semibold">{serviceRecord.followUpNotes || "No follow-up notes provided."}</p>
+            </div>
+          )}
           <div className="flex justify-end gap-2">
             {serviceRecord.confirmed ? (
               <Button type="button" variant="outline" size="sm" onClick={() => onReopenTicket?.(serviceRecord)}>Reopen Ticket</Button>
@@ -2665,12 +2684,18 @@ function ServicesTab({
 
   const finalizeTicketMutation = useMutation({
     mutationFn: async (serviceRecord: ServiceRecord) => {
-      const response = await apiRequest("POST", `/api/service-records/${serviceRecord.id}/finalize`);
+      const response = await apiRequest("POST", `/api/service-records/${serviceRecord.id}/finalize`, {});
       return response.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/service-records/by-location", locationId] });
       queryClient.invalidateQueries({ queryKey: ["/api/service-records"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/services/by-location", locationId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/services"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/appointments/by-location", locationId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/appointments"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/opportunities/by-location", locationId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/opportunities"] });
       toast({ title: "Service ticket finalized" });
     },
     onError: (error: Error) => toast({ title: "Unable to finalize ticket", description: error.message, variant: "destructive" }),
@@ -2678,12 +2703,18 @@ function ServicesTab({
 
   const reopenTicketMutation = useMutation({
     mutationFn: async (serviceRecord: ServiceRecord) => {
-      const response = await apiRequest("POST", `/api/service-records/${serviceRecord.id}/reopen`);
+      const reason = window.prompt("Reopen reason is required");
+      if (!reason?.trim()) throw new Error("Reopen reason is required");
+      const response = await apiRequest("POST", `/api/service-records/${serviceRecord.id}/reopen`, { reason });
       return response.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/service-records/by-location", locationId] });
       queryClient.invalidateQueries({ queryKey: ["/api/service-records"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/services/by-location", locationId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/services"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/appointments/by-location", locationId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/appointments"] });
       toast({ title: "Service ticket reopened" });
     },
     onError: (error: Error) => toast({ title: "Unable to reopen ticket", description: error.message, variant: "destructive" }),
@@ -2722,6 +2753,13 @@ function ServicesTab({
             const siblingCount = Math.max(siblingServices.length - 1, 0);
             const hasSharedVisit = !!service.appointmentId && !!appointment && siblingCount > 0;
             const technicianName = technicianNameById.get(service.assignedTechnicianId || "") || serviceRecord?.technicianName || "Unassigned";
+            const serviceStatusLabel = serviceRecord?.confirmed
+              ? "Finalized"
+              : serviceRecord?.ticketStatus === "REOPENED"
+                ? "Reopened"
+                : serviceRecord
+                  ? "Posted"
+                  : service.status;
             return (
               <div
                 key={service.id}
@@ -2742,7 +2780,7 @@ function ServicesTab({
                   ) : null}
                 </span>
                 <span>
-                  <Badge variant="secondary" className="text-[10px] uppercase tracking-wide">{service.status}</Badge>
+                  <Badge variant={serviceRecord?.confirmed ? "default" : "secondary"} className="text-[10px] uppercase tracking-wide">{serviceStatusLabel}</Badge>
                 </span>
                 <span>{service.price ? formatCurrency(parseFloat(service.price)) : "Not set"}</span>
                 <span className="truncate">{technicianName}</span>

@@ -35,6 +35,7 @@ const mainNav = [
 ];
 
 const operationsNav = [
+  { title: "Ticket Review", url: "/service-ticket-review", icon: ClipboardList },
   { title: "Invoices", url: "/invoices", icon: FileText },
   { title: "Communications", url: "/communications", icon: MessageSquare },
   { title: "Reports", url: "/reports", icon: BarChart3 },

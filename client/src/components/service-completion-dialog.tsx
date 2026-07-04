@@ -9,7 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import type { Appointment, MaterialProduct, Service, ServiceRecord, ServiceType, TargetPest, Technician } from "@shared/schema";
+import type { Appointment, MaterialProduct, ProductApplication, Service, ServiceRecord, ServiceType, TargetPest, Technician } from "@shared/schema";
 
 interface MaterialLine {
   key: string;
@@ -66,6 +66,25 @@ function emptyMaterial(): MaterialLine {
     epaRegNumber: "",
     activeIngredientAmount: "",
     notes: "",
+  };
+}
+
+function materialFromApplication(application: ProductApplication): MaterialLine {
+  return {
+    key: application.id || createClientKey(),
+    collapsed: true,
+    materialProductId: application.materialProductId || "",
+    productName: application.productName || "",
+    amountApplied: application.amountApplied || "",
+    unit: application.unit || "",
+    dilutionLabel: application.dilutionLabel || "",
+    dilutionRate: application.dilutionRate || "",
+    applicationMethod: application.applicationMethod || "",
+    device: application.device || "",
+    applicationLocation: application.applicationLocation || "",
+    epaRegNumber: application.epaRegNumber || "",
+    activeIngredientAmount: application.activeIngredientAmount || "",
+    notes: application.notes || "",
   };
 }
 
@@ -147,6 +166,8 @@ export function ServiceCompletionDialog({
   const [targetPests, setTargetPests] = useState("");
   const [conditionsFound, setConditionsFound] = useState("");
   const [recommendations, setRecommendations] = useState("");
+  const [followUpRequired, setFollowUpRequired] = useState(false);
+  const [followUpNotes, setFollowUpNotes] = useState("");
   const [deviceNotes, setDeviceNotes] = useState("");
   const [materials, setMaterials] = useState<MaterialLine[]>([emptyMaterial()]);
   const [targetPestSearch, setTargetPestSearch] = useState("");
@@ -154,7 +175,11 @@ export function ServiceCompletionDialog({
   const [ticketPrice, setTicketPrice] = useState("");
 
   const { data: materialProducts } = useQuery<MaterialProduct[]>({ queryKey: ["/api/material-products"] });
+  const { data: productApplications } = useQuery<ProductApplication[]>({ queryKey: ["/api/product-applications"] });
   const { data: configuredTargetPests } = useQuery<TargetPest[]>({ queryKey: ["/api/target-pests"] });
+  const { data: timeTrackingSetting } = useQuery<{ mode: "AUTO_TIMEOUT_ON_TICKET_POST" | "PROMPT_FOR_TIMEOUT" | "MANUAL_TIMEOUT" }>({
+    queryKey: ["/api/settings/service-time-tracking"],
+  });
 
   const serviceTypeName = useMemo(() => {
     return serviceTypes?.find((serviceType) => serviceType.id === ticketServiceTypeId || serviceType.id === service?.serviceTypeId)?.name ?? "Service";
@@ -165,6 +190,10 @@ export function ServiceCompletionDialog({
   }, [technicianId, technicians]);
 
   const draftKey = getDraftKey(service?.id);
+  const existingApplications = useMemo(() => {
+    if (!existingServiceRecord) return [];
+    return (productApplications ?? []).filter((application) => application.serviceRecordId === existingServiceRecord.id);
+  }, [existingServiceRecord, productApplications]);
   const allowServiceOverride = !!service && !service.agreementId && service.source !== "AGREEMENT_GENERATED";
   const selectedTargetPests = useMemo(() => targetPests.split(",").map((value) => value.trim()).filter(Boolean), [targetPests]);
   const targetPestOptions = useMemo(() => {
@@ -175,8 +204,8 @@ export function ServiceCompletionDialog({
 
   useEffect(() => {
     if (!open || !service) return;
-    const nextTechnicianId = defaultTechnicianId || service.assignedTechnicianId || appointment?.assignedTechnicianId || "";
-    const nextServiceDate = formatDateTimeLocalValue(appointment?.scheduledDate ?? new Date());
+    const nextTechnicianId = existingServiceRecord?.technicianId || defaultTechnicianId || service.assignedTechnicianId || appointment?.assignedTechnicianId || "";
+    const nextServiceDate = formatDateTimeLocalValue(existingServiceRecord?.serviceDate ?? appointment?.scheduledDate ?? new Date());
     const cachedDraft = draftKey ? localStorage.getItem(draftKey) : null;
 
     if (cachedDraft) {
@@ -188,6 +217,8 @@ export function ServiceCompletionDialog({
         setTargetPests(parsed.targetPests || "");
         setConditionsFound(parsed.conditionsFound || "");
         setRecommendations(parsed.recommendations || "");
+        setFollowUpRequired(!!parsed.followUpRequired);
+        setFollowUpNotes(parsed.followUpNotes || "");
         setDeviceNotes(parsed.deviceNotes || "");
         setTicketServiceTypeId(parsed.ticketServiceTypeId || service.serviceTypeId || "");
         setTicketPrice(parsed.ticketPrice ?? service.price ?? "");
@@ -200,15 +231,17 @@ export function ServiceCompletionDialog({
 
     setTechnicianId(nextTechnicianId);
     setServiceDate(nextServiceDate);
-    setNotes("");
-    setTargetPests("");
-    setConditionsFound("");
-    setRecommendations("");
+    setNotes(existingServiceRecord?.notes || "");
+    setTargetPests(existingServiceRecord?.targetPests?.join(", ") || "");
+    setConditionsFound(existingServiceRecord?.conditionsFound || "");
+    setRecommendations(existingServiceRecord?.recommendations || "");
+    setFollowUpRequired(existingServiceRecord?.followUpRequired ?? false);
+    setFollowUpNotes(existingServiceRecord?.followUpNotes || "");
     setDeviceNotes("");
     setTicketServiceTypeId(service.serviceTypeId || "");
     setTicketPrice(service.price || "");
-    setMaterials([]);
-  }, [appointment?.assignedTechnicianId, appointment?.scheduledDate, defaultTechnicianId, draftKey, open, service]);
+    setMaterials(existingApplications.length ? existingApplications.map(materialFromApplication) : []);
+  }, [appointment?.assignedTechnicianId, appointment?.scheduledDate, defaultTechnicianId, draftKey, existingApplications, existingServiceRecord, open, service]);
 
   useEffect(() => {
     if (!open || !draftKey || !service) return;
@@ -219,13 +252,15 @@ export function ServiceCompletionDialog({
       targetPests,
       conditionsFound,
       recommendations,
+      followUpRequired,
+      followUpNotes,
       deviceNotes,
       ticketServiceTypeId,
       ticketPrice,
       materials,
       savedAt: new Date().toISOString(),
     }));
-  }, [conditionsFound, deviceNotes, draftKey, materials, notes, open, recommendations, service, serviceDate, targetPests, technicianId, ticketPrice, ticketServiceTypeId]);
+  }, [conditionsFound, deviceNotes, draftKey, followUpNotes, followUpRequired, materials, notes, open, recommendations, service, serviceDate, targetPests, technicianId, ticketPrice, ticketServiceTypeId]);
 
   const completeMutation = useMutation({
     mutationFn: async () => {
@@ -242,6 +277,8 @@ export function ServiceCompletionDialog({
         areasServiced: derivedAreas || null,
         conditionsFound,
         recommendations,
+        followUpRequired,
+        followUpNotes: followUpRequired ? followUpNotes : null,
         confirmed: false,
         productApplications: materials
           .filter((material) => material.productName.trim())
@@ -262,8 +299,11 @@ export function ServiceCompletionDialog({
       });
       return response.json();
     },
-    onSuccess: () => {
+    onSuccess: async () => {
       if (draftKey) localStorage.removeItem(draftKey);
+      if (timeTrackingSetting?.mode === "PROMPT_FOR_TIMEOUT" && appointment?.id && !appointment.timeOutAt && window.confirm("Would you like to time out now?")) {
+        await apiRequest("POST", `/api/appointments/${appointment.id}/time-out`, {});
+      }
       toast({ title: "Service ticket posted", description: "Office review is pending." });
       queryClient.invalidateQueries({ queryKey: ["/api/services"] });
       queryClient.invalidateQueries({ queryKey: ["/api/services/by-location"] });
@@ -427,6 +467,31 @@ export function ServiceCompletionDialog({
                 <Label>Recommendations</Label>
                 <Textarea value={recommendations} onChange={(event) => setRecommendations(event.target.value)} />
               </div>
+            </div>
+
+            <div className="space-y-3 rounded-lg border p-3">
+              <label className="flex items-start gap-2 text-sm font-medium">
+                <input
+                  type="checkbox"
+                  className="mt-1"
+                  checked={followUpRequired}
+                  onChange={(event) => setFollowUpRequired(event.target.checked)}
+                />
+                <span>
+                  Follow-up required
+                  <span className="block text-xs font-normal text-muted-foreground">Office will use this to contact the customer and schedule next steps.</span>
+                </span>
+              </label>
+              {followUpRequired ? (
+                <div className="space-y-1.5">
+                  <Label>Follow-up Notes</Label>
+                  <Textarea
+                    value={followUpNotes}
+                    onChange={(event) => setFollowUpNotes(event.target.value)}
+                    placeholder="Example: call in 2 weeks, follow up in 30 days, customer wants attic reinspected"
+                  />
+                </div>
+              ) : null}
             </div>
 
             <div className="space-y-3">

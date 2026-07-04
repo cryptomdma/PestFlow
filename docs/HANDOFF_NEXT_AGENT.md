@@ -65,12 +65,19 @@ Build and verify the mobile-first web/PWA technician work route, structured mate
 * structured material rows use Material Product definitions where available
 * material cards add newest at top, allow removal, and collapse into summaries
 * target pests are Settings-managed internal Service Ticket treatment context, not warranted pests
+* follow-up required is a technician flag with notes for office review/customer contact
+* technician Appointment cancel/reschedule requests use Settings-configured reasons, cancel the historical Appointment, requeue linked Services, and create open Opportunities for office follow-up/rescheduling
 * non-agreement Services can be adjusted for service type/price in the ticket flow; agreement-generated Services are locked
 * active ingredient amount is captured on Product Application rows
-* office finalization/reopen is staged separately from technician posting
-* Appointment status completes only after all linked Services have posted tickets
-* agreement-generated Service ticket posting advances agreement recurrence
-* non-agreement Service ticket posting preserves Opportunity generation behavior
+* appointment-level Time In / Time Out captures visit duration
+* Service Time Tracking Mode controls automatic, prompted, or manual time out behavior
+* `/service-ticket-review` is the office queue for posted tickets
+* office finalization/reopen is separate from technician posting
+* Appointment status completes only after all linked Services are finalized
+* agreement-generated Service finalization advances agreement recurrence
+* non-agreement Service finalization preserves Opportunity generation behavior
+* finalized Service Records are billing-ready; posted tickets pending review are not billing events
+* do not build technician-driven follow-up scheduling until route optimization and admin follow-up availability settings exist
 * return a concise implementation summary with files changed, edge cases, and known follow-up work
 
 ## Constraints
