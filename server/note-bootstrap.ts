@@ -2,6 +2,7 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { accounts, customerNotes, customers, locations, noteRevisions, type CustomerNote } from "@shared/schema";
 import { db } from "./db";
 import { PLACEHOLDER_LOCATION_NAME, PLACEHOLDER_LOCATION_NOTE } from "./account-bootstrap";
+import { getHeritageOrgId } from "./org-bootstrap";
 
 function normalizeNoteBody(body: string | null | undefined) {
   const trimmed = body?.trim();
@@ -57,6 +58,7 @@ async function ensureNoteRevisionTable() {
 async function upsertCanonicalScopeNote(
   tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
   {
+    orgId,
     scope,
     accountId,
     locationId,
@@ -64,6 +66,7 @@ async function upsertCanonicalScopeNote(
     scopedRows,
     noteIdsWithRevisions,
   }: {
+    orgId: string;
     scope: "ACCOUNT" | "LOCATION";
     accountId: string;
     locationId: string | null;
@@ -85,7 +88,7 @@ async function upsertCanonicalScopeNote(
 
   if (!mergedBody) {
     if (redundantUnreferencedRows.length > 0) {
-      await tx.delete(customerNotes).where(inArray(customerNotes.id, redundantUnreferencedRows.map((row) => row.id)));
+      await tx.delete(customerNotes).where(and(eq(customerNotes.orgId, orgId), inArray(customerNotes.id, redundantUnreferencedRows.map((row) => row.id))));
     }
     return;
   }
@@ -101,15 +104,16 @@ async function upsertCanonicalScopeNote(
         body: mergedBody,
         updatedAt: new Date(),
       })
-      .where(eq(customerNotes.id, primaryRow.id));
+      .where(and(eq(customerNotes.orgId, orgId), eq(customerNotes.id, primaryRow.id)));
 
     if (redundantUnreferencedRows.length > 0) {
-      await tx.delete(customerNotes).where(inArray(customerNotes.id, redundantUnreferencedRows.map((row) => row.id)));
+      await tx.delete(customerNotes).where(and(eq(customerNotes.orgId, orgId), inArray(customerNotes.id, redundantUnreferencedRows.map((row) => row.id))));
     }
     return;
   }
 
   await tx.insert(customerNotes).values({
+    orgId,
     accountId,
     customerId: null,
     locationId,
@@ -122,16 +126,17 @@ async function upsertCanonicalScopeNote(
   });
 }
 
-async function backfillInitialNoteRevisions() {
+async function backfillInitialNoteRevisions(orgId: string) {
   const [notes, existingRevisions] = await Promise.all([
-    db.select().from(customerNotes),
-    db.select().from(noteRevisions),
+    db.select().from(customerNotes).where(eq(customerNotes.orgId, orgId)),
+    db.select().from(noteRevisions).where(eq(noteRevisions.orgId, orgId)),
   ]);
 
   const noteIdsWithRevisions = new Set(existingRevisions.map((revision) => revision.noteId));
   const baselineRows = notes
     .filter((note) => !noteIdsWithRevisions.has(note.id))
     .map((note) => ({
+      orgId,
       noteId: note.id,
       revisionNumber: 1,
       scope: note.scope,
@@ -158,12 +163,13 @@ export async function bootstrapCanonicalNoteTables(): Promise<void> {
 }
 
 export async function bootstrapCanonicalNotes(): Promise<void> {
+  const orgId = await getHeritageOrgId();
   const [allAccounts, allCustomers, allLocations, allNotes, allRevisions] = await Promise.all([
-    db.select().from(accounts),
-    db.select().from(customers),
-    db.select().from(locations),
-    db.select().from(customerNotes),
-    db.select().from(noteRevisions),
+    db.select().from(accounts).where(eq(accounts.orgId, orgId)),
+    db.select().from(customers).where(eq(customers.orgId, orgId)),
+    db.select().from(locations).where(eq(locations.orgId, orgId)),
+    db.select().from(customerNotes).where(eq(customerNotes.orgId, orgId)),
+    db.select().from(noteRevisions).where(eq(noteRevisions.orgId, orgId)),
   ]);
   const noteIdsWithRevisions = new Set(allRevisions.map((revision) => revision.noteId));
 
@@ -246,6 +252,7 @@ export async function bootstrapCanonicalNotes(): Promise<void> {
   await db.transaction(async (tx) => {
     for (const [accountId, group] of Array.from(accountGroups.entries())) {
       await upsertCanonicalScopeNote(tx, {
+        orgId,
         scope: "ACCOUNT",
         accountId,
         locationId: null,
@@ -257,6 +264,7 @@ export async function bootstrapCanonicalNotes(): Promise<void> {
 
     for (const [locationId, group] of Array.from(locationGroups.entries())) {
       await upsertCanonicalScopeNote(tx, {
+        orgId,
         scope: "LOCATION",
         accountId: group.accountId,
         locationId,
@@ -267,35 +275,36 @@ export async function bootstrapCanonicalNotes(): Promise<void> {
     }
 
     if (blankUnreferencedNoteIds.length > 0) {
-      await tx.delete(customerNotes).where(inArray(customerNotes.id, blankUnreferencedNoteIds));
+      await tx.delete(customerNotes).where(and(eq(customerNotes.orgId, orgId), inArray(customerNotes.id, blankUnreferencedNoteIds)));
     }
 
     if (legacyCustomerIdsToClear.length > 0) {
       await tx
         .update(customers)
         .set({ notes: null })
-        .where(inArray(customers.id, legacyCustomerIdsToClear));
+        .where(and(eq(customers.orgId, orgId), inArray(customers.id, legacyCustomerIdsToClear)));
     }
 
     if (legacyLocationIdsToClear.length > 0) {
       await tx
         .update(locations)
         .set({ notes: null })
-        .where(inArray(locations.id, legacyLocationIdsToClear));
+        .where(and(eq(locations.orgId, orgId), inArray(locations.id, legacyLocationIdsToClear)));
     }
   });
 
   await db.execute(
-    sql`UPDATE customer_notes SET scope = 'ACCOUNT', customer_id = NULL, updated_at = COALESCE(updated_at, created_at, now()) WHERE account_id IS NOT NULL AND location_id IS NULL`,
+    sql`UPDATE customer_notes SET scope = 'ACCOUNT', customer_id = NULL, updated_at = COALESCE(updated_at, created_at, now()) WHERE account_id IS NOT NULL AND location_id IS NULL AND org_id = ${orgId}`,
   );
   await db.execute(sql`
     DELETE FROM customer_notes
     WHERE (body IS NULL OR BTRIM(body) = '')
+      AND org_id = ${orgId}
       AND NOT EXISTS (
         SELECT 1
         FROM note_revisions
         WHERE note_revisions.note_id = customer_notes.id
       )
   `);
-  await backfillInitialNoteRevisions();
+  await backfillInitialNoteRevisions(orgId);
 }

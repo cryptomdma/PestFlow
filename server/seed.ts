@@ -1,9 +1,13 @@
 import { db } from "./db";
 import { customers, contacts, locations, serviceTypes, technicians, services, appointments, serviceRecords, productApplications, invoices, communications, billingProfiles, customerNotes, agreementTemplates, agreementCancellationPolicies } from "@shared/schema";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
+import { getHeritageOrgId } from "./org-bootstrap";
 
 export async function seedDatabase() {
-  const existingCustomers = await db.select().from(customers);
+  const orgId = await getHeritageOrgId();
+  const withOrg = <T extends object>(row: T): T & { orgId: string } => ({ ...row, orgId });
+
+  const existingCustomers = await db.select().from(customers).where(eq(customers.orgId, orgId));
   if (existingCustomers.length > 0) return;
 
   console.log("Seeding database...");
@@ -14,7 +18,7 @@ export async function seedDatabase() {
     { firstName: "Mike", lastName: "Rodriguez", companyName: null, email: "mike.r@email.com", phone: "(555) 456-7890", customerType: "residential", status: "active", notes: "Termite treatment plan. Annual inspection required." },
     { firstName: "Linda", lastName: "Washington", companyName: "Sunset Property Management", email: "linda@sunsetpm.com", phone: "(555) 567-8901", customerType: "commercial", status: "active", notes: "Manages 12 residential units. Quarterly service contract." },
     { firstName: "Tom", lastName: "Baker", companyName: null, email: "tom.baker@email.com", phone: "(555) 678-9012", customerType: "residential", status: "prospect", notes: "Interested in one-time rodent treatment." },
-  ]).returning();
+  ].map(withOrg)).returning();
 
   // Contacts are inserted after locations so they can be scoped to specific locations
   // They are re-inserted below after locations are created
@@ -22,9 +26,9 @@ export async function seedDatabase() {
   const [bp1, bp2] = await db.insert(billingProfiles).values([
     { customerId: c2.id, label: "Corporate Card", methodType: "card", lastFour: "4242", isDefault: true },
     { customerId: c2.id, label: "Westside Invoice", methodType: "invoice", lastFour: null, isDefault: false },
-  ]).returning();
+  ].map(withOrg)).returning();
 
-  await db.update(customers).set({ defaultBillingProfileId: bp1.id }).where(eq(customers.id, c2.id));
+  await db.update(customers).set({ defaultBillingProfileId: bp1.id }).where(and(eq(customers.orgId, orgId), eq(customers.id, c2.id)));
 
   const [l1, l2, l3, l4, l5, l6] = await db.insert(locations).values([
     { customerId: c1.id, name: "Home", address: "1234 Oak Street", city: "Springfield", state: "IL", zip: "62701", isPrimary: true, propertyType: "residential", squareFootage: 2400, gateCode: "1234", notes: "Single story ranch with large backyard" },
@@ -33,13 +37,13 @@ export async function seedDatabase() {
     { customerId: c3.id, name: "Home", address: "321 Pine Lane", city: "Springfield", state: "IL", zip: "62703", isPrimary: true, propertyType: "residential", squareFootage: 3100, gateCode: "5678", notes: "Two story colonial with basement. History of termite activity." },
     { customerId: c4.id, name: "Sunset Apartments A", address: "100 Sunset Blvd, Building A", city: "Springfield", state: "IL", zip: "62705", isPrimary: true, propertyType: "multi-family", squareFootage: 12000, notes: "6 units, 3 floors" },
     { customerId: c4.id, name: "Sunset Apartments B", address: "100 Sunset Blvd, Building B", city: "Springfield", state: "IL", zip: "62705", isPrimary: false, propertyType: "multi-family", squareFootage: 12000, notes: "6 units, 3 floors" },
-  ]).returning();
+  ].map(withOrg)).returning();
 
   await db.insert(contacts).values([
     { customerId: c2.id, locationId: l2.id, firstName: "David", lastName: "Chen", email: "david@goldengatefoods.com", phone: "(555) 345-6780", phoneType: "work", role: "Operations Manager", isPrimary: true },
     { customerId: c2.id, locationId: l3.id, firstName: "Maria", lastName: "Lopez", email: "maria@goldengatefoods.com", phone: "(555) 345-6781", phoneType: "mobile", role: "Kitchen Manager", isPrimary: true },
     { customerId: c4.id, locationId: l5.id, firstName: "Robert", lastName: "Hayes", email: "robert@sunsetpm.com", phone: "(555) 567-8902", phoneType: "work", role: "Maintenance Coordinator", isPrimary: true },
-  ]);
+  ].map(withOrg));
 
   await db.insert(customerNotes).values([
     { customerId: c2.id, locationId: null, scope: "CUSTOMER", pinned: true, body: "VIP account - always prioritize scheduling. Sarah prefers communication via email. Multi-year contract in place.", createdBy: "Admin" },
@@ -48,7 +52,7 @@ export async function seedDatabase() {
     { customerId: null, locationId: l3.id, scope: "LOCATION", pinned: true, body: "Westside location manager is Maria Lopez. She has the keys. Call before arrival.", createdBy: "Admin" },
     { customerId: c1.id, locationId: null, scope: "CUSTOMER", pinned: false, body: "James has a golden retriever named Max. Always use pet-safe products and keep gate closed.", createdBy: "Jake Miller" },
     { customerId: null, locationId: l1.id, scope: "LOCATION", pinned: false, body: "Check garage eaves for wasp nests in summer months.", createdBy: "Sam Torres" },
-  ]);
+  ].map(withOrg));
 
   const [st1, st2, st3, st4, st5] = await db.insert(serviceTypes).values([
     { name: "General Pest Control", description: "Standard interior/exterior pest prevention treatment", defaultPrice: "125.00", estimatedDuration: 45, category: "General", opportunityLeadDays: 90, opportunityLabel: "General Pest Follow-up" },
@@ -56,12 +60,12 @@ export async function seedDatabase() {
     { name: "Termite Treatment", description: "Liquid or bait station termite treatment", defaultPrice: "1500.00", estimatedDuration: 240, category: "Termite", opportunityLeadDays: 365, opportunityLabel: "Termite Renewal" },
     { name: "Rodent Control", description: "Interior/exterior rodent baiting and exclusion", defaultPrice: "175.00", estimatedDuration: 60, category: "Rodent", opportunityLeadDays: 60, opportunityLabel: "Rodent Follow-up" },
     { name: "Commercial Kitchen Service", description: "Monthly commercial pest management service", defaultPrice: "250.00", estimatedDuration: 90, category: "Commercial" },
-  ]).returning();
+  ].map(withOrg)).returning();
 
   const [tech1, tech2] = await db.insert(technicians).values([
     { displayName: "Jake Miller", licenseId: "TX-PCO-1001", status: "ACTIVE", email: "jake@pestflow.local", color: "#2563eb" },
     { displayName: "Sam Torres", licenseId: "TX-PCO-1002", status: "ACTIVE", email: "sam@pestflow.local", color: "#16a34a" },
-  ]).returning();
+  ].map(withOrg)).returning();
 
   const [noFeePolicy, annualPolicy, seasonalPolicy, termitePolicy] = await db.insert(agreementCancellationPolicies).values([
     {
@@ -127,7 +131,7 @@ export async function seedDatabase() {
       requiresOverrideReason: true,
       termsSummary: "Termite cancellations require review because monitoring, renewal status, and customer retention risk may vary by property.",
     },
-  ]).returning();
+  ].map(withOrg)).returning();
 
   void noFeePolicy;
 
@@ -198,7 +202,7 @@ export async function seedDatabase() {
       sortOrder: 3,
       internalCode: "MOSQUITO_SEASONAL",
     },
-  ]);
+  ].map(withOrg));
 
   const now = new Date();
   const twoDaysAgo = new Date(now.getTime() - 2 * 86400000);
@@ -215,7 +219,7 @@ export async function seedDatabase() {
     { customerId: c4.id, locationId: l5.id, serviceTypeId: st1.id, dueDate: threeDays.toISOString().slice(0, 10), expectedDurationMinutes: 45, price: "125.00", status: "SCHEDULED", assignedTechnicianId: tech2.id, source: "MANUAL", notes: "Quarterly service - all common areas" },
     { customerId: c2.id, locationId: l3.id, serviceTypeId: st5.id, dueDate: nextWeek.toISOString().slice(0, 10), expectedDurationMinutes: 90, price: "250.00", status: "SCHEDULED", assignedTechnicianId: tech1.id, source: "MANUAL", notes: "Monthly kitchen service - Westside" },
     { customerId: c3.id, locationId: l4.id, serviceTypeId: st4.id, dueDate: twoWeeks.toISOString().slice(0, 10), expectedDurationMinutes: 60, price: "175.00", status: "PENDING_SCHEDULING", assignedTechnicianId: null, source: "MANUAL", notes: "Rodent follow-up awaiting dispatch." },
-  ]).returning();
+  ].map(withOrg)).returning();
 
   const [a1, a2, a3, a4, a5] = await db.insert(appointments).values([
     { customerId: c1.id, locationId: l1.id, serviceId: svc1.id, serviceTypeId: st1.id, scheduledDate: twoDaysAgo, status: "completed", assignedTo: "Jake Miller", assignedTechnicianId: tech1.id, notes: "Monthly prevention service" },
@@ -223,19 +227,19 @@ export async function seedDatabase() {
     { customerId: c3.id, locationId: l4.id, serviceId: svc3.id, serviceTypeId: st2.id, scheduledDate: tomorrow, status: "scheduled", assignedTo: "Jake Miller", assignedTechnicianId: tech1.id, notes: "Annual termite inspection" },
     { customerId: c4.id, locationId: l5.id, serviceId: svc4.id, serviceTypeId: st1.id, scheduledDate: threeDays, status: "scheduled", assignedTo: "Sam Torres", assignedTechnicianId: tech2.id, notes: "Quarterly service - all common areas" },
     { customerId: c2.id, locationId: l3.id, serviceId: svc5.id, serviceTypeId: st5.id, scheduledDate: nextWeek, status: "scheduled", assignedTo: "Jake Miller", assignedTechnicianId: tech1.id, notes: "Monthly kitchen service - Westside" },
-  ]).returning();
+  ].map(withOrg)).returning();
 
   const [sr1, sr2] = await db.insert(serviceRecords).values([
     { serviceId: svc1.id, appointmentId: a1.id, customerId: c1.id, locationId: l1.id, serviceTypeId: st1.id, serviceDate: twoDaysAgo, technicianId: tech1.id, technicianName: "Jake Miller", targetPests: ["Ants", "Spiders", "Crickets"], areasServiced: "Exterior perimeter, garage, kitchen, bathrooms", conditionsFound: "Minor ant activity near kitchen window. Spider webs in garage corners.", recommendations: "Seal gap around kitchen window. Remove debris from foundation.", customerSignature: true, confirmed: true },
     { serviceId: svc2.id, appointmentId: a2.id, customerId: c2.id, locationId: l2.id, serviceTypeId: st5.id, serviceDate: yesterday, technicianId: tech1.id, technicianName: "Jake Miller", targetPests: ["Roaches", "Flies", "Stored Product Pests"], areasServiced: "Kitchen, storage areas, dumpster area, dining room", conditionsFound: "Clean conditions. Minor fly activity near back door. No roach activity detected.", recommendations: "Replace weather stripping on back door. Continue monthly service.", customerSignature: true, confirmed: false },
-  ]).returning();
+  ].map(withOrg)).returning();
 
   await db.insert(productApplications).values([
     { serviceRecordId: sr1.id, productName: "Demand CS", epaRegNumber: "100-1066", dilutionRate: "0.4 oz/gal", amountApplied: "2 gallons", applicationMethod: "Spray", device: "B&G Sprayer", applicationLocation: "Exterior perimeter, 3ft up/3ft out" },
     { serviceRecordId: sr1.id, productName: "Advion Ant Gel", epaRegNumber: "352-746", dilutionRate: "Ready to use", amountApplied: "15 grams", applicationMethod: "Bait placement", device: "Gel gun", applicationLocation: "Kitchen window sill, behind appliances" },
     { serviceRecordId: sr2.id, productName: "Vendetta Plus", epaRegNumber: "1021-2593", dilutionRate: "Ready to use", amountApplied: "30 grams", applicationMethod: "Crack & crevice bait", device: "Bait gun", applicationLocation: "Kitchen equipment bases, wall voids behind prep areas" },
     { serviceRecordId: sr2.id, productName: "Gentrol Point Source", epaRegNumber: "2724-469", dilutionRate: "Ready to use", amountApplied: "6 units", applicationMethod: "IGR placement", device: "Point source device", applicationLocation: "Under sinks, behind equipment" },
-  ]);
+  ].map(withOrg));
 
   const lastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 15);
   await db.insert(invoices).values([
@@ -243,7 +247,7 @@ export async function seedDatabase() {
     { customerId: c2.id, locationId: l2.id, serviceRecordId: sr2.id, invoiceNumber: "INV-002", amount: "250.00", tax: "20.00", totalAmount: "270.00", status: "pending", dueDate: nextWeek, notes: "Commercial kitchen service - Downtown" },
     { customerId: c4.id, locationId: l5.id, invoiceNumber: "INV-003", amount: "375.00", tax: "30.00", totalAmount: "405.00", status: "paid", dueDate: lastMonth, paidDate: lastMonth, notes: "Quarterly service - both buildings" },
     { customerId: c3.id, locationId: l4.id, invoiceNumber: "INV-004", amount: "200.00", tax: "16.00", totalAmount: "216.00", status: "pending", dueDate: twoWeeks, notes: "Annual termite inspection" },
-  ]);
+  ].map(withOrg));
 
   await db.insert(communications).values([
     { customerId: c1.id, locationId: l1.id, type: "email", direction: "outbound", subject: "Service Confirmation", body: "Hi James, this is to confirm your monthly pest prevention service has been completed. Your next service is scheduled for next month. Please don't hesitate to reach out if you notice any pest activity.", sentAt: twoDaysAgo, status: "sent" },
@@ -252,7 +256,7 @@ export async function seedDatabase() {
     { customerId: c5.id, type: "email", direction: "outbound", subject: "Quote for Rodent Treatment", body: "Hi Tom, thank you for your interest in our services. Based on our initial assessment, we recommend a comprehensive rodent treatment plan at $175. This includes interior/exterior baiting and exclusion work. Please let us know if you'd like to proceed.", sentAt: lastMonth, status: "sent" },
     { customerId: c4.id, locationId: l5.id, type: "sms", direction: "outbound", subject: "Service Reminder", body: "Hi Linda, reminder: quarterly pest service for Sunset Apartments is scheduled in 3 days. Please ensure common areas are accessible.", sentAt: now, status: "sent" },
     { customerId: c2.id, locationId: l3.id, type: "email", direction: "outbound", subject: "Westside Monthly Service Update", body: "Monthly kitchen service for the Westside location is scheduled for next week. Please ensure access to storage areas.", sentAt: now, status: "sent" },
-  ]);
+  ].map(withOrg));
 
   console.log("Database seeded successfully!");
 }

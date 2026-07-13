@@ -9,7 +9,7 @@ import { bootstrapCanonicalNotes, bootstrapCanonicalNoteTables } from "./note-bo
 import { bootstrapAgreements } from "./agreement-bootstrap";
 import { bootstrapServiceSchedulingFoundation } from "./service-scheduling-bootstrap";
 import { bootstrapAuth } from "./auth-bootstrap";
-import { setupAuth, registerAuthRoutes, requireAuth } from "./auth";
+import { setupAuth, registerAuthRoutes, requireAuth, attachOrgStorage } from "./auth";
 import { bootstrapOrganizations } from "./org-bootstrap";
 import { bootstrapTenancy } from "./tenancy-bootstrap";
 
@@ -74,7 +74,7 @@ app.use((req, res, next) => {
   await bootstrapAuth().catch((e) => console.error("Auth bootstrap error:", e));
   setupAuth(app);
   registerAuthRoutes(app);
-  app.use("/api", requireAuth);
+  app.use("/api", requireAuth, attachOrgStorage);
 
   // Table/column structure only (raw SQL, no query-builder use) must run
   // before bootstrapTenancy() adds org_id - everything below this point uses
