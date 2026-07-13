@@ -6,6 +6,7 @@ import { relations } from "drizzle-orm";
 
 export const customers = pgTable("customers", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: varchar("org_id"),
   firstName: text("first_name").notNull(),
   lastName: text("last_name").notNull(),
   companyName: text("company_name"),
@@ -24,6 +25,7 @@ export const customers = pgTable("customers", {
 // TODO(Phase2): remove legacyCustomerId after all reads/writes migrate off legacy customers.
 export const accounts = pgTable("accounts", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: varchar("org_id"),
   primaryLocationId: varchar("primary_location_id"),
   status: text("status").notNull().default("active"),
   // Transitional legacy mapping for compatibility reads.
@@ -34,6 +36,7 @@ export const accounts = pgTable("accounts", {
 
 export const contacts = pgTable("contacts", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: varchar("org_id"),
   customerId: varchar("customer_id").notNull().references(() => customers.id),
   locationId: varchar("location_id").references(() => locations.id),
   firstName: text("first_name").notNull(),
@@ -47,6 +50,7 @@ export const contacts = pgTable("contacts", {
 
 export const locations = pgTable("locations", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: varchar("org_id"),
   customerId: varchar("customer_id").notNull().references(() => customers.id),
   // Transitional nullable field for additive rollout. Bootstrap + write paths backfill/populate this.
   // TODO(Phase2): make accountId non-null once data and writes are fully canonicalized.
@@ -69,6 +73,7 @@ export const locations = pgTable("locations", {
 
 export const billingProfiles = pgTable("billing_profiles", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: varchar("org_id"),
   customerId: varchar("customer_id").notNull().references(() => customers.id),
   label: text("label").notNull(),
   methodType: text("method_type").notNull().default("invoice"),
@@ -78,6 +83,7 @@ export const billingProfiles = pgTable("billing_profiles", {
 
 export const customerNotes = pgTable("customer_notes", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: varchar("org_id"),
   accountId: varchar("account_id").references(() => accounts.id),
   // Transitional legacy ownership field kept only for migration safety.
   customerId: varchar("customer_id").references(() => customers.id),
@@ -95,6 +101,7 @@ export const customerNotes = pgTable("customer_notes", {
 
 export const noteRevisions = pgTable("note_revisions", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: varchar("org_id"),
   noteId: varchar("note_id").notNull().references(() => customerNotes.id),
   revisionNumber: integer("revision_number").notNull(),
   scope: text("scope").notNull(),
@@ -109,6 +116,7 @@ export const noteRevisions = pgTable("note_revisions", {
 
 export const serviceTypes = pgTable("service_types", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: varchar("org_id"),
   name: text("name").notNull(),
   description: text("description"),
   defaultPrice: decimal("default_price", { precision: 10, scale: 2 }),
@@ -120,6 +128,7 @@ export const serviceTypes = pgTable("service_types", {
 
 export const technicians = pgTable("technicians", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: varchar("org_id"),
   displayName: text("display_name").notNull(),
   licenseId: text("license_id").notNull(),
   status: text("status").notNull().default("ACTIVE"),
@@ -133,6 +142,7 @@ export const technicians = pgTable("technicians", {
 
 export const services = pgTable("services", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: varchar("org_id"),
   customerId: varchar("customer_id").notNull().references(() => customers.id),
   locationId: varchar("location_id").notNull().references(() => locations.id),
   appointmentId: varchar("appointment_id").references(() => appointments.id),
@@ -156,6 +166,7 @@ export const services = pgTable("services", {
 
 export const appointments = pgTable("appointments", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: varchar("org_id"),
   customerId: varchar("customer_id").notNull().references(() => customers.id),
   locationId: varchar("location_id").references(() => locations.id),
   serviceId: varchar("service_id"),
@@ -189,6 +200,7 @@ export const appointments = pgTable("appointments", {
 
 export const agreementCancellationPolicies = pgTable("agreement_cancellation_policies", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: varchar("org_id"),
   name: text("name").notNull(),
   description: text("description"),
   isActive: boolean("is_active").notNull().default(true),
@@ -210,6 +222,7 @@ export const agreementCancellationPolicies = pgTable("agreement_cancellation_pol
 
 export const agreements = pgTable("agreements", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: varchar("org_id"),
   customerId: varchar("customer_id").notNull().references(() => customers.id),
   locationId: varchar("location_id").notNull().references(() => locations.id),
   agreementTemplateId: varchar("agreement_template_id"),
@@ -259,6 +272,7 @@ export const agreements = pgTable("agreements", {
 
 export const agreementTemplates = pgTable("agreement_templates", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: varchar("org_id"),
   name: text("name").notNull(),
   description: text("description"),
   isActive: boolean("is_active").notNull().default(true),
@@ -285,6 +299,7 @@ export const agreementTemplates = pgTable("agreement_templates", {
 
 export const serviceRecords = pgTable("service_records", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: varchar("org_id"),
   serviceId: varchar("service_id"),
   appointmentId: varchar("appointment_id").references(() => appointments.id),
   customerId: varchar("customer_id").notNull().references(() => customers.id),
@@ -317,6 +332,7 @@ export const serviceRecords = pgTable("service_records", {
 });
 
 export const appSettings = pgTable("app_settings", {
+  orgId: varchar("org_id"),
   key: text("key").primaryKey(),
   value: text("value").notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
@@ -324,6 +340,7 @@ export const appSettings = pgTable("app_settings", {
 
 export const opportunities = pgTable("opportunities", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: varchar("org_id"),
   locationId: varchar("location_id").notNull().references(() => locations.id),
   agreementId: varchar("agreement_id").references(() => agreements.id),
   sourceServiceId: varchar("source_service_id").references(() => services.id),
@@ -351,6 +368,7 @@ export const opportunities = pgTable("opportunities", {
 
 export const opportunityDispositions = pgTable("opportunity_dispositions", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: varchar("org_id"),
   key: text("key").notNull().unique(),
   label: text("label").notNull(),
   isActive: boolean("is_active").notNull().default(true),
@@ -365,6 +383,7 @@ export const opportunityDispositions = pgTable("opportunity_dispositions", {
 
 export const opportunityActivities = pgTable("opportunity_activities", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: varchar("org_id"),
   opportunityId: varchar("opportunity_id").notNull().references(() => opportunities.id),
   dispositionKey: text("disposition_key"),
   dispositionLabel: text("disposition_label"),
@@ -377,6 +396,7 @@ export const opportunityActivities = pgTable("opportunity_activities", {
 
 export const productApplications = pgTable("product_applications", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: varchar("org_id"),
   serviceRecordId: varchar("service_record_id").notNull().references(() => serviceRecords.id),
   materialProductId: varchar("material_product_id"),
   productName: text("product_name").notNull(),
@@ -394,6 +414,7 @@ export const productApplications = pgTable("product_applications", {
 
 export const materialProducts = pgTable("material_products", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: varchar("org_id"),
   name: text("name").notNull(),
   epaRegNumber: text("epa_reg_number"),
   manufacturer: text("manufacturer"),
@@ -418,6 +439,7 @@ export const materialProducts = pgTable("material_products", {
 
 export const targetPests = pgTable("target_pests", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: varchar("org_id"),
   label: text("label").notNull(),
   isActive: boolean("is_active").notNull().default(true),
   isFavorite: boolean("is_favorite").notNull().default(false),
@@ -429,6 +451,7 @@ export const targetPests = pgTable("target_pests", {
 
 export const invoices = pgTable("invoices", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: varchar("org_id"),
   customerId: varchar("customer_id").notNull().references(() => customers.id),
   locationId: varchar("location_id").references(() => locations.id),
   serviceRecordId: varchar("service_record_id").references(() => serviceRecords.id),
@@ -445,6 +468,7 @@ export const invoices = pgTable("invoices", {
 
 export const communications = pgTable("communications", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: varchar("org_id"),
   customerId: varchar("customer_id").notNull().references(() => customers.id),
   locationId: varchar("location_id").references(() => locations.id),
   opportunityId: varchar("opportunity_id").references(() => opportunities.id),
@@ -470,6 +494,7 @@ export const organizations = pgTable("organizations", {
 
 export const users = pgTable("users", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: varchar("org_id"),
   firstName: text("first_name").notNull(),
   lastName: text("last_name").notNull(),
   email: text("email").notNull().unique(),
@@ -482,6 +507,7 @@ export const users = pgTable("users", {
 
 export const auditLogs = pgTable("audit_logs", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: varchar("org_id"),
   entityType: text("entity_type").notNull(),
   entityId: varchar("entity_id").notNull(),
   action: text("action").notNull(),
