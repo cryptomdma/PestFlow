@@ -10,6 +10,7 @@ import { bootstrapAgreements } from "./agreement-bootstrap";
 import { bootstrapServiceSchedulingFoundation } from "./service-scheduling-bootstrap";
 import { bootstrapAuth } from "./auth-bootstrap";
 import { setupAuth, registerAuthRoutes, requireAuth } from "./auth";
+import { bootstrapOrganizations } from "./org-bootstrap";
 
 const app = express();
 const httpServer = createServer(app);
@@ -68,6 +69,7 @@ app.use((req, res, next) => {
 });
 
 (async () => {
+  await bootstrapOrganizations().catch((e) => console.error("Organization bootstrap error:", e));
   await bootstrapAuth().catch((e) => console.error("Auth bootstrap error:", e));
   setupAuth(app);
   registerAuthRoutes(app);
