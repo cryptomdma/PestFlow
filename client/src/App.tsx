@@ -7,6 +7,8 @@ import { ThemeProvider } from "@/lib/theme-provider";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/app-sidebar";
+import { useAuth } from "@/hooks/use-auth";
+import Login from "@/pages/login";
 import NotFound from "@/pages/not-found";
 import Dashboard from "@/pages/dashboard";
 import MobileDashboard from "@/pages/mobile-dashboard";
@@ -45,7 +47,16 @@ function Router() {
 
 function AppLayout() {
   const [location] = useLocation();
+  const { user, isLoading } = useAuth();
   const isFullscreenDashboard = location === "/mobile-dashboard";
+
+  if (isLoading) {
+    return null;
+  }
+
+  if (!user) {
+    return <Login />;
+  }
 
   if (isFullscreenDashboard) {
     return <Router />;

@@ -14,6 +14,8 @@ import {
   serviceRecords, productApplications, materialProducts, targetPests, invoices, communications,
   billingProfiles, customerNotes,
   noteRevisions,
+  users,
+  type User, type InsertUser,
   type Account,
   type Customer, type InsertCustomer,
   type Contact, type InsertContact,
@@ -332,6 +334,10 @@ export interface IStorage {
   createCommunication(data: InsertCommunication): Promise<Communication>;
 
   getLocationScopedCounts(locationId: string): Promise<{ contacts: number; appointments: number; agreements: number; services: number; invoices: number; communications: number; opportunities: number }>;
+
+  getUser(id: string): Promise<User | undefined>;
+  getUserByEmail(email: string): Promise<User | undefined>;
+  createUser(data: InsertUser): Promise<User>;
 }
 
 function normalizeDateOnly(value: string | Date | null | undefined): string | null {
@@ -3197,6 +3203,21 @@ export class DatabaseStorage implements IStorage {
       db.select().from(opportunities).where(and(eq(opportunities.locationId, locationId), eq(opportunities.status, "OPEN"))),
     ]);
     return { contacts: cts.length, appointments: appts.length, agreements: agrs.length, services: svcs.length, invoices: invs.length, communications: comms.length, opportunities: opps.length };
+  }
+
+  async getUser(id: string): Promise<User | undefined> {
+    const [user] = await db.select().from(users).where(eq(users.id, id));
+    return user;
+  }
+
+  async getUserByEmail(email: string): Promise<User | undefined> {
+    const [user] = await db.select().from(users).where(eq(users.email, email));
+    return user;
+  }
+
+  async createUser(data: InsertUser): Promise<User> {
+    const [user] = await db.insert(users).values(data).returning();
+    return user;
   }
 }
 
