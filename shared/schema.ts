@@ -459,6 +459,15 @@ export const communications = pgTable("communications", {
   status: text("status").default("sent"),
 });
 
+export const organizations = pgTable("organizations", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  name: text("name").notNull(),
+  slug: text("slug").notNull().unique(),
+  status: text("status").notNull().default("active"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
 export const users = pgTable("users", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   firstName: text("first_name").notNull(),
@@ -509,6 +518,7 @@ export const insertInvoiceSchema = createInsertSchema(invoices).omit({ id: true,
 export const insertCommunicationSchema = createInsertSchema(communications).omit({ id: true });
 export const insertAuditLogSchema = createInsertSchema(auditLogs).omit({ id: true, createdAt: true });
 export const insertUserSchema = createInsertSchema(users).omit({ id: true, createdAt: true, updatedAt: true });
+export const insertOrganizationSchema = createInsertSchema(organizations).omit({ id: true, createdAt: true, updatedAt: true });
 
 export type Customer = typeof customers.$inferSelect;
 export type InsertCustomer = z.infer<typeof insertCustomerSchema>;
@@ -562,3 +572,5 @@ export type AuditLog = typeof auditLogs.$inferSelect;
 export type InsertAuditLog = z.infer<typeof insertAuditLogSchema>;
 export type User = typeof users.$inferSelect;
 export type InsertUser = z.infer<typeof insertUserSchema>;
+export type Organization = typeof organizations.$inferSelect;
+export type InsertOrganization = z.infer<typeof insertOrganizationSchema>;
