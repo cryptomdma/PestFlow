@@ -5,12 +5,13 @@ import { serveStatic } from "./static";
 import { createServer } from "http";
 import { seedDatabase } from "./seed";
 import { bootstrapCanonicalAccounts } from "./account-bootstrap";
-import { bootstrapCanonicalNotes } from "./note-bootstrap";
+import { bootstrapCanonicalNotes, bootstrapCanonicalNoteTables } from "./note-bootstrap";
 import { bootstrapAgreements } from "./agreement-bootstrap";
 import { bootstrapServiceSchedulingFoundation } from "./service-scheduling-bootstrap";
 import { bootstrapAuth } from "./auth-bootstrap";
 import { setupAuth, registerAuthRoutes, requireAuth } from "./auth";
 import { bootstrapOrganizations } from "./org-bootstrap";
+import { bootstrapTenancy } from "./tenancy-bootstrap";
 
 const app = express();
 const httpServer = createServer(app);
@@ -75,11 +76,18 @@ app.use((req, res, next) => {
   registerAuthRoutes(app);
   app.use("/api", requireAuth);
 
+  // Table/column structure only (raw SQL, no query-builder use) must run
+  // before bootstrapTenancy() adds org_id - everything below this point uses
+  // the Drizzle query builder against these tables and needs org_id to
+  // already exist in the DB, since it's already present in the schema types.
+  await bootstrapAgreements().catch((e) => console.error("Agreement bootstrap error:", e));
+  await bootstrapServiceSchedulingFoundation().catch((e) => console.error("Service scheduling bootstrap error:", e));
+  await bootstrapCanonicalNoteTables().catch((e) => console.error("Note table bootstrap error:", e));
+  await bootstrapTenancy().catch((e) => console.error("Tenancy bootstrap error:", e));
+
   await seedDatabase().catch((e) => console.error("Seed error:", e));
   await bootstrapCanonicalAccounts().catch((e) => console.error("Account bootstrap error:", e));
   await bootstrapCanonicalNotes().catch((e) => console.error("Note bootstrap error:", e));
-  await bootstrapAgreements().catch((e) => console.error("Agreement bootstrap error:", e));
-  await bootstrapServiceSchedulingFoundation().catch((e) => console.error("Service scheduling bootstrap error:", e));
   await registerRoutes(httpServer, app);
 
   app.use((err: any, _req: Request, res: Response, next: NextFunction) => {

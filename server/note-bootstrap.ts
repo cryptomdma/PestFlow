@@ -149,10 +149,15 @@ async function backfillInitialNoteRevisions() {
   }
 }
 
-export async function bootstrapCanonicalNotes(): Promise<void> {
+// Structural setup only (raw SQL, no query-builder use) so it can run before
+// the tenancy bootstrap adds org_id - which the query-builder-based migration
+// below depends on already existing on every table it touches.
+export async function bootstrapCanonicalNoteTables(): Promise<void> {
   await ensureCanonicalNoteColumns();
   await ensureNoteRevisionTable();
+}
 
+export async function bootstrapCanonicalNotes(): Promise<void> {
   const [allAccounts, allCustomers, allLocations, allNotes, allRevisions] = await Promise.all([
     db.select().from(accounts),
     db.select().from(customers),
