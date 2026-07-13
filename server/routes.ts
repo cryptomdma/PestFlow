@@ -1,6 +1,5 @@
-import type { Express } from "express";
+﻿import type { Express } from "express";
 import { createServer, type Server } from "http";
-import { storage } from "./storage";
 import {
   insertCustomerSchema, insertContactSchema, insertLocationSchema,
   insertServiceTypeSchema, insertAppointmentSchema, insertServiceRecordSchema,
@@ -383,14 +382,14 @@ export async function registerRoutes(
 
   // Transitional dev-only diagnostics for Phase 1 account/location hardening.
   // TODO(Phase2): gate behind auth/admin controls once user model exists.
-  app.get("/api/dev/account-invariants", async (_req, res) => {
-    const data = await storage.getAccountInvariantSummary();
+  app.get("/api/dev/account-invariants", async (req, res) => {
+    const data = await req.storage.getAccountInvariantSummary();
     res.json(data);
   });
 
   // Transitional compatibility endpoint for Phase 1 account/location bootstrap.
   app.get("/api/customer-detail-compat/:legacyCustomerId", async (req, res) => {
-    const data = await storage.getCustomerDetailCompat(
+    const data = await req.storage.getCustomerDetailCompat(
       req.params.legacyCustomerId,
       typeof req.query.locationId === "string" ? req.query.locationId : undefined,
     );
@@ -399,13 +398,13 @@ export async function registerRoutes(
   });
 
   // Customers
-  app.get("/api/customers", async (_req, res) => {
-    const data = await storage.getCustomers();
+  app.get("/api/customers", async (req, res) => {
+    const data = await req.storage.getCustomers();
     res.json(data);
   });
 
   app.get("/api/customers/:id", async (req, res) => {
-    const data = await storage.getCustomer(req.params.id);
+    const data = await req.storage.getCustomer(req.params.id);
     if (!data) return res.status(404).json({ message: "Customer not found" });
     res.json(data);
   });
@@ -414,12 +413,12 @@ export async function registerRoutes(
     try {
       const validated = insertCustomerSchema.parse(req.body);
       const customerNotesBody = validated.notes?.trim() || "";
-      const data = await storage.createCustomer({
+      const data = await req.storage.createCustomer({
         ...validated,
         notes: null,
       });
       if (customerNotesBody) {
-        await storage.saveScopedNote({
+        await req.storage.saveScopedNote({
           scope: "ACCOUNT",
           customerId: data.id,
           body: customerNotesBody,
@@ -491,7 +490,7 @@ export async function registerRoutes(
           }
         : undefined;
 
-      const data = await storage.createCustomerWithPrimaryLocation({
+      const data = await req.storage.createCustomerWithPrimaryLocation({
         customer: {
           ...validated.customer,
           email: validated.customer.email?.trim() || null,
@@ -506,7 +505,7 @@ export async function registerRoutes(
       });
 
       if (customerNotesBody) {
-        await storage.saveScopedNote({
+        await req.storage.saveScopedNote({
           scope: "ACCOUNT",
           customerId: data.id,
           body: customerNotesBody,
@@ -515,10 +514,10 @@ export async function registerRoutes(
       }
 
       if (locationNotesBody) {
-        const createdLocations = await storage.getLocations(data.id);
+        const createdLocations = await req.storage.getLocations(data.id);
         const primaryLocation = createdLocations.find((location) => location.isPrimary) ?? createdLocations[0];
         if (primaryLocation) {
-          await storage.saveScopedNote({
+          await req.storage.saveScopedNote({
             scope: "LOCATION",
             locationId: primaryLocation.id,
             body: locationNotesBody,
@@ -538,13 +537,13 @@ export async function registerRoutes(
     try {
       const validated = insertCustomerSchema.partial().parse(req.body);
       const customerNotesBody = validated.notes !== undefined ? (validated.notes?.trim() || "") : undefined;
-      const data = await storage.updateCustomer(req.params.id, {
+      const data = await req.storage.updateCustomer(req.params.id, {
         ...validated,
         notes: validated.notes !== undefined ? null : validated.notes,
       });
       if (!data) return res.status(404).json({ message: "Customer not found" });
       if (customerNotesBody !== undefined) {
-        await storage.saveScopedNote({
+        await req.storage.saveScopedNote({
           scope: "ACCOUNT",
           customerId: req.params.id,
           body: customerNotesBody,
@@ -560,12 +559,12 @@ export async function registerRoutes(
 
   // Contacts
   app.get("/api/contacts/:customerId", async (req, res) => {
-    const data = await storage.getContacts(req.params.customerId);
+    const data = await req.storage.getContacts(req.params.customerId);
     res.json(data);
   });
 
   app.get("/api/contacts/by-location/:locationId", async (req, res) => {
-    const data = await storage.getContactsByLocation(req.params.locationId);
+    const data = await req.storage.getContactsByLocation(req.params.locationId);
     res.json(data);
   });
 
@@ -577,7 +576,7 @@ export async function registerRoutes(
         return res.status(400).json({ message: "Phone type must be mobile, home, work, or fax." });
       }
 
-      const data = await storage.createContact({
+      const data = await req.storage.createContact({
         ...validated,
         email: validated.email?.trim() || null,
         phone: normalizePhone(validated.phone) || null,
@@ -599,7 +598,7 @@ export async function registerRoutes(
         return res.status(400).json({ message: "Phone type must be mobile, home, work, or fax." });
       }
 
-      const data = await storage.updateContact(req.params.id, {
+      const data = await req.storage.updateContact(req.params.id, {
         ...validated,
         email: validated.email === undefined ? undefined : validated.email?.trim() || null,
         phone: validated.phone === undefined ? undefined : normalizePhone(validated.phone) || null,
@@ -616,7 +615,7 @@ export async function registerRoutes(
 
   app.post("/api/contacts/:id/set-primary", async (req, res) => {
     try {
-      const data = await storage.setPrimaryContact(req.params.id);
+      const data = await req.storage.setPrimaryContact(req.params.id);
       if (!data) return res.status(404).json({ message: "Contact not found" });
       res.json(data);
     } catch (e: any) {
@@ -626,12 +625,12 @@ export async function registerRoutes(
 
   // Locations
   app.get("/api/locations/:customerId", async (req, res) => {
-    const data = await storage.getLocations(req.params.customerId);
+    const data = await req.storage.getLocations(req.params.customerId);
     res.json(data);
   });
 
-  app.get("/api/all-locations", async (_req, res) => {
-    const data = await storage.getAllLocations();
+  app.get("/api/all-locations", async (req, res) => {
+    const data = await req.storage.getAllLocations();
     res.json(data);
   });
 
@@ -660,19 +659,19 @@ export async function registerRoutes(
           : undefined;
 
       const data = initialContact
-        ? await storage.createLocationWithPrimaryContact({
+        ? await req.storage.createLocationWithPrimaryContact({
             location: {
               ...locationPayload,
               notes: null,
             },
             initialContact,
           })
-        : await storage.createLocation({
+        : await req.storage.createLocation({
             ...locationPayload,
             notes: null,
           });
       if (locationNotesBody) {
-        await storage.saveScopedNote({
+        await req.storage.saveScopedNote({
           scope: "LOCATION",
           locationId: data.id,
           body: locationNotesBody,
@@ -680,7 +679,7 @@ export async function registerRoutes(
         });
       }
       if (locationPayload.isPrimary) {
-        await storage.setPrimaryLocation(data.customerId, data.id);
+        await req.storage.setPrimaryLocation(data.customerId, data.id);
       }
       res.status(201).json(data);
     } catch (e: any) {
@@ -692,7 +691,7 @@ export async function registerRoutes(
   app.patch("/api/locations/:id", async (req, res) => {
     try {
       const validated = insertLocationSchema.partial().parse(req.body);
-      const data = await storage.updateLocation(req.params.id, validated);
+      const data = await req.storage.updateLocation(req.params.id, validated);
       if (!data) return res.status(404).json({ message: "Location not found" });
       res.json(data);
     } catch (e: any) {
@@ -704,7 +703,7 @@ export async function registerRoutes(
   app.patch("/api/customers/:customerId/locations/:locationId/profile", async (req, res) => {
     try {
       const validated = updateLocationProfileSchema.parse(req.body);
-      const existingLocation = await storage.getLocation(req.params.locationId);
+      const existingLocation = await req.storage.getLocation(req.params.locationId);
       if (!existingLocation || existingLocation.customerId !== req.params.customerId) {
         return res.status(404).json({ message: "Location not found" });
       }
@@ -749,7 +748,7 @@ export async function registerRoutes(
         }
       }
 
-      const result = await storage.updateLocationProfile({
+      const result = await req.storage.updateLocationProfile({
         customerId: req.params.customerId,
         locationId: req.params.locationId,
         actor: getAuditActor(req),
@@ -780,7 +779,7 @@ export async function registerRoutes(
 
       if (!result) return res.status(404).json({ message: "Location not found" });
       if (validated.location.notes !== undefined) {
-        await storage.saveScopedNote({
+        await req.storage.saveScopedNote({
           scope: "LOCATION",
           locationId: req.params.locationId,
           body: validated.location.notes?.trim() || "",
@@ -796,9 +795,9 @@ export async function registerRoutes(
 
   app.post("/api/locations/:id/set-primary", async (req, res) => {
     try {
-      const loc = await storage.getLocation(req.params.id);
+      const loc = await req.storage.getLocation(req.params.id);
       if (!loc) return res.status(404).json({ message: "Location not found" });
-      await storage.setPrimaryLocation(loc.customerId, loc.id);
+      await req.storage.setPrimaryLocation(loc.customerId, loc.id);
       res.json({ success: true });
     } catch (e: any) {
       res.status(400).json({ message: e.message });
@@ -807,14 +806,14 @@ export async function registerRoutes(
 
   // Billing Profiles
   app.get("/api/billing-profiles/:customerId", async (req, res) => {
-    const data = await storage.getBillingProfiles(req.params.customerId);
+    const data = await req.storage.getBillingProfiles(req.params.customerId);
     res.json(data);
   });
 
   app.post("/api/billing-profiles", async (req, res) => {
     try {
       const validated = insertBillingProfileSchema.parse(req.body);
-      const data = await storage.createBillingProfile(validated);
+      const data = await req.storage.createBillingProfile(validated);
       res.status(201).json(data);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
@@ -824,24 +823,24 @@ export async function registerRoutes(
 
   // Canonical Notes
   app.get("/api/notes/shared/:customerId", async (req, res) => {
-    const data = await storage.getSharedNotes(req.params.customerId);
+    const data = await req.storage.getSharedNotes(req.params.customerId);
     res.json(data);
   });
 
   app.get("/api/notes/location/:locationId", async (req, res) => {
-    const data = await storage.getNotesByLocation(req.params.locationId);
+    const data = await req.storage.getNotesByLocation(req.params.locationId);
     res.json(data);
   });
 
   app.get("/api/notes/:noteId/revisions", async (req, res) => {
-    const data = await storage.getNoteRevisions(req.params.noteId);
+    const data = await req.storage.getNoteRevisions(req.params.noteId);
     res.json(data);
   });
 
   app.put("/api/notes/scoped", async (req, res) => {
     try {
       const validated = saveScopedNoteSchema.parse(req.body);
-      const data = await storage.saveScopedNote({
+      const data = await req.storage.saveScopedNote({
         ...validated,
         actor: getAuditActor(req),
       });
@@ -854,48 +853,48 @@ export async function registerRoutes(
 
   // Location-scoped counts
   app.get("/api/location-counts/:locationId", async (req, res) => {
-    await storage.generateAgreementServicesForLocation(req.params.locationId);
-    const data = await storage.getLocationScopedCounts(req.params.locationId);
+    await req.storage.generateAgreementServicesForLocation(req.params.locationId);
+    const data = await req.storage.getLocationScopedCounts(req.params.locationId);
     res.json(data);
   });
 
   // Location-scoped data endpoints
   app.get("/api/appointments/by-location/:locationId", async (req, res) => {
-    await storage.generateAgreementServicesForLocation(req.params.locationId);
-    const data = await storage.getAppointmentsByLocation(req.params.locationId);
+    await req.storage.generateAgreementServicesForLocation(req.params.locationId);
+    const data = await req.storage.getAppointmentsByLocation(req.params.locationId);
     res.json(data);
   });
 
   app.get("/api/service-records/by-location/:locationId", async (req, res) => {
-    const data = await storage.getServiceRecordsByLocation(req.params.locationId);
+    const data = await req.storage.getServiceRecordsByLocation(req.params.locationId);
     res.json(data);
   });
 
   app.get("/api/invoices/by-location/:locationId", async (req, res) => {
-    const data = await storage.getInvoicesByLocation(req.params.locationId);
+    const data = await req.storage.getInvoicesByLocation(req.params.locationId);
     res.json(data);
   });
 
   app.get("/api/location-balances/:customerId", async (req, res) => {
-    const data = await storage.getLocationBalancesByCustomer(req.params.customerId);
+    const data = await req.storage.getLocationBalancesByCustomer(req.params.customerId);
     res.json(data);
   });
 
   app.get("/api/communications/by-location/:locationId", async (req, res) => {
-    const data = await storage.getCommunicationsByLocation(req.params.locationId);
+    const data = await req.storage.getCommunicationsByLocation(req.params.locationId);
     res.json(data);
   });
 
   // Service Types
-  app.get("/api/service-types", async (_req, res) => {
-    const data = await storage.getServiceTypes();
+  app.get("/api/service-types", async (req, res) => {
+    const data = await req.storage.getServiceTypes();
     res.json(data);
   });
 
   app.post("/api/service-types", async (req, res) => {
     try {
       const validated = insertServiceTypeSchema.parse(req.body);
-      const data = await storage.createServiceType(validated);
+      const data = await req.storage.createServiceType(validated);
       res.status(201).json(data);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
@@ -906,7 +905,7 @@ export async function registerRoutes(
   app.patch("/api/service-types/:id", async (req, res) => {
     try {
       const validated = insertServiceTypeSchema.partial().parse(req.body);
-      const data = await storage.updateServiceType(req.params.id, validated);
+      const data = await req.storage.updateServiceType(req.params.id, validated);
       if (!data) return res.status(404).json({ message: "Service type not found" });
       res.json(data);
     } catch (e: any) {
@@ -918,14 +917,14 @@ export async function registerRoutes(
   // Technicians
   app.get("/api/technicians", async (req, res) => {
     const includeInactive = req.query.includeInactive === "true";
-    const data = await storage.getTechnicians(includeInactive);
+    const data = await req.storage.getTechnicians(includeInactive);
     res.json(data);
   });
 
   app.post("/api/technicians", async (req, res) => {
     try {
       const validated = technicianSchema.parse(req.body);
-      const data = await storage.createTechnician(validated);
+      const data = await req.storage.createTechnician(validated);
       res.status(201).json(data);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
@@ -936,7 +935,7 @@ export async function registerRoutes(
   app.patch("/api/technicians/:id", async (req, res) => {
     try {
       const validated = updateTechnicianSchema.parse(req.body);
-      const data = await storage.updateTechnician(req.params.id, validated);
+      const data = await req.storage.updateTechnician(req.params.id, validated);
       if (!data) return res.status(404).json({ message: "Technician not found" });
       res.json(data);
     } catch (e: any) {
@@ -950,7 +949,7 @@ export async function registerRoutes(
       const date = typeof req.query.date === "string" && req.query.date
         ? req.query.date
         : new Date().toISOString().slice(0, 10);
-      const data = await storage.getTechnicianWork(req.params.id, date);
+      const data = await req.storage.getTechnicianWork(req.params.id, date);
       res.json(data);
     } catch (e: any) {
       res.status(400).json({ message: e.message });
@@ -958,18 +957,18 @@ export async function registerRoutes(
   });
 
   // Services
-  app.get("/api/services", async (_req, res) => {
-    const data = await storage.getServices();
+  app.get("/api/services", async (req, res) => {
+    const data = await req.storage.getServices();
     res.json(data);
   });
 
   app.get("/api/services/by-location/:locationId", async (req, res) => {
-    const data = await storage.getServicesByLocation(req.params.locationId);
+    const data = await req.storage.getServicesByLocation(req.params.locationId);
     res.json(data);
   });
 
   app.get("/api/services/pending", async (req, res) => {
-    const data = await storage.getPendingServices({
+    const data = await req.storage.getPendingServices({
       dateFrom: typeof req.query.dateFrom === "string" ? req.query.dateFrom : "",
       dateTo: typeof req.query.dateTo === "string" ? req.query.dateTo : "",
     });
@@ -977,13 +976,13 @@ export async function registerRoutes(
   });
 
   app.get("/api/services/:id", async (req, res) => {
-    const data = await storage.getService(req.params.id);
+    const data = await req.storage.getService(req.params.id);
     if (!data) return res.status(404).json({ message: "Service not found" });
     res.json(data);
   });
 
   app.get("/api/opportunities", async (req, res) => {
-    const data = await storage.getOpportunities({
+    const data = await req.storage.getOpportunities({
       status: typeof req.query.status === "string" && req.query.status !== "ALL" ? req.query.status : undefined,
       dueFrom: typeof req.query.dueFrom === "string" ? req.query.dueFrom : undefined,
       dueTo: typeof req.query.dueTo === "string" ? req.query.dueTo : undefined,
@@ -993,20 +992,20 @@ export async function registerRoutes(
   });
 
   app.get("/api/opportunities/by-location/:locationId", async (req, res) => {
-    const data = await storage.getOpportunitiesByLocation(req.params.locationId);
+    const data = await req.storage.getOpportunitiesByLocation(req.params.locationId);
     res.json(data);
   });
 
   app.get("/api/opportunity-dispositions", async (req, res) => {
     const includeInactive = req.query.includeInactive === "true";
-    const data = await storage.getOpportunityDispositions(includeInactive);
+    const data = await req.storage.getOpportunityDispositions(includeInactive);
     res.json(data);
   });
 
   app.post("/api/opportunity-dispositions", async (req, res) => {
     try {
       const validated = opportunityDispositionSchema.parse(req.body);
-      const data = await storage.createOpportunityDisposition(validated);
+      const data = await req.storage.createOpportunityDisposition(validated);
       res.status(201).json(data);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
@@ -1017,7 +1016,7 @@ export async function registerRoutes(
   app.patch("/api/opportunity-dispositions/:id", async (req, res) => {
     try {
       const validated = opportunityDispositionUpdateSchema.parse(req.body);
-      const data = await storage.updateOpportunityDisposition(req.params.id, validated);
+      const data = await req.storage.updateOpportunityDisposition(req.params.id, validated);
       if (!data) return res.status(404).json({ message: "Opportunity disposition not found" });
       res.json(data);
     } catch (e: any) {
@@ -1027,14 +1026,14 @@ export async function registerRoutes(
   });
 
   app.get("/api/opportunities/:id/activities", async (req, res) => {
-    const data = await storage.getOpportunityActivitiesByOpportunity(req.params.id);
+    const data = await req.storage.getOpportunityActivitiesByOpportunity(req.params.id);
     res.json(data);
   });
 
   app.patch("/api/opportunities/:id", async (req, res) => {
     try {
       const validated = opportunityUpdateSchema.parse(req.body);
-      const data = await storage.updateOpportunity(req.params.id, validated);
+      const data = await req.storage.updateOpportunity(req.params.id, validated);
       if (!data) return res.status(404).json({ message: "Opportunity not found" });
       res.json(data);
     } catch (e: any) {
@@ -1046,7 +1045,7 @@ export async function registerRoutes(
   app.post("/api/opportunities/:id/disposition", async (req, res) => {
     try {
       const validated = applyOpportunityDispositionSchema.parse(req.body);
-      const data = await storage.applyOpportunityDisposition({
+      const data = await req.storage.applyOpportunityDisposition({
         opportunityId: req.params.id,
         dispositionId: validated.dispositionId,
         nextActionDate: validated.nextActionDate,
@@ -1063,7 +1062,7 @@ export async function registerRoutes(
 
   app.post("/api/opportunities/:id/convert", async (req, res) => {
     try {
-      const data = await storage.convertOpportunityToService(req.params.id, getAuditActor(req));
+      const data = await req.storage.convertOpportunityToService(req.params.id, getAuditActor(req));
       if (!data) return res.status(404).json({ message: "Opportunity not found" });
       res.status(201).json(data);
     } catch (e: any) {
@@ -1074,7 +1073,7 @@ export async function registerRoutes(
   app.post("/api/services", async (req, res) => {
     try {
       const validated = serviceSchema.parse(req.body);
-      const data = await storage.createService(validated);
+      const data = await req.storage.createService(validated);
       res.status(201).json(data);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
@@ -1085,7 +1084,7 @@ export async function registerRoutes(
   app.patch("/api/services/:id", async (req, res) => {
     try {
       const validated = updateServiceSchema.parse(req.body);
-      const data = await storage.updateService(req.params.id, validated);
+      const data = await req.storage.updateService(req.params.id, validated);
       if (!data) return res.status(404).json({ message: "Service not found" });
       res.json(data);
     } catch (e: any) {
@@ -1096,7 +1095,7 @@ export async function registerRoutes(
 
   app.delete("/api/services/:id", async (req, res) => {
     try {
-      const deleted = await storage.deleteService(req.params.id);
+      const deleted = await req.storage.deleteService(req.params.id);
       if (!deleted) return res.status(404).json({ message: "Service not found" });
       res.status(204).send();
     } catch (e: any) {
@@ -1107,7 +1106,7 @@ export async function registerRoutes(
   app.post("/api/services/:id/complete", async (req, res) => {
     try {
       const validated = completeServiceSchema.parse(req.body);
-      const data = await storage.completeService({
+      const data = await req.storage.completeService({
         serviceId: req.params.id,
         ...validated,
       });
@@ -1122,14 +1121,14 @@ export async function registerRoutes(
   // Agreement Cancellation Policies
   app.get("/api/agreement-cancellation-policies", async (req, res) => {
     const includeInactive = req.query.includeInactive === "true";
-    const data = await storage.getAgreementCancellationPolicies(includeInactive);
+    const data = await req.storage.getAgreementCancellationPolicies(includeInactive);
     res.json(data);
   });
 
   app.post("/api/agreement-cancellation-policies", async (req, res) => {
     try {
       const validated = agreementCancellationPolicySchema.parse(req.body);
-      const data = await storage.createAgreementCancellationPolicy(validated);
+      const data = await req.storage.createAgreementCancellationPolicy(validated);
       res.status(201).json(data);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
@@ -1140,7 +1139,7 @@ export async function registerRoutes(
   app.patch("/api/agreement-cancellation-policies/:id", async (req, res) => {
     try {
       const validated = updateAgreementCancellationPolicySchema.parse(req.body);
-      const data = await storage.updateAgreementCancellationPolicy(req.params.id, validated);
+      const data = await req.storage.updateAgreementCancellationPolicy(req.params.id, validated);
       if (!data) return res.status(404).json({ message: "Cancellation policy not found" });
       res.json(data);
     } catch (e: any) {
@@ -1150,15 +1149,15 @@ export async function registerRoutes(
   });
 
   // Agreement Templates
-  app.get("/api/agreement-templates", async (_req, res) => {
-    const data = await storage.getAgreementTemplates();
+  app.get("/api/agreement-templates", async (req, res) => {
+    const data = await req.storage.getAgreementTemplates();
     res.json(data);
   });
 
   app.post("/api/agreement-templates", async (req, res) => {
     try {
       const validated = agreementTemplateSchema.parse(req.body);
-      const data = await storage.createAgreementTemplate(validated);
+      const data = await req.storage.createAgreementTemplate(validated);
       res.status(201).json(data);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
@@ -1169,7 +1168,7 @@ export async function registerRoutes(
   app.patch("/api/agreement-templates/:id", async (req, res) => {
     try {
       const validated = updateAgreementTemplateSchema.parse(req.body);
-      const data = await storage.updateAgreementTemplate(req.params.id, validated);
+      const data = await req.storage.updateAgreementTemplate(req.params.id, validated);
       if (!data) return res.status(404).json({ message: "Agreement template not found" });
       res.json(data);
     } catch (e: any) {
@@ -1180,15 +1179,15 @@ export async function registerRoutes(
 
   // Agreements
   app.get("/api/agreements/location/:locationId", async (req, res) => {
-    await storage.generateAgreementServicesForLocation(req.params.locationId);
-    const data = await storage.getAgreementsByLocation(req.params.locationId);
+    await req.storage.generateAgreementServicesForLocation(req.params.locationId);
+    const data = await req.storage.getAgreementsByLocation(req.params.locationId);
     res.json(data);
   });
 
   app.post("/api/agreements", async (req, res) => {
     try {
       const validated = createAgreementFromTemplateSchema.parse(req.body);
-      const data = await storage.createAgreementFromTemplate({
+      const data = await req.storage.createAgreementFromTemplate({
         agreementTemplateId: validated.agreementTemplateId ?? null,
         agreement: validated.agreement,
         actor: getAuditActor(req),
@@ -1203,7 +1202,7 @@ export async function registerRoutes(
   app.patch("/api/agreements/:id", async (req, res) => {
     try {
       const validated = updateAgreementSchema.parse(req.body);
-      const data = await storage.updateAgreement(req.params.id, validated, getAuditActor(req));
+      const data = await req.storage.updateAgreement(req.params.id, validated, getAuditActor(req));
       if (!data) return res.status(404).json({ message: "Agreement not found" });
       res.json(data);
     } catch (e: any) {
@@ -1215,7 +1214,7 @@ export async function registerRoutes(
   app.post("/api/agreements/:id/cancel", async (req, res) => {
     try {
       const validated = cancelAgreementSchema.parse(req.body);
-      const data = await storage.cancelAgreement({
+      const data = await req.storage.cancelAgreement({
         agreementId: req.params.id,
         ...validated,
         actor: getAuditActor(req),
@@ -1231,7 +1230,7 @@ export async function registerRoutes(
   app.post("/api/agreements/:id/link-initial-appointment", async (req, res) => {
     try {
       const validated = linkAgreementInitialAppointmentSchema.parse(req.body);
-      const data = await storage.linkAgreementInitialAppointment({
+      const data = await req.storage.linkAgreementInitialAppointment({
         agreementId: req.params.id,
         appointmentId: validated.appointmentId,
         actor: getAuditActor(req),
@@ -1245,15 +1244,15 @@ export async function registerRoutes(
   });
 
   // Appointments
-  app.get("/api/appointments", async (_req, res) => {
-    const data = await storage.getAppointments();
+  app.get("/api/appointments", async (req, res) => {
+    const data = await req.storage.getAppointments();
     res.json(data);
   });
 
   app.post("/api/appointments", async (req, res) => {
     try {
       const validated = appointmentSchema.parse(req.body);
-      const data = await storage.createAppointment({
+      const data = await req.storage.createAppointment({
         ...validated,
         scheduledDate: validated.scheduledDate,
         scheduledEndDate: validated.scheduledEndDate,
@@ -1269,7 +1268,7 @@ export async function registerRoutes(
   app.patch("/api/appointments/:id", async (req, res) => {
     try {
       const validated = updateAppointmentSchema.parse(req.body);
-      const data = await storage.updateAppointment(req.params.id, {
+      const data = await req.storage.updateAppointment(req.params.id, {
         ...validated,
         scheduledDate: validated.scheduledDate,
         scheduledEndDate: validated.scheduledEndDate,
@@ -1285,7 +1284,7 @@ export async function registerRoutes(
 
   app.post("/api/appointments/:id/time-in", async (req, res) => {
     try {
-      const data = await storage.timeInAppointment(req.params.id);
+      const data = await req.storage.timeInAppointment(req.params.id);
       if (!data) return res.status(404).json({ message: "Appointment not found" });
       res.json(data);
     } catch (e: any) {
@@ -1295,7 +1294,7 @@ export async function registerRoutes(
 
   app.post("/api/appointments/:id/time-out", async (req, res) => {
     try {
-      const data = await storage.timeOutAppointment(req.params.id);
+      const data = await req.storage.timeOutAppointment(req.params.id);
       if (!data) return res.status(404).json({ message: "Appointment not found" });
       res.json(data);
     } catch (e: any) {
@@ -1306,7 +1305,7 @@ export async function registerRoutes(
   app.post("/api/appointments/:id/cancel-reschedule", async (req, res) => {
     try {
       const validated = appointmentCancelRescheduleSchema.parse(req.body);
-      const data = await storage.requestAppointmentCancelOrReschedule({
+      const data = await req.storage.requestAppointmentCancelOrReschedule({
         appointmentId: req.params.id,
         reason: validated.reason,
         notes: validated.notes,
@@ -1322,13 +1321,13 @@ export async function registerRoutes(
   });
 
   // Service Records
-  app.get("/api/service-records", async (_req, res) => {
-    const data = await storage.getServiceRecords();
+  app.get("/api/service-records", async (req, res) => {
+    const data = await req.storage.getServiceRecords();
     res.json(data);
   });
 
   app.get("/api/service-records/:id", async (req, res) => {
-    const data = await storage.getServiceRecord(req.params.id);
+    const data = await req.storage.getServiceRecord(req.params.id);
     if (!data) return res.status(404).json({ message: "Service record not found" });
     res.json(data);
   });
@@ -1336,7 +1335,7 @@ export async function registerRoutes(
   app.post("/api/service-records", async (req, res) => {
     try {
       const validated = serviceRecordSchema.parse(req.body);
-      const data = await storage.createServiceRecord(validated);
+      const data = await req.storage.createServiceRecord(validated);
       res.status(201).json(data);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
@@ -1347,7 +1346,7 @@ export async function registerRoutes(
   app.patch("/api/service-records/:id", async (req, res) => {
     try {
       const validated = updateServiceRecordSchema.parse(req.body);
-      const data = await storage.updateServiceRecord(req.params.id, validated);
+      const data = await req.storage.updateServiceRecord(req.params.id, validated);
       if (!data) return res.status(404).json({ message: "Service record not found" });
       res.json(data);
     } catch (e: any) {
@@ -1358,7 +1357,7 @@ export async function registerRoutes(
 
   app.post("/api/service-records/:id/finalize", async (req, res) => {
     try {
-      const data = await storage.finalizeServiceRecord(req.params.id, getAuditActor(req));
+      const data = await req.storage.finalizeServiceRecord(req.params.id, getAuditActor(req));
       if (!data) return res.status(404).json({ message: "Service record not found" });
       res.json(data);
     } catch (e: any) {
@@ -1369,7 +1368,7 @@ export async function registerRoutes(
   app.post("/api/service-records/:id/reopen", async (req, res) => {
     try {
       const validated = reopenServiceRecordSchema.parse(req.body);
-      const data = await storage.reopenServiceRecord(req.params.id, validated.reason, getAuditActor(req));
+      const data = await req.storage.reopenServiceRecord(req.params.id, validated.reason, getAuditActor(req));
       if (!data) return res.status(404).json({ message: "Service record not found" });
       res.json(data);
     } catch (e: any) {
@@ -1378,15 +1377,15 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/settings/service-time-tracking", async (_req, res) => {
-    const mode = await storage.getServiceTimeTrackingMode();
+  app.get("/api/settings/service-time-tracking", async (req, res) => {
+    const mode = await req.storage.getServiceTimeTrackingMode();
     res.json({ mode });
   });
 
   app.patch("/api/settings/service-time-tracking", async (req, res) => {
     try {
       const validated = serviceTimeTrackingModeSchema.parse(req.body);
-      const data = await storage.setServiceTimeTrackingMode(validated.mode);
+      const data = await req.storage.setServiceTimeTrackingMode(validated.mode);
       res.json({ mode: data.value });
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
@@ -1394,15 +1393,15 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/settings/appointment-cancel-reasons", async (_req, res) => {
-    const reasons = await storage.getAppointmentCancelReasons();
+  app.get("/api/settings/appointment-cancel-reasons", async (req, res) => {
+    const reasons = await req.storage.getAppointmentCancelReasons();
     res.json({ reasons });
   });
 
   app.patch("/api/settings/appointment-cancel-reasons", async (req, res) => {
     try {
       const validated = appointmentCancelReasonsSchema.parse(req.body);
-      const data = await storage.setAppointmentCancelReasons(validated.reasons);
+      const data = await req.storage.setAppointmentCancelReasons(validated.reasons);
       res.json({ reasons: JSON.parse(data.value) });
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
@@ -1413,14 +1412,14 @@ export async function registerRoutes(
   // Material Products
   app.get("/api/material-products", async (req, res) => {
     const includeInactive = req.query.includeInactive === "true";
-    const data = await storage.getMaterialProducts(includeInactive);
+    const data = await req.storage.getMaterialProducts(includeInactive);
     res.json(data);
   });
 
   app.post("/api/material-products", async (req, res) => {
     try {
       const validated = materialProductSchema.parse(req.body);
-      const data = await storage.createMaterialProduct(validated);
+      const data = await req.storage.createMaterialProduct(validated);
       res.status(201).json(data);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
@@ -1431,7 +1430,7 @@ export async function registerRoutes(
   app.patch("/api/material-products/:id", async (req, res) => {
     try {
       const validated = updateMaterialProductSchema.parse(req.body);
-      const data = await storage.updateMaterialProduct(req.params.id, validated);
+      const data = await req.storage.updateMaterialProduct(req.params.id, validated);
       if (!data) return res.status(404).json({ message: "Material product not found" });
       res.json(data);
     } catch (e: any) {
@@ -1443,14 +1442,14 @@ export async function registerRoutes(
   // Target Pests
   app.get("/api/target-pests", async (req, res) => {
     const includeInactive = req.query.includeInactive === "true";
-    const data = await storage.getTargetPests(includeInactive);
+    const data = await req.storage.getTargetPests(includeInactive);
     res.json(data);
   });
 
   app.post("/api/target-pests", async (req, res) => {
     try {
       const validated = targetPestSchema.parse(req.body);
-      const data = await storage.createTargetPest(validated);
+      const data = await req.storage.createTargetPest(validated);
       res.status(201).json(data);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
@@ -1461,7 +1460,7 @@ export async function registerRoutes(
   app.patch("/api/target-pests/:id", async (req, res) => {
     try {
       const validated = updateTargetPestSchema.parse(req.body);
-      const data = await storage.updateTargetPest(req.params.id, validated);
+      const data = await req.storage.updateTargetPest(req.params.id, validated);
       if (!data) return res.status(404).json({ message: "Target pest not found" });
       res.json(data);
     } catch (e: any) {
@@ -1471,15 +1470,15 @@ export async function registerRoutes(
   });
 
   // Product Applications
-  app.get("/api/product-applications", async (_req, res) => {
-    const data = await storage.getProductApplications();
+  app.get("/api/product-applications", async (req, res) => {
+    const data = await req.storage.getProductApplications();
     res.json(data);
   });
 
   app.post("/api/product-applications", async (req, res) => {
     try {
       const validated = insertProductApplicationSchema.parse(req.body);
-      const data = await storage.createProductApplication(validated);
+      const data = await req.storage.createProductApplication(validated);
       res.status(201).json(data);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
@@ -1488,15 +1487,15 @@ export async function registerRoutes(
   });
 
   // Invoices
-  app.get("/api/invoices", async (_req, res) => {
-    const data = await storage.getInvoices();
+  app.get("/api/invoices", async (req, res) => {
+    const data = await req.storage.getInvoices();
     res.json(data);
   });
 
   app.post("/api/invoices", async (req, res) => {
     try {
       const validated = insertInvoiceSchema.parse(req.body);
-      const data = await storage.createInvoice(validated);
+      const data = await req.storage.createInvoice(validated);
       res.status(201).json(data);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
@@ -1507,7 +1506,7 @@ export async function registerRoutes(
   app.patch("/api/invoices/:id", async (req, res) => {
     try {
       const validated = insertInvoiceSchema.partial().parse(req.body);
-      const data = await storage.updateInvoice(req.params.id, validated);
+      const data = await req.storage.updateInvoice(req.params.id, validated);
       if (!data) return res.status(404).json({ message: "Invoice not found" });
       res.json(data);
     } catch (e: any) {
@@ -1518,19 +1517,19 @@ export async function registerRoutes(
 
   // Communications
   app.get("/api/communications/:customerId", async (req, res) => {
-    const data = await storage.getCommunications(req.params.customerId);
+    const data = await req.storage.getCommunications(req.params.customerId);
     res.json(data);
   });
 
-  app.get("/api/all-communications", async (_req, res) => {
-    const data = await storage.getAllCommunications();
+  app.get("/api/all-communications", async (req, res) => {
+    const data = await req.storage.getAllCommunications();
     res.json(data);
   });
 
   app.post("/api/communications", async (req, res) => {
     try {
       const validated = insertCommunicationSchema.parse(req.body);
-      const data = await storage.createCommunication(validated);
+      const data = await req.storage.createCommunication(validated);
       res.status(201).json(data);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);

@@ -4,7 +4,7 @@ import passport from "passport";
 import { Strategy as LocalStrategy } from "passport-local";
 import type { Express, RequestHandler } from "express";
 import { pool } from "./db";
-import { storage } from "./storage";
+import { userStorage, createOrgScopedStorage, type IStorage } from "./storage";
 import { verifyPassword } from "./password";
 import type { User } from "@shared/schema";
 
@@ -12,6 +12,9 @@ declare global {
   namespace Express {
     // eslint-disable-next-line @typescript-eslint/no-empty-interface
     interface User extends Omit<import("@shared/schema").User, "passwordHash"> {}
+    interface Request {
+      storage: IStorage;
+    }
   }
 }
 
@@ -23,7 +26,7 @@ function sanitizeUser(user: User): Express.User {
 passport.use(
   new LocalStrategy({ usernameField: "email", passwordField: "password" }, async (email, password, done) => {
     try {
-      const user = await storage.getUserByEmail(email.trim().toLowerCase());
+      const user = await userStorage.getUserByEmail(email.trim().toLowerCase());
       if (!user || user.status !== "active") {
         return done(null, false, { message: "Invalid email or password" });
       }
@@ -46,7 +49,7 @@ passport.serializeUser((user, done) => {
 
 passport.deserializeUser(async (id: string, done) => {
   try {
-    const user = await storage.getUser(id);
+    const user = await userStorage.getUser(id);
     if (!user) {
       return done(null, false);
     }
@@ -84,6 +87,20 @@ export const requireAuth: RequestHandler = (req, res, next) => {
   }
 
   return res.status(401).json({ message: "Authentication required" });
+};
+
+// Must run after requireAuth - relies on req.user already being populated.
+// Each request gets its own DatabaseStorage instance scoped to the logged-in
+// user's org, so every query that instance runs is filtered by that org with
+// no per-call chance of passing the wrong id.
+export const attachOrgStorage: RequestHandler = (req, res, next) => {
+  const orgId = req.user?.orgId;
+  if (!orgId) {
+    return res.status(403).json({ message: "User is not assigned to an organization" });
+  }
+
+  req.storage = createOrgScopedStorage(orgId);
+  next();
 };
 
 export function registerAuthRoutes(app: Express) {

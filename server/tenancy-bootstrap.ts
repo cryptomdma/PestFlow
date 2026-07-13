@@ -47,4 +47,11 @@ export async function bootstrapTenancy(): Promise<void> {
     await db.execute(sql.raw(`ALTER TABLE ${table} ALTER COLUMN org_id SET NOT NULL`));
     await db.execute(sql.raw(`CREATE INDEX IF NOT EXISTS ${table}_org_id_idx ON ${table} (org_id)`));
   }
+
+  // app_settings.key alone used to be the primary key; with multiple orgs it
+  // must become a composite (org_id, key) key so two orgs can each have their
+  // own value for the same setting name. Dropping and re-adding the same
+  // constraint name every boot is idempotent.
+  await db.execute(sql.raw(`ALTER TABLE app_settings DROP CONSTRAINT IF EXISTS app_settings_pkey`));
+  await db.execute(sql.raw(`ALTER TABLE app_settings ADD CONSTRAINT app_settings_pkey PRIMARY KEY (org_id, key)`));
 }

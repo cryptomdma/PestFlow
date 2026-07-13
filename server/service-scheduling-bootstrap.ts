@@ -95,10 +95,14 @@ export async function bootstrapServiceSchedulingFoundation(): Promise<void> {
       updated_at timestamp NOT NULL DEFAULT now()
     )
   `);
+  // app_settings.key alone was the primary key when this table was first
+  // created; the tenancy bootstrap later converts it to a composite
+  // (org_id, key) key. An unqualified ON CONFLICT DO NOTHING works under
+  // either shape, since it isn't tied to a specific constraint's columns.
   await db.execute(sql`
     INSERT INTO app_settings (key, value)
     VALUES ('service_time_tracking_mode', 'AUTO_TIMEOUT_ON_TICKET_POST')
-    ON CONFLICT (key) DO NOTHING
+    ON CONFLICT DO NOTHING
   `);
   await db.execute(sql`
     INSERT INTO app_settings (key, value)
@@ -106,7 +110,7 @@ export async function bootstrapServiceSchedulingFoundation(): Promise<void> {
       'appointment_cancel_reschedule_reasons',
       '["Weather","Gates locked","Schedule conflict","Customer not home","Canceled by company","Customer requested reschedule","Access issue","Other"]'
     )
-    ON CONFLICT (key) DO NOTHING
+    ON CONFLICT DO NOTHING
   `);
 
   await db.execute(sql`
