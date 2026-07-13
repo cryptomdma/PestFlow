@@ -8,6 +8,8 @@ import { bootstrapCanonicalAccounts } from "./account-bootstrap";
 import { bootstrapCanonicalNotes } from "./note-bootstrap";
 import { bootstrapAgreements } from "./agreement-bootstrap";
 import { bootstrapServiceSchedulingFoundation } from "./service-scheduling-bootstrap";
+import { bootstrapAuth } from "./auth-bootstrap";
+import { setupAuth, registerAuthRoutes, requireAuth } from "./auth";
 
 const app = express();
 const httpServer = createServer(app);
@@ -66,6 +68,11 @@ app.use((req, res, next) => {
 });
 
 (async () => {
+  await bootstrapAuth().catch((e) => console.error("Auth bootstrap error:", e));
+  setupAuth(app);
+  registerAuthRoutes(app);
+  app.use("/api", requireAuth);
+
   await seedDatabase().catch((e) => console.error("Seed error:", e));
   await bootstrapCanonicalAccounts().catch((e) => console.error("Account bootstrap error:", e));
   await bootstrapCanonicalNotes().catch((e) => console.error("Note bootstrap error:", e));

@@ -24,9 +24,14 @@ function handleZodError(res: any, error: ZodError) {
 }
 
 function getAuditActor(req: Request) {
+  const user = req.user;
+  if (!user) {
+    return { userId: null, actorLabel: null };
+  }
+
   return {
-    userId: req.header("x-pestflow-user-id") || null,
-    actorLabel: req.header("x-pestflow-user-name") || null,
+    userId: user.id,
+    actorLabel: `${user.firstName} ${user.lastName}`.trim(),
   };
 }
 

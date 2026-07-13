@@ -11,6 +11,7 @@ import {
   Bug,
   Target,
   Wrench,
+  LogOut,
 } from "lucide-react";
 import {
   Sidebar,
@@ -24,6 +25,8 @@ import {
   SidebarHeader,
   SidebarFooter,
 } from "@/components/ui/sidebar";
+import { Button } from "@/components/ui/button";
+import { useAuth } from "@/hooks/use-auth";
 
 const mainNav = [
   { title: "Dashboard", url: "/", icon: LayoutDashboard },
@@ -47,6 +50,7 @@ const systemNav = [
 
 export function AppSidebar() {
   const [location] = useLocation();
+  const { user, logout } = useAuth();
 
   const isActive = (url: string) => {
     if (url === "/") return location === "/";
@@ -122,6 +126,22 @@ export function AppSidebar() {
         </SidebarGroup>
       </SidebarContent>
       <SidebarFooter className="p-4">
+        {user && (
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <p className="truncate text-xs font-medium" data-testid="text-current-user">
+              {user.firstName} {user.lastName}
+            </p>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-6 w-6 shrink-0"
+              onClick={() => logout()}
+              data-testid="button-logout"
+            >
+              <LogOut className="h-3.5 w-3.5" />
+            </Button>
+          </div>
+        )}
         <p className="text-xs text-muted-foreground">PestFlow v1.0</p>
       </SidebarFooter>
     </Sidebar>
