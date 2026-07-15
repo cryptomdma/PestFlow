@@ -520,6 +520,24 @@ export const auditLogs = pgTable("audit_logs", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
+// Transactional outbox for the four integration ports (server/integrations/**).
+// A domain change and its outbox_events row are written in the same DB
+// transaction; a worker (not built yet - see PLAN_BILLING_V1.md §0.4) drains
+// PENDING rows with retries. This is what makes "invoice synced to
+// QuickBooks" reliable instead of best-effort.
+export const outboxEvents = pgTable("outbox_events", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: varchar("org_id").notNull(),
+  port: text("port").notNull(), // 'payments' | 'accounting' | 'crm' | 'inventory'
+  eventType: text("event_type").notNull(), // e.g. 'push_invoice', 'emit_consumption'
+  payload: jsonb("payload").notNull(),
+  status: text("status").notNull().default("PENDING"), // PENDING | PROCESSING | SENT | FAILED
+  attempts: integer("attempts").notNull().default(0),
+  lastError: text("last_error"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  processedAt: timestamp("processed_at"),
+});
+
 export const insertCustomerSchema = createInsertSchema(customers).omit({ orgId: true, id: true, createdAt: true });
 export const insertAccountSchema = createInsertSchema(accounts).omit({ orgId: true, id: true, createdAt: true, updatedAt: true });
 export const insertContactSchema = createInsertSchema(contacts).omit({ orgId: true, id: true });
@@ -547,6 +565,7 @@ export const insertCommunicationSchema = createInsertSchema(communications).omit
 export const insertAuditLogSchema = createInsertSchema(auditLogs).omit({ orgId: true, id: true, createdAt: true });
 export const insertUserSchema = createInsertSchema(users).omit({ orgId: true, id: true, createdAt: true, updatedAt: true });
 export const insertOrganizationSchema = createInsertSchema(organizations).omit({ id: true, createdAt: true, updatedAt: true });
+export const insertOutboxEventSchema = createInsertSchema(outboxEvents).omit({ orgId: true, id: true, createdAt: true, processedAt: true, status: true, attempts: true, lastError: true });
 
 export type Customer = typeof customers.$inferSelect;
 export type InsertCustomer = z.infer<typeof insertCustomerSchema>;
@@ -602,3 +621,5 @@ export type User = typeof users.$inferSelect;
 export type InsertUser = z.infer<typeof insertUserSchema>;
 export type Organization = typeof organizations.$inferSelect;
 export type InsertOrganization = z.infer<typeof insertOrganizationSchema>;
+export type OutboxEvent = typeof outboxEvents.$inferSelect;
+export type InsertOutboxEvent = z.infer<typeof insertOutboxEventSchema>;
