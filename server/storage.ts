@@ -44,6 +44,7 @@ import {
 import { db } from "./db";
 import { eq, and, inArray, sql, gte, lte, asc, desc, ne } from "drizzle-orm";
 import { PLACEHOLDER_LOCATION_NAME, PLACEHOLDER_LOCATION_NOTE } from "./account-bootstrap";
+import { can, PERMISSIONS, type UserRole } from "@shared/permissions";
 
 export interface CustomerDetailCompatProjection {
   legacyCustomer: Customer;
@@ -130,6 +131,7 @@ export interface CancelAgreementInput {
 
 export interface CompleteServiceInput {
   serviceId: string;
+  actorRole: UserRole;
   appointmentId?: string | null;
   technicianId?: string | null;
   serviceDate: Date;
@@ -2824,7 +2826,8 @@ export class DatabaseStorage implements IStorage {
       }
 
       let effectiveService = service;
-      const allowFieldServiceOverride = !service.agreementId && service.source !== "AGREEMENT_GENERATED";
+      const isAgreementGeneratedService = !!service.agreementId || service.source === "AGREEMENT_GENERATED";
+      const allowFieldServiceOverride = !isAgreementGeneratedService || can(input.actorRole, PERMISSIONS.ADJUST_PRICE_AGREEMENT);
       if (allowFieldServiceOverride && (input.serviceTypeId !== undefined || input.priceCents !== undefined)) {
         const [updatedService] = await tx
           .update(services)

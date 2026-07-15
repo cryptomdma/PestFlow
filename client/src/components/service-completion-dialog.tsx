@@ -8,8 +8,10 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/hooks/use-auth";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { dollarsToCents, centsToDollarString, formatCents } from "@shared/money";
+import { can, PERMISSIONS } from "@shared/permissions";
 import type { Appointment, MaterialProduct, ProductApplication, Service, ServiceRecord, ServiceType, TargetPest, Technician } from "@shared/schema";
 
 interface MaterialLine {
@@ -161,6 +163,7 @@ export function ServiceCompletionDialog({
   onCompleted,
 }: ServiceCompletionDialogProps) {
   const { toast } = useToast();
+  const { user } = useAuth();
   const [technicianId, setTechnicianId] = useState("");
   const [serviceDate, setServiceDate] = useState(formatDateTimeLocalValue(new Date()));
   const [notes, setNotes] = useState("");
@@ -195,7 +198,8 @@ export function ServiceCompletionDialog({
     if (!existingServiceRecord) return [];
     return (productApplications ?? []).filter((application) => application.serviceRecordId === existingServiceRecord.id);
   }, [existingServiceRecord, productApplications]);
-  const allowServiceOverride = !!service && !service.agreementId && service.source !== "AGREEMENT_GENERATED";
+  const isAgreementGeneratedService = !!service && (!!service.agreementId || service.source === "AGREEMENT_GENERATED");
+  const allowServiceOverride = !!service && (!isAgreementGeneratedService || can(user?.role ?? "", PERMISSIONS.ADJUST_PRICE_AGREEMENT));
   const selectedTargetPests = useMemo(() => targetPests.split(",").map((value) => value.trim()).filter(Boolean), [targetPests]);
   const targetPestOptions = useMemo(() => {
     const configured = (configuredTargetPests ?? []).map((pest) => pest.label);
