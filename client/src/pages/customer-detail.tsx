@@ -35,6 +35,7 @@ import { OpportunityHistoryDialog } from "@/components/opportunity-history-dialo
 import { OpportunityConvertDialog } from "@/components/opportunity-convert-dialog";
 import { ServiceCompletionDialog } from "@/components/service-completion-dialog";
 import { formatPhoneDisplay } from "@shared/phone";
+import { dollarsToCents, centsToDollars, centsToDollarString } from "@shared/money";
 import {
   ArrowLeft, Mail, Phone, MapPin, Plus, Calendar, FileText, MessageSquare,
   ClipboardList, Building2, User, ChevronDown, ArrowUpRight, StickyNote,
@@ -58,8 +59,8 @@ interface UpdateLocationProfileResponse {
 
 interface LocationBalanceSummary {
   locationId: string;
-  openBalance: number;
-  totalInvoiced: number;
+  openBalanceCents: number;
+  totalInvoicedCents: number;
   invoiceCount: number;
 }
 
@@ -243,7 +244,11 @@ function buildAgreementFormState(agreement?: Agreement | null, template?: Agreem
     renewalDate: agreement?.renewalDate ?? (startDate ? addAgreementInterval(startDate, termUnit, parseInt(termInterval, 10)) : ""),
     nextServiceDate: agreement?.nextServiceDate ?? (startDate ? addAgreementInterval(startDate, recurrenceUnit, parseInt(recurrenceInterval, 10)) : ""),
     billingFrequency: agreement?.billingFrequency ?? template?.defaultBillingFrequency ?? "",
-    price: agreement?.price ?? template?.defaultPrice ?? "",
+    price: agreement?.priceCents != null
+      ? centsToDollarString(agreement.priceCents)
+      : template?.defaultPriceCents != null
+        ? centsToDollarString(template.defaultPriceCents)
+        : "",
     recurrenceUnit,
     recurrenceInterval,
     generationLeadDays: agreement?.generationLeadDays ? String(agreement.generationLeadDays) : template?.defaultGenerationLeadDays ? String(template.defaultGenerationLeadDays) : "14",
@@ -1418,7 +1423,7 @@ function AgreementForm({
     renewalDate: data.renewalDate || null,
     nextServiceDate: data.nextServiceDate,
     billingFrequency: data.billingFrequency.trim() || null,
-    price: data.price.trim() || null,
+    priceCents: dollarsToCents(data.price),
     recurrenceUnit: data.recurrenceUnit,
     recurrenceInterval: parseInt(data.recurrenceInterval, 10),
     generationLeadDays: parseInt(data.generationLeadDays, 10),
@@ -1805,12 +1810,12 @@ function AgreementForm({
 
 function formatCancellationFeeDisplay(policy?: AgreementCancellationPolicy | null, agreement?: Agreement | null) {
   const feeType = policy?.cancellationFeeType || agreement?.cancellationFeeType || "NONE";
-  const feeAmount = policy?.cancellationFeeAmount || agreement?.cancellationFeeAmount;
+  const feeAmountCents = policy?.cancellationFeeAmountCents ?? agreement?.cancellationFeeAmountCents;
   if (feeType === "NONE") return "No cancellation fee";
-  if (feeType === "FLAT") return `$${Number(feeAmount || 0).toFixed(2)} flat cancellation fee`;
-  if (feeType === "PERCENT_CONTRACT") return `${Number(feeAmount || 0).toFixed(2)}% of contract price`;
-  if (feeType === "PERCENT_REMAINING") return `${Number(feeAmount || 0).toFixed(2)}% of remaining balance`;
-  return feeAmount ? `$${Number(feeAmount).toFixed(2)} manual cancellation fee` : "Manual fee review";
+  if (feeType === "FLAT") return `${formatCurrency(centsToDollars(feeAmountCents))} flat cancellation fee`;
+  if (feeType === "PERCENT_CONTRACT") return `${centsToDollars(feeAmountCents).toFixed(2)}% of contract price`;
+  if (feeType === "PERCENT_REMAINING") return `${centsToDollars(feeAmountCents).toFixed(2)}% of remaining balance`;
+  return feeAmountCents ? `${formatCurrency(centsToDollars(feeAmountCents))} manual cancellation fee` : "Manual fee review";
 }
 
 function CancelAgreementDialog({
@@ -1853,7 +1858,7 @@ function CancelAgreementDialog({
       createRetentionOpportunity: policy?.createRetentionOpportunityDefault ?? false,
       overrideApplied: false,
       overrideReason: "",
-      cancellationFeeAmount: policy?.cancellationFeeAmount ?? "",
+      cancellationFeeAmount: policy?.cancellationFeeAmountCents != null ? centsToDollarString(policy.cancellationFeeAmountCents) : "",
       confirmed: false,
     });
   }, [open, policy]);
@@ -1871,7 +1876,7 @@ function CancelAgreementDialog({
         createRetentionOpportunity: form.createRetentionOpportunity,
         overrideApplied: form.overrideApplied,
         overrideReason: form.overrideReason || null,
-        cancellationFeeAmount: form.cancellationFeeAmount || null,
+        cancellationFeeAmountCents: dollarsToCents(form.cancellationFeeAmount),
       });
       return response.json();
     },
@@ -2129,7 +2134,7 @@ function AgreementsTab({
                     </div>
                     <div>
                       <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Price</p>
-                      <p className="mt-1">{agreement.price ? formatCurrency(parseFloat(agreement.price)) : "Not set"}</p>
+                      <p className="mt-1">{agreement.priceCents != null ? formatCurrency(centsToDollars(agreement.priceCents)) : "Not set"}</p>
                     </div>
                     <div>
                       <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Lead Time</p>
@@ -2197,7 +2202,7 @@ function ServiceForm({
       key: service?.id ?? "line-1",
       serviceTypeId: service?.serviceTypeId ?? "",
       expectedDurationMinutes: service?.expectedDurationMinutes ? String(service.expectedDurationMinutes) : "",
-      price: service?.price ?? "",
+      price: service?.priceCents != null ? centsToDollarString(service.priceCents) : "",
     },
   ]);
 
@@ -2230,7 +2235,7 @@ function ServiceForm({
       return {
         ...line,
         expectedDurationMinutes: line.expectedDurationMinutes || (selectedServiceType.estimatedDuration ? String(selectedServiceType.estimatedDuration) : ""),
-        price: line.price || selectedServiceType.defaultPrice || "",
+        price: line.price || (selectedServiceType.defaultPriceCents != null ? centsToDollarString(selectedServiceType.defaultPriceCents) : ""),
       };
     }));
   }, [isEditMode, serviceLines.length, serviceTypes]);
@@ -2270,7 +2275,7 @@ function ServiceForm({
           dueDate: form.dueDate || null,
           timeWindow: form.timeWindow || null,
           expectedDurationMinutes: line.expectedDurationMinutes ? parseInt(line.expectedDurationMinutes, 10) : null,
-          price: line.price.trim() || null,
+          priceCents: dollarsToCents(line.price),
           status: service.status,
           assignedTechnicianId: service.assignedTechnicianId ?? null,
           source: service.source ?? "MANUAL",
@@ -2291,7 +2296,7 @@ function ServiceForm({
           dueDate: form.dueDate || null,
           timeWindow: form.timeWindow || null,
           expectedDurationMinutes: line.expectedDurationMinutes ? parseInt(line.expectedDurationMinutes, 10) : null,
-          price: line.price.trim() || null,
+          priceCents: dollarsToCents(line.price),
           status: "PENDING_SCHEDULING",
           assignedTechnicianId: null,
           source: "MANUAL",
@@ -2354,7 +2359,7 @@ function ServiceForm({
                     updateServiceLine(line.key, {
                       serviceTypeId: value,
                       expectedDurationMinutes: line.expectedDurationMinutes || (serviceType?.estimatedDuration ? String(serviceType.estimatedDuration) : ""),
-                      price: line.price || serviceType?.defaultPrice || "",
+                      price: line.price || (serviceType?.defaultPriceCents != null ? centsToDollarString(serviceType.defaultPriceCents) : ""),
                     });
                   }}>
                     <SelectTrigger><SelectValue placeholder="Select service type" /></SelectTrigger>
@@ -2470,7 +2475,7 @@ function ServiceDetailModal({
         <div><p className="text-xs uppercase tracking-wide text-muted-foreground">Status</p><p className="mt-1">{service.status}</p></div>
         <div><p className="text-xs uppercase tracking-wide text-muted-foreground">Service Date</p><p className="mt-1">{displayDate.label}</p></div>
         <div><p className="text-xs uppercase tracking-wide text-muted-foreground">Technician</p><p className="mt-1">{technicianName || "Unassigned"}</p></div>
-        <div><p className="text-xs uppercase tracking-wide text-muted-foreground">Cost</p><p className="mt-1">{service.price ? formatCurrency(parseFloat(service.price)) : "Not set"}</p></div>
+        <div><p className="text-xs uppercase tracking-wide text-muted-foreground">Cost</p><p className="mt-1">{service.priceCents != null ? formatCurrency(centsToDollars(service.priceCents)) : "Not set"}</p></div>
         <div><p className="text-xs uppercase tracking-wide text-muted-foreground">Duration</p><p className="mt-1">{service.expectedDurationMinutes ? `${service.expectedDurationMinutes} min` : "Not set"}</p></div>
         <div><p className="text-xs uppercase tracking-wide text-muted-foreground">Time Window</p><p className="mt-1">{service.timeWindow || "Not set"}</p></div>
       </div>
@@ -2782,7 +2787,7 @@ function ServicesTab({
                 <span>
                   <Badge variant={serviceRecord?.confirmed ? "default" : "secondary"} className="text-[10px] uppercase tracking-wide">{serviceStatusLabel}</Badge>
                 </span>
-                <span>{service.price ? formatCurrency(parseFloat(service.price)) : "Not set"}</span>
+                <span>{service.priceCents != null ? formatCurrency(centsToDollars(service.priceCents)) : "Not set"}</span>
                 <span className="truncate">{technicianName}</span>
                 <span>
                   {invoice ? (
@@ -3267,8 +3272,8 @@ export default function CustomerDetail() {
                   ? `${nickname} · ${contactName}`
                   : nickname || contactName || loc.name;
                 const secondaryText = `${loc.address}, ${loc.city}, ${loc.state} ${loc.zip}`;
-                const balanceText = locationBalance && locationBalance.openBalance > 0
-                  ? `Open ${formatCurrency(locationBalance.openBalance)}`
+                const balanceText = locationBalance && locationBalance.openBalanceCents > 0
+                  ? `Open ${formatCurrency(centsToDollars(locationBalance.openBalanceCents))}`
                   : locationBalance?.invoiceCount
                     ? "Paid up"
                     : "No balance";
@@ -3500,7 +3505,7 @@ export default function CustomerDetail() {
               <Card key={inv.id} data-testid={`card-invoice-${inv.id}`}>
                 <CardContent className="p-4 flex items-center justify-between gap-3">
                   <div><p className="text-sm font-medium">{inv.invoiceNumber}</p><p className="text-xs text-muted-foreground">{new Date(inv.createdAt).toLocaleDateString()}</p></div>
-                  <div className="flex items-center gap-2 shrink-0"><span className="text-sm font-semibold">${parseFloat(inv.totalAmount).toFixed(2)}</span><Badge variant="secondary" className={`text-xs ${inv.status === "paid" ? "bg-primary/10 text-primary" : inv.status === "overdue" ? "bg-destructive/10 text-destructive" : "bg-chart-3/10 text-chart-3"}`}>{inv.status}</Badge></div>
+                  <div className="flex items-center gap-2 shrink-0"><span className="text-sm font-semibold">{formatCurrency(centsToDollars(inv.totalAmountCents))}</span><Badge variant="secondary" className={`text-xs ${inv.status === "paid" ? "bg-primary/10 text-primary" : inv.status === "overdue" ? "bg-destructive/10 text-destructive" : "bg-chart-3/10 text-chart-3"}`}>{inv.status}</Badge></div>
                 </CardContent>
               </Card>
             ))}

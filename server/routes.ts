@@ -176,7 +176,7 @@ export async function registerRoutes(
     technicianId: z.string().nullable().optional(),
     serviceDate: z.coerce.date(),
     serviceTypeId: z.string().nullable().optional(),
-    price: z.string().nullable().optional(),
+    priceCents: z.number().int().nullable().optional(),
     notes: z.string().nullable().optional(),
     targetPests: z.array(z.string()).nullable().optional(),
     areasServiced: z.string().nullable().optional(),
@@ -270,7 +270,7 @@ export async function registerRoutes(
     createRetentionOpportunity: z.boolean().optional(),
     overrideApplied: z.boolean().optional(),
     overrideReason: z.string().nullable().optional(),
-    cancellationFeeAmount: z.string().nullable().optional(),
+    cancellationFeeAmountCents: z.number().int().nullable().optional(),
   });
   const agreementTemplateSchema = insertAgreementTemplateSchema.extend({
     defaultTermUnit: recurrenceUnitSchema,

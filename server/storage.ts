@@ -63,8 +63,8 @@ export interface AccountInvariantSummary {
 
 export interface LocationBalanceSummary {
   locationId: string;
-  openBalance: number;
-  totalInvoiced: number;
+  openBalanceCents: number;
+  totalInvoicedCents: number;
   invoiceCount: number;
 }
 
@@ -124,7 +124,7 @@ export interface CancelAgreementInput {
   createRetentionOpportunity?: boolean;
   overrideApplied?: boolean;
   overrideReason?: string | null;
-  cancellationFeeAmount?: string | null;
+  cancellationFeeAmountCents?: number | null;
   actor?: AuditActor;
 }
 
@@ -134,7 +134,7 @@ export interface CompleteServiceInput {
   technicianId?: string | null;
   serviceDate: Date;
   serviceTypeId?: string | null;
-  price?: string | null;
+  priceCents?: number | null;
   notes?: string | null;
   targetPests?: string[] | null;
   areasServiced?: string | null;
@@ -524,7 +524,7 @@ export class DatabaseStorage implements IStorage {
       renewalDate: normalizeDateOnly(data.renewalDate),
       nextServiceDate: normalizeDateOnly(data.nextServiceDate)!,
       billingFrequency: data.billingFrequency?.trim() || null,
-      price: data.price || null,
+      priceCents: data.priceCents ?? null,
       recurrenceUnit: data.recurrenceUnit,
       recurrenceInterval: Math.max(data.recurrenceInterval || 1, 1),
       generationLeadDays: Math.max(data.generationLeadDays || 0, 0),
@@ -543,7 +543,7 @@ export class DatabaseStorage implements IStorage {
       cancellationNotes: data.cancellationNotes?.trim() || null,
       cancellationEffectiveDate: normalizeDateOnly(data.cancellationEffectiveDate),
       cancellationFeeType: data.cancellationFeeType || null,
-      cancellationFeeAmount: data.cancellationFeeAmount || null,
+      cancellationFeeAmountCents: data.cancellationFeeAmountCents ?? null,
       cancellationOverrideApplied: data.cancellationOverrideApplied ?? false,
       cancellationOverrideReason: data.cancellationOverrideReason?.trim() || null,
       cancellationOverrideByUserId: data.cancellationOverrideByUserId || null,
@@ -580,7 +580,7 @@ export class DatabaseStorage implements IStorage {
     if (data.schedulingMode !== undefined) payload.schedulingMode = data.schedulingMode || "MANUAL";
     if (data.serviceTypeId !== undefined) payload.serviceTypeId = data.serviceTypeId || null;
     if (data.defaultDurationMinutes !== undefined) payload.defaultDurationMinutes = data.defaultDurationMinutes ?? null;
-    if (data.price !== undefined) payload.price = data.price || null;
+    if (data.priceCents !== undefined) payload.priceCents = data.priceCents ?? null;
     if (data.serviceTemplateName !== undefined) payload.serviceTemplateName = data.serviceTemplateName?.trim() || null;
     if (data.serviceInstructions !== undefined) payload.serviceInstructions = data.serviceInstructions?.trim() || null;
     if (data.notes !== undefined) payload.notes = data.notes?.trim() || null;
@@ -589,7 +589,7 @@ export class DatabaseStorage implements IStorage {
     if (data.cancellationNotes !== undefined) payload.cancellationNotes = data.cancellationNotes?.trim() || null;
     if (data.cancellationEffectiveDate !== undefined) payload.cancellationEffectiveDate = normalizeDateOnly(data.cancellationEffectiveDate as any) as any;
     if (data.cancellationFeeType !== undefined) payload.cancellationFeeType = data.cancellationFeeType || null;
-    if (data.cancellationFeeAmount !== undefined) payload.cancellationFeeAmount = data.cancellationFeeAmount || null;
+    if (data.cancellationFeeAmountCents !== undefined) payload.cancellationFeeAmountCents = data.cancellationFeeAmountCents ?? null;
     if (data.cancellationOverrideApplied !== undefined) payload.cancellationOverrideApplied = data.cancellationOverrideApplied ?? false;
     if (data.cancellationOverrideReason !== undefined) payload.cancellationOverrideReason = data.cancellationOverrideReason?.trim() || null;
     if (data.cancellationOverrideByUserId !== undefined) payload.cancellationOverrideByUserId = data.cancellationOverrideByUserId || null;
@@ -622,7 +622,7 @@ export class DatabaseStorage implements IStorage {
       defaultServiceTypeId: data.defaultServiceTypeId || null,
       defaultServiceTemplateName: data.defaultServiceTemplateName?.trim() || null,
       defaultDurationMinutes: data.defaultDurationMinutes ?? null,
-      defaultPrice: data.defaultPrice || null,
+      defaultPriceCents: data.defaultPriceCents ?? null,
       defaultInstructions: data.defaultInstructions?.trim() || null,
       sortOrder: data.sortOrder ?? null,
       internalCode: data.internalCode?.trim() || null,
@@ -647,7 +647,7 @@ export class DatabaseStorage implements IStorage {
     if (data.defaultServiceTypeId !== undefined) payload.defaultServiceTypeId = data.defaultServiceTypeId || null;
     if (data.defaultServiceTemplateName !== undefined) payload.defaultServiceTemplateName = data.defaultServiceTemplateName?.trim() || null;
     if (data.defaultDurationMinutes !== undefined) payload.defaultDurationMinutes = data.defaultDurationMinutes ?? null;
-    if (data.defaultPrice !== undefined) payload.defaultPrice = data.defaultPrice || null;
+    if (data.defaultPriceCents !== undefined) payload.defaultPriceCents = data.defaultPriceCents ?? null;
     if (data.defaultInstructions !== undefined) payload.defaultInstructions = data.defaultInstructions?.trim() || null;
     if (data.internalCode !== undefined) payload.internalCode = data.internalCode?.trim() || null;
     return payload;
@@ -660,7 +660,7 @@ export class DatabaseStorage implements IStorage {
       description: data.description?.trim() || null,
       isActive: data.isActive ?? true,
       cancellationFeeType: data.cancellationFeeType || "NONE",
-      cancellationFeeAmount: data.cancellationFeeType === "NONE" ? null : data.cancellationFeeAmount || null,
+      cancellationFeeAmountCents: data.cancellationFeeType === "NONE" ? null : data.cancellationFeeAmountCents ?? null,
       noticeDays: Math.max(data.noticeDays || 0, 0),
       effectiveDateMode: data.effectiveDateMode || "IMMEDIATE",
       cancelPendingServicesDefault: data.cancelPendingServicesDefault ?? true,
@@ -679,8 +679,8 @@ export class DatabaseStorage implements IStorage {
     if (data.name !== undefined) payload.name = data.name.trim();
     if (data.description !== undefined) payload.description = data.description?.trim() || null;
     if (data.cancellationFeeType !== undefined) payload.cancellationFeeType = data.cancellationFeeType || "NONE";
-    if (data.cancellationFeeAmount !== undefined) payload.cancellationFeeAmount = data.cancellationFeeAmount || null;
-    if (data.cancellationFeeType === "NONE" && data.cancellationFeeAmount === undefined) payload.cancellationFeeAmount = null;
+    if (data.cancellationFeeAmountCents !== undefined) payload.cancellationFeeAmountCents = data.cancellationFeeAmountCents ?? null;
+    if (data.cancellationFeeType === "NONE" && data.cancellationFeeAmountCents === undefined) payload.cancellationFeeAmountCents = null;
     if (data.noticeDays !== undefined) payload.noticeDays = Math.max(data.noticeDays || 0, 0);
     if (data.effectiveDateMode !== undefined) payload.effectiveDateMode = data.effectiveDateMode || "IMMEDIATE";
     if (data.defaultRetentionFollowUpDays !== undefined) payload.defaultRetentionFollowUpDays = data.defaultRetentionFollowUpDays ?? null;
@@ -694,7 +694,7 @@ export class DatabaseStorage implements IStorage {
       policyId: policy.id,
       name: policy.name,
       cancellationFeeType: policy.cancellationFeeType,
-      cancellationFeeAmount: policy.cancellationFeeAmount,
+      cancellationFeeAmountCents: policy.cancellationFeeAmountCents,
       noticeDays: policy.noticeDays,
       effectiveDateMode: policy.effectiveDateMode,
       cancelPendingServicesDefault: policy.cancelPendingServicesDefault,
@@ -745,7 +745,7 @@ export class DatabaseStorage implements IStorage {
       serviceWindowEnd: normalizeDateOnly(data.serviceWindowEnd),
       timeWindow: data.timeWindow?.trim() || null,
       expectedDurationMinutes: data.expectedDurationMinutes ?? null,
-      price: data.price || null,
+      priceCents: data.priceCents ?? null,
       status: data.status || "PENDING_SCHEDULING",
       assignedTechnicianId: data.assignedTechnicianId || null,
       source: data.source || "MANUAL",
@@ -765,7 +765,7 @@ export class DatabaseStorage implements IStorage {
     if (data.serviceWindowEnd !== undefined) payload.serviceWindowEnd = normalizeDateOnly(data.serviceWindowEnd as any) as any;
     if (data.timeWindow !== undefined) payload.timeWindow = data.timeWindow?.trim() || null;
     if (data.expectedDurationMinutes !== undefined) payload.expectedDurationMinutes = data.expectedDurationMinutes ?? null;
-    if (data.price !== undefined) payload.price = data.price || null;
+    if (data.priceCents !== undefined) payload.priceCents = data.priceCents ?? null;
     if (data.assignedTechnicianId !== undefined) payload.assignedTechnicianId = data.assignedTechnicianId || null;
     if (data.schedulingMode !== undefined) payload.schedulingMode = data.schedulingMode || null;
     if (data.notes !== undefined) payload.notes = data.notes?.trim() || null;
@@ -914,7 +914,7 @@ export class DatabaseStorage implements IStorage {
       renewalDate: agreementData.renewalDate ?? null,
       nextServiceDate: agreementData.nextServiceDate,
       billingFrequency: agreementData.billingFrequency ?? template?.defaultBillingFrequency ?? null,
-      price: agreementData.price ?? template?.defaultPrice ?? null,
+      priceCents: agreementData.priceCents ?? template?.defaultPriceCents ?? null,
       recurrenceUnit: agreementData.recurrenceUnit ?? template?.defaultRecurrenceUnit ?? "MONTH",
       recurrenceInterval: agreementData.recurrenceInterval ?? template?.defaultRecurrenceInterval ?? 1,
       generationLeadDays: agreementData.generationLeadDays ?? template?.defaultGenerationLeadDays ?? 14,
@@ -1081,7 +1081,7 @@ export class DatabaseStorage implements IStorage {
       serviceWindowStart: serviceWindowStart as any,
       serviceWindowEnd: serviceWindowEnd as any,
       expectedDurationMinutes: agreement.defaultDurationMinutes ?? null,
-      price: agreement.price ?? null,
+      priceCents: agreement.priceCents ?? null,
       status: "PENDING_SCHEDULING",
       assignedTechnicianId: null,
       source: "AGREEMENT_GENERATED",
@@ -2059,7 +2059,7 @@ export class DatabaseStorage implements IStorage {
             serviceTypeId: opportunity.serviceTypeId || null,
             dueDate: opportunity.dueDate,
             expectedDurationMinutes: serviceType?.estimatedDuration ?? null,
-            price: serviceType?.defaultPrice ?? null,
+            priceCents: serviceType?.defaultPriceCents ?? null,
             status: "PENDING_SCHEDULING",
             source: "MANUAL",
             notes: opportunity.notes || `Converted from opportunity: ${opportunity.opportunityType || serviceType?.name || "Opportunity"}`,
@@ -2241,9 +2241,9 @@ export class DatabaseStorage implements IStorage {
       const closeOpenOpportunities = input.closeOpenOpportunities ?? policy?.closeOpenOpportunitiesDefault ?? false;
       const createRetentionOpportunity = input.createRetentionOpportunity ?? policy?.createRetentionOpportunityDefault ?? false;
       const overrideApplied = input.overrideApplied ?? false;
-      const cancellationFeeAmount = input.cancellationFeeAmount !== undefined
-        ? input.cancellationFeeAmount || null
-        : policy?.cancellationFeeAmount || null;
+      const cancellationFeeAmountCents = input.cancellationFeeAmountCents !== undefined
+        ? input.cancellationFeeAmountCents ?? null
+        : policy?.cancellationFeeAmountCents ?? null;
       const cancelledAt = new Date();
 
       if (overrideApplied && policy?.requiresOverrideReason && !input.overrideReason?.trim()) {
@@ -2261,7 +2261,7 @@ export class DatabaseStorage implements IStorage {
           cancellationPolicyId: agreement.cancellationPolicyId || policy?.id || null,
           cancellationPolicySnapshot: snapshot,
           cancellationFeeType: policy?.cancellationFeeType || "NONE",
-          cancellationFeeAmount,
+          cancellationFeeAmountCents,
           cancellationOverrideApplied: overrideApplied,
           cancellationOverrideReason: input.overrideReason?.trim() || null,
           cancellationOverrideByUserId: overrideApplied ? input.actor?.userId || null : null,
@@ -2825,12 +2825,12 @@ export class DatabaseStorage implements IStorage {
 
       let effectiveService = service;
       const allowFieldServiceOverride = !service.agreementId && service.source !== "AGREEMENT_GENERATED";
-      if (allowFieldServiceOverride && (input.serviceTypeId !== undefined || input.price !== undefined)) {
+      if (allowFieldServiceOverride && (input.serviceTypeId !== undefined || input.priceCents !== undefined)) {
         const [updatedService] = await tx
           .update(services)
           .set({
             serviceTypeId: input.serviceTypeId ?? service.serviceTypeId ?? null,
-            price: input.price === undefined ? service.price : input.price || null,
+            priceCents: input.priceCents === undefined ? service.priceCents : input.priceCents ?? null,
             updatedAt: new Date(),
           })
           .where(and(eq(services.orgId, this.orgId), eq(services.id, service.id)))
@@ -3170,17 +3170,17 @@ export class DatabaseStorage implements IStorage {
 
       const current = balances.get(invoice.locationId) ?? {
         locationId: invoice.locationId,
-        openBalance: 0,
-        totalInvoiced: 0,
+        openBalanceCents: 0,
+        totalInvoicedCents: 0,
         invoiceCount: 0,
       };
 
-      const invoiceTotal = parseFloat(invoice.totalAmount || "0");
-      current.totalInvoiced += invoiceTotal;
+      const invoiceTotalCents = invoice.totalAmountCents;
+      current.totalInvoicedCents += invoiceTotalCents;
       current.invoiceCount += 1;
 
       if (invoice.status !== "paid") {
-        current.openBalance += invoiceTotal;
+        current.openBalanceCents += invoiceTotalCents;
       }
 
       balances.set(invoice.locationId, current);

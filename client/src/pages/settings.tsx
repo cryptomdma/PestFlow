@@ -23,6 +23,7 @@ import {
 } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { dollarsToCents, centsToDollars, centsToDollarString, formatCents } from "@shared/money";
 import { Plus, Settings as SettingsIcon, Wrench, FileText, Users, ShieldCheck, FlaskConical, Bug } from "lucide-react";
 import type { AgreementCancellationPolicy, AgreementTemplate, MaterialProduct, OpportunityDisposition, ServiceType, TargetPest, Technician } from "@shared/schema";
 
@@ -55,9 +56,9 @@ function formatTemplateTerm(template: AgreementTemplate) {
 
 function formatCancellationFee(policy: AgreementCancellationPolicy) {
   if (policy.cancellationFeeType === "NONE") return "No fee";
-  if (policy.cancellationFeeType === "FLAT") return `$${Number(policy.cancellationFeeAmount || 0).toFixed(2)} flat`;
-  if (policy.cancellationFeeType === "PERCENT_CONTRACT") return `${Number(policy.cancellationFeeAmount || 0).toFixed(2)}% of contract`;
-  if (policy.cancellationFeeType === "PERCENT_REMAINING") return `${Number(policy.cancellationFeeAmount || 0).toFixed(2)}% of remaining balance`;
+  if (policy.cancellationFeeType === "FLAT") return `${formatCents(policy.cancellationFeeAmountCents)} flat`;
+  if (policy.cancellationFeeType === "PERCENT_CONTRACT") return `${centsToDollars(policy.cancellationFeeAmountCents).toFixed(2)}% of contract`;
+  if (policy.cancellationFeeType === "PERCENT_REMAINING") return `${centsToDollars(policy.cancellationFeeAmountCents).toFixed(2)}% of remaining balance`;
   return "Manual fee review";
 }
 
@@ -67,7 +68,7 @@ function ServiceTypeForm({ serviceType, onClose }: { serviceType?: ServiceType |
   const [form, setForm] = useState({
     name: serviceType?.name ?? "",
     description: serviceType?.description ?? "",
-    defaultPrice: serviceType?.defaultPrice ?? "",
+    defaultPrice: serviceType?.defaultPriceCents != null ? centsToDollarString(serviceType.defaultPriceCents) : "",
     estimatedDuration: serviceType?.estimatedDuration ? String(serviceType.estimatedDuration) : "",
     category: serviceType?.category ?? "",
     opportunityLeadDays: serviceType?.opportunityLeadDays ? String(serviceType.opportunityLeadDays) : "",
@@ -76,9 +77,10 @@ function ServiceTypeForm({ serviceType, onClose }: { serviceType?: ServiceType |
 
   const mutation = useMutation({
     mutationFn: (data: typeof form) => {
+      const { defaultPrice, ...rest } = data;
       const payload = {
-        ...data,
-        defaultPrice: data.defaultPrice || null,
+        ...rest,
+        defaultPriceCents: dollarsToCents(defaultPrice),
         estimatedDuration: data.estimatedDuration ? parseInt(data.estimatedDuration) : null,
         category: data.category || null,
         description: data.description || null,
@@ -467,7 +469,7 @@ function AgreementCancellationPolicyForm({ policy, onClose }: { policy?: Agreeme
     description: policy?.description ?? "",
     isActive: policy?.isActive ?? true,
     cancellationFeeType: policy?.cancellationFeeType ?? "NONE",
-    cancellationFeeAmount: policy?.cancellationFeeAmount ?? "",
+    cancellationFeeAmount: policy?.cancellationFeeAmountCents != null ? centsToDollarString(policy.cancellationFeeAmountCents) : "",
     noticeDays: policy?.noticeDays !== undefined ? String(policy.noticeDays) : "0",
     effectiveDateMode: policy?.effectiveDateMode ?? "IMMEDIATE",
     cancelPendingServicesDefault: policy?.cancelPendingServicesDefault ?? true,
@@ -482,10 +484,11 @@ function AgreementCancellationPolicyForm({ policy, onClose }: { policy?: Agreeme
 
   const mutation = useMutation({
     mutationFn: (data: typeof form) => {
+      const { cancellationFeeAmount, ...rest } = data;
       const payload = {
-        ...data,
+        ...rest,
         description: data.description || null,
-        cancellationFeeAmount: data.cancellationFeeAmount || null,
+        cancellationFeeAmountCents: dollarsToCents(cancellationFeeAmount),
         noticeDays: data.noticeDays ? parseInt(data.noticeDays) : 0,
         defaultRetentionFollowUpDays: data.defaultRetentionFollowUpDays ? parseInt(data.defaultRetentionFollowUpDays) : null,
         termsSummary: data.termsSummary || null,
@@ -588,7 +591,7 @@ function AgreementTemplateForm({
     defaultServiceTypeId: template?.defaultServiceTypeId ?? "",
     defaultServiceTemplateName: template?.defaultServiceTemplateName ?? "",
     defaultDurationMinutes: template?.defaultDurationMinutes ? String(template.defaultDurationMinutes) : "",
-    defaultPrice: template?.defaultPrice ?? "",
+    defaultPrice: template?.defaultPriceCents != null ? centsToDollarString(template.defaultPriceCents) : "",
     defaultInstructions: template?.defaultInstructions ?? "",
     sortOrder: template?.sortOrder ? String(template.sortOrder) : "",
     internalCode: template?.internalCode ?? "",
@@ -613,7 +616,7 @@ function AgreementTemplateForm({
         defaultServiceTypeId: data.defaultServiceTypeId || null,
         defaultServiceTemplateName: data.defaultServiceTemplateName.trim() || null,
         defaultDurationMinutes: data.defaultDurationMinutes.trim() ? parseInt(data.defaultDurationMinutes, 10) : null,
-        defaultPrice: data.defaultPrice.trim() || null,
+        defaultPriceCents: dollarsToCents(data.defaultPrice),
         defaultInstructions: data.defaultInstructions.trim() || null,
         sortOrder: data.sortOrder.trim() ? parseInt(data.sortOrder, 10) : null,
         internalCode: data.internalCode.trim() || null,
@@ -884,7 +887,7 @@ export default function Settings() {
                     {st.opportunityLabel && <p className="text-xs text-muted-foreground mt-0.5">Opportunity: {st.opportunityLabel}</p>}
                   </div>
                   <div className="flex items-center gap-3 shrink-0 text-sm">
-                    {st.defaultPrice && <span className="font-semibold">${parseFloat(st.defaultPrice).toFixed(2)}</span>}
+                    {st.defaultPriceCents != null && <span className="font-semibold">{formatCents(st.defaultPriceCents)}</span>}
                     {st.estimatedDuration && <span className="text-xs text-muted-foreground">{st.estimatedDuration} min</span>}
                     <Button variant="outline" size="sm" onClick={() => { setEditingServiceType(st); setDialogOpen(true); }}>
                       Edit
@@ -1153,7 +1156,7 @@ export default function Settings() {
                         {template.description && <p className="text-xs text-muted-foreground mt-1">{template.description}</p>}
                       </div>
                       <div className="flex items-center gap-3 shrink-0">
-                        {template.defaultPrice && <span className="text-sm font-semibold">${parseFloat(template.defaultPrice).toFixed(2)}</span>}
+                        {template.defaultPriceCents != null && <span className="text-sm font-semibold">{formatCents(template.defaultPriceCents)}</span>}
                         <Button variant="outline" size="sm" onClick={() => openEditTemplate(template)} data-testid={`button-edit-agreement-template-${template.id}`}>Edit</Button>
                       </div>
                     </div>

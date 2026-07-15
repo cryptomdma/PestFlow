@@ -14,6 +14,7 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { formatCents, dollarsToCents } from "@shared/money";
 import {
   CalendarDays,
   ChevronLeft,
@@ -64,9 +65,9 @@ function addDays(date: Date, days: number) {
   return next;
 }
 
-function formatCurrency(value: string | null | undefined) {
-  if (!value) return "Not set";
-  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(parseFloat(value));
+function formatCurrency(cents: number | null | undefined) {
+  if (cents === null || cents === undefined) return "Not set";
+  return formatCents(cents);
 }
 
 function buildSlotDate(baseDate: Date, hour: number) {
@@ -216,7 +217,7 @@ function AppointmentSheet({
                 <Badge variant="outline">{appointment.status}</Badge>
               </div>
               <p className="mt-2 text-xs text-muted-foreground">{locationLabel}</p>
-              <p className="mt-1 text-xs text-muted-foreground">Service value: {formatCurrency(service?.price)}</p>
+              <p className="mt-1 text-xs text-muted-foreground">Service value: {formatCurrency(service?.priceCents)}</p>
             </div>
 
             <div className="space-y-2">
@@ -385,7 +386,7 @@ function ServiceDetailDialog({
               </div>
               <div>
                 <p className="text-xs uppercase tracking-wide text-muted-foreground">Service Value</p>
-                <p className="mt-1 font-medium">{formatCurrency(service.price)}</p>
+                <p className="mt-1 font-medium">{formatCurrency(service.priceCents)}</p>
               </div>
             </div>
             {service.notes ? (
@@ -519,7 +520,7 @@ export default function Schedule() {
         serviceTypeId,
         dueDate,
         expectedDurationMinutes: expectedDurationMinutes ? parseInt(expectedDurationMinutes, 10) : null,
-        price: price || null,
+        priceCents: dollarsToCents(price),
         status: "PENDING_SCHEDULING",
         assignedTechnicianId: null,
         source: params.get("agreementId") ? "AGREEMENT_INITIAL" : "MANUAL",
@@ -717,24 +718,24 @@ export default function Schedule() {
   };
 
   const analytics = useMemo(() => {
-    const totals = { jobs: viewportAppointments.length, revenue: 0 };
-    const byTechnician = new Map<string, { technicianName: string; jobs: number; revenue: number }>();
+    const totals = { jobs: viewportAppointments.length, revenueCents: 0 };
+    const byTechnician = new Map<string, { technicianName: string; jobs: number; revenueCents: number }>();
 
     for (const appointment of viewportAppointments) {
       const linkedServices = servicesByAppointmentId.get(appointment.id)
         ?? (appointment.serviceId ? [serviceById.get(appointment.serviceId)].filter((service): service is Service => !!service) : []);
-      const revenue = linkedServices.reduce((sum, service) => sum + (service.price ? parseFloat(service.price) : 0), 0);
-      totals.revenue += revenue;
+      const revenueCents = linkedServices.reduce((sum, service) => sum + (service.priceCents ?? 0), 0);
+      totals.revenueCents += revenueCents;
 
       const technician = appointment.assignedTechnicianId ? technicianById.get(appointment.assignedTechnicianId) : null;
       const key = appointment.assignedTechnicianId || "unassigned";
       const current = byTechnician.get(key) || {
         technicianName: technician?.displayName || appointment.assignedTo || "Unassigned",
         jobs: 0,
-        revenue: 0,
+        revenueCents: 0,
       };
       current.jobs += 1;
-      current.revenue += revenue;
+      current.revenueCents += revenueCents;
       byTechnician.set(key, current);
     }
 
@@ -767,7 +768,7 @@ export default function Schedule() {
 
       <div className="grid gap-3 md:grid-cols-3">
         <Card><CardContent className="p-4"><div className="flex items-center justify-between gap-3"><div><p className="text-xs uppercase tracking-wide text-muted-foreground">Jobs In View</p><p className="mt-1 text-2xl font-semibold">{analytics.jobs}</p></div><ClipboardList className="h-5 w-5 text-muted-foreground" /></div></CardContent></Card>
-        <Card><CardContent className="p-4"><div className="flex items-center justify-between gap-3"><div><p className="text-xs uppercase tracking-wide text-muted-foreground">Scheduled Revenue</p><p className="mt-1 text-2xl font-semibold">{formatCurrency(String(analytics.revenue.toFixed(2)))}</p></div><DollarSign className="h-5 w-5 text-muted-foreground" /></div></CardContent></Card>
+        <Card><CardContent className="p-4"><div className="flex items-center justify-between gap-3"><div><p className="text-xs uppercase tracking-wide text-muted-foreground">Scheduled Revenue</p><p className="mt-1 text-2xl font-semibold">{formatCurrency(analytics.revenueCents)}</p></div><DollarSign className="h-5 w-5 text-muted-foreground" /></div></CardContent></Card>
         <Card><CardContent className="p-4"><div className="flex items-center justify-between gap-3"><div><p className="text-xs uppercase tracking-wide text-muted-foreground">Board Window</p><p className="mt-1 text-sm font-semibold">{configSummary}</p><p className="mt-1 text-xs text-muted-foreground">{getViewportLabel(boardDates)}</p></div><Clock3 className="h-5 w-5 text-muted-foreground" /></div></CardContent></Card>
       </div>
 
@@ -778,7 +779,7 @@ export default function Schedule() {
               <CardContent className="p-4">
                 <p className="text-sm font-medium">{row.technicianName}</p>
                 <p className="mt-1 text-xs text-muted-foreground">{row.jobs} jobs in view</p>
-                <p className="mt-2 text-sm font-semibold">{formatCurrency(String(row.revenue.toFixed(2)))}</p>
+                <p className="mt-2 text-sm font-semibold">{formatCurrency(row.revenueCents)}</p>
               </CardContent>
             </Card>
           ))}
@@ -1022,7 +1023,7 @@ export default function Schedule() {
                                         <div><p className="uppercase tracking-wide text-muted-foreground">Time</p><p className="mt-1">{new Date(appointment.scheduledDate).toLocaleString()}</p></div>
                                         <div><p className="uppercase tracking-wide text-muted-foreground">Duration</p><p className="mt-1">{durationMinutes ? `${durationMinutes} min` : "Not set"}</p></div>
                                         <div><p className="uppercase tracking-wide text-muted-foreground">Status</p><p className="mt-1">{appointment.status}</p></div>
-                                        <div><p className="uppercase tracking-wide text-muted-foreground">Revenue</p><p className="mt-1">{formatCurrency(String(linkedServices.reduce((sum, service) => sum + (service.price ? parseFloat(service.price) : 0), 0).toFixed(2)))}</p></div>
+                                        <div><p className="uppercase tracking-wide text-muted-foreground">Revenue</p><p className="mt-1">{formatCurrency(linkedServices.reduce((sum, service) => sum + (service.priceCents ?? 0), 0))}</p></div>
                                       </div>
                                       {siblingCount > 0 ? <div className="rounded-md border bg-muted/20 px-2 py-2 text-[11px]">This appointment includes {linkedServices.length} services in one visit.</div> : null}
                                       {hasLocks ? <div className="rounded-md border bg-muted/20 px-2 py-2 text-[11px]">Lock state: {appointment.lockTime ? "Time locked" : "Time flexible"} | {appointment.lockTechnician ? "Technician locked" : "Technician flexible"}</div> : null}
@@ -1087,7 +1088,7 @@ export default function Schedule() {
                       <p className="mt-1 text-xs text-muted-foreground">{getLocationLabel(location)}</p>
                     </div>
                     <div className="shrink-0 text-right">
-                      <p className="text-sm font-medium">{formatCurrency(service.price)}</p>
+                      <p className="text-sm font-medium">{formatCurrency(service.priceCents)}</p>
                       <p className="mt-1 text-xs text-muted-foreground">{isSelected ? "Selected" : "Click to dispatch"}</p>
                     </div>
                   </button>
