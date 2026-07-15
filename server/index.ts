@@ -16,6 +16,7 @@ import { bootstrapMoney } from "./money-bootstrap";
 import { bootstrapOutbox } from "./outbox-bootstrap";
 import { bootstrapBillingProfiles } from "./billing-profile-bootstrap";
 import { backfillExpectedServiceCounts } from "./production-value-backfill";
+import { bootstrapInvoices } from "./invoice-bootstrap";
 
 const app = express();
 const httpServer = createServer(app);
@@ -88,6 +89,7 @@ app.use((req, res, next) => {
   await bootstrapServiceSchedulingFoundation().catch((e) => console.error("Service scheduling bootstrap error:", e));
   await bootstrapCanonicalNoteTables().catch((e) => console.error("Note table bootstrap error:", e));
   await bootstrapOutbox().catch((e) => console.error("Outbox bootstrap error:", e));
+  await bootstrapInvoices().catch((e) => console.error("Invoice bootstrap error:", e));
   await bootstrapTenancy().catch((e) => console.error("Tenancy bootstrap error:", e));
   await bootstrapMoney().catch((e) => console.error("Money bootstrap error:", e));
   await backfillExpectedServiceCounts().catch((e) => console.error("Production value backfill error:", e));

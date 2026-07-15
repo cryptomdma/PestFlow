@@ -3505,7 +3505,7 @@ export default function CustomerDetail() {
               <Card key={inv.id} data-testid={`card-invoice-${inv.id}`}>
                 <CardContent className="p-4 flex items-center justify-between gap-3">
                   <div><p className="text-sm font-medium">{inv.invoiceNumber}</p><p className="text-xs text-muted-foreground">{new Date(inv.createdAt).toLocaleDateString()}</p></div>
-                  <div className="flex items-center gap-2 shrink-0"><span className="text-sm font-semibold">{formatCurrency(centsToDollars(inv.totalAmountCents))}</span><Badge variant="secondary" className={`text-xs ${inv.status === "paid" ? "bg-primary/10 text-primary" : inv.status === "overdue" ? "bg-destructive/10 text-destructive" : "bg-chart-3/10 text-chart-3"}`}>{inv.status}</Badge></div>
+                  <div className="flex items-center gap-2 shrink-0"><span className="text-sm font-semibold">{formatCurrency(centsToDollars(inv.totalAmountCents))}</span><Badge variant="secondary" className={`text-xs capitalize ${inv.status === "PAID" ? "bg-primary/10 text-primary" : inv.status === "OPEN" && inv.dueDate && new Date(inv.dueDate).getTime() < Date.now() ? "bg-destructive/10 text-destructive" : "bg-chart-3/10 text-chart-3"}`}>{inv.status === "OPEN" && inv.dueDate && new Date(inv.dueDate).getTime() < Date.now() ? "overdue" : inv.status.toLowerCase().replace(/_/g, " ")}</Badge></div>
                 </CardContent>
               </Card>
             ))}

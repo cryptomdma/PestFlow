@@ -22,8 +22,8 @@ export default function Reports() {
 
   const loading = lc || la || li || ls;
 
-  const totalRevenueCents = invoices?.filter((i) => i.status === "paid").reduce((s, i) => s + i.totalAmountCents, 0) || 0;
-  const avgInvoiceCents = invoices && invoices.length > 0 ? totalRevenueCents / (invoices.filter((i) => i.status === "paid").length || 1) : 0;
+  const totalRevenueCents = invoices?.filter((i) => i.status === "PAID").reduce((s, i) => s + i.totalAmountCents, 0) || 0;
+  const avgInvoiceCents = invoices && invoices.length > 0 ? totalRevenueCents / (invoices.filter((i) => i.status === "PAID").length || 1) : 0;
   const completedServices = services?.filter((s) => s.confirmed).length || 0;
   const completionRate = services && services.length > 0 ? ((completedServices / services.length) * 100).toFixed(0) : "0";
   const activeCustomers = customers?.filter((c) => c.status === "active").length || 0;
@@ -31,7 +31,7 @@ export default function Reports() {
   const residentialCount = customers?.filter((c) => c.customerType === "residential").length || 0;
 
   const monthlyRevenueCents: Record<string, number> = {};
-  invoices?.filter((i) => i.status === "paid").forEach((inv) => {
+  invoices?.filter((i) => i.status === "PAID").forEach((inv) => {
     const month = new Date(inv.createdAt).toLocaleDateString("en-US", { month: "short", year: "numeric" });
     monthlyRevenueCents[month] = (monthlyRevenueCents[month] || 0) + inv.totalAmountCents;
   });
@@ -196,15 +196,15 @@ export default function Reports() {
                 </div>
                 <div className="flex items-center justify-between">
                   <span className="text-sm text-muted-foreground">Paid</span>
-                  <span className="text-sm font-semibold text-primary">{invoices?.filter((i) => i.status === "paid").length || 0}</span>
+                  <span className="text-sm font-semibold text-primary">{invoices?.filter((i) => i.status === "PAID").length || 0}</span>
                 </div>
                 <div className="flex items-center justify-between">
-                  <span className="text-sm text-muted-foreground">Pending</span>
-                  <span className="text-sm font-semibold text-chart-3">{invoices?.filter((i) => i.status === "pending").length || 0}</span>
+                  <span className="text-sm text-muted-foreground">Open</span>
+                  <span className="text-sm font-semibold text-chart-3">{invoices?.filter((i) => i.status === "OPEN" || i.status === "PARTIALLY_PAID").length || 0}</span>
                 </div>
                 <div className="flex items-center justify-between">
                   <span className="text-sm text-muted-foreground">Overdue</span>
-                  <span className="text-sm font-semibold text-destructive">{invoices?.filter((i) => i.status === "overdue").length || 0}</span>
+                  <span className="text-sm font-semibold text-destructive">{invoices?.filter((i) => i.status === "OPEN" && !!i.dueDate && new Date(i.dueDate).getTime() < Date.now()).length || 0}</span>
                 </div>
               </div>
             )}
