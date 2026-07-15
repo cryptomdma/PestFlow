@@ -14,6 +14,7 @@ import { bootstrapOrganizations } from "./org-bootstrap";
 import { bootstrapTenancy } from "./tenancy-bootstrap";
 import { bootstrapMoney } from "./money-bootstrap";
 import { bootstrapOutbox } from "./outbox-bootstrap";
+import { bootstrapBillingProfiles } from "./billing-profile-bootstrap";
 
 const app = express();
 const httpServer = createServer(app);
@@ -91,6 +92,9 @@ app.use((req, res, next) => {
 
   await seedDatabase().catch((e) => console.error("Seed error:", e));
   await bootstrapCanonicalAccounts().catch((e) => console.error("Account bootstrap error:", e));
+  // Needs accounts.legacy_customer_id populated for its account_id backfill,
+  // so it must run after bootstrapCanonicalAccounts().
+  await bootstrapBillingProfiles().catch((e) => console.error("Billing profile bootstrap error:", e));
   await bootstrapCanonicalNotes().catch((e) => console.error("Note bootstrap error:", e));
   await registerRoutes(httpServer, app);
 

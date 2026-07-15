@@ -24,8 +24,8 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { dollarsToCents, centsToDollars, centsToDollarString, formatCents } from "@shared/money";
-import { Plus, Settings as SettingsIcon, Wrench, FileText, Users, ShieldCheck, FlaskConical, Bug } from "lucide-react";
-import type { AgreementCancellationPolicy, AgreementTemplate, MaterialProduct, OpportunityDisposition, ServiceType, TargetPest, Technician } from "@shared/schema";
+import { Plus, Settings as SettingsIcon, Wrench, FileText, Users, ShieldCheck, FlaskConical, Bug, CreditCard } from "lucide-react";
+import type { AgreementCancellationPolicy, AgreementTemplate, BillingProfileTemplate, MaterialProduct, OpportunityDisposition, ServiceType, TargetPest, Technician } from "@shared/schema";
 
 function formatTemplateRecurrence(template: AgreementTemplate) {
   const interval = template.defaultRecurrenceInterval || 1;
@@ -280,6 +280,82 @@ function TargetPestForm({ pest, onClose }: { pest?: TargetPest | null; onClose: 
       </div>
       <div className="space-y-1.5"><Label>Notes</Label><Textarea value={form.notes} onChange={(e) => setForm((p) => ({ ...p, notes: e.target.value }))} /></div>
       <div className="flex justify-end gap-2"><Button type="button" variant="outline" onClick={onClose}>Cancel</Button><Button type="submit" disabled={mutation.isPending || !form.label.trim()}>{mutation.isPending ? "Saving..." : isEditMode ? "Save Pest" : "Create Pest"}</Button></div>
+    </form>
+  );
+}
+
+function BillingProfileTemplateForm({ template, onClose }: { template?: BillingProfileTemplate | null; onClose: () => void }) {
+  const { toast } = useToast();
+  const isEditMode = !!template;
+  const [form, setForm] = useState({
+    name: template?.name ?? "",
+    description: template?.description ?? "",
+    billingType: template?.billingType ?? "invoice_terms",
+    defaultInvoiceTerms: template?.defaultInvoiceTerms ?? "",
+    isActive: template?.isActive ?? true,
+    sortOrder: template?.sortOrder !== null && template?.sortOrder !== undefined ? String(template.sortOrder) : "0",
+  });
+
+  const mutation = useMutation({
+    mutationFn: async (data: typeof form) => {
+      const payload = {
+        name: data.name.trim(),
+        description: data.description.trim() || null,
+        billingType: data.billingType,
+        defaultInvoiceTerms: data.billingType === "invoice_terms" ? (data.defaultInvoiceTerms || null) : null,
+        isActive: data.isActive,
+        sortOrder: data.sortOrder.trim() ? parseInt(data.sortOrder, 10) : 0,
+      };
+      const response = isEditMode
+        ? await apiRequest("PATCH", `/api/billing-profile-templates/${template.id}`, payload)
+        : await apiRequest("POST", "/api/billing-profile-templates", payload);
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/billing-profile-templates?includeInactive=true"] });
+      toast({ title: isEditMode ? "Billing profile template updated" : "Billing profile template created" });
+      onClose();
+    },
+    onError: (err: Error) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+  });
+
+  return (
+    <form onSubmit={(e) => { e.preventDefault(); mutation.mutate(form); }} className="space-y-4">
+      <div className="space-y-1.5"><Label>Name *</Label><Input value={form.name} onChange={(e) => setForm((p) => ({ ...p, name: e.target.value }))} /></div>
+      <div className="space-y-1.5"><Label>Description</Label><Input value={form.description} onChange={(e) => setForm((p) => ({ ...p, description: e.target.value }))} /></div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="space-y-1.5">
+          <Label>Billing Type</Label>
+          <Select value={form.billingType} onValueChange={(value) => setForm((p) => ({ ...p, billingType: value }))}>
+            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="card">Card</SelectItem>
+              <SelectItem value="ach">ACH</SelectItem>
+              <SelectItem value="invoice_terms">Invoice Terms</SelectItem>
+              <SelectItem value="cash">Cash</SelectItem>
+              <SelectItem value="check">Check</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="space-y-1.5"><Label>Sort Order</Label><Input type="number" value={form.sortOrder} onChange={(e) => setForm((p) => ({ ...p, sortOrder: e.target.value }))} /></div>
+      </div>
+      {form.billingType === "invoice_terms" && (
+        <div className="space-y-1.5">
+          <Label>Default Invoice Terms</Label>
+          <Select value={form.defaultInvoiceTerms || "NONE"} onValueChange={(value) => setForm((p) => ({ ...p, defaultInvoiceTerms: value === "NONE" ? "" : value }))}>
+            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="NONE">Unset</SelectItem>
+              <SelectItem value="DUE_ON_RECEIPT">Due on Receipt</SelectItem>
+              <SelectItem value="NET_15">Net 15</SelectItem>
+              <SelectItem value="NET_30">Net 30</SelectItem>
+              <SelectItem value="NET_60">Net 60</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+      )}
+      <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.isActive} onChange={(e) => setForm((p) => ({ ...p, isActive: e.target.checked }))} /> Active</label>
+      <div className="flex justify-end gap-2"><Button type="button" variant="outline" onClick={onClose}>Cancel</Button><Button type="submit" disabled={mutation.isPending || !form.name.trim()}>{mutation.isPending ? "Saving..." : isEditMode ? "Save Template" : "Create Template"}</Button></div>
     </form>
   );
 }
@@ -778,6 +854,8 @@ export default function Settings() {
   const [editingMaterialProduct, setEditingMaterialProduct] = useState<MaterialProduct | null>(null);
   const [targetPestDialogOpen, setTargetPestDialogOpen] = useState(false);
   const [editingTargetPest, setEditingTargetPest] = useState<TargetPest | null>(null);
+  const [billingProfileTemplateDialogOpen, setBillingProfileTemplateDialogOpen] = useState(false);
+  const [editingBillingProfileTemplate, setEditingBillingProfileTemplate] = useState<BillingProfileTemplate | null>(null);
   const [appointmentCancelReasonsText, setAppointmentCancelReasonsText] = useState("");
   const { data: serviceTypes, isLoading } = useQuery<ServiceType[]>({ queryKey: ["/api/service-types"] });
   const { data: technicians, isLoading: techniciansLoading } = useQuery<Technician[]>({ queryKey: ["/api/technicians?includeInactive=true"] });
@@ -786,6 +864,7 @@ export default function Settings() {
   const { data: agreementTemplates, isLoading: templatesLoading } = useQuery<AgreementTemplate[]>({ queryKey: ["/api/agreement-templates"] });
   const { data: cancellationPolicies, isLoading: policiesLoading } = useQuery<AgreementCancellationPolicy[]>({ queryKey: ["/api/agreement-cancellation-policies?includeInactive=true"] });
   const { data: opportunityDispositions, isLoading: dispositionsLoading } = useQuery<OpportunityDisposition[]>({ queryKey: ["/api/opportunity-dispositions?includeInactive=true"] });
+  const { data: billingProfileTemplates, isLoading: billingProfileTemplatesLoading } = useQuery<BillingProfileTemplate[]>({ queryKey: ["/api/billing-profile-templates?includeInactive=true"] });
   const { data: serviceTimeTracking } = useQuery<{ mode: string }>({ queryKey: ["/api/settings/service-time-tracking"] });
   const { data: appointmentCancelReasons } = useQuery<{ reasons: string[] }>({ queryKey: ["/api/settings/appointment-cancel-reasons"] });
   useEffect(() => {
@@ -932,6 +1011,46 @@ export default function Settings() {
                     <p className="mt-0.5 text-xs text-muted-foreground">Sort: {pest.sortOrder}{pest.notes ? ` | ${pest.notes}` : ""}</p>
                   </div>
                   <Button variant="outline" size="sm" onClick={() => { setEditingTargetPest(pest); setTargetPestDialogOpen(true); }}>Edit</Button>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
+          <CardTitle className="text-base font-semibold flex items-center gap-2"><CreditCard className="h-4 w-4" /> Billing Profile Templates</CardTitle>
+          <Dialog open={billingProfileTemplateDialogOpen} onOpenChange={(open) => { setBillingProfileTemplateDialogOpen(open); if (!open) setEditingBillingProfileTemplate(null); }}>
+            <DialogTrigger asChild><Button size="sm" onClick={() => setEditingBillingProfileTemplate(null)}><Plus className="h-3 w-3 mr-1" /> Add Template</Button></DialogTrigger>
+            <DialogContent>
+              <DialogHeader><DialogTitle>{editingBillingProfileTemplate ? "Edit Billing Profile Template" : "New Billing Profile Template"}</DialogTitle></DialogHeader>
+              <BillingProfileTemplateForm template={editingBillingProfileTemplate} onClose={() => { setBillingProfileTemplateDialogOpen(false); setEditingBillingProfileTemplate(null); }} />
+            </DialogContent>
+          </Dialog>
+        </CardHeader>
+        <CardContent>
+          {billingProfileTemplatesLoading ? (
+            <div className="space-y-2">{[1, 2, 3].map((i) => <Skeleton key={i} className="h-14" />)}</div>
+          ) : !billingProfileTemplates?.length ? (
+            <div className="text-center py-8">
+              <CreditCard className="h-8 w-8 mx-auto text-muted-foreground/30 mb-2" />
+              <p className="text-sm text-muted-foreground">No billing profile templates configured</p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {billingProfileTemplates.map((template) => (
+                <div key={template.id} className="flex items-center justify-between gap-3 rounded-md bg-muted/50 p-3">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-sm font-medium">{template.name}</span>
+                      <Badge variant="outline">{template.billingType.replace(/_/g, " ")}</Badge>
+                      <Badge variant={template.isActive ? "secondary" : "outline"}>{template.isActive ? "Active" : "Inactive"}</Badge>
+                    </div>
+                    {template.description && <p className="mt-0.5 text-xs text-muted-foreground">{template.description}</p>}
+                    {template.defaultInvoiceTerms && <p className="mt-0.5 text-xs text-muted-foreground">Terms: {template.defaultInvoiceTerms.replace(/_/g, " ")}</p>}
+                  </div>
+                  <Button variant="outline" size="sm" onClick={() => { setEditingBillingProfileTemplate(template); setBillingProfileTemplateDialogOpen(true); }}>Edit</Button>
                 </div>
               ))}
             </div>
