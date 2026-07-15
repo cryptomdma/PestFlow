@@ -10,6 +10,7 @@ import {
   agreements,
   agreementTemplates,
   agreementCancellationPolicies,
+  billingPlans,
   appSettings,
   serviceRecords, productApplications, materialProducts, targetPests, invoices, communications,
   billingProfiles, billingProfileTemplates, customerNotes,
@@ -25,6 +26,7 @@ import {
   type Service, type InsertService,
   type Appointment, type InsertAppointment,
   type AgreementCancellationPolicy, type InsertAgreementCancellationPolicy,
+  type BillingPlan, type InsertBillingPlan,
   type Agreement, type InsertAgreement,
   type AgreementTemplate, type InsertAgreementTemplate,
   type ServiceRecord, type InsertServiceRecord,
@@ -283,6 +285,12 @@ export interface IStorage {
   createAgreementCancellationPolicy(data: InsertAgreementCancellationPolicy): Promise<AgreementCancellationPolicy>;
   updateAgreementCancellationPolicy(id: string, data: Partial<InsertAgreementCancellationPolicy>): Promise<AgreementCancellationPolicy | undefined>;
 
+  getBillingPlans(includeInactive?: boolean): Promise<BillingPlan[]>;
+  getBillingPlan(id: string): Promise<BillingPlan | undefined>;
+  createBillingPlan(data: InsertBillingPlan): Promise<BillingPlan>;
+  updateBillingPlan(id: string, data: Partial<InsertBillingPlan>): Promise<BillingPlan | undefined>;
+  resolveAgreementBillingPlanSnapshot(agreementId: string): Promise<Record<string, unknown> | null>;
+
   getAgreementTemplates(): Promise<AgreementTemplate[]>;
   getAgreementTemplate(id: string): Promise<AgreementTemplate | undefined>;
   createAgreementTemplate(data: InsertAgreementTemplate): Promise<AgreementTemplate>;
@@ -523,6 +531,8 @@ export class DatabaseStorage implements IStorage {
       agreementTemplateId: data.agreementTemplateId || null,
       cancellationPolicyId: data.cancellationPolicyId || null,
       cancellationPolicySnapshot: data.cancellationPolicySnapshot ?? null,
+      billingPlanId: data.billingPlanId || null,
+      billingPlanSnapshot: data.billingPlanSnapshot ?? null,
       initialAppointmentId: data.initialAppointmentId || null,
       startDateSource: data.startDateSource || "MANUAL",
       agreementName: data.agreementName.trim(),
@@ -573,6 +583,8 @@ export class DatabaseStorage implements IStorage {
     if (data.agreementTemplateId !== undefined) payload.agreementTemplateId = data.agreementTemplateId || null;
     if (data.cancellationPolicyId !== undefined) payload.cancellationPolicyId = data.cancellationPolicyId || null;
     if (data.cancellationPolicySnapshot !== undefined) payload.cancellationPolicySnapshot = data.cancellationPolicySnapshot ?? null;
+    if (data.billingPlanId !== undefined) payload.billingPlanId = data.billingPlanId || null;
+    if (data.billingPlanSnapshot !== undefined) payload.billingPlanSnapshot = data.billingPlanSnapshot ?? null;
     if (data.initialAppointmentId !== undefined) payload.initialAppointmentId = data.initialAppointmentId || null;
     if (data.startDateSource !== undefined) payload.startDateSource = data.startDateSource || "MANUAL";
     if (data.agreementType !== undefined) payload.agreementType = data.agreementType?.trim() || null;
@@ -714,6 +726,28 @@ export class DatabaseStorage implements IStorage {
       allowManagerOverride: policy.allowManagerOverride,
       requiresOverrideReason: policy.requiresOverrideReason,
       termsSummary: policy.termsSummary,
+      snapshottedAt: new Date().toISOString(),
+    };
+  }
+
+  private buildBillingPlanSnapshot(plan?: BillingPlan | null) {
+    if (!plan) return null;
+    return {
+      planId: plan.id,
+      name: plan.name,
+      chargeTrigger: plan.chargeTrigger,
+      billingMode: plan.billingMode,
+      intervalUnit: plan.intervalUnit,
+      intervalCount: plan.intervalCount,
+      installmentCount: plan.installmentCount,
+      anchorMode: plan.anchorMode,
+      anchorDay: plan.anchorDay,
+      prorationRule: plan.prorationRule,
+      initialChargeType: plan.initialChargeType,
+      initialChargeCents: plan.initialChargeCents,
+      initialChargeCoversFirstPeriod: plan.initialChargeCoversFirstPeriod,
+      initialChargeCollectedBy: plan.initialChargeCollectedBy,
+      fieldAddableSurcharge: plan.fieldAddableSurcharge,
       snapshottedAt: new Date().toISOString(),
     };
   }
@@ -904,6 +938,8 @@ export class DatabaseStorage implements IStorage {
     const template = input.agreementTemplateId ? await this.getAgreementTemplate(input.agreementTemplateId) : undefined;
     const policyId = input.agreement.cancellationPolicyId ?? template?.cancellationPolicyId ?? null;
     const policy = policyId ? await this.getAgreementCancellationPolicy(policyId) : undefined;
+    const billingPlanId = input.agreement.billingPlanId ?? template?.billingPlanId ?? null;
+    const billingPlan = billingPlanId ? await this.getBillingPlan(billingPlanId) : undefined;
     const agreementData = input.agreement;
 
     return {
@@ -912,6 +948,8 @@ export class DatabaseStorage implements IStorage {
       agreementTemplateId: template?.id ?? agreementData.agreementTemplateId ?? null,
       cancellationPolicyId: policy?.id ?? policyId ?? null,
       cancellationPolicySnapshot: agreementData.cancellationPolicySnapshot ?? this.buildCancellationPolicySnapshot(policy),
+      billingPlanId: billingPlan?.id ?? billingPlanId ?? null,
+      billingPlanSnapshot: agreementData.billingPlanSnapshot ?? this.buildBillingPlanSnapshot(billingPlan),
       initialAppointmentId: agreementData.initialAppointmentId ?? null,
       startDateSource: agreementData.startDateSource ?? "MANUAL",
       agreementName: agreementData.agreementName ?? template?.name ?? "Agreement",
@@ -2191,6 +2229,45 @@ export class DatabaseStorage implements IStorage {
       .where(and(eq(agreementCancellationPolicies.orgId, this.orgId), eq(agreementCancellationPolicies.id, id)))
       .returning();
     return policy;
+  }
+
+  async getBillingPlans(includeInactive = false): Promise<BillingPlan[]> {
+    const rows = includeInactive
+      ? await db.select().from(billingPlans).where(eq(billingPlans.orgId, this.orgId))
+      : await db.select().from(billingPlans).where(and(eq(billingPlans.orgId, this.orgId), eq(billingPlans.isActive, true)));
+    return rows.sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0) || a.name.localeCompare(b.name));
+  }
+
+  async getBillingPlan(id: string): Promise<BillingPlan | undefined> {
+    const [plan] = await db.select().from(billingPlans).where(and(eq(billingPlans.orgId, this.orgId), eq(billingPlans.id, id)));
+    return plan;
+  }
+
+  async createBillingPlan(data: InsertBillingPlan): Promise<BillingPlan> {
+    const [plan] = await db.insert(billingPlans).values({ ...data, orgId: this.orgId }).returning();
+    return plan;
+  }
+
+  async updateBillingPlan(id: string, data: Partial<InsertBillingPlan>): Promise<BillingPlan | undefined> {
+    const [plan] = await db
+      .update(billingPlans)
+      .set({ ...data, updatedAt: new Date() })
+      .where(and(eq(billingPlans.orgId, this.orgId), eq(billingPlans.id, id)))
+      .returning();
+    return plan;
+  }
+
+  // Prefers the snapshot stored at agreement-creation time; rebuilds from the
+  // live billing plan only as a fallback for agreements that predate this
+  // snapshot mechanism - same override-wins/rebuild-on-missing shape as
+  // cancelAgreement()'s cancellationPolicySnapshot handling.
+  async resolveAgreementBillingPlanSnapshot(agreementId: string): Promise<Record<string, unknown> | null> {
+    const [agreement] = await db.select().from(agreements).where(and(eq(agreements.orgId, this.orgId), eq(agreements.id, agreementId)));
+    if (!agreement) return null;
+    if (agreement.billingPlanSnapshot) return agreement.billingPlanSnapshot as Record<string, unknown>;
+
+    const plan = agreement.billingPlanId ? await this.getBillingPlan(agreement.billingPlanId) : undefined;
+    return this.buildBillingPlanSnapshot(plan);
   }
 
   async getAgreementTemplates(): Promise<AgreementTemplate[]> {

@@ -24,8 +24,8 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { dollarsToCents, centsToDollars, centsToDollarString, formatCents } from "@shared/money";
-import { Plus, Settings as SettingsIcon, Wrench, FileText, Users, ShieldCheck, FlaskConical, Bug, CreditCard } from "lucide-react";
-import type { AgreementCancellationPolicy, AgreementTemplate, BillingProfileTemplate, MaterialProduct, OpportunityDisposition, ServiceType, TargetPest, Technician } from "@shared/schema";
+import { Plus, Settings as SettingsIcon, Wrench, FileText, Users, ShieldCheck, FlaskConical, Bug, CreditCard, CalendarClock } from "lucide-react";
+import type { AgreementCancellationPolicy, AgreementTemplate, BillingPlan, BillingProfileTemplate, MaterialProduct, OpportunityDisposition, ServiceType, TargetPest, Technician } from "@shared/schema";
 
 function formatTemplateRecurrence(template: AgreementTemplate) {
   const interval = template.defaultRecurrenceInterval || 1;
@@ -356,6 +356,181 @@ function BillingProfileTemplateForm({ template, onClose }: { template?: BillingP
       )}
       <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.isActive} onChange={(e) => setForm((p) => ({ ...p, isActive: e.target.checked }))} /> Active</label>
       <div className="flex justify-end gap-2"><Button type="button" variant="outline" onClick={onClose}>Cancel</Button><Button type="submit" disabled={mutation.isPending || !form.name.trim()}>{mutation.isPending ? "Saving..." : isEditMode ? "Save Template" : "Create Template"}</Button></div>
+    </form>
+  );
+}
+
+function BillingPlanForm({ plan, onClose }: { plan?: BillingPlan | null; onClose: () => void }) {
+  const { toast } = useToast();
+  const isEditMode = !!plan;
+  const [form, setForm] = useState({
+    name: plan?.name ?? "",
+    description: plan?.description ?? "",
+    chargeTrigger: plan?.chargeTrigger ?? "ON_SCHEDULE",
+    billingMode: plan?.billingMode ?? "RECURRING_INTERVAL",
+    intervalUnit: plan?.intervalUnit ?? "MONTH",
+    intervalCount: plan?.intervalCount != null ? String(plan.intervalCount) : "1",
+    installmentCount: plan?.installmentCount != null ? String(plan.installmentCount) : "",
+    anchorMode: plan?.anchorMode ?? "SIGNUP_DATE",
+    anchorDay: plan?.anchorDay != null ? String(plan.anchorDay) : "",
+    prorationRule: plan?.prorationRule ?? "NONE",
+    initialChargeType: plan?.initialChargeType ?? "NONE",
+    initialCharge: plan?.initialChargeCents != null ? centsToDollarString(plan.initialChargeCents) : "",
+    initialChargeCoversFirstPeriod: plan?.initialChargeCoversFirstPeriod ?? false,
+    initialChargeCollectedBy: plan?.initialChargeCollectedBy ?? "OFFICE_AT_SIGNING",
+    fieldAddableSurcharge: plan?.fieldAddableSurcharge ?? false,
+    isActive: plan?.isActive ?? true,
+    sortOrder: plan?.sortOrder !== null && plan?.sortOrder !== undefined ? String(plan.sortOrder) : "0",
+  });
+
+  const mutation = useMutation({
+    mutationFn: async (data: typeof form) => {
+      const payload = {
+        name: data.name.trim(),
+        description: data.description.trim() || null,
+        chargeTrigger: data.chargeTrigger,
+        billingMode: data.billingMode,
+        intervalUnit: data.billingMode === "RECURRING_INTERVAL" ? data.intervalUnit : null,
+        intervalCount: data.billingMode === "RECURRING_INTERVAL" ? (data.intervalCount.trim() ? parseInt(data.intervalCount, 10) : 1) : null,
+        installmentCount: data.billingMode === "INSTALLMENT" ? (data.installmentCount.trim() ? parseInt(data.installmentCount, 10) : null) : null,
+        anchorMode: data.anchorMode,
+        anchorDay: data.anchorMode === "CALENDAR_DAY" ? (data.anchorDay.trim() ? parseInt(data.anchorDay, 10) : null) : null,
+        prorationRule: data.prorationRule,
+        initialChargeType: data.initialChargeType === "NONE" ? null : data.initialChargeType,
+        initialChargeCents: data.initialChargeType !== "NONE" ? dollarsToCents(data.initialCharge) : null,
+        initialChargeCoversFirstPeriod: data.initialChargeType !== "NONE" ? data.initialChargeCoversFirstPeriod : false,
+        initialChargeCollectedBy: data.initialChargeType !== "NONE" ? data.initialChargeCollectedBy : null,
+        fieldAddableSurcharge: data.fieldAddableSurcharge,
+        isActive: data.isActive,
+        sortOrder: data.sortOrder.trim() ? parseInt(data.sortOrder, 10) : 0,
+      };
+      const response = isEditMode
+        ? await apiRequest("PATCH", `/api/billing-plans/${plan.id}`, payload)
+        : await apiRequest("POST", "/api/billing-plans", payload);
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/billing-plans?includeInactive=true"] });
+      toast({ title: isEditMode ? "Billing plan updated" : "Billing plan created" });
+      onClose();
+    },
+    onError: (err: Error) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+  });
+
+  return (
+    <form onSubmit={(e) => { e.preventDefault(); mutation.mutate(form); }} className="space-y-4">
+      <div className="space-y-1.5"><Label>Name *</Label><Input value={form.name} onChange={(e) => setForm((p) => ({ ...p, name: e.target.value }))} /></div>
+      <div className="space-y-1.5"><Label>Description</Label><Input value={form.description} onChange={(e) => setForm((p) => ({ ...p, description: e.target.value }))} /></div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="space-y-1.5">
+          <Label>Charge Trigger</Label>
+          <Select value={form.chargeTrigger} onValueChange={(value) => setForm((p) => ({ ...p, chargeTrigger: value }))}>
+            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="ON_SCHEDULE">On Schedule</SelectItem>
+              <SelectItem value="ON_SERVICE_COMPLETION">On Service Completion</SelectItem>
+              <SelectItem value="ON_AGREEMENT_START">On Agreement Start</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="space-y-1.5">
+          <Label>Billing Mode</Label>
+          <Select value={form.billingMode} onValueChange={(value) => setForm((p) => ({ ...p, billingMode: value }))}>
+            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="PER_SERVICE">Per Service</SelectItem>
+              <SelectItem value="RECURRING_INTERVAL">Recurring Interval</SelectItem>
+              <SelectItem value="PREPAID_TERM">Prepaid Term</SelectItem>
+              <SelectItem value="INSTALLMENT">Installment</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+      {form.billingMode === "RECURRING_INTERVAL" && (
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div className="space-y-1.5">
+            <Label>Interval Unit</Label>
+            <Select value={form.intervalUnit} onValueChange={(value) => setForm((p) => ({ ...p, intervalUnit: value }))}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="DAY">Day</SelectItem>
+                <SelectItem value="WEEK">Week</SelectItem>
+                <SelectItem value="MONTH">Month</SelectItem>
+                <SelectItem value="QUARTER">Quarter</SelectItem>
+                <SelectItem value="YEAR">Year</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-1.5"><Label>Interval Count</Label><Input type="number" min="1" value={form.intervalCount} onChange={(e) => setForm((p) => ({ ...p, intervalCount: e.target.value }))} /></div>
+        </div>
+      )}
+      {form.billingMode === "INSTALLMENT" && (
+        <div className="space-y-1.5"><Label>Installment Count</Label><Input type="number" min="1" value={form.installmentCount} onChange={(e) => setForm((p) => ({ ...p, installmentCount: e.target.value }))} /></div>
+      )}
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="space-y-1.5">
+          <Label>Anchor Mode</Label>
+          <Select value={form.anchorMode} onValueChange={(value) => setForm((p) => ({ ...p, anchorMode: value }))}>
+            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="SIGNUP_DATE">Signup Date</SelectItem>
+              <SelectItem value="CALENDAR_DAY">Calendar Day</SelectItem>
+              <SelectItem value="CUSTOM">Custom</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        {form.anchorMode === "CALENDAR_DAY" ? (
+          <div className="space-y-1.5"><Label>Anchor Day</Label><Input type="number" min="1" max="31" value={form.anchorDay} onChange={(e) => setForm((p) => ({ ...p, anchorDay: e.target.value }))} /></div>
+        ) : (
+          <div className="space-y-1.5">
+            <Label>Proration Rule</Label>
+            <Select value={form.prorationRule} onValueChange={(value) => setForm((p) => ({ ...p, prorationRule: value }))}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="NONE">None</SelectItem>
+                <SelectItem value="DAILY">Daily</SelectItem>
+                <SelectItem value="FIRST_PERIOD_FULL">First Period Full</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        )}
+      </div>
+      <div className="space-y-1.5">
+        <Label>Initial Charge</Label>
+        <Select value={form.initialChargeType} onValueChange={(value) => setForm((p) => ({ ...p, initialChargeType: value }))}>
+          <SelectTrigger><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="NONE">None</SelectItem>
+            <SelectItem value="DOWN_PAYMENT">Down Payment</SelectItem>
+            <SelectItem value="CLEANOUT_SURCHARGE">Cleanout Surcharge</SelectItem>
+            <SelectItem value="PREPAY_FULL">Prepay Full</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+      {form.initialChargeType !== "NONE" && (
+        <>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="space-y-1.5"><Label>Initial Charge Amount ($)</Label><Input type="number" step="0.01" value={form.initialCharge} onChange={(e) => setForm((p) => ({ ...p, initialCharge: e.target.value }))} /></div>
+            <div className="space-y-1.5">
+              <Label>Collected By</Label>
+              <Select value={form.initialChargeCollectedBy} onValueChange={(value) => setForm((p) => ({ ...p, initialChargeCollectedBy: value }))}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="OFFICE_AT_SIGNING">Office at Signing</SelectItem>
+                  <SelectItem value="TECH_AT_FIRST_SERVICE">Tech at First Service</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.initialChargeCoversFirstPeriod} onChange={(e) => setForm((p) => ({ ...p, initialChargeCoversFirstPeriod: e.target.checked }))} /> Covers first period (no double-bill)</label>
+        </>
+      )}
+      <div className="grid gap-3 sm:grid-cols-2">
+        <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.fieldAddableSurcharge} onChange={(e) => setForm((p) => ({ ...p, fieldAddableSurcharge: e.target.checked }))} /> Tech may add surcharge in field</label>
+        <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.isActive} onChange={(e) => setForm((p) => ({ ...p, isActive: e.target.checked }))} /> Active</label>
+      </div>
+      <div className="space-y-1.5"><Label>Sort Order</Label><Input type="number" value={form.sortOrder} onChange={(e) => setForm((p) => ({ ...p, sortOrder: e.target.value }))} /></div>
+      <div className="flex justify-end gap-2"><Button type="button" variant="outline" onClick={onClose}>Cancel</Button><Button type="submit" disabled={mutation.isPending || !form.name.trim()}>{mutation.isPending ? "Saving..." : isEditMode ? "Save Plan" : "Create Plan"}</Button></div>
     </form>
   );
 }
@@ -856,6 +1031,8 @@ export default function Settings() {
   const [editingTargetPest, setEditingTargetPest] = useState<TargetPest | null>(null);
   const [billingProfileTemplateDialogOpen, setBillingProfileTemplateDialogOpen] = useState(false);
   const [editingBillingProfileTemplate, setEditingBillingProfileTemplate] = useState<BillingProfileTemplate | null>(null);
+  const [billingPlanDialogOpen, setBillingPlanDialogOpen] = useState(false);
+  const [editingBillingPlan, setEditingBillingPlan] = useState<BillingPlan | null>(null);
   const [appointmentCancelReasonsText, setAppointmentCancelReasonsText] = useState("");
   const { data: serviceTypes, isLoading } = useQuery<ServiceType[]>({ queryKey: ["/api/service-types"] });
   const { data: technicians, isLoading: techniciansLoading } = useQuery<Technician[]>({ queryKey: ["/api/technicians?includeInactive=true"] });
@@ -865,6 +1042,7 @@ export default function Settings() {
   const { data: cancellationPolicies, isLoading: policiesLoading } = useQuery<AgreementCancellationPolicy[]>({ queryKey: ["/api/agreement-cancellation-policies?includeInactive=true"] });
   const { data: opportunityDispositions, isLoading: dispositionsLoading } = useQuery<OpportunityDisposition[]>({ queryKey: ["/api/opportunity-dispositions?includeInactive=true"] });
   const { data: billingProfileTemplates, isLoading: billingProfileTemplatesLoading } = useQuery<BillingProfileTemplate[]>({ queryKey: ["/api/billing-profile-templates?includeInactive=true"] });
+  const { data: billingPlans, isLoading: billingPlansLoading } = useQuery<BillingPlan[]>({ queryKey: ["/api/billing-plans?includeInactive=true"] });
   const { data: serviceTimeTracking } = useQuery<{ mode: string }>({ queryKey: ["/api/settings/service-time-tracking"] });
   const { data: appointmentCancelReasons } = useQuery<{ reasons: string[] }>({ queryKey: ["/api/settings/appointment-cancel-reasons"] });
   useEffect(() => {
@@ -1051,6 +1229,53 @@ export default function Settings() {
                     {template.defaultInvoiceTerms && <p className="mt-0.5 text-xs text-muted-foreground">Terms: {template.defaultInvoiceTerms.replace(/_/g, " ")}</p>}
                   </div>
                   <Button variant="outline" size="sm" onClick={() => { setEditingBillingProfileTemplate(template); setBillingProfileTemplateDialogOpen(true); }}>Edit</Button>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
+          <CardTitle className="text-base font-semibold flex items-center gap-2"><CalendarClock className="h-4 w-4" /> Billing Plans</CardTitle>
+          <Dialog open={billingPlanDialogOpen} onOpenChange={(open) => { setBillingPlanDialogOpen(open); if (!open) setEditingBillingPlan(null); }}>
+            <DialogTrigger asChild><Button size="sm" onClick={() => setEditingBillingPlan(null)}><Plus className="h-3 w-3 mr-1" /> Add Plan</Button></DialogTrigger>
+            <DialogContent>
+              <DialogHeader><DialogTitle>{editingBillingPlan ? "Edit Billing Plan" : "New Billing Plan"}</DialogTitle></DialogHeader>
+              <BillingPlanForm plan={editingBillingPlan} onClose={() => { setBillingPlanDialogOpen(false); setEditingBillingPlan(null); }} />
+            </DialogContent>
+          </Dialog>
+        </CardHeader>
+        <CardContent>
+          {billingPlansLoading ? (
+            <div className="space-y-2">{[1, 2, 3].map((i) => <Skeleton key={i} className="h-14" />)}</div>
+          ) : !billingPlans?.length ? (
+            <div className="text-center py-8">
+              <CalendarClock className="h-8 w-8 mx-auto text-muted-foreground/30 mb-2" />
+              <p className="text-sm text-muted-foreground">No billing plans configured</p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {billingPlans.map((plan) => (
+                <div key={plan.id} className="flex items-center justify-between gap-3 rounded-md bg-muted/50 p-3">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-sm font-medium">{plan.name}</span>
+                      <Badge variant="outline">{plan.billingMode.replace(/_/g, " ")}</Badge>
+                      {plan.billingMode === "RECURRING_INTERVAL" && plan.intervalUnit && (
+                        <Badge variant="outline">Every {plan.intervalCount ?? 1} {plan.intervalUnit.toLowerCase()}{(plan.intervalCount ?? 1) === 1 ? "" : "s"}</Badge>
+                      )}
+                      <Badge variant={plan.isActive ? "secondary" : "outline"}>{plan.isActive ? "Active" : "Inactive"}</Badge>
+                    </div>
+                    {plan.description && <p className="mt-0.5 text-xs text-muted-foreground">{plan.description}</p>}
+                    {plan.initialChargeType && (
+                      <p className="mt-0.5 text-xs text-muted-foreground">
+                        Initial: {plan.initialChargeType.replace(/_/g, " ")}{plan.initialChargeCents != null ? ` (${formatCents(plan.initialChargeCents)})` : ""}
+                      </p>
+                    )}
+                  </div>
+                  <Button variant="outline" size="sm" onClick={() => { setEditingBillingPlan(plan); setBillingPlanDialogOpen(true); }}>Edit</Button>
                 </div>
               ))}
             </div>
