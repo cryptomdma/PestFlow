@@ -15,6 +15,7 @@ import { bootstrapTenancy } from "./tenancy-bootstrap";
 import { bootstrapMoney } from "./money-bootstrap";
 import { bootstrapOutbox } from "./outbox-bootstrap";
 import { bootstrapBillingProfiles } from "./billing-profile-bootstrap";
+import { backfillExpectedServiceCounts } from "./production-value-backfill";
 
 const app = express();
 const httpServer = createServer(app);
@@ -89,6 +90,7 @@ app.use((req, res, next) => {
   await bootstrapOutbox().catch((e) => console.error("Outbox bootstrap error:", e));
   await bootstrapTenancy().catch((e) => console.error("Tenancy bootstrap error:", e));
   await bootstrapMoney().catch((e) => console.error("Money bootstrap error:", e));
+  await backfillExpectedServiceCounts().catch((e) => console.error("Production value backfill error:", e));
 
   await seedDatabase().catch((e) => console.error("Seed error:", e));
   await bootstrapCanonicalAccounts().catch((e) => console.error("Account bootstrap error:", e));

@@ -310,6 +310,13 @@ export const agreements = pgTable("agreements", {
   nextServiceDate: date("next_service_date").notNull(),
   billingFrequency: text("billing_frequency"),
   priceCents: integer("price_cents"),
+  // Snapshotted once at creation from term x recurrence (see
+  // computeExpectedServiceCount in storage.ts) and never recomputed on
+  // update, so a later term/frequency edit can't retroactively change the
+  // production value of services already performed. Production value is
+  // computed at read time as priceCents / expectedServiceCount - see
+  // shared/production-value.ts.
+  expectedServiceCount: integer("expected_service_count"),
   recurrenceUnit: text("recurrence_unit").notNull().default("MONTH"),
   recurrenceInterval: integer("recurrence_interval").notNull().default(1),
   generationLeadDays: integer("generation_lead_days").notNull().default(14),

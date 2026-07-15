@@ -105,6 +105,7 @@ export async function bootstrapAgreements(): Promise<void> {
       next_service_date date NOT NULL,
       billing_frequency text,
       price_cents integer,
+      expected_service_count integer,
       recurrence_unit text NOT NULL DEFAULT 'MONTH',
       recurrence_interval integer NOT NULL DEFAULT 1,
       generation_lead_days integer NOT NULL DEFAULT 14,
@@ -143,6 +144,7 @@ export async function bootstrapAgreements(): Promise<void> {
   await db.execute(sql`ALTER TABLE agreements ADD COLUMN IF NOT EXISTS cancellation_policy_snapshot jsonb`);
   await db.execute(sql`ALTER TABLE agreements ADD COLUMN IF NOT EXISTS billing_plan_id varchar`);
   await db.execute(sql`ALTER TABLE agreements ADD COLUMN IF NOT EXISTS billing_plan_snapshot jsonb`);
+  await db.execute(sql`ALTER TABLE agreements ADD COLUMN IF NOT EXISTS expected_service_count integer`);
   await db.execute(sql`ALTER TABLE agreements ADD COLUMN IF NOT EXISTS initial_appointment_id varchar`);
   await db.execute(sql`ALTER TABLE agreements ADD COLUMN IF NOT EXISTS start_date_source text NOT NULL DEFAULT 'MANUAL'`);
   await db.execute(sql`ALTER TABLE agreements ADD COLUMN IF NOT EXISTS term_unit text NOT NULL DEFAULT 'YEAR'`);
