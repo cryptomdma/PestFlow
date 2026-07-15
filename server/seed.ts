@@ -55,11 +55,11 @@ export async function seedDatabase() {
   ].map(withOrg));
 
   const [st1, st2, st3, st4, st5] = await db.insert(serviceTypes).values([
-    { name: "General Pest Control", description: "Standard interior/exterior pest prevention treatment", defaultPrice: "125.00", estimatedDuration: 45, category: "General", opportunityLeadDays: 90, opportunityLabel: "General Pest Follow-up" },
-    { name: "Termite Inspection", description: "Comprehensive WDI/WDO inspection with report", defaultPrice: "200.00", estimatedDuration: 60, category: "Termite", opportunityLeadDays: 365, opportunityLabel: "Annual Termite Renewal" },
-    { name: "Termite Treatment", description: "Liquid or bait station termite treatment", defaultPrice: "1500.00", estimatedDuration: 240, category: "Termite", opportunityLeadDays: 365, opportunityLabel: "Termite Renewal" },
-    { name: "Rodent Control", description: "Interior/exterior rodent baiting and exclusion", defaultPrice: "175.00", estimatedDuration: 60, category: "Rodent", opportunityLeadDays: 60, opportunityLabel: "Rodent Follow-up" },
-    { name: "Commercial Kitchen Service", description: "Monthly commercial pest management service", defaultPrice: "250.00", estimatedDuration: 90, category: "Commercial" },
+    { name: "General Pest Control", description: "Standard interior/exterior pest prevention treatment", defaultPriceCents: 12500, estimatedDuration: 45, category: "General", opportunityLeadDays: 90, opportunityLabel: "General Pest Follow-up" },
+    { name: "Termite Inspection", description: "Comprehensive WDI/WDO inspection with report", defaultPriceCents: 20000, estimatedDuration: 60, category: "Termite", opportunityLeadDays: 365, opportunityLabel: "Annual Termite Renewal" },
+    { name: "Termite Treatment", description: "Liquid or bait station termite treatment", defaultPriceCents: 150000, estimatedDuration: 240, category: "Termite", opportunityLeadDays: 365, opportunityLabel: "Termite Renewal" },
+    { name: "Rodent Control", description: "Interior/exterior rodent baiting and exclusion", defaultPriceCents: 17500, estimatedDuration: 60, category: "Rodent", opportunityLeadDays: 60, opportunityLabel: "Rodent Follow-up" },
+    { name: "Commercial Kitchen Service", description: "Monthly commercial pest management service", defaultPriceCents: 25000, estimatedDuration: 90, category: "Commercial" },
   ].map(withOrg)).returning();
 
   const [tech1, tech2] = await db.insert(technicians).values([
@@ -88,7 +88,7 @@ export async function seedDatabase() {
       description: "Standard annual recurring service cancellation terms.",
       isActive: true,
       cancellationFeeType: "FLAT",
-      cancellationFeeAmount: "99.00",
+      cancellationFeeAmountCents: 9900,
       noticeDays: 30,
       effectiveDateMode: "CUSTOM",
       cancelPendingServicesDefault: true,
@@ -153,7 +153,7 @@ export async function seedDatabase() {
       defaultServiceTypeId: st1.id,
       defaultServiceTemplateName: "General Pest Control Visit",
       defaultDurationMinutes: 45,
-      defaultPrice: "125.00",
+      defaultPriceCents: 12500,
       defaultInstructions: "Exterior perimeter treatment, garage, and common interior touchpoints.",
       sortOrder: 1,
       internalCode: "CONTROL_PLUS",
@@ -175,7 +175,7 @@ export async function seedDatabase() {
       defaultServiceTypeId: st2.id,
       defaultServiceTemplateName: "Annual Termite Inspection",
       defaultDurationMinutes: 60,
-      defaultPrice: "200.00",
+      defaultPriceCents: 20000,
       defaultInstructions: "Inspect stations, note activity, and document renewal status.",
       sortOrder: 2,
       internalCode: "SENTRICON_RENEWAL",
@@ -197,7 +197,7 @@ export async function seedDatabase() {
       defaultServiceTypeId: st1.id,
       defaultServiceTemplateName: "Mosquito Yard Treatment",
       defaultDurationMinutes: 35,
-      defaultPrice: "95.00",
+      defaultPriceCents: 9500,
       defaultInstructions: "Treat harborage, standing water edges, and fence-line foliage.",
       sortOrder: 3,
       internalCode: "MOSQUITO_SEASONAL",
@@ -213,12 +213,12 @@ export async function seedDatabase() {
   const twoWeeks = new Date(now.getTime() + 14 * 86400000);
 
   const [svc1, svc2, svc3, svc4, svc5, svc6] = await db.insert(services).values([
-    { customerId: c1.id, locationId: l1.id, serviceTypeId: st1.id, dueDate: twoDaysAgo.toISOString().slice(0, 10), expectedDurationMinutes: 45, price: "125.00", status: "COMPLETED", assignedTechnicianId: tech1.id, source: "MANUAL", notes: "Monthly prevention service" },
-    { customerId: c2.id, locationId: l2.id, serviceTypeId: st5.id, dueDate: yesterday.toISOString().slice(0, 10), expectedDurationMinutes: 90, price: "250.00", status: "COMPLETED", assignedTechnicianId: tech1.id, source: "MANUAL", notes: "Monthly kitchen service" },
-    { customerId: c3.id, locationId: l4.id, serviceTypeId: st2.id, dueDate: tomorrow.toISOString().slice(0, 10), expectedDurationMinutes: 60, price: "200.00", status: "SCHEDULED", assignedTechnicianId: tech1.id, source: "MANUAL", notes: "Annual termite inspection" },
-    { customerId: c4.id, locationId: l5.id, serviceTypeId: st1.id, dueDate: threeDays.toISOString().slice(0, 10), expectedDurationMinutes: 45, price: "125.00", status: "SCHEDULED", assignedTechnicianId: tech2.id, source: "MANUAL", notes: "Quarterly service - all common areas" },
-    { customerId: c2.id, locationId: l3.id, serviceTypeId: st5.id, dueDate: nextWeek.toISOString().slice(0, 10), expectedDurationMinutes: 90, price: "250.00", status: "SCHEDULED", assignedTechnicianId: tech1.id, source: "MANUAL", notes: "Monthly kitchen service - Westside" },
-    { customerId: c3.id, locationId: l4.id, serviceTypeId: st4.id, dueDate: twoWeeks.toISOString().slice(0, 10), expectedDurationMinutes: 60, price: "175.00", status: "PENDING_SCHEDULING", assignedTechnicianId: null, source: "MANUAL", notes: "Rodent follow-up awaiting dispatch." },
+    { customerId: c1.id, locationId: l1.id, serviceTypeId: st1.id, dueDate: twoDaysAgo.toISOString().slice(0, 10), expectedDurationMinutes: 45, priceCents: 12500, status: "COMPLETED", assignedTechnicianId: tech1.id, source: "MANUAL", notes: "Monthly prevention service" },
+    { customerId: c2.id, locationId: l2.id, serviceTypeId: st5.id, dueDate: yesterday.toISOString().slice(0, 10), expectedDurationMinutes: 90, priceCents: 25000, status: "COMPLETED", assignedTechnicianId: tech1.id, source: "MANUAL", notes: "Monthly kitchen service" },
+    { customerId: c3.id, locationId: l4.id, serviceTypeId: st2.id, dueDate: tomorrow.toISOString().slice(0, 10), expectedDurationMinutes: 60, priceCents: 20000, status: "SCHEDULED", assignedTechnicianId: tech1.id, source: "MANUAL", notes: "Annual termite inspection" },
+    { customerId: c4.id, locationId: l5.id, serviceTypeId: st1.id, dueDate: threeDays.toISOString().slice(0, 10), expectedDurationMinutes: 45, priceCents: 12500, status: "SCHEDULED", assignedTechnicianId: tech2.id, source: "MANUAL", notes: "Quarterly service - all common areas" },
+    { customerId: c2.id, locationId: l3.id, serviceTypeId: st5.id, dueDate: nextWeek.toISOString().slice(0, 10), expectedDurationMinutes: 90, priceCents: 25000, status: "SCHEDULED", assignedTechnicianId: tech1.id, source: "MANUAL", notes: "Monthly kitchen service - Westside" },
+    { customerId: c3.id, locationId: l4.id, serviceTypeId: st4.id, dueDate: twoWeeks.toISOString().slice(0, 10), expectedDurationMinutes: 60, priceCents: 17500, status: "PENDING_SCHEDULING", assignedTechnicianId: null, source: "MANUAL", notes: "Rodent follow-up awaiting dispatch." },
   ].map(withOrg)).returning();
 
   const [a1, a2, a3, a4, a5] = await db.insert(appointments).values([
@@ -243,10 +243,10 @@ export async function seedDatabase() {
 
   const lastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 15);
   await db.insert(invoices).values([
-    { customerId: c1.id, locationId: l1.id, serviceRecordId: sr1.id, invoiceNumber: "INV-001", amount: "125.00", tax: "10.00", totalAmount: "135.00", status: "paid", dueDate: twoDaysAgo, paidDate: yesterday, notes: "Monthly pest prevention" },
-    { customerId: c2.id, locationId: l2.id, serviceRecordId: sr2.id, invoiceNumber: "INV-002", amount: "250.00", tax: "20.00", totalAmount: "270.00", status: "pending", dueDate: nextWeek, notes: "Commercial kitchen service - Downtown" },
-    { customerId: c4.id, locationId: l5.id, invoiceNumber: "INV-003", amount: "375.00", tax: "30.00", totalAmount: "405.00", status: "paid", dueDate: lastMonth, paidDate: lastMonth, notes: "Quarterly service - both buildings" },
-    { customerId: c3.id, locationId: l4.id, invoiceNumber: "INV-004", amount: "200.00", tax: "16.00", totalAmount: "216.00", status: "pending", dueDate: twoWeeks, notes: "Annual termite inspection" },
+    { customerId: c1.id, locationId: l1.id, serviceRecordId: sr1.id, invoiceNumber: "INV-001", amountCents: 12500, taxCents: 1000, totalAmountCents: 13500, status: "paid", dueDate: twoDaysAgo, paidDate: yesterday, notes: "Monthly pest prevention" },
+    { customerId: c2.id, locationId: l2.id, serviceRecordId: sr2.id, invoiceNumber: "INV-002", amountCents: 25000, taxCents: 2000, totalAmountCents: 27000, status: "pending", dueDate: nextWeek, notes: "Commercial kitchen service - Downtown" },
+    { customerId: c4.id, locationId: l5.id, invoiceNumber: "INV-003", amountCents: 37500, taxCents: 3000, totalAmountCents: 40500, status: "paid", dueDate: lastMonth, paidDate: lastMonth, notes: "Quarterly service - both buildings" },
+    { customerId: c3.id, locationId: l4.id, invoiceNumber: "INV-004", amountCents: 20000, taxCents: 1600, totalAmountCents: 21600, status: "pending", dueDate: twoWeeks, notes: "Annual termite inspection" },
   ].map(withOrg));
 
   await db.insert(communications).values([

@@ -9,6 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { dollarsToCents, centsToDollarString, formatCents } from "@shared/money";
 import type { Appointment, MaterialProduct, ProductApplication, Service, ServiceRecord, ServiceType, TargetPest, Technician } from "@shared/schema";
 
 interface MaterialLine {
@@ -221,7 +222,7 @@ export function ServiceCompletionDialog({
         setFollowUpNotes(parsed.followUpNotes || "");
         setDeviceNotes(parsed.deviceNotes || "");
         setTicketServiceTypeId(parsed.ticketServiceTypeId || service.serviceTypeId || "");
-        setTicketPrice(parsed.ticketPrice ?? service.price ?? "");
+        setTicketPrice(parsed.ticketPrice ?? (service.priceCents != null ? centsToDollarString(service.priceCents) : ""));
         setMaterials(Array.isArray(parsed.materials) && parsed.materials.length ? parsed.materials : [emptyMaterial()]);
         return;
       } catch {
@@ -239,7 +240,7 @@ export function ServiceCompletionDialog({
     setFollowUpNotes(existingServiceRecord?.followUpNotes || "");
     setDeviceNotes("");
     setTicketServiceTypeId(service.serviceTypeId || "");
-    setTicketPrice(service.price || "");
+    setTicketPrice(service.priceCents != null ? centsToDollarString(service.priceCents) : "");
     setMaterials(existingApplications.length ? existingApplications.map(materialFromApplication) : []);
   }, [appointment?.assignedTechnicianId, appointment?.scheduledDate, defaultTechnicianId, draftKey, existingApplications, existingServiceRecord, open, service]);
 
@@ -271,7 +272,7 @@ export function ServiceCompletionDialog({
         technicianId: technicianId || null,
         serviceDate,
         serviceTypeId: allowServiceOverride ? ticketServiceTypeId || null : undefined,
-        price: allowServiceOverride ? ticketPrice || null : undefined,
+        priceCents: allowServiceOverride ? dollarsToCents(ticketPrice) : undefined,
         notes: [notes, deviceNotes ? `Device notes: ${deviceNotes}` : null].filter(Boolean).join("\n\n"),
         targetPests: targetPests.split(",").map((value) => value.trim()).filter(Boolean),
         areasServiced: derivedAreas || null,
@@ -425,7 +426,7 @@ export function ServiceCompletionDialog({
                 {allowServiceOverride ? (
                   <Input type="number" min="0" step="0.01" value={ticketPrice} onChange={(event) => setTicketPrice(event.target.value)} />
                 ) : (
-                  <div className="rounded-md border bg-muted/20 px-3 py-2 text-sm">{service.price ? `$${Number(service.price).toFixed(2)}` : "Not set"} <span className="text-xs text-muted-foreground">(agreement locked)</span></div>
+                  <div className="rounded-md border bg-muted/20 px-3 py-2 text-sm">{service.priceCents != null ? formatCents(service.priceCents) : "Not set"} <span className="text-xs text-muted-foreground">(agreement locked)</span></div>
                 )}
               </div>
             </div>

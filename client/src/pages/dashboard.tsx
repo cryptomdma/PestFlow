@@ -4,6 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { Calendar, ClipboardList, DollarSign, FileText, MessageSquare, Settings, Users, BarChart3 } from "lucide-react";
+import { formatCents } from "@shared/money";
 import type { Appointment, Customer, Invoice, ServiceRecord, Communication } from "@shared/schema";
 
 export default function Dashboard() {
@@ -19,16 +20,16 @@ export default function Dashboard() {
     appointments?.filter((appointment) => new Date(appointment.scheduledDate) >= new Date() && appointment.status !== "canceled").length || 0;
   const completedServices = services?.filter((service) => service.confirmed).length || 0;
   const communicationsCount = communications?.length || 0;
-  const paidRevenue =
+  const paidRevenueCents =
     invoices
       ?.filter((invoice) => invoice.status === "paid")
-      .reduce((sum, invoice) => sum + parseFloat(invoice.totalAmount), 0) || 0;
+      .reduce((sum, invoice) => sum + invoice.totalAmountCents, 0) || 0;
 
   const quickLinks = [
     { title: "Customers", href: "/customers", icon: Users, stat: `${activeCustomers} active` },
     { title: "Schedule", href: "/schedule", icon: Calendar, stat: `${upcomingAppointments} upcoming` },
     { title: "Services", href: "/services", icon: ClipboardList, stat: `${completedServices} confirmed` },
-    { title: "Invoices", href: "/invoices", icon: FileText, stat: `$${paidRevenue.toFixed(2)} paid` },
+    { title: "Invoices", href: "/invoices", icon: FileText, stat: `${formatCents(paidRevenueCents)} paid` },
     { title: "Communications", href: "/communications", icon: MessageSquare, stat: `${communicationsCount} logged` },
     { title: "Reports", href: "/reports", icon: BarChart3 },
     { title: "Settings", href: "/settings", icon: Settings },
@@ -64,7 +65,7 @@ export default function Dashboard() {
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-medium flex items-center gap-2"><DollarSign className="h-4 w-4" /> Paid Invoices</CardTitle>
           </CardHeader>
-          <CardContent>{loading ? <Skeleton className="h-8 w-24" /> : <p className="text-2xl font-bold">${paidRevenue.toFixed(2)}</p>}</CardContent>
+          <CardContent>{loading ? <Skeleton className="h-8 w-24" /> : <p className="text-2xl font-bold">{formatCents(paidRevenueCents)}</p>}</CardContent>
         </Card>
       </div>
 

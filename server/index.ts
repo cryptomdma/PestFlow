@@ -12,6 +12,7 @@ import { bootstrapAuth } from "./auth-bootstrap";
 import { setupAuth, registerAuthRoutes, requireAuth, attachOrgStorage } from "./auth";
 import { bootstrapOrganizations } from "./org-bootstrap";
 import { bootstrapTenancy } from "./tenancy-bootstrap";
+import { bootstrapMoney } from "./money-bootstrap";
 
 const app = express();
 const httpServer = createServer(app);
@@ -84,6 +85,7 @@ app.use((req, res, next) => {
   await bootstrapServiceSchedulingFoundation().catch((e) => console.error("Service scheduling bootstrap error:", e));
   await bootstrapCanonicalNoteTables().catch((e) => console.error("Note table bootstrap error:", e));
   await bootstrapTenancy().catch((e) => console.error("Tenancy bootstrap error:", e));
+  await bootstrapMoney().catch((e) => console.error("Money bootstrap error:", e));
 
   await seedDatabase().catch((e) => console.error("Seed error:", e));
   await bootstrapCanonicalAccounts().catch((e) => console.error("Account bootstrap error:", e));

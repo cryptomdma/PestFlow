@@ -23,6 +23,7 @@ import {
 } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { dollarsToCents, formatCents } from "@shared/money";
 import {
   Plus,
   Search,
@@ -48,15 +49,20 @@ function InvoiceForm({ onClose }: { onClose: () => void }) {
     notes: "",
   });
 
-  const totalAmount = (parseFloat(form.amount || "0") + parseFloat(form.tax || "0")).toFixed(2);
+  const amountCents = dollarsToCents(form.amount) ?? 0;
+  const taxCents = dollarsToCents(form.tax) ?? 0;
+  const totalAmountCents = amountCents + taxCents;
 
   const mutation = useMutation({
     mutationFn: (data: typeof form) =>
       apiRequest("POST", "/api/invoices", {
-        ...data,
-        amount: data.amount,
-        tax: data.tax,
-        totalAmount,
+        customerId: data.customerId,
+        invoiceNumber: data.invoiceNumber,
+        amountCents,
+        taxCents,
+        totalAmountCents,
+        status: data.status,
+        notes: data.notes,
         dueDate: data.dueDate ? new Date(data.dueDate).toISOString() : null,
         serviceRecordId: null,
       }),
@@ -96,7 +102,7 @@ function InvoiceForm({ onClose }: { onClose: () => void }) {
         </div>
         <div className="space-y-1.5">
           <Label>Total</Label>
-          <Input value={`$${totalAmount}`} disabled />
+          <Input value={formatCents(totalAmountCents)} disabled />
         </div>
       </div>
       <div className="grid grid-cols-2 gap-3">
@@ -155,9 +161,9 @@ export default function Invoices() {
     return matchesSearch && matchesStatus;
   }) || [];
 
-  const totalPending = filtered.filter((i) => i.status === "pending").reduce((s, i) => s + parseFloat(i.totalAmount), 0);
-  const totalPaid = filtered.filter((i) => i.status === "paid").reduce((s, i) => s + parseFloat(i.totalAmount), 0);
-  const totalOverdue = filtered.filter((i) => i.status === "overdue").reduce((s, i) => s + parseFloat(i.totalAmount), 0);
+  const totalPendingCents = filtered.filter((i) => i.status === "pending").reduce((s, i) => s + i.totalAmountCents, 0);
+  const totalPaidCents = filtered.filter((i) => i.status === "paid").reduce((s, i) => s + i.totalAmountCents, 0);
+  const totalOverdueCents = filtered.filter((i) => i.status === "overdue").reduce((s, i) => s + i.totalAmountCents, 0);
 
   const statusIcon = (status: string) => {
     switch (status) {
@@ -199,19 +205,19 @@ export default function Invoices() {
         <Card>
           <CardContent className="p-4 flex items-center gap-3">
             <div className="h-9 w-9 rounded-md bg-chart-3/10 flex items-center justify-center shrink-0"><Clock className="h-4 w-4 text-chart-3" /></div>
-            <div><p className="text-xs text-muted-foreground">Pending</p><p className="text-lg font-bold" data-testid="text-total-pending">${totalPending.toFixed(2)}</p></div>
+            <div><p className="text-xs text-muted-foreground">Pending</p><p className="text-lg font-bold" data-testid="text-total-pending">{formatCents(totalPendingCents)}</p></div>
           </CardContent>
         </Card>
         <Card>
           <CardContent className="p-4 flex items-center gap-3">
             <div className="h-9 w-9 rounded-md bg-primary/10 flex items-center justify-center shrink-0"><CheckCircle className="h-4 w-4 text-primary" /></div>
-            <div><p className="text-xs text-muted-foreground">Paid</p><p className="text-lg font-bold" data-testid="text-total-paid">${totalPaid.toFixed(2)}</p></div>
+            <div><p className="text-xs text-muted-foreground">Paid</p><p className="text-lg font-bold" data-testid="text-total-paid">{formatCents(totalPaidCents)}</p></div>
           </CardContent>
         </Card>
         <Card>
           <CardContent className="p-4 flex items-center gap-3">
             <div className="h-9 w-9 rounded-md bg-destructive/10 flex items-center justify-center shrink-0"><AlertCircle className="h-4 w-4 text-destructive" /></div>
-            <div><p className="text-xs text-muted-foreground">Overdue</p><p className="text-lg font-bold" data-testid="text-total-overdue">${totalOverdue.toFixed(2)}</p></div>
+            <div><p className="text-xs text-muted-foreground">Overdue</p><p className="text-lg font-bold" data-testid="text-total-overdue">{formatCents(totalOverdueCents)}</p></div>
           </CardContent>
         </Card>
       </div>
@@ -267,7 +273,7 @@ export default function Invoices() {
                       </div>
                     </div>
                     <div className="flex items-center gap-3 shrink-0">
-                      <span className="text-lg font-bold">${parseFloat(inv.totalAmount).toFixed(2)}</span>
+                      <span className="text-lg font-bold">{formatCents(inv.totalAmountCents)}</span>
                       {inv.status === "pending" && (
                         <Button
                           variant="outline"

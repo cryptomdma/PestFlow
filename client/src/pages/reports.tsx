@@ -11,6 +11,7 @@ import {
   BarChart3,
   PieChart,
 } from "lucide-react";
+import { formatCents } from "@shared/money";
 import type { Customer, Appointment, Invoice, ServiceRecord } from "@shared/schema";
 
 export default function Reports() {
@@ -21,18 +22,18 @@ export default function Reports() {
 
   const loading = lc || la || li || ls;
 
-  const totalRevenue = invoices?.filter((i) => i.status === "paid").reduce((s, i) => s + parseFloat(i.totalAmount), 0) || 0;
-  const avgInvoice = invoices && invoices.length > 0 ? totalRevenue / (invoices.filter((i) => i.status === "paid").length || 1) : 0;
+  const totalRevenueCents = invoices?.filter((i) => i.status === "paid").reduce((s, i) => s + i.totalAmountCents, 0) || 0;
+  const avgInvoiceCents = invoices && invoices.length > 0 ? totalRevenueCents / (invoices.filter((i) => i.status === "paid").length || 1) : 0;
   const completedServices = services?.filter((s) => s.confirmed).length || 0;
   const completionRate = services && services.length > 0 ? ((completedServices / services.length) * 100).toFixed(0) : "0";
   const activeCustomers = customers?.filter((c) => c.status === "active").length || 0;
   const commercialCount = customers?.filter((c) => c.customerType === "commercial").length || 0;
   const residentialCount = customers?.filter((c) => c.customerType === "residential").length || 0;
 
-  const monthlyRevenue: Record<string, number> = {};
+  const monthlyRevenueCents: Record<string, number> = {};
   invoices?.filter((i) => i.status === "paid").forEach((inv) => {
     const month = new Date(inv.createdAt).toLocaleDateString("en-US", { month: "short", year: "numeric" });
-    monthlyRevenue[month] = (monthlyRevenue[month] || 0) + parseFloat(inv.totalAmount);
+    monthlyRevenueCents[month] = (monthlyRevenueCents[month] || 0) + inv.totalAmountCents;
   });
 
   const monthlyServices: Record<string, number> = {};
@@ -41,8 +42,8 @@ export default function Reports() {
     monthlyServices[month] = (monthlyServices[month] || 0) + 1;
   });
 
-  const recentMonths = Object.entries(monthlyRevenue).slice(-6);
-  const maxRevenue = Math.max(...recentMonths.map(([, v]) => v), 1);
+  const recentMonths = Object.entries(monthlyRevenueCents).slice(-6);
+  const maxRevenueCents = Math.max(...recentMonths.map(([, v]) => v), 1);
 
   const recentServiceMonths = Object.entries(monthlyServices).slice(-6);
   const maxServices = Math.max(...recentServiceMonths.map(([, v]) => v), 1);
@@ -60,7 +61,7 @@ export default function Reports() {
             {loading ? <Skeleton className="h-16" /> : (
               <div className="flex items-center gap-3">
                 <div className="h-10 w-10 rounded-md bg-primary/10 flex items-center justify-center shrink-0"><DollarSign className="h-5 w-5 text-primary" /></div>
-                <div><p className="text-xs text-muted-foreground">Total Revenue</p><p className="text-xl font-bold">${totalRevenue.toFixed(2)}</p></div>
+                <div><p className="text-xs text-muted-foreground">Total Revenue</p><p className="text-xl font-bold">{formatCents(totalRevenueCents)}</p></div>
               </div>
             )}
           </CardContent>
@@ -70,7 +71,7 @@ export default function Reports() {
             {loading ? <Skeleton className="h-16" /> : (
               <div className="flex items-center gap-3">
                 <div className="h-10 w-10 rounded-md bg-chart-2/10 flex items-center justify-center shrink-0"><TrendingUp className="h-5 w-5 text-chart-2" /></div>
-                <div><p className="text-xs text-muted-foreground">Avg Invoice</p><p className="text-xl font-bold">${avgInvoice.toFixed(2)}</p></div>
+                <div><p className="text-xs text-muted-foreground">Avg Invoice</p><p className="text-xl font-bold">{formatCents(avgInvoiceCents)}</p></div>
               </div>
             )}
           </CardContent>
@@ -105,14 +106,14 @@ export default function Reports() {
               <div className="text-center py-12"><p className="text-sm text-muted-foreground">No revenue data yet</p></div>
             ) : (
               <div className="space-y-3">
-                {recentMonths.map(([month, amount]) => (
+                {recentMonths.map(([month, amountCents]) => (
                   <div key={month} className="space-y-1">
                     <div className="flex items-center justify-between text-sm">
                       <span className="text-muted-foreground">{month}</span>
-                      <span className="font-semibold">${amount.toFixed(2)}</span>
+                      <span className="font-semibold">{formatCents(amountCents)}</span>
                     </div>
                     <div className="h-3 bg-muted rounded-md overflow-hidden">
-                      <div className="h-full bg-primary rounded-md transition-all" style={{ width: `${(amount / maxRevenue) * 100}%` }} />
+                      <div className="h-full bg-primary rounded-md transition-all" style={{ width: `${(amountCents / maxRevenueCents) * 100}%` }} />
                     </div>
                   </div>
                 ))}
