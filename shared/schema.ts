@@ -229,6 +229,43 @@ export const appointments = pgTable("appointments", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
+// Org-level reusable charge-schedule presets, Settings-configurable - same
+// shape as agreementCancellationPolicies: this table IS the referenced/
+// snapshotted entity, there is no separate "instance" table. Per
+// PLAN_BILLING_V1.md §1.2: Billing Plan = when/how much/what's due up
+// front, attached to the thing being sold (Agreement / Service Type) - not
+// to be confused with Billing Profile (who pays, how - attached to the
+// payer/Account). The actual charge-emitting engine that reads this is
+// Phase 1 unit 12 (nightly billing run); this table + the snapshot on
+// agreements is only the foundation.
+export const billingPlans = pgTable("billing_plans", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: varchar("org_id").notNull(),
+  name: text("name").notNull(),
+  description: text("description"),
+  isActive: boolean("is_active").notNull().default(true),
+
+  chargeTrigger: text("charge_trigger").notNull().default("ON_SCHEDULE"), // ON_SERVICE_COMPLETION | ON_SCHEDULE | ON_AGREEMENT_START
+  billingMode: text("billing_mode").notNull().default("RECURRING_INTERVAL"), // PER_SERVICE | RECURRING_INTERVAL | PREPAID_TERM | INSTALLMENT
+  intervalUnit: text("interval_unit"), // DAY | WEEK | MONTH | QUARTER | YEAR
+  intervalCount: integer("interval_count"),
+  installmentCount: integer("installment_count"),
+
+  anchorMode: text("anchor_mode").notNull().default("SIGNUP_DATE"), // SIGNUP_DATE | CALENDAR_DAY | CUSTOM
+  anchorDay: integer("anchor_day"),
+  prorationRule: text("proration_rule").notNull().default("NONE"), // NONE | DAILY | FIRST_PERIOD_FULL
+
+  initialChargeType: text("initial_charge_type"), // NONE | DOWN_PAYMENT | CLEANOUT_SURCHARGE | PREPAY_FULL
+  initialChargeCents: integer("initial_charge_cents"),
+  initialChargeCoversFirstPeriod: boolean("initial_charge_covers_first_period").notNull().default(false),
+  initialChargeCollectedBy: text("initial_charge_collected_by"), // OFFICE_AT_SIGNING | TECH_AT_FIRST_SERVICE
+  fieldAddableSurcharge: boolean("field_addable_surcharge").notNull().default(false),
+
+  sortOrder: integer("sort_order"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
 export const agreementCancellationPolicies = pgTable("agreement_cancellation_policies", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   orgId: varchar("org_id").notNull(),
@@ -259,6 +296,8 @@ export const agreements = pgTable("agreements", {
   agreementTemplateId: varchar("agreement_template_id"),
   cancellationPolicyId: varchar("cancellation_policy_id").references(() => agreementCancellationPolicies.id),
   cancellationPolicySnapshot: jsonb("cancellation_policy_snapshot"),
+  billingPlanId: varchar("billing_plan_id").references(() => billingPlans.id),
+  billingPlanSnapshot: jsonb("billing_plan_snapshot"),
   initialAppointmentId: varchar("initial_appointment_id").references(() => appointments.id),
   startDateSource: text("start_date_source").notNull().default("MANUAL"),
   agreementName: text("agreement_name").notNull(),
@@ -308,6 +347,7 @@ export const agreementTemplates = pgTable("agreement_templates", {
   description: text("description"),
   isActive: boolean("is_active").notNull().default(true),
   cancellationPolicyId: varchar("cancellation_policy_id").references(() => agreementCancellationPolicies.id),
+  billingPlanId: varchar("billing_plan_id").references(() => billingPlans.id),
   defaultAgreementType: text("default_agreement_type"),
   defaultBillingFrequency: text("default_billing_frequency"),
   defaultTermUnit: text("default_term_unit").notNull().default("YEAR"),
@@ -581,6 +621,7 @@ export const insertServiceTypeSchema = createInsertSchema(serviceTypes).omit({ o
 export const insertTechnicianSchema = createInsertSchema(technicians).omit({ orgId: true, id: true, createdAt: true, updatedAt: true });
 export const insertServiceSchema = createInsertSchema(services).omit({ orgId: true, id: true, createdAt: true, updatedAt: true });
 export const insertAppointmentSchema = createInsertSchema(appointments).omit({ orgId: true, id: true, createdAt: true });
+export const insertBillingPlanSchema = createInsertSchema(billingPlans).omit({ orgId: true, id: true, createdAt: true, updatedAt: true });
 export const insertAgreementCancellationPolicySchema = createInsertSchema(agreementCancellationPolicies).omit({ orgId: true, id: true, createdAt: true, updatedAt: true });
 export const insertAgreementSchema = createInsertSchema(agreements).omit({ orgId: true, id: true, createdAt: true, updatedAt: true });
 export const insertAgreementTemplateSchema = createInsertSchema(agreementTemplates).omit({ orgId: true, id: true, createdAt: true, updatedAt: true });
@@ -623,6 +664,8 @@ export type Service = typeof services.$inferSelect;
 export type InsertService = z.infer<typeof insertServiceSchema>;
 export type Appointment = typeof appointments.$inferSelect;
 export type InsertAppointment = z.infer<typeof insertAppointmentSchema>;
+export type BillingPlan = typeof billingPlans.$inferSelect;
+export type InsertBillingPlan = z.infer<typeof insertBillingPlanSchema>;
 export type AgreementCancellationPolicy = typeof agreementCancellationPolicies.$inferSelect;
 export type InsertAgreementCancellationPolicy = z.infer<typeof insertAgreementCancellationPolicySchema>;
 export type Agreement = typeof agreements.$inferSelect;

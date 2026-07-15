@@ -10,6 +10,7 @@ import {
   insertAgreementSchema,
   insertAgreementTemplateSchema,
   insertAgreementCancellationPolicySchema,
+  insertBillingPlanSchema,
   insertOpportunitySchema,
   insertOpportunityDispositionSchema,
   insertTargetPestSchema,
@@ -265,6 +266,12 @@ export async function registerRoutes(
     cancellationFeeType: cancellationFeeTypeSchema.optional(),
     effectiveDateMode: cancellationEffectiveDateModeSchema.optional(),
   }).partial();
+  const billingPlanSchema = insertBillingPlanSchema.superRefine((value, ctx) => {
+    if (!value.name?.trim()) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["name"], message: "name is required" });
+    }
+  });
+  const updateBillingPlanSchema = insertBillingPlanSchema.partial();
   const cancelAgreementSchema = z.object({
     reason: z.string().min(1),
     effectiveDate: z.string().nullable().optional(),
@@ -1200,6 +1207,42 @@ export async function registerRoutes(
       if (e instanceof ZodError) return handleZodError(res, e);
       res.status(400).json({ message: e.message });
     }
+  });
+
+  // Billing Plans
+  app.get("/api/billing-plans", async (req, res) => {
+    const includeInactive = req.query.includeInactive === "true";
+    const data = await req.storage.getBillingPlans(includeInactive);
+    res.json(data);
+  });
+
+  app.post("/api/billing-plans", async (req, res) => {
+    try {
+      const validated = billingPlanSchema.parse(req.body);
+      const data = await req.storage.createBillingPlan(validated);
+      res.status(201).json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.patch("/api/billing-plans/:id", async (req, res) => {
+    try {
+      const validated = updateBillingPlanSchema.parse(req.body);
+      const data = await req.storage.updateBillingPlan(req.params.id, validated);
+      if (!data) return res.status(404).json({ message: "Billing plan not found" });
+      res.json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.get("/api/agreements/:id/billing-plan-snapshot", async (req, res) => {
+    const data = await req.storage.resolveAgreementBillingPlanSnapshot(req.params.id);
+    if (data === null) return res.status(404).json({ message: "Agreement not found" });
+    res.json(data);
   });
 
   // Agreement Templates

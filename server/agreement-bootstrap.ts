@@ -3,6 +3,32 @@ import { db } from "./db";
 
 export async function bootstrapAgreements(): Promise<void> {
   await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS billing_plans (
+      id varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+      name text NOT NULL,
+      description text,
+      is_active boolean NOT NULL DEFAULT true,
+      charge_trigger text NOT NULL DEFAULT 'ON_SCHEDULE',
+      billing_mode text NOT NULL DEFAULT 'RECURRING_INTERVAL',
+      interval_unit text,
+      interval_count integer,
+      installment_count integer,
+      anchor_mode text NOT NULL DEFAULT 'SIGNUP_DATE',
+      anchor_day integer,
+      proration_rule text NOT NULL DEFAULT 'NONE',
+      initial_charge_type text,
+      initial_charge_cents integer,
+      initial_charge_covers_first_period boolean NOT NULL DEFAULT false,
+      initial_charge_collected_by text,
+      field_addable_surcharge boolean NOT NULL DEFAULT false,
+      sort_order integer,
+      created_at timestamp NOT NULL DEFAULT now(),
+      updated_at timestamp NOT NULL DEFAULT now()
+    )
+  `);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS billing_plans_is_active_idx ON billing_plans (is_active)`);
+
+  await db.execute(sql`
     CREATE TABLE IF NOT EXISTS agreement_cancellation_policies (
       id varchar PRIMARY KEY DEFAULT gen_random_uuid(),
       name text NOT NULL,
@@ -33,6 +59,7 @@ export async function bootstrapAgreements(): Promise<void> {
       description text,
       is_active boolean NOT NULL DEFAULT true,
       cancellation_policy_id varchar REFERENCES agreement_cancellation_policies(id),
+      billing_plan_id varchar REFERENCES billing_plans(id),
       default_agreement_type text,
       default_billing_frequency text,
       default_term_unit text NOT NULL DEFAULT 'YEAR',
@@ -64,6 +91,8 @@ export async function bootstrapAgreements(): Promise<void> {
       agreement_template_id varchar,
       cancellation_policy_id varchar REFERENCES agreement_cancellation_policies(id),
       cancellation_policy_snapshot jsonb,
+      billing_plan_id varchar REFERENCES billing_plans(id),
+      billing_plan_snapshot jsonb,
       initial_appointment_id varchar REFERENCES appointments(id),
       start_date_source text NOT NULL DEFAULT 'MANUAL',
       agreement_name text NOT NULL,
@@ -112,6 +141,8 @@ export async function bootstrapAgreements(): Promise<void> {
   await db.execute(sql`ALTER TABLE agreements ADD COLUMN IF NOT EXISTS agreement_template_id varchar`);
   await db.execute(sql`ALTER TABLE agreements ADD COLUMN IF NOT EXISTS cancellation_policy_id varchar`);
   await db.execute(sql`ALTER TABLE agreements ADD COLUMN IF NOT EXISTS cancellation_policy_snapshot jsonb`);
+  await db.execute(sql`ALTER TABLE agreements ADD COLUMN IF NOT EXISTS billing_plan_id varchar`);
+  await db.execute(sql`ALTER TABLE agreements ADD COLUMN IF NOT EXISTS billing_plan_snapshot jsonb`);
   await db.execute(sql`ALTER TABLE agreements ADD COLUMN IF NOT EXISTS initial_appointment_id varchar`);
   await db.execute(sql`ALTER TABLE agreements ADD COLUMN IF NOT EXISTS start_date_source text NOT NULL DEFAULT 'MANUAL'`);
   await db.execute(sql`ALTER TABLE agreements ADD COLUMN IF NOT EXISTS term_unit text NOT NULL DEFAULT 'YEAR'`);
@@ -128,6 +159,7 @@ export async function bootstrapAgreements(): Promise<void> {
   await db.execute(sql`ALTER TABLE agreements ADD COLUMN IF NOT EXISTS cancellation_override_by_label text`);
   await db.execute(sql`ALTER TABLE agreements ADD COLUMN IF NOT EXISTS cancellation_override_at timestamp`);
   await db.execute(sql`ALTER TABLE agreement_templates ADD COLUMN IF NOT EXISTS cancellation_policy_id varchar`);
+  await db.execute(sql`ALTER TABLE agreement_templates ADD COLUMN IF NOT EXISTS billing_plan_id varchar`);
   await db.execute(sql`ALTER TABLE agreement_templates ADD COLUMN IF NOT EXISTS default_term_unit text NOT NULL DEFAULT 'YEAR'`);
   await db.execute(sql`ALTER TABLE agreement_templates ADD COLUMN IF NOT EXISTS default_term_interval integer NOT NULL DEFAULT 1`);
   await db.execute(sql`ALTER TABLE agreement_templates ADD COLUMN IF NOT EXISTS default_scheduling_mode text NOT NULL DEFAULT 'MANUAL'`);
@@ -185,6 +217,30 @@ export async function bootstrapAgreements(): Promise<void> {
   await db.execute(sql`UPDATE agreement_templates SET cancellation_policy_id = (SELECT id FROM agreement_cancellation_policies WHERE name = 'Annual Agreement Cancellation' LIMIT 1) WHERE internal_code = 'CONTROL_PLUS' AND cancellation_policy_id IS NULL`);
   await db.execute(sql`UPDATE agreement_templates SET cancellation_policy_id = (SELECT id FROM agreement_cancellation_policies WHERE name = 'Seasonal Service Cancellation' LIMIT 1) WHERE internal_code = 'MOSQUITO_SEASONAL' AND cancellation_policy_id IS NULL`);
   await db.execute(sql`UPDATE agreement_templates SET cancellation_policy_id = (SELECT id FROM agreement_cancellation_policies WHERE name = 'Termite Agreement Cancellation' LIMIT 1) WHERE internal_code = 'SENTRICON_RENEWAL' AND cancellation_policy_id IS NULL`);
+
+  await db.execute(sql`
+    INSERT INTO billing_plans (name, description, charge_trigger, billing_mode, interval_unit, interval_count, anchor_mode, proration_rule)
+    SELECT 'Quarterly Recurring', 'Bills once per quarter on a recurring schedule, anchored to signup date.', 'ON_SCHEDULE', 'RECURRING_INTERVAL', 'QUARTER', 1, 'SIGNUP_DATE', 'NONE'
+    WHERE NOT EXISTS (SELECT 1 FROM billing_plans WHERE name = 'Quarterly Recurring')
+  `);
+  await db.execute(sql`
+    INSERT INTO billing_plans (name, description, charge_trigger, billing_mode, interval_unit, interval_count, anchor_mode, proration_rule)
+    SELECT 'Monthly Recurring', 'Bills once per month on a recurring schedule, anchored to signup date.', 'ON_SCHEDULE', 'RECURRING_INTERVAL', 'MONTH', 1, 'SIGNUP_DATE', 'NONE'
+    WHERE NOT EXISTS (SELECT 1 FROM billing_plans WHERE name = 'Monthly Recurring')
+  `);
+  await db.execute(sql`
+    INSERT INTO billing_plans (name, description, charge_trigger, billing_mode, interval_unit, interval_count, anchor_mode, proration_rule)
+    SELECT 'Annual Prepaid', 'Bills the full term up front at agreement start.', 'ON_AGREEMENT_START', 'PREPAID_TERM', 'YEAR', 1, 'SIGNUP_DATE', 'NONE'
+    WHERE NOT EXISTS (SELECT 1 FROM billing_plans WHERE name = 'Annual Prepaid')
+  `);
+  await db.execute(sql`
+    INSERT INTO billing_plans (name, description, charge_trigger, billing_mode)
+    SELECT 'COD (Per Service)', 'Non-agreement / one-time work, billed on completion of each service.', 'ON_SERVICE_COMPLETION', 'PER_SERVICE'
+    WHERE NOT EXISTS (SELECT 1 FROM billing_plans WHERE name = 'COD (Per Service)')
+  `);
+  await db.execute(sql`UPDATE agreement_templates SET billing_plan_id = (SELECT id FROM billing_plans WHERE name = 'Quarterly Recurring' LIMIT 1) WHERE internal_code = 'CONTROL_PLUS' AND billing_plan_id IS NULL`);
+  await db.execute(sql`UPDATE agreement_templates SET billing_plan_id = (SELECT id FROM billing_plans WHERE name = 'Monthly Recurring' LIMIT 1) WHERE internal_code = 'MOSQUITO_SEASONAL' AND billing_plan_id IS NULL`);
+  await db.execute(sql`UPDATE agreement_templates SET billing_plan_id = (SELECT id FROM billing_plans WHERE name = 'Annual Prepaid' LIMIT 1) WHERE internal_code = 'SENTRICON_RENEWAL' AND billing_plan_id IS NULL`);
 
   await db.execute(sql`ALTER TABLE appointments ADD COLUMN IF NOT EXISTS agreement_id varchar`);
   await db.execute(sql`ALTER TABLE appointments ADD COLUMN IF NOT EXISTS source text DEFAULT 'MANUAL'`);
