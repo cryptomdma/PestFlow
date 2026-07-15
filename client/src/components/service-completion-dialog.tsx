@@ -12,7 +12,8 @@ import { useAuth } from "@/hooks/use-auth";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { dollarsToCents, centsToDollarString, formatCents } from "@shared/money";
 import { can, PERMISSIONS } from "@shared/permissions";
-import type { Appointment, MaterialProduct, ProductApplication, Service, ServiceRecord, ServiceType, TargetPest, Technician } from "@shared/schema";
+import { computeProductionValueCents } from "@shared/production-value";
+import type { Agreement, Appointment, MaterialProduct, ProductApplication, Service, ServiceRecord, ServiceType, TargetPest, Technician } from "@shared/schema";
 
 interface MaterialLine {
   key: string;
@@ -184,6 +185,10 @@ export function ServiceCompletionDialog({
   const { data: timeTrackingSetting } = useQuery<{ mode: "AUTO_TIMEOUT_ON_TICKET_POST" | "PROMPT_FOR_TIMEOUT" | "MANUAL_TIMEOUT" }>({
     queryKey: ["/api/settings/service-time-tracking"],
   });
+  const { data: agreement } = useQuery<Agreement>({
+    queryKey: [`/api/agreements/${service?.agreementId}`],
+    enabled: !!service?.agreementId,
+  });
 
   const serviceTypeName = useMemo(() => {
     return serviceTypes?.find((serviceType) => serviceType.id === ticketServiceTypeId || serviceType.id === service?.serviceTypeId)?.name ?? "Service";
@@ -200,6 +205,11 @@ export function ServiceCompletionDialog({
   }, [existingServiceRecord, productApplications]);
   const isAgreementGeneratedService = !!service && (!!service.agreementId || service.source === "AGREEMENT_GENERATED");
   const allowServiceOverride = !!service && (!isAgreementGeneratedService || can(user?.role ?? "", PERMISSIONS.ADJUST_PRICE_AGREEMENT));
+  const computedProductionValueCents = useMemo(
+    () => computeProductionValueCents(agreement?.priceCents, agreement?.expectedServiceCount),
+    [agreement?.priceCents, agreement?.expectedServiceCount],
+  );
+  const displayPriceCents = service?.priceCents ?? computedProductionValueCents;
   const selectedTargetPests = useMemo(() => targetPests.split(",").map((value) => value.trim()).filter(Boolean), [targetPests]);
   const targetPestOptions = useMemo(() => {
     const configured = (configuredTargetPests ?? []).map((pest) => pest.label);
@@ -248,6 +258,15 @@ export function ServiceCompletionDialog({
     setMaterials(existingApplications.length ? existingApplications.map(materialFromApplication) : []);
   }, [appointment?.assignedTechnicianId, appointment?.scheduledDate, defaultTechnicianId, draftKey, existingApplications, existingServiceRecord, open, service]);
 
+  // Agreement-generated services no longer carry a stamped price - prefill
+  // the editable field with the live-computed production value once it's
+  // available, but only if nothing has set a value yet (a real stamp or a
+  // restored draft both win over this).
+  useEffect(() => {
+    if (!open || !service || service.priceCents != null || ticketPrice.trim() !== "" || computedProductionValueCents == null) return;
+    setTicketPrice(centsToDollarString(computedProductionValueCents));
+  }, [open, service, ticketPrice, computedProductionValueCents]);
+
   useEffect(() => {
     if (!open || !draftKey || !service) return;
     localStorage.setItem(draftKey, JSON.stringify({
@@ -276,7 +295,16 @@ export function ServiceCompletionDialog({
         technicianId: technicianId || null,
         serviceDate,
         serviceTypeId: allowServiceOverride ? ticketServiceTypeId || null : undefined,
-        priceCents: allowServiceOverride ? dollarsToCents(ticketPrice) : undefined,
+        // For an agreement-generated service, only stamp a price if it was
+        // deliberately changed from the live-computed default - otherwise
+        // leave it null so production value keeps tracking the agreement
+        // (e.g. a later price edit) instead of freezing at whatever the
+        // computed value happened to be when this ticket was submitted.
+        priceCents: !allowServiceOverride
+          ? undefined
+          : isAgreementGeneratedService && dollarsToCents(ticketPrice) === computedProductionValueCents
+            ? undefined
+            : dollarsToCents(ticketPrice),
         notes: [notes, deviceNotes ? `Device notes: ${deviceNotes}` : null].filter(Boolean).join("\n\n"),
         targetPests: targetPests.split(",").map((value) => value.trim()).filter(Boolean),
         areasServiced: derivedAreas || null,
@@ -430,7 +458,7 @@ export function ServiceCompletionDialog({
                 {allowServiceOverride ? (
                   <Input type="number" min="0" step="0.01" value={ticketPrice} onChange={(event) => setTicketPrice(event.target.value)} />
                 ) : (
-                  <div className="rounded-md border bg-muted/20 px-3 py-2 text-sm">{service.priceCents != null ? formatCents(service.priceCents) : "Not set"} <span className="text-xs text-muted-foreground">(agreement locked)</span></div>
+                  <div className="rounded-md border bg-muted/20 px-3 py-2 text-sm">{displayPriceCents != null ? formatCents(displayPriceCents) : "Not set"} <span className="text-xs text-muted-foreground">(agreement locked)</span></div>
                 )}
               </div>
             </div>

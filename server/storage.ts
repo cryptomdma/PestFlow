@@ -48,6 +48,7 @@ import { db } from "./db";
 import { eq, and, inArray, sql, gte, lte, asc, desc, ne, isNull } from "drizzle-orm";
 import { PLACEHOLDER_LOCATION_NAME, PLACEHOLDER_LOCATION_NOTE } from "./account-bootstrap";
 import { can, PERMISSIONS, type UserRole } from "@shared/permissions";
+import { computeProductionValueCents } from "@shared/production-value";
 
 export interface CustomerDetailCompatProjection {
   legacyCustomer: Customer;
@@ -157,6 +158,11 @@ export interface CompleteServiceResult {
   appointment?: Appointment | null;
   serviceRecord: ServiceRecord;
   productApplications: ProductApplication[];
+  // service.priceCents if a real override was stamped (manual service, or a
+  // manager/admin override on an agreement-generated one); otherwise the
+  // live-computed value from the related agreement. See
+  // shared/production-value.ts.
+  productionValueCents: number | null;
 }
 
 export type ServiceTimeTrackingMode = "AUTO_TIMEOUT_ON_TICKET_POST" | "PROMPT_FOR_TIMEOUT" | "MANUAL_TIMEOUT";
@@ -433,6 +439,32 @@ function advanceAgreementDate(dateOnly: string, recurrenceUnit: string, recurren
     default:
       return addMonths(dateOnly, step);
   }
+}
+
+// How many times generateServiceForAgreement would actually fire between
+// startDate and the term end, at the given recurrence cadence. Reuses
+// advanceAgreementDate for both so this count always matches the real
+// generation cadence, including its MONTH/QUARTER/YEAR calendar-month
+// arithmetic (not a fixed-days approximation). Exported so it can also run
+// as a one-time backfill for agreements created before expectedServiceCount
+// existed - see server/production-value-backfill.ts.
+export function computeExpectedServiceCount(
+  startDate: string,
+  termUnit: string,
+  termInterval: number,
+  recurrenceUnit: string,
+  recurrenceInterval: number,
+): number {
+  const termEndDate = advanceAgreementDate(startDate, termUnit, Math.max(termInterval || 1, 1));
+
+  let count = 0;
+  let cursor = startDate;
+  while (cursor < termEndDate) {
+    count += 1;
+    cursor = advanceAgreementDate(cursor, recurrenceUnit, recurrenceInterval);
+  }
+
+  return Math.max(count, 1);
 }
 
 function resolveAgreementStartDateFromValues(
@@ -942,6 +974,12 @@ export class DatabaseStorage implements IStorage {
     const billingPlan = billingPlanId ? await this.getBillingPlan(billingPlanId) : undefined;
     const agreementData = input.agreement;
 
+    const startDate = agreementData.startDate;
+    const termUnit = agreementData.termUnit ?? template?.defaultTermUnit ?? "YEAR";
+    const termInterval = agreementData.termInterval ?? template?.defaultTermInterval ?? 1;
+    const recurrenceUnit = agreementData.recurrenceUnit ?? template?.defaultRecurrenceUnit ?? "MONTH";
+    const recurrenceInterval = agreementData.recurrenceInterval ?? template?.defaultRecurrenceInterval ?? 1;
+
     return {
       customerId: agreementData.customerId,
       locationId: agreementData.locationId,
@@ -955,15 +993,16 @@ export class DatabaseStorage implements IStorage {
       agreementName: agreementData.agreementName ?? template?.name ?? "Agreement",
       status: agreementData.status,
       agreementType: agreementData.agreementType ?? template?.defaultAgreementType ?? null,
-      startDate: agreementData.startDate,
-      termUnit: agreementData.termUnit ?? template?.defaultTermUnit ?? "YEAR",
-      termInterval: agreementData.termInterval ?? template?.defaultTermInterval ?? 1,
+      startDate,
+      termUnit,
+      termInterval,
       renewalDate: agreementData.renewalDate ?? null,
       nextServiceDate: agreementData.nextServiceDate,
       billingFrequency: agreementData.billingFrequency ?? template?.defaultBillingFrequency ?? null,
       priceCents: agreementData.priceCents ?? template?.defaultPriceCents ?? null,
-      recurrenceUnit: agreementData.recurrenceUnit ?? template?.defaultRecurrenceUnit ?? "MONTH",
-      recurrenceInterval: agreementData.recurrenceInterval ?? template?.defaultRecurrenceInterval ?? 1,
+      expectedServiceCount: agreementData.expectedServiceCount ?? computeExpectedServiceCount(startDate, termUnit, termInterval, recurrenceUnit, recurrenceInterval),
+      recurrenceUnit,
+      recurrenceInterval,
       generationLeadDays: agreementData.generationLeadDays ?? template?.defaultGenerationLeadDays ?? 14,
       serviceWindowDays: agreementData.serviceWindowDays ?? template?.defaultServiceWindowDays ?? null,
       schedulingMode: agreementData.schedulingMode ?? template?.defaultSchedulingMode ?? "MANUAL",
@@ -1128,7 +1167,15 @@ export class DatabaseStorage implements IStorage {
       serviceWindowStart: serviceWindowStart as any,
       serviceWindowEnd: serviceWindowEnd as any,
       expectedDurationMinutes: agreement.defaultDurationMinutes ?? null,
-      priceCents: agreement.priceCents ?? null,
+      // Deliberately not stamped: agreement-generated services have no
+      // durable price of their own. Production value is computed at read
+      // time from agreement.priceCents / agreement.expectedServiceCount
+      // (see shared/production-value.ts) so an agreement price edit is
+      // reflected immediately instead of leaving already-generated services
+      // holding a stale copy. A manager/admin field override still writes
+      // directly to this column via completeService() and wins over the
+      // computed value once set.
+      priceCents: null,
       status: "PENDING_SCHEDULING",
       assignedTechnicianId: null,
       source: "AGREEMENT_GENERATED",
@@ -3084,11 +3131,19 @@ export class DatabaseStorage implements IStorage {
         }
       }
 
+      const finalService = postedService ?? effectiveService;
+      let productionValueCents = finalService.priceCents;
+      if (productionValueCents == null && finalService.agreementId) {
+        const [relatedAgreement] = await tx.select().from(agreements).where(and(eq(agreements.orgId, this.orgId), eq(agreements.id, finalService.agreementId)));
+        productionValueCents = computeProductionValueCents(relatedAgreement?.priceCents, relatedAgreement?.expectedServiceCount);
+      }
+
       return {
-        service: postedService ?? effectiveService,
+        service: finalService,
         appointment: updatedAppointment ?? null,
         serviceRecord,
         productApplications: savedApplications,
+        productionValueCents,
       };
     });
   }

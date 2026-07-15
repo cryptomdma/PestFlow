@@ -1281,6 +1281,12 @@ export async function registerRoutes(
     res.json(data);
   });
 
+  app.get("/api/agreements/:id", async (req, res) => {
+    const data = await req.storage.getAgreement(req.params.id);
+    if (!data) return res.status(404).json({ message: "Agreement not found" });
+    res.json(data);
+  });
+
   app.post("/api/agreements", async (req, res) => {
     try {
       const validated = createAgreementFromTemplateSchema.parse(req.body);
