@@ -12,7 +12,7 @@ import {
   agreementCancellationPolicies,
   appSettings,
   serviceRecords, productApplications, materialProducts, targetPests, invoices, communications,
-  billingProfiles, customerNotes,
+  billingProfiles, billingProfileTemplates, customerNotes,
   noteRevisions,
   users,
   type User, type InsertUser,
@@ -38,11 +38,12 @@ import {
   type Invoice, type InsertInvoice,
   type Communication, type InsertCommunication,
   type BillingProfile, type InsertBillingProfile,
+  type BillingProfileTemplate, type InsertBillingProfileTemplate,
   type CustomerNote,
   type NoteRevision,
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, and, inArray, sql, gte, lte, asc, desc, ne } from "drizzle-orm";
+import { eq, and, inArray, sql, gte, lte, asc, desc, ne, isNull } from "drizzle-orm";
 import { PLACEHOLDER_LOCATION_NAME, PLACEHOLDER_LOCATION_NOTE } from "./account-bootstrap";
 import { can, PERMISSIONS, type UserRole } from "@shared/permissions";
 
@@ -237,8 +238,14 @@ export interface IStorage {
   updateLocation(id: string, data: Partial<InsertLocation>): Promise<Location | undefined>;
   setPrimaryLocation(customerId: string, locationId: string): Promise<void>;
 
-  getBillingProfiles(customerId: string): Promise<BillingProfile[]>;
+  getBillingProfileTemplates(includeInactive?: boolean): Promise<BillingProfileTemplate[]>;
+  createBillingProfileTemplate(data: InsertBillingProfileTemplate): Promise<BillingProfileTemplate>;
+  updateBillingProfileTemplate(id: string, data: Partial<InsertBillingProfileTemplate>): Promise<BillingProfileTemplate | undefined>;
+
+  getBillingProfilesForAccount(accountId: string): Promise<BillingProfile[]>;
   createBillingProfile(data: InsertBillingProfile): Promise<BillingProfile>;
+  updateBillingProfile(id: string, data: Partial<InsertBillingProfile>): Promise<BillingProfile | undefined>;
+  resolveBillingProfileForLocation(locationId: string): Promise<BillingProfile | undefined>;
 
   getNotesByLocation(locationId: string): Promise<CustomerNote[]>;
   getSharedNotes(customerId: string): Promise<CustomerNote[]>;
@@ -1519,13 +1526,67 @@ export class DatabaseStorage implements IStorage {
     await this.ensurePrimaryLocationInvariant(targetLocation.accountId, locationId);
   }
 
-  async getBillingProfiles(customerId: string): Promise<BillingProfile[]> {
-    return db.select().from(billingProfiles).where(and(eq(billingProfiles.orgId, this.orgId), eq(billingProfiles.customerId, customerId)));
+  async getBillingProfileTemplates(includeInactive = false): Promise<BillingProfileTemplate[]> {
+    if (includeInactive) {
+      return db.select().from(billingProfileTemplates).where(eq(billingProfileTemplates.orgId, this.orgId)).orderBy(asc(billingProfileTemplates.sortOrder), asc(billingProfileTemplates.name));
+    }
+    return db.select().from(billingProfileTemplates).where(and(eq(billingProfileTemplates.orgId, this.orgId), eq(billingProfileTemplates.isActive, true))).orderBy(asc(billingProfileTemplates.sortOrder), asc(billingProfileTemplates.name));
+  }
+
+  async createBillingProfileTemplate(data: InsertBillingProfileTemplate): Promise<BillingProfileTemplate> {
+    const [template] = await db.insert(billingProfileTemplates).values({ ...data, orgId: this.orgId }).returning();
+    return template;
+  }
+
+  async updateBillingProfileTemplate(id: string, data: Partial<InsertBillingProfileTemplate>): Promise<BillingProfileTemplate | undefined> {
+    const [template] = await db
+      .update(billingProfileTemplates)
+      .set({ ...data, updatedAt: new Date() })
+      .where(and(eq(billingProfileTemplates.orgId, this.orgId), eq(billingProfileTemplates.id, id)))
+      .returning();
+    return template;
+  }
+
+  async getBillingProfilesForAccount(accountId: string): Promise<BillingProfile[]> {
+    return db.select().from(billingProfiles).where(and(eq(billingProfiles.orgId, this.orgId), eq(billingProfiles.accountId, accountId)));
   }
 
   async createBillingProfile(data: InsertBillingProfile): Promise<BillingProfile> {
     const [bp] = await db.insert(billingProfiles).values({ ...data, orgId: this.orgId }).returning();
     return bp;
+  }
+
+  async updateBillingProfile(id: string, data: Partial<InsertBillingProfile>): Promise<BillingProfile | undefined> {
+    const [bp] = await db
+      .update(billingProfiles)
+      .set({ ...data, updatedAt: new Date() })
+      .where(and(eq(billingProfiles.orgId, this.orgId), eq(billingProfiles.id, id)))
+      .returning();
+    return bp;
+  }
+
+  // Per CANONICAL_DOMAIN_RULES_V1.md §4: a location-level profile (locationId
+  // = this location) wins if one exists; otherwise fall back to the
+  // account-level default (locationId IS NULL) for that location's account.
+  async resolveBillingProfileForLocation(locationId: string): Promise<BillingProfile | undefined> {
+    const [location] = await db.select().from(locations).where(and(eq(locations.orgId, this.orgId), eq(locations.id, locationId)));
+    if (!location?.accountId) {
+      return undefined;
+    }
+
+    const [locationOverride] = await db
+      .select()
+      .from(billingProfiles)
+      .where(and(eq(billingProfiles.orgId, this.orgId), eq(billingProfiles.locationId, locationId), eq(billingProfiles.status, "active")));
+    if (locationOverride) {
+      return locationOverride;
+    }
+
+    const accountProfiles = await db
+      .select()
+      .from(billingProfiles)
+      .where(and(eq(billingProfiles.orgId, this.orgId), eq(billingProfiles.accountId, location.accountId), isNull(billingProfiles.locationId), eq(billingProfiles.status, "active")));
+    return accountProfiles.find((profile) => profile.isDefault) ?? accountProfiles[0];
   }
 
   async getNotesByLocation(locationId: string): Promise<CustomerNote[]> {

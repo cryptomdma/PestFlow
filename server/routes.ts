@@ -6,6 +6,7 @@ import {
   insertTechnicianSchema, insertServiceSchema,
   insertProductApplicationSchema, insertMaterialProductSchema, insertInvoiceSchema, insertCommunicationSchema,
   insertBillingProfileSchema,
+  insertBillingProfileTemplateSchema,
   insertAgreementSchema,
   insertAgreementTemplateSchema,
   insertAgreementCancellationPolicySchema,
@@ -200,6 +201,8 @@ export async function registerRoutes(
     label: z.string().min(1),
   });
   const updateTargetPestSchema = targetPestSchema.partial();
+  const updateBillingProfileTemplateSchema = insertBillingProfileTemplateSchema.partial();
+  const updateBillingProfileSchema = insertBillingProfileSchema.partial();
   const serviceTimeTrackingModeSchema = z.object({
     mode: z.enum(["AUTO_TIMEOUT_ON_TICKET_POST", "PROMPT_FOR_TIMEOUT", "MANUAL_TIMEOUT"]),
   });
@@ -806,9 +809,45 @@ export async function registerRoutes(
     }
   });
 
-  // Billing Profiles
-  app.get("/api/billing-profiles/:customerId", async (req, res) => {
-    const data = await req.storage.getBillingProfiles(req.params.customerId);
+  // Billing Profile Templates
+  app.get("/api/billing-profile-templates", async (req, res) => {
+    const includeInactive = req.query.includeInactive === "true";
+    const data = await req.storage.getBillingProfileTemplates(includeInactive);
+    res.json(data);
+  });
+
+  app.post("/api/billing-profile-templates", async (req, res) => {
+    try {
+      const validated = insertBillingProfileTemplateSchema.parse(req.body);
+      const data = await req.storage.createBillingProfileTemplate(validated);
+      res.status(201).json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.patch("/api/billing-profile-templates/:id", async (req, res) => {
+    try {
+      const validated = updateBillingProfileTemplateSchema.parse(req.body);
+      const data = await req.storage.updateBillingProfileTemplate(req.params.id, validated);
+      if (!data) return res.status(404).json({ message: "Billing profile template not found" });
+      res.json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  // Billing Profiles (instances - account-level default or a location-level override)
+  app.get("/api/accounts/:accountId/billing-profiles", async (req, res) => {
+    const data = await req.storage.getBillingProfilesForAccount(req.params.accountId);
+    res.json(data);
+  });
+
+  app.get("/api/locations/:locationId/billing-profile", async (req, res) => {
+    const data = await req.storage.resolveBillingProfileForLocation(req.params.locationId);
+    if (!data) return res.status(404).json({ message: "No billing profile resolved for this location" });
     res.json(data);
   });
 
@@ -817,6 +856,18 @@ export async function registerRoutes(
       const validated = insertBillingProfileSchema.parse(req.body);
       const data = await req.storage.createBillingProfile(validated);
       res.status(201).json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.patch("/api/billing-profiles/:id", async (req, res) => {
+    try {
+      const validated = updateBillingProfileSchema.parse(req.body);
+      const data = await req.storage.updateBillingProfile(req.params.id, validated);
+      if (!data) return res.status(404).json({ message: "Billing profile not found" });
+      res.json(data);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
       res.status(400).json({ message: e.message });

@@ -1,5 +1,5 @@
 import { db } from "./db";
-import { customers, contacts, locations, serviceTypes, technicians, services, appointments, serviceRecords, productApplications, invoices, communications, billingProfiles, customerNotes, agreementTemplates, agreementCancellationPolicies } from "@shared/schema";
+import { customers, contacts, locations, serviceTypes, technicians, services, appointments, serviceRecords, productApplications, invoices, communications, customerNotes, agreementTemplates, agreementCancellationPolicies, billingProfileTemplates } from "@shared/schema";
 import { and, eq } from "drizzle-orm";
 import { getHeritageOrgId } from "./org-bootstrap";
 
@@ -23,17 +23,10 @@ export async function seedDatabase() {
   // Contacts are inserted after locations so they can be scoped to specific locations
   // They are re-inserted below after locations are created
 
-  const [bp1, bp2] = await db.insert(billingProfiles).values([
-    { customerId: c2.id, label: "Corporate Card", methodType: "card", lastFour: "4242", isDefault: true },
-    { customerId: c2.id, label: "Westside Invoice", methodType: "invoice", lastFour: null, isDefault: false },
-  ].map(withOrg)).returning();
-
-  await db.update(customers).set({ defaultBillingProfileId: bp1.id }).where(and(eq(customers.orgId, orgId), eq(customers.id, c2.id)));
-
   const [l1, l2, l3, l4, l5, l6] = await db.insert(locations).values([
     { customerId: c1.id, name: "Home", address: "1234 Oak Street", city: "Springfield", state: "IL", zip: "62701", isPrimary: true, propertyType: "residential", squareFootage: 2400, gateCode: "1234", notes: "Single story ranch with large backyard" },
     { customerId: c2.id, name: "Downtown Location", address: "456 Main Street", city: "Springfield", state: "IL", zip: "62702", isPrimary: true, propertyType: "commercial", squareFootage: 4500, notes: "Restaurant with commercial kitchen and outdoor patio" },
-    { customerId: c2.id, name: "Westside Location", address: "789 West Ave", city: "Springfield", state: "IL", zip: "62704", isPrimary: false, propertyType: "commercial", squareFootage: 3200, notes: "Smaller location, primarily take-out", billingProfileId: bp2.id },
+    { customerId: c2.id, name: "Westside Location", address: "789 West Ave", city: "Springfield", state: "IL", zip: "62704", isPrimary: false, propertyType: "commercial", squareFootage: 3200, notes: "Smaller location, primarily take-out" },
     { customerId: c3.id, name: "Home", address: "321 Pine Lane", city: "Springfield", state: "IL", zip: "62703", isPrimary: true, propertyType: "residential", squareFootage: 3100, gateCode: "5678", notes: "Two story colonial with basement. History of termite activity." },
     { customerId: c4.id, name: "Sunset Apartments A", address: "100 Sunset Blvd, Building A", city: "Springfield", state: "IL", zip: "62705", isPrimary: true, propertyType: "multi-family", squareFootage: 12000, notes: "6 units, 3 floors" },
     { customerId: c4.id, name: "Sunset Apartments B", address: "100 Sunset Blvd, Building B", city: "Springfield", state: "IL", zip: "62705", isPrimary: false, propertyType: "multi-family", squareFootage: 12000, notes: "6 units, 3 floors" },
@@ -61,6 +54,13 @@ export async function seedDatabase() {
     { name: "Rodent Control", description: "Interior/exterior rodent baiting and exclusion", defaultPriceCents: 17500, estimatedDuration: 60, category: "Rodent", opportunityLeadDays: 60, opportunityLabel: "Rodent Follow-up" },
     { name: "Commercial Kitchen Service", description: "Monthly commercial pest management service", defaultPriceCents: 25000, estimatedDuration: 90, category: "Commercial" },
   ].map(withOrg)).returning();
+
+  await db.insert(billingProfileTemplates).values([
+    { name: "Card on File", description: "Recurring auto-charge to a saved card.", billingType: "card", sortOrder: 1 },
+    { name: "ACH Autopay", description: "Recurring auto-draft from a bank account.", billingType: "ach", sortOrder: 2 },
+    { name: "Net 30 Invoice", description: "Emailed invoice, due within 30 days.", billingType: "invoice_terms", defaultInvoiceTerms: "NET_30", sortOrder: 3 },
+    { name: "Due on Receipt", description: "Emailed invoice, due immediately.", billingType: "invoice_terms", defaultInvoiceTerms: "DUE_ON_RECEIPT", sortOrder: 4 },
+  ].map(withOrg));
 
   const [tech1, tech2] = await db.insert(technicians).values([
     { displayName: "Jake Miller", licenseId: "TX-PCO-1001", status: "ACTIVE", email: "jake@pestflow.local", color: "#2563eb" },

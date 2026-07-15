@@ -71,14 +71,45 @@ export const locations = pgTable("locations", {
   source: text("source"),
 });
 
+// Org-level reusable presets, Settings-configurable (same shape as
+// ServiceType/TargetPest). A billing_profiles instance may optionally be
+// created from one of these; the template itself never bills anything.
+export const billingProfileTemplates = pgTable("billing_profile_templates", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: varchar("org_id").notNull(),
+  name: text("name").notNull(),
+  description: text("description"),
+  isActive: boolean("is_active").notNull().default(true),
+  billingType: text("billing_type").notNull().default("invoice_terms"), // card | ach | invoice_terms | cash | check
+  defaultInvoiceTerms: text("default_invoice_terms"),
+  sortOrder: integer("sort_order"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+// Billing information used by a Location, or inherited from the Account
+// context when locationId is null. Per CANONICAL_DOMAIN_RULES_V1.md §4: the
+// account (or its primary location) provides the default billing behavior,
+// child locations inherit it, and a location may override with its own row
+// here when needed - see resolveBillingProfileForLocation in storage.ts.
 export const billingProfiles = pgTable("billing_profiles", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   orgId: varchar("org_id").notNull(),
-  customerId: varchar("customer_id").notNull().references(() => customers.id),
+  accountId: varchar("account_id").notNull().references(() => accounts.id),
+  locationId: varchar("location_id").references(() => locations.id),
+  templateId: varchar("template_id").references(() => billingProfileTemplates.id),
   label: text("label").notNull(),
-  methodType: text("method_type").notNull().default("invoice"),
+  billingType: text("billing_type").notNull().default("invoice_terms"), // card | ach | invoice_terms | cash | check
+  billingName: text("billing_name"),
+  billingAddress: text("billing_address"),
+  cardOnFileToken: text("card_on_file_token"),
+  achToken: text("ach_token"),
+  invoiceTerms: text("invoice_terms"),
   lastFour: text("last_four"),
-  isDefault: boolean("is_default").default(false),
+  isDefault: boolean("is_default").notNull().default(false),
+  status: text("status").notNull().default("active"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
 export const customerNotes = pgTable("customer_notes", {
@@ -542,7 +573,8 @@ export const insertCustomerSchema = createInsertSchema(customers).omit({ orgId: 
 export const insertAccountSchema = createInsertSchema(accounts).omit({ orgId: true, id: true, createdAt: true, updatedAt: true });
 export const insertContactSchema = createInsertSchema(contacts).omit({ orgId: true, id: true });
 export const insertLocationSchema = createInsertSchema(locations).omit({ orgId: true, id: true });
-export const insertBillingProfileSchema = createInsertSchema(billingProfiles).omit({ orgId: true, id: true });
+export const insertBillingProfileTemplateSchema = createInsertSchema(billingProfileTemplates).omit({ orgId: true, id: true, createdAt: true, updatedAt: true });
+export const insertBillingProfileSchema = createInsertSchema(billingProfiles).omit({ orgId: true, id: true, createdAt: true, updatedAt: true });
 export const insertCustomerNoteSchema = createInsertSchema(customerNotes).omit({ orgId: true, id: true, createdAt: true, updatedAt: true });
 export const insertNoteRevisionSchema = createInsertSchema(noteRevisions).omit({ orgId: true, id: true, createdAt: true });
 export const insertServiceTypeSchema = createInsertSchema(serviceTypes).omit({ orgId: true, id: true });
@@ -575,6 +607,8 @@ export type Contact = typeof contacts.$inferSelect;
 export type InsertContact = z.infer<typeof insertContactSchema>;
 export type Location = typeof locations.$inferSelect;
 export type InsertLocation = z.infer<typeof insertLocationSchema>;
+export type BillingProfileTemplate = typeof billingProfileTemplates.$inferSelect;
+export type InsertBillingProfileTemplate = z.infer<typeof insertBillingProfileTemplateSchema>;
 export type BillingProfile = typeof billingProfiles.$inferSelect;
 export type InsertBillingProfile = z.infer<typeof insertBillingProfileSchema>;
 export type CustomerNote = typeof customerNotes.$inferSelect;
