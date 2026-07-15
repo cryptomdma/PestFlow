@@ -16,6 +16,8 @@ import {
 import { normalizePhone } from "@shared/phone";
 import { ZodError, z } from "zod";
 import type { Request } from "express";
+import { requirePermission } from "./auth";
+import { PERMISSIONS, type UserRole } from "@shared/permissions";
 
 function handleZodError(res: any, error: ZodError) {
   const messages = error.errors.map((e) => `${e.path.join(".")}: ${e.message}`).join(", ");
@@ -1108,6 +1110,7 @@ export async function registerRoutes(
       const validated = completeServiceSchema.parse(req.body);
       const data = await req.storage.completeService({
         serviceId: req.params.id,
+        actorRole: req.user!.role as UserRole,
         ...validated,
       });
       if (!data) return res.status(404).json({ message: "Service not found" });
@@ -1355,7 +1358,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/service-records/:id/finalize", async (req, res) => {
+  app.post("/api/service-records/:id/finalize", requirePermission(PERMISSIONS.FINALIZE_TICKET), async (req, res) => {
     try {
       const data = await req.storage.finalizeServiceRecord(req.params.id, getAuditActor(req));
       if (!data) return res.status(404).json({ message: "Service record not found" });
@@ -1365,7 +1368,7 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/service-records/:id/reopen", async (req, res) => {
+  app.post("/api/service-records/:id/reopen", requirePermission(PERMISSIONS.REOPEN_TICKET), async (req, res) => {
     try {
       const validated = reopenServiceRecordSchema.parse(req.body);
       const data = await req.storage.reopenServiceRecord(req.params.id, validated.reason, getAuditActor(req));

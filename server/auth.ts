@@ -6,6 +6,7 @@ import type { Express, RequestHandler } from "express";
 import { pool } from "./db";
 import { userStorage, createOrgScopedStorage, type IStorage } from "./storage";
 import { verifyPassword } from "./password";
+import { can, type Permission } from "@shared/permissions";
 import type { User } from "@shared/schema";
 
 declare global {
@@ -102,6 +103,18 @@ export const attachOrgStorage: RequestHandler = (req, res, next) => {
   req.storage = createOrgScopedStorage(orgId);
   next();
 };
+
+// Must run after requireAuth. 403s if the logged-in user's role doesn't
+// carry the given permission - see server/permissions.ts for the matrix.
+export function requirePermission(permission: Permission): RequestHandler<any> {
+  return (req, res, next) => {
+    if (!req.user || !can(req.user.role, permission)) {
+      return res.status(403).json({ message: "You don't have permission to perform this action" });
+    }
+
+    next();
+  };
+}
 
 export function registerAuthRoutes(app: Express) {
   app.post("/api/auth/login", (req, res, next) => {
