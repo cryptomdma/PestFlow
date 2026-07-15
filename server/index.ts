@@ -13,6 +13,7 @@ import { setupAuth, registerAuthRoutes, requireAuth, attachOrgStorage } from "./
 import { bootstrapOrganizations } from "./org-bootstrap";
 import { bootstrapTenancy } from "./tenancy-bootstrap";
 import { bootstrapMoney } from "./money-bootstrap";
+import { bootstrapOutbox } from "./outbox-bootstrap";
 
 const app = express();
 const httpServer = createServer(app);
@@ -84,6 +85,7 @@ app.use((req, res, next) => {
   await bootstrapAgreements().catch((e) => console.error("Agreement bootstrap error:", e));
   await bootstrapServiceSchedulingFoundation().catch((e) => console.error("Service scheduling bootstrap error:", e));
   await bootstrapCanonicalNoteTables().catch((e) => console.error("Note table bootstrap error:", e));
+  await bootstrapOutbox().catch((e) => console.error("Outbox bootstrap error:", e));
   await bootstrapTenancy().catch((e) => console.error("Tenancy bootstrap error:", e));
   await bootstrapMoney().catch((e) => console.error("Money bootstrap error:", e));
 
