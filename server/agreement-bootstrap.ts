@@ -9,7 +9,7 @@ export async function bootstrapAgreements(): Promise<void> {
       description text,
       is_active boolean NOT NULL DEFAULT true,
       cancellation_fee_type text NOT NULL DEFAULT 'NONE',
-      cancellation_fee_amount numeric(10, 2),
+      cancellation_fee_amount_cents integer,
       notice_days integer NOT NULL DEFAULT 0,
       effective_date_mode text NOT NULL DEFAULT 'IMMEDIATE',
       cancel_pending_services_default boolean NOT NULL DEFAULT true,
@@ -45,7 +45,7 @@ export async function bootstrapAgreements(): Promise<void> {
       default_service_type_id varchar REFERENCES service_types(id),
       default_service_template_name text,
       default_duration_minutes integer,
-      default_price numeric(10, 2),
+      default_price_cents integer,
       default_instructions text,
       sort_order integer,
       internal_code text,
@@ -75,7 +75,7 @@ export async function bootstrapAgreements(): Promise<void> {
       renewal_date date,
       next_service_date date NOT NULL,
       billing_frequency text,
-      price numeric(10, 2),
+      price_cents integer,
       recurrence_unit text NOT NULL DEFAULT 'MONTH',
       recurrence_interval integer NOT NULL DEFAULT 1,
       generation_lead_days integer NOT NULL DEFAULT 14,
@@ -94,7 +94,7 @@ export async function bootstrapAgreements(): Promise<void> {
       cancellation_notes text,
       cancellation_effective_date date,
       cancellation_fee_type text,
-      cancellation_fee_amount numeric(10, 2),
+      cancellation_fee_amount_cents integer,
       cancellation_override_applied boolean NOT NULL DEFAULT false,
       cancellation_override_reason text,
       cancellation_override_by_user_id varchar,
@@ -122,7 +122,6 @@ export async function bootstrapAgreements(): Promise<void> {
   await db.execute(sql`ALTER TABLE agreements ADD COLUMN IF NOT EXISTS cancellation_notes text`);
   await db.execute(sql`ALTER TABLE agreements ADD COLUMN IF NOT EXISTS cancellation_effective_date date`);
   await db.execute(sql`ALTER TABLE agreements ADD COLUMN IF NOT EXISTS cancellation_fee_type text`);
-  await db.execute(sql`ALTER TABLE agreements ADD COLUMN IF NOT EXISTS cancellation_fee_amount numeric(10, 2)`);
   await db.execute(sql`ALTER TABLE agreements ADD COLUMN IF NOT EXISTS cancellation_override_applied boolean NOT NULL DEFAULT false`);
   await db.execute(sql`ALTER TABLE agreements ADD COLUMN IF NOT EXISTS cancellation_override_reason text`);
   await db.execute(sql`ALTER TABLE agreements ADD COLUMN IF NOT EXISTS cancellation_override_by_user_id varchar`);
@@ -137,7 +136,7 @@ export async function bootstrapAgreements(): Promise<void> {
 
   await db.execute(sql`
     INSERT INTO agreement_cancellation_policies (
-      name, description, is_active, cancellation_fee_type, cancellation_fee_amount, notice_days,
+      name, description, is_active, cancellation_fee_type, cancellation_fee_amount_cents, notice_days,
       effective_date_mode, cancel_pending_services_default, cancel_scheduled_appointments_default,
       close_open_opportunities_default, create_retention_opportunity_default, default_retention_follow_up_days,
       allow_manager_override, requires_override_reason, terms_summary
@@ -149,19 +148,19 @@ export async function bootstrapAgreements(): Promise<void> {
   `);
   await db.execute(sql`
     INSERT INTO agreement_cancellation_policies (
-      name, description, is_active, cancellation_fee_type, cancellation_fee_amount, notice_days,
+      name, description, is_active, cancellation_fee_type, cancellation_fee_amount_cents, notice_days,
       effective_date_mode, cancel_pending_services_default, cancel_scheduled_appointments_default,
       close_open_opportunities_default, create_retention_opportunity_default, default_retention_follow_up_days,
       allow_manager_override, requires_override_reason, terms_summary
     )
-    SELECT 'Annual Agreement Cancellation', 'Standard annual recurring service cancellation terms.', true, 'FLAT', 99.00, 30,
+    SELECT 'Annual Agreement Cancellation', 'Standard annual recurring service cancellation terms.', true, 'FLAT', 9900, 30,
       'CUSTOM', true, true, true, true, 7, true, true,
       'Annual agreements require notice. Cancellation may include a flat fee and review of pending generated services and scheduled appointments.'
     WHERE NOT EXISTS (SELECT 1 FROM agreement_cancellation_policies WHERE name = 'Annual Agreement Cancellation')
   `);
   await db.execute(sql`
     INSERT INTO agreement_cancellation_policies (
-      name, description, is_active, cancellation_fee_type, cancellation_fee_amount, notice_days,
+      name, description, is_active, cancellation_fee_type, cancellation_fee_amount_cents, notice_days,
       effective_date_mode, cancel_pending_services_default, cancel_scheduled_appointments_default,
       close_open_opportunities_default, create_retention_opportunity_default, default_retention_follow_up_days,
       allow_manager_override, requires_override_reason, terms_summary
@@ -173,7 +172,7 @@ export async function bootstrapAgreements(): Promise<void> {
   `);
   await db.execute(sql`
     INSERT INTO agreement_cancellation_policies (
-      name, description, is_active, cancellation_fee_type, cancellation_fee_amount, notice_days,
+      name, description, is_active, cancellation_fee_type, cancellation_fee_amount_cents, notice_days,
       effective_date_mode, cancel_pending_services_default, cancel_scheduled_appointments_default,
       close_open_opportunities_default, create_retention_opportunity_default, default_retention_follow_up_days,
       allow_manager_override, requires_override_reason, terms_summary

@@ -23,11 +23,17 @@ const MONEY_COLUMNS: Array<{
 export async function bootstrapMoney(): Promise<void> {
   for (const { table, oldColumn, newColumn, notNull, defaultCents } of MONEY_COLUMNS) {
     await db.execute(sql.raw(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${newColumn} integer`));
-    await db.execute(
-      sql.raw(
-        `UPDATE ${table} SET ${newColumn} = ROUND(${oldColumn}::numeric * 100) WHERE ${newColumn} IS NULL AND ${oldColumn} IS NOT NULL`,
-      ),
+
+    const oldColumnExists = await db.execute(
+      sql`SELECT 1 FROM information_schema.columns WHERE table_name = ${table} AND column_name = ${oldColumn}`,
     );
+    if (oldColumnExists.rows.length > 0) {
+      await db.execute(
+        sql.raw(
+          `UPDATE ${table} SET ${newColumn} = ROUND(${oldColumn}::numeric * 100) WHERE ${newColumn} IS NULL AND ${oldColumn} IS NOT NULL`,
+        ),
+      );
+    }
     if (defaultCents !== undefined) {
       await db.execute(sql.raw(`UPDATE ${table} SET ${newColumn} = ${defaultCents} WHERE ${newColumn} IS NULL`));
       await db.execute(sql.raw(`ALTER TABLE ${table} ALTER COLUMN ${newColumn} SET DEFAULT ${defaultCents}`));
