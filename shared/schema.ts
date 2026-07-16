@@ -662,6 +662,27 @@ export const billingEvents = pgTable("billing_events", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
+// Rendered PDF artifacts, per PLAN_BILLING_V1.md §1.7: "what you sent is
+// what you can always re-produce, byte for byte." contentBase64 stores the
+// PDF itself (base64 in a text column rather than a native bytea type -
+// simplest path with Drizzle, and invoice-sized PDFs are small enough that
+// the ~33% encoding overhead doesn't matter); contentHash (sha256 of the
+// raw PDF bytes) is what lets a later regeneration be verified against the
+// original without re-storing it. One row per invoice for kind=INVOICE -
+// getOrCreateInvoiceDocument in storage.ts returns the existing row rather
+// than re-rendering, since the renderer is deterministic and a duplicate
+// would be byte-identical anyway.
+export const documents = pgTable("documents", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: varchar("org_id").notNull(),
+  kind: text("kind").notNull(), // INVOICE | STATEMENT
+  invoiceId: varchar("invoice_id").references(() => invoices.id),
+  contentHash: text("content_hash").notNull(),
+  contentBase64: text("content_base64").notNull(),
+  mimeType: text("mime_type").notNull().default("application/pdf"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
 export const communications = pgTable("communications", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   orgId: varchar("org_id").notNull(),
@@ -679,11 +700,21 @@ export const communications = pgTable("communications", {
   status: text("status").default("sent"),
 });
 
+// Branding fields feed the invoice/statement document renderer
+// (server/documents/**) - PLAN_BILLING_V1.md §1.7. remitTo* is deliberately
+// separate from any Contact/BillingProfile record: it's who the org itself
+// is (their own letterhead), not a payer or a customer-facing contact.
 export const organizations = pgTable("organizations", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   name: text("name").notNull(),
   slug: text("slug").notNull().unique(),
   status: text("status").notNull().default("active"),
+  logoUrl: text("logo_url"),
+  primaryColorHex: text("primary_color_hex"),
+  remitToName: text("remit_to_name"),
+  remitToAddress: text("remit_to_address"),
+  remitToEmail: text("remit_to_email"),
+  remitToPhone: text("remit_to_phone"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
@@ -759,6 +790,7 @@ export const insertTargetPestSchema = createInsertSchema(targetPests).omit({ org
 export const insertInvoiceSchema = createInsertSchema(invoices).omit({ orgId: true, id: true, createdAt: true, publicId: true, invoiceNumber: true });
 export const insertInvoiceLineItemSchema = createInsertSchema(invoiceLineItems).omit({ orgId: true, id: true, invoiceId: true });
 export const insertBillingEventSchema = createInsertSchema(billingEvents).omit({ orgId: true, id: true, createdAt: true });
+export const insertDocumentSchema = createInsertSchema(documents).omit({ orgId: true, id: true, createdAt: true });
 export const insertTaxRateSchema = createInsertSchema(taxRates).omit({ orgId: true, id: true, createdAt: true, updatedAt: true });
 export const insertTaxRuleSchema = createInsertSchema(taxRules).omit({ orgId: true, id: true, createdAt: true, updatedAt: true });
 export const insertTaxExemptionCertificateSchema = createInsertSchema(taxExemptionCertificates).omit({ orgId: true, id: true, createdAt: true });
@@ -822,6 +854,8 @@ export type InvoiceLineItem = typeof invoiceLineItems.$inferSelect;
 export type InsertInvoiceLineItem = z.infer<typeof insertInvoiceLineItemSchema>;
 export type BillingEvent = typeof billingEvents.$inferSelect;
 export type InsertBillingEvent = z.infer<typeof insertBillingEventSchema>;
+export type Document = typeof documents.$inferSelect;
+export type InsertDocument = z.infer<typeof insertDocumentSchema>;
 export type TaxRate = typeof taxRates.$inferSelect;
 export type InsertTaxRate = z.infer<typeof insertTaxRateSchema>;
 export type TaxRule = typeof taxRules.$inferSelect;

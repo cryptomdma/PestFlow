@@ -1593,6 +1593,34 @@ export async function registerRoutes(
     }
   });
 
+  // Organization branding (feeds the invoice/statement document renderer)
+  const organizationBrandingSchema = z.object({
+    logoUrl: z.string().nullable().optional(),
+    primaryColorHex: z.string().nullable().optional(),
+    remitToName: z.string().nullable().optional(),
+    remitToAddress: z.string().nullable().optional(),
+    remitToEmail: z.string().nullable().optional(),
+    remitToPhone: z.string().nullable().optional(),
+  });
+
+  app.get("/api/organization", async (req, res) => {
+    const data = await req.storage.getOrganization();
+    if (!data) return res.status(404).json({ message: "Organization not found" });
+    res.json(data);
+  });
+
+  app.patch("/api/organization/branding", requirePermission(PERMISSIONS.MANAGE_SETTINGS), async (req, res) => {
+    try {
+      const validated = organizationBrandingSchema.parse(req.body);
+      const data = await req.storage.updateOrganizationBranding(validated);
+      if (!data) return res.status(404).json({ message: "Organization not found" });
+      res.json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
   // Invoices
   const manualInvoiceSchema = z.object({
     customerId: z.string(),
@@ -1699,6 +1727,29 @@ export async function registerRoutes(
     const data = await req.storage.voidInvoice(req.params.id);
     if (!data) return res.status(404).json({ message: "Invoice not found" });
     res.json(data);
+  });
+
+  // Document rendering (PLAN_BILLING_V1.md §1.7) - generates the PDF on
+  // first request and stores it; every request after that returns the
+  // same stored artifact rather than re-rendering.
+  app.get("/api/invoices/:id/document", async (req, res) => {
+    try {
+      const document = await req.storage.getOrCreateInvoiceDocument(req.params.id);
+      if (!document) return res.status(404).json({ message: "Invoice not found" });
+      const invoice = await req.storage.getInvoice(req.params.id);
+      res.setHeader("Content-Type", document.mimeType);
+      res.setHeader("Content-Disposition", `inline; filename="invoice-${invoice?.invoiceNumber ?? document.id}.pdf"`);
+      res.send(Buffer.from(document.contentBase64, "base64"));
+    } catch (e: any) {
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.get("/api/invoices/:id/document-info", async (req, res) => {
+    const document = await req.storage.getOrCreateInvoiceDocument(req.params.id);
+    if (!document) return res.status(404).json({ message: "Invoice not found" });
+    const { contentBase64, ...info } = document;
+    res.json(info);
   });
 
   // Tax Rates

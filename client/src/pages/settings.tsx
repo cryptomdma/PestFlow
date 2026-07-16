@@ -24,8 +24,8 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { dollarsToCents, centsToDollars, centsToDollarString, formatCents } from "@shared/money";
-import { Plus, Settings as SettingsIcon, Wrench, FileText, Users, ShieldCheck, FlaskConical, Bug, CreditCard, CalendarClock, Percent, Scale } from "lucide-react";
-import type { AgreementCancellationPolicy, AgreementTemplate, BillingPlan, BillingProfileTemplate, MaterialProduct, OpportunityDisposition, ServiceType, TargetPest, TaxRate, TaxRule, Technician } from "@shared/schema";
+import { Plus, Settings as SettingsIcon, Wrench, FileText, Users, ShieldCheck, FlaskConical, Bug, CreditCard, CalendarClock, Percent, Scale, Building2 } from "lucide-react";
+import type { AgreementCancellationPolicy, AgreementTemplate, BillingPlan, BillingProfileTemplate, MaterialProduct, OpportunityDisposition, Organization, ServiceType, TargetPest, TaxRate, TaxRule, Technician } from "@shared/schema";
 
 function formatTemplateRecurrence(template: AgreementTemplate) {
   const interval = template.defaultRecurrenceInterval || 1;
@@ -60,6 +60,78 @@ function formatCancellationFee(policy: AgreementCancellationPolicy) {
   if (policy.cancellationFeeType === "PERCENT_CONTRACT") return `${centsToDollars(policy.cancellationFeeAmountCents).toFixed(2)}% of contract`;
   if (policy.cancellationFeeType === "PERCENT_REMAINING") return `${centsToDollars(policy.cancellationFeeAmountCents).toFixed(2)}% of remaining balance`;
   return "Manual fee review";
+}
+
+function OrganizationBrandingCard() {
+  const { toast } = useToast();
+  const { data: org } = useQuery<Organization>({ queryKey: ["/api/organization"] });
+  const [form, setForm] = useState({
+    logoUrl: "",
+    primaryColorHex: "",
+    remitToName: "",
+    remitToAddress: "",
+    remitToEmail: "",
+    remitToPhone: "",
+  });
+
+  useEffect(() => {
+    if (org) {
+      setForm({
+        logoUrl: org.logoUrl ?? "",
+        primaryColorHex: org.primaryColorHex ?? "",
+        remitToName: org.remitToName ?? "",
+        remitToAddress: org.remitToAddress ?? "",
+        remitToEmail: org.remitToEmail ?? "",
+        remitToPhone: org.remitToPhone ?? "",
+      });
+    }
+  }, [org]);
+
+  const mutation = useMutation({
+    mutationFn: async (data: typeof form) => {
+      const payload = {
+        logoUrl: data.logoUrl.trim() || null,
+        primaryColorHex: data.primaryColorHex.trim() || null,
+        remitToName: data.remitToName.trim() || null,
+        remitToAddress: data.remitToAddress.trim() || null,
+        remitToEmail: data.remitToEmail.trim() || null,
+        remitToPhone: data.remitToPhone.trim() || null,
+      };
+      const response = await apiRequest("PATCH", "/api/organization/branding", payload);
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/organization"] });
+      toast({ title: "Branding updated" });
+    },
+    onError: (err: Error) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+  });
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base font-semibold flex items-center gap-2"><Building2 className="h-4 w-4" /> Organization Branding</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <form onSubmit={(e) => { e.preventDefault(); mutation.mutate(form); }} className="space-y-4">
+          <p className="text-xs text-muted-foreground">Used on generated invoice PDFs and statements.</p>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="space-y-1.5"><Label>Logo URL</Label><Input value={form.logoUrl} onChange={(e) => setForm((p) => ({ ...p, logoUrl: e.target.value }))} placeholder="https://..." /></div>
+            <div className="space-y-1.5"><Label>Primary Color</Label><Input type="text" value={form.primaryColorHex} onChange={(e) => setForm((p) => ({ ...p, primaryColorHex: e.target.value }))} placeholder="#2563eb" /></div>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="space-y-1.5"><Label>Remit To Name</Label><Input value={form.remitToName} onChange={(e) => setForm((p) => ({ ...p, remitToName: e.target.value }))} /></div>
+            <div className="space-y-1.5"><Label>Remit To Email</Label><Input type="email" value={form.remitToEmail} onChange={(e) => setForm((p) => ({ ...p, remitToEmail: e.target.value }))} /></div>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="space-y-1.5"><Label>Remit To Address</Label><Textarea value={form.remitToAddress} onChange={(e) => setForm((p) => ({ ...p, remitToAddress: e.target.value }))} className="resize-none" /></div>
+            <div className="space-y-1.5"><Label>Remit To Phone</Label><Input value={form.remitToPhone} onChange={(e) => setForm((p) => ({ ...p, remitToPhone: e.target.value }))} /></div>
+          </div>
+          <div className="flex justify-end"><Button type="submit" disabled={mutation.isPending}>{mutation.isPending ? "Saving..." : "Save Branding"}</Button></div>
+        </form>
+      </CardContent>
+    </Card>
+  );
 }
 
 function ServiceTypeForm({ serviceType, onClose }: { serviceType?: ServiceType | null; onClose: () => void }) {
@@ -1238,6 +1310,8 @@ export default function Settings() {
         <h1 className="text-2xl font-bold tracking-tight" data-testid="text-page-title">Settings</h1>
         <p className="text-muted-foreground text-sm mt-0.5">Configure your PestFlow CRM</p>
       </div>
+
+      <OrganizationBrandingCard />
 
       <Card>
         <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
