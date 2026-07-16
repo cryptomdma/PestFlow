@@ -11,6 +11,9 @@ import {
   insertAgreementTemplateSchema,
   insertAgreementCancellationPolicySchema,
   insertBillingPlanSchema,
+  insertTaxRateSchema,
+  insertTaxRuleSchema,
+  insertTaxExemptionCertificateSchema,
   insertOpportunitySchema,
   insertOpportunityDispositionSchema,
   insertTargetPestSchema,
@@ -1654,6 +1657,83 @@ export async function registerRoutes(
     const data = await req.storage.voidInvoice(req.params.id);
     if (!data) return res.status(404).json({ message: "Invoice not found" });
     res.json(data);
+  });
+
+  // Tax Rates
+  app.get("/api/tax-rates", async (req, res) => {
+    const includeInactive = req.query.includeInactive === "true";
+    const data = await req.storage.getTaxRates(includeInactive);
+    res.json(data);
+  });
+
+  app.post("/api/tax-rates", async (req, res) => {
+    try {
+      const validated = insertTaxRateSchema.parse(req.body);
+      const data = await req.storage.createTaxRate(validated);
+      res.status(201).json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.patch("/api/tax-rates/:id", async (req, res) => {
+    try {
+      const validated = insertTaxRateSchema.partial().parse(req.body);
+      const data = await req.storage.updateTaxRate(req.params.id, validated);
+      if (!data) return res.status(404).json({ message: "Tax rate not found" });
+      res.json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  // Tax Rules
+  app.get("/api/tax-rules", async (req, res) => {
+    const includeInactive = req.query.includeInactive === "true";
+    const data = await req.storage.getTaxRules(includeInactive);
+    res.json(data);
+  });
+
+  app.post("/api/tax-rules", async (req, res) => {
+    try {
+      const validated = insertTaxRuleSchema.parse(req.body);
+      const data = await req.storage.createTaxRule(validated);
+      res.status(201).json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.patch("/api/tax-rules/:id", async (req, res) => {
+    try {
+      const validated = insertTaxRuleSchema.partial().parse(req.body);
+      const data = await req.storage.updateTaxRule(req.params.id, validated);
+      if (!data) return res.status(404).json({ message: "Tax rule not found" });
+      res.json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  // Tax Exemption Certificates
+  app.get("/api/accounts/:accountId/tax-exemption-certificates", async (req, res) => {
+    const data = await req.storage.getTaxExemptionCertificates(req.params.accountId);
+    res.json(data);
+  });
+
+  app.post("/api/tax-exemption-certificates", async (req, res) => {
+    try {
+      const validated = insertTaxExemptionCertificateSchema.parse(req.body);
+      const data = await req.storage.createTaxExemptionCertificate(validated);
+      res.status(201).json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      res.status(400).json({ message: e.message });
+    }
   });
 
   // Communications

@@ -24,8 +24,8 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { dollarsToCents, centsToDollars, centsToDollarString, formatCents } from "@shared/money";
-import { Plus, Settings as SettingsIcon, Wrench, FileText, Users, ShieldCheck, FlaskConical, Bug, CreditCard, CalendarClock } from "lucide-react";
-import type { AgreementCancellationPolicy, AgreementTemplate, BillingPlan, BillingProfileTemplate, MaterialProduct, OpportunityDisposition, ServiceType, TargetPest, Technician } from "@shared/schema";
+import { Plus, Settings as SettingsIcon, Wrench, FileText, Users, ShieldCheck, FlaskConical, Bug, CreditCard, CalendarClock, Percent, Scale } from "lucide-react";
+import type { AgreementCancellationPolicy, AgreementTemplate, BillingPlan, BillingProfileTemplate, MaterialProduct, OpportunityDisposition, ServiceType, TargetPest, TaxRate, TaxRule, Technician } from "@shared/schema";
 
 function formatTemplateRecurrence(template: AgreementTemplate) {
   const interval = template.defaultRecurrenceInterval || 1;
@@ -535,6 +535,126 @@ function BillingPlanForm({ plan, onClose }: { plan?: BillingPlan | null; onClose
   );
 }
 
+function TaxRateForm({ rate, onClose }: { rate?: TaxRate | null; onClose: () => void }) {
+  const { toast } = useToast();
+  const isEditMode = !!rate;
+  const [form, setForm] = useState({
+    name: rate?.name ?? "",
+    jurisdiction: rate?.jurisdiction ?? "",
+    ratePercent: rate?.rateBasisPoints != null ? (rate.rateBasisPoints / 100).toString() : "",
+    effectiveFrom: rate?.effectiveFrom ?? new Date().toISOString().slice(0, 10),
+    effectiveTo: rate?.effectiveTo ?? "",
+    isDefault: rate?.isDefault ?? false,
+    isActive: rate?.isActive ?? true,
+  });
+
+  const mutation = useMutation({
+    mutationFn: async (data: typeof form) => {
+      const payload = {
+        name: data.name.trim(),
+        jurisdiction: data.jurisdiction.trim() || null,
+        rateBasisPoints: Math.round(parseFloat(data.ratePercent || "0") * 100),
+        effectiveFrom: data.effectiveFrom,
+        effectiveTo: data.effectiveTo || null,
+        isDefault: data.isDefault,
+        isActive: data.isActive,
+      };
+      const response = isEditMode
+        ? await apiRequest("PATCH", `/api/tax-rates/${rate.id}`, payload)
+        : await apiRequest("POST", "/api/tax-rates", payload);
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/tax-rates?includeInactive=true"] });
+      toast({ title: isEditMode ? "Tax rate updated" : "Tax rate created" });
+      onClose();
+    },
+    onError: (err: Error) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+  });
+
+  return (
+    <form onSubmit={(e) => { e.preventDefault(); mutation.mutate(form); }} className="space-y-4">
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="space-y-1.5"><Label>Name *</Label><Input value={form.name} onChange={(e) => setForm((p) => ({ ...p, name: e.target.value }))} /></div>
+        <div className="space-y-1.5"><Label>Jurisdiction</Label><Input placeholder="e.g., Texas, DFW" value={form.jurisdiction} onChange={(e) => setForm((p) => ({ ...p, jurisdiction: e.target.value }))} /></div>
+      </div>
+      <div className="space-y-1.5"><Label>Rate (%) *</Label><Input type="number" step="0.01" min="0" value={form.ratePercent} onChange={(e) => setForm((p) => ({ ...p, ratePercent: e.target.value }))} /></div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="space-y-1.5"><Label>Effective From *</Label><Input type="date" value={form.effectiveFrom} onChange={(e) => setForm((p) => ({ ...p, effectiveFrom: e.target.value }))} /></div>
+        <div className="space-y-1.5"><Label>Effective To</Label><Input type="date" value={form.effectiveTo} onChange={(e) => setForm((p) => ({ ...p, effectiveTo: e.target.value }))} /></div>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.isDefault} onChange={(e) => setForm((p) => ({ ...p, isDefault: e.target.checked }))} /> Default rate</label>
+        <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.isActive} onChange={(e) => setForm((p) => ({ ...p, isActive: e.target.checked }))} /> Active</label>
+      </div>
+      <div className="flex justify-end gap-2"><Button type="button" variant="outline" onClick={onClose}>Cancel</Button><Button type="submit" disabled={mutation.isPending || !form.name.trim() || !form.ratePercent}>{mutation.isPending ? "Saving..." : isEditMode ? "Save Rate" : "Create Rate"}</Button></div>
+    </form>
+  );
+}
+
+function TaxRuleForm({ rule, onClose }: { rule?: TaxRule | null; onClose: () => void }) {
+  const { toast } = useToast();
+  const isEditMode = !!rule;
+  const { data: serviceTypes } = useQuery<ServiceType[]>({ queryKey: ["/api/service-types"] });
+  const [form, setForm] = useState({
+    serviceTypeId: rule?.serviceTypeId ?? "",
+    locationType: rule?.locationType ?? "",
+    taxable: rule?.taxable ?? true,
+    isActive: rule?.isActive ?? true,
+  });
+
+  const mutation = useMutation({
+    mutationFn: async (data: typeof form) => {
+      const payload = {
+        serviceTypeId: data.serviceTypeId || null,
+        locationType: data.locationType || null,
+        taxable: data.taxable,
+        isActive: data.isActive,
+      };
+      const response = isEditMode
+        ? await apiRequest("PATCH", `/api/tax-rules/${rule.id}`, payload)
+        : await apiRequest("POST", "/api/tax-rules", payload);
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/tax-rules?includeInactive=true"] });
+      toast({ title: isEditMode ? "Tax rule updated" : "Tax rule created" });
+      onClose();
+    },
+    onError: (err: Error) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+  });
+
+  return (
+    <form onSubmit={(e) => { e.preventDefault(); mutation.mutate(form); }} className="space-y-4">
+      <div className="space-y-1.5">
+        <Label>Service Type</Label>
+        <Select value={form.serviceTypeId || "ANY"} onValueChange={(value) => setForm((p) => ({ ...p, serviceTypeId: value === "ANY" ? "" : value }))}>
+          <SelectTrigger><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="ANY">Any service type</SelectItem>
+            {(serviceTypes ?? []).map((st) => <SelectItem key={st.id} value={st.id}>{st.name}</SelectItem>)}
+          </SelectContent>
+        </Select>
+      </div>
+      <div className="space-y-1.5">
+        <Label>Location Type</Label>
+        <Select value={form.locationType || "ANY"} onValueChange={(value) => setForm((p) => ({ ...p, locationType: value === "ANY" ? "" : value }))}>
+          <SelectTrigger><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="ANY">Any location type</SelectItem>
+            <SelectItem value="residential">Residential</SelectItem>
+            <SelectItem value="commercial">Commercial</SelectItem>
+            <SelectItem value="multi-family">Multi-family</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+      <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.taxable} onChange={(e) => setForm((p) => ({ ...p, taxable: e.target.checked }))} /> Taxable</label>
+      <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.isActive} onChange={(e) => setForm((p) => ({ ...p, isActive: e.target.checked }))} /> Active</label>
+      <div className="flex justify-end gap-2"><Button type="button" variant="outline" onClick={onClose}>Cancel</Button><Button type="submit" disabled={mutation.isPending}>{mutation.isPending ? "Saving..." : isEditMode ? "Save Rule" : "Create Rule"}</Button></div>
+    </form>
+  );
+}
+
 function OpportunityDispositionForm({ disposition, onClose }: { disposition?: OpportunityDisposition | null; onClose: () => void }) {
   const { toast } = useToast();
   const isEditMode = !!disposition;
@@ -1033,6 +1153,10 @@ export default function Settings() {
   const [editingBillingProfileTemplate, setEditingBillingProfileTemplate] = useState<BillingProfileTemplate | null>(null);
   const [billingPlanDialogOpen, setBillingPlanDialogOpen] = useState(false);
   const [editingBillingPlan, setEditingBillingPlan] = useState<BillingPlan | null>(null);
+  const [taxRateDialogOpen, setTaxRateDialogOpen] = useState(false);
+  const [editingTaxRate, setEditingTaxRate] = useState<TaxRate | null>(null);
+  const [taxRuleDialogOpen, setTaxRuleDialogOpen] = useState(false);
+  const [editingTaxRule, setEditingTaxRule] = useState<TaxRule | null>(null);
   const [appointmentCancelReasonsText, setAppointmentCancelReasonsText] = useState("");
   const { data: serviceTypes, isLoading } = useQuery<ServiceType[]>({ queryKey: ["/api/service-types"] });
   const { data: technicians, isLoading: techniciansLoading } = useQuery<Technician[]>({ queryKey: ["/api/technicians?includeInactive=true"] });
@@ -1043,6 +1167,8 @@ export default function Settings() {
   const { data: opportunityDispositions, isLoading: dispositionsLoading } = useQuery<OpportunityDisposition[]>({ queryKey: ["/api/opportunity-dispositions?includeInactive=true"] });
   const { data: billingProfileTemplates, isLoading: billingProfileTemplatesLoading } = useQuery<BillingProfileTemplate[]>({ queryKey: ["/api/billing-profile-templates?includeInactive=true"] });
   const { data: billingPlans, isLoading: billingPlansLoading } = useQuery<BillingPlan[]>({ queryKey: ["/api/billing-plans?includeInactive=true"] });
+  const { data: taxRates, isLoading: taxRatesLoading } = useQuery<TaxRate[]>({ queryKey: ["/api/tax-rates?includeInactive=true"] });
+  const { data: taxRules, isLoading: taxRulesLoading } = useQuery<TaxRule[]>({ queryKey: ["/api/tax-rules?includeInactive=true"] });
   const { data: serviceTimeTracking } = useQuery<{ mode: string }>({ queryKey: ["/api/settings/service-time-tracking"] });
   const { data: appointmentCancelReasons } = useQuery<{ reasons: string[] }>({ queryKey: ["/api/settings/appointment-cancel-reasons"] });
   useEffect(() => {
@@ -1276,6 +1402,89 @@ export default function Settings() {
                     )}
                   </div>
                   <Button variant="outline" size="sm" onClick={() => { setEditingBillingPlan(plan); setBillingPlanDialogOpen(true); }}>Edit</Button>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
+          <CardTitle className="text-base font-semibold flex items-center gap-2"><Percent className="h-4 w-4" /> Tax Rates</CardTitle>
+          <Dialog open={taxRateDialogOpen} onOpenChange={(open) => { setTaxRateDialogOpen(open); if (!open) setEditingTaxRate(null); }}>
+            <DialogTrigger asChild><Button size="sm" onClick={() => setEditingTaxRate(null)}><Plus className="h-3 w-3 mr-1" /> Add Rate</Button></DialogTrigger>
+            <DialogContent>
+              <DialogHeader><DialogTitle>{editingTaxRate ? "Edit Tax Rate" : "New Tax Rate"}</DialogTitle></DialogHeader>
+              <TaxRateForm rate={editingTaxRate} onClose={() => { setTaxRateDialogOpen(false); setEditingTaxRate(null); }} />
+            </DialogContent>
+          </Dialog>
+        </CardHeader>
+        <CardContent>
+          {taxRatesLoading ? (
+            <div className="space-y-2">{[1, 2].map((i) => <Skeleton key={i} className="h-14" />)}</div>
+          ) : !taxRates?.length ? (
+            <div className="text-center py-8">
+              <Percent className="h-8 w-8 mx-auto text-muted-foreground/30 mb-2" />
+              <p className="text-sm text-muted-foreground">No tax rates configured</p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {taxRates.map((rate) => (
+                <div key={rate.id} className="flex items-center justify-between gap-3 rounded-md bg-muted/50 p-3">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-sm font-medium">{rate.name}</span>
+                      <Badge variant="outline">{(rate.rateBasisPoints / 100).toFixed(2)}%</Badge>
+                      {rate.isDefault && <Badge variant="secondary">Default</Badge>}
+                      <Badge variant={rate.isActive ? "secondary" : "outline"}>{rate.isActive ? "Active" : "Inactive"}</Badge>
+                    </div>
+                    <p className="mt-0.5 text-xs text-muted-foreground">
+                      {rate.jurisdiction ? `${rate.jurisdiction} • ` : ""}Effective {rate.effectiveFrom}{rate.effectiveTo ? ` – ${rate.effectiveTo}` : ""}
+                    </p>
+                  </div>
+                  <Button variant="outline" size="sm" onClick={() => { setEditingTaxRate(rate); setTaxRateDialogOpen(true); }}>Edit</Button>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
+          <CardTitle className="text-base font-semibold flex items-center gap-2"><Scale className="h-4 w-4" /> Tax Rules</CardTitle>
+          <Dialog open={taxRuleDialogOpen} onOpenChange={(open) => { setTaxRuleDialogOpen(open); if (!open) setEditingTaxRule(null); }}>
+            <DialogTrigger asChild><Button size="sm" onClick={() => setEditingTaxRule(null)}><Plus className="h-3 w-3 mr-1" /> Add Rule</Button></DialogTrigger>
+            <DialogContent>
+              <DialogHeader><DialogTitle>{editingTaxRule ? "Edit Tax Rule" : "New Tax Rule"}</DialogTitle></DialogHeader>
+              <TaxRuleForm rule={editingTaxRule} onClose={() => { setTaxRuleDialogOpen(false); setEditingTaxRule(null); }} />
+            </DialogContent>
+          </Dialog>
+        </CardHeader>
+        <CardContent>
+          {taxRulesLoading ? (
+            <div className="space-y-2">{[1, 2].map((i) => <Skeleton key={i} className="h-14" />)}</div>
+          ) : !taxRules?.length ? (
+            <div className="text-center py-8">
+              <Scale className="h-8 w-8 mx-auto text-muted-foreground/30 mb-2" />
+              <p className="text-sm text-muted-foreground">No tax rules configured - defaults to taxable</p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {taxRules.map((rule) => (
+                <div key={rule.id} className="flex items-center justify-between gap-3 rounded-md bg-muted/50 p-3">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-sm font-medium">
+                        {serviceTypes?.find((st) => st.id === rule.serviceTypeId)?.name ?? "Any service type"}
+                        {rule.locationType ? ` • ${rule.locationType}` : " • Any location type"}
+                      </span>
+                      <Badge variant={rule.taxable ? "secondary" : "outline"}>{rule.taxable ? "Taxable" : "Exempt"}</Badge>
+                      <Badge variant={rule.isActive ? "secondary" : "outline"}>{rule.isActive ? "Active" : "Inactive"}</Badge>
+                    </div>
+                  </div>
+                  <Button variant="outline" size="sm" onClick={() => { setEditingTaxRule(rule); setTaxRuleDialogOpen(true); }}>Edit</Button>
                 </div>
               ))}
             </div>

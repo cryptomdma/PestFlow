@@ -538,6 +538,50 @@ export const invoiceCounters = pgTable("invoice_counters", {
   nextNumber: integer("next_number").notNull().default(1),
 });
 
+// Org-scoped, Settings-configurable. Rate stored as basis points (1/100th
+// of a percent - 825 = 8.25%) to keep tax math in integers, same reasoning
+// as money-as-cents (shared/money.ts).
+export const taxRates = pgTable("tax_rates", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: varchar("org_id").notNull(),
+  name: text("name").notNull(),
+  jurisdiction: text("jurisdiction"),
+  rateBasisPoints: integer("rate_basis_points").notNull(),
+  effectiveFrom: date("effective_from").notNull(),
+  effectiveTo: date("effective_to"),
+  isDefault: boolean("is_default").notNull().default(false),
+  isActive: boolean("is_active").notNull().default(true),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+// Taxability decision matrix. Both serviceTypeId and locationType are
+// optional match keys; resolveTaxDecision in storage.ts picks the most
+// specific matching rule (both keys > serviceTypeId only > locationType
+// only > org-wide default rule with neither key set).
+export const taxRules = pgTable("tax_rules", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: varchar("org_id").notNull(),
+  serviceTypeId: varchar("service_type_id").references(() => serviceTypes.id),
+  locationType: text("location_type"), // matches locations.propertyType - residential | commercial | ...
+  taxable: boolean("taxable").notNull().default(true),
+  isActive: boolean("is_active").notNull().default(true),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+// documentUrl mirrors agreements.contractUrl - a link to an externally
+// stored file, not a built-in upload/document feature.
+export const taxExemptionCertificates = pgTable("tax_exemption_certificates", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: varchar("org_id").notNull(),
+  accountId: varchar("account_id").notNull().references(() => accounts.id),
+  certificateNumber: text("certificate_number").notNull(),
+  expiresAt: date("expires_at"),
+  documentUrl: text("document_url"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
 export const invoices = pgTable("invoices", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   orgId: varchar("org_id").notNull(),
@@ -553,6 +597,11 @@ export const invoices = pgTable("invoices", {
   // resolveBillingProfileForLocation at issue time - not a live join, so a
   // later billing profile edit never changes an already-created invoice.
   billingProfileSnapshot: jsonb("billing_profile_snapshot"),
+  // jsonb snapshot of the resolveTaxDecision result (rate, jurisdiction,
+  // taxability, which rule/exemption applied) at invoice creation. Tax is
+  // calculated and frozen at issue, per PLAN_BILLING_V1.md §1.5 - never
+  // recomputed, so a later tax rate edit never changes an issued invoice.
+  taxSnapshot: jsonb("tax_snapshot"),
   amountCents: integer("amount_cents").notNull(),
   taxCents: integer("tax_cents").default(0),
   totalAmountCents: integer("total_amount_cents").notNull(),
@@ -681,6 +730,9 @@ export const insertMaterialProductSchema = createInsertSchema(materialProducts).
 export const insertTargetPestSchema = createInsertSchema(targetPests).omit({ orgId: true, id: true, createdAt: true, updatedAt: true });
 export const insertInvoiceSchema = createInsertSchema(invoices).omit({ orgId: true, id: true, createdAt: true, publicId: true, invoiceNumber: true });
 export const insertInvoiceLineItemSchema = createInsertSchema(invoiceLineItems).omit({ orgId: true, id: true, invoiceId: true });
+export const insertTaxRateSchema = createInsertSchema(taxRates).omit({ orgId: true, id: true, createdAt: true, updatedAt: true });
+export const insertTaxRuleSchema = createInsertSchema(taxRules).omit({ orgId: true, id: true, createdAt: true, updatedAt: true });
+export const insertTaxExemptionCertificateSchema = createInsertSchema(taxExemptionCertificates).omit({ orgId: true, id: true, createdAt: true });
 export const insertCommunicationSchema = createInsertSchema(communications).omit({ orgId: true, id: true });
 export const insertAuditLogSchema = createInsertSchema(auditLogs).omit({ orgId: true, id: true, createdAt: true });
 export const insertUserSchema = createInsertSchema(users).omit({ orgId: true, id: true, createdAt: true, updatedAt: true });
@@ -739,6 +791,12 @@ export type Invoice = typeof invoices.$inferSelect;
 export type InsertInvoice = z.infer<typeof insertInvoiceSchema>;
 export type InvoiceLineItem = typeof invoiceLineItems.$inferSelect;
 export type InsertInvoiceLineItem = z.infer<typeof insertInvoiceLineItemSchema>;
+export type TaxRate = typeof taxRates.$inferSelect;
+export type InsertTaxRate = z.infer<typeof insertTaxRateSchema>;
+export type TaxRule = typeof taxRules.$inferSelect;
+export type InsertTaxRule = z.infer<typeof insertTaxRuleSchema>;
+export type TaxExemptionCertificate = typeof taxExemptionCertificates.$inferSelect;
+export type InsertTaxExemptionCertificate = z.infer<typeof insertTaxExemptionCertificateSchema>;
 export type Communication = typeof communications.$inferSelect;
 export type InsertCommunication = z.infer<typeof insertCommunicationSchema>;
 export type AuditLog = typeof auditLogs.$inferSelect;
