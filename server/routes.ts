@@ -1642,6 +1642,47 @@ export async function registerRoutes(
     }
   });
 
+  // Batch Invoicing - PLAN_BILLING_V1.md §1.6.1: from the Ticket Review
+  // queue, filter finalized/billing-ready records over a date range ->
+  // preview -> generate -> optionally bulk-send.
+  const batchDateRangeSchema = z.object({
+    dateFrom: z.string().min(1),
+    dateTo: z.string().min(1),
+  });
+
+  app.get("/api/invoices/batch-preview", requirePermission(PERMISSIONS.GENERATE_INVOICE), async (req, res) => {
+    try {
+      const { dateFrom, dateTo } = batchDateRangeSchema.parse(req.query);
+      const data = await req.storage.getServiceRecordsReadyForBillingInRange(dateFrom, dateTo);
+      res.json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/invoices/batch-generate", requirePermission(PERMISSIONS.GENERATE_INVOICE), async (req, res) => {
+    try {
+      const { dateFrom, dateTo } = batchDateRangeSchema.parse(req.body);
+      const data = await req.storage.batchGenerateInvoicesForDateRange(dateFrom, dateTo);
+      res.json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/invoices/batch-send", requirePermission(PERMISSIONS.SEND_INVOICE), async (req, res) => {
+    try {
+      const invoiceIds = z.array(z.string()).min(1).parse(req.body.invoiceIds);
+      const data = await req.storage.batchSendInvoices(invoiceIds);
+      res.json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
   app.patch("/api/invoices/:id", async (req, res) => {
     try {
       const validated = insertInvoiceSchema.partial().parse(req.body);

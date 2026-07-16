@@ -10,9 +10,19 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/hooks/use-auth";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { CheckCircle2, ClipboardCheck, RotateCcw } from "lucide-react";
+import { formatCents } from "@shared/money";
+import { can, PERMISSIONS } from "@shared/permissions";
+import { CheckCircle2, ClipboardCheck, FileStack, RotateCcw, Send } from "lucide-react";
 import type { Appointment, Customer, Location, ProductApplication, Service, ServiceRecord, ServiceType, Technician } from "@shared/schema";
+
+interface BatchGenerateResult {
+  totalEligible: number;
+  invoiced: Array<{ serviceRecordId: string; invoiceId: string; invoiceNumber: string; totalAmountCents: number }>;
+  skipped: Array<{ serviceRecordId: string; reason: string }>;
+  totalAmountCents: number;
+}
 
 function formatDateInputValue(date: Date) {
   const year = date.getFullYear();
@@ -42,6 +52,7 @@ function statusLabel(record: ServiceRecord) {
 
 export default function ServiceTicketReview() {
   const { toast } = useToast();
+  const { user } = useAuth();
   const [, setLocation] = useLocation();
   const [statusFilter, setStatusFilter] = useState("PENDING_REVIEW");
   const [technicianFilter, setTechnicianFilter] = useState("ALL");
@@ -50,6 +61,10 @@ export default function ServiceTicketReview() {
   const [dateTo, setDateTo] = useState("");
   const [selectedRecordId, setSelectedRecordId] = useState<string | null>(null);
   const [reopenReason, setReopenReason] = useState("");
+  const [batchDialogOpen, setBatchDialogOpen] = useState(false);
+  const [batchResult, setBatchResult] = useState<BatchGenerateResult | null>(null);
+  const canBatchInvoice = can(user?.role ?? "", PERMISSIONS.GENERATE_INVOICE);
+  const canSendInvoice = can(user?.role ?? "", PERMISSIONS.SEND_INVOICE);
 
   const { data: serviceRecords } = useQuery<ServiceRecord[]>({ queryKey: ["/api/service-records"] });
   const { data: services } = useQuery<Service[]>({ queryKey: ["/api/services"] });
@@ -131,11 +146,67 @@ export default function ServiceTicketReview() {
     onError: (error: Error) => toast({ title: "Unable to reopen ticket", description: error.message, variant: "destructive" }),
   });
 
+  const { data: batchPreview, isLoading: batchPreviewLoading } = useQuery<ServiceRecord[]>({
+    queryKey: [`/api/invoices/batch-preview?dateFrom=${dateFrom}&dateTo=${dateTo}`],
+    enabled: batchDialogOpen && !!dateFrom && !!dateTo,
+  });
+
+  const batchGenerateMutation = useMutation({
+    mutationFn: async () => {
+      const response = await apiRequest("POST", "/api/invoices/batch-generate", { dateFrom, dateTo });
+      return response.json() as Promise<BatchGenerateResult>;
+    },
+    onSuccess: (result) => {
+      setBatchResult(result);
+      toast({ title: "Batch invoicing complete", description: `${result.invoiced.length} invoice(s) generated, ${result.skipped.length} skipped.` });
+      invalidateReviewData();
+      queryClient.invalidateQueries({ queryKey: ["/api/invoices"] });
+    },
+    onError: (error: Error) => toast({ title: "Batch invoicing failed", description: error.message, variant: "destructive" }),
+  });
+
+  const batchSendMutation = useMutation({
+    mutationFn: async (invoiceIds: string[]) => {
+      const response = await apiRequest("POST", "/api/invoices/batch-send", { invoiceIds });
+      return response.json();
+    },
+    onSuccess: (sent: unknown[]) => {
+      toast({ title: "Invoices sent", description: `${sent.length} invoice(s) marked as sent.` });
+      queryClient.invalidateQueries({ queryKey: ["/api/invoices"] });
+    },
+    onError: (error: Error) => toast({ title: "Unable to send invoices", description: error.message, variant: "destructive" }),
+  });
+
+  const closeBatchDialog = (open: boolean) => {
+    setBatchDialogOpen(open);
+    if (!open) setBatchResult(null);
+  };
+
+  const batchPreviewTotalCents = useMemo(() => {
+    return (batchPreview ?? []).reduce((sum, record) => {
+      const service = record.serviceId ? serviceById.get(record.serviceId) : undefined;
+      return sum + (service?.priceCents ?? 0);
+    }, 0);
+  }, [batchPreview, serviceById]);
+
   return (
     <div className="p-4 sm:p-6 space-y-5">
-      <div>
-        <p className="text-sm text-muted-foreground">Office review and finalization</p>
-        <h1 className="text-2xl font-semibold tracking-tight">Service Ticket Review</h1>
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div>
+          <p className="text-sm text-muted-foreground">Office review and finalization</p>
+          <h1 className="text-2xl font-semibold tracking-tight">Service Ticket Review</h1>
+        </div>
+        {canBatchInvoice && (
+          <Button
+            type="button"
+            variant="outline"
+            disabled={!dateFrom || !dateTo}
+            onClick={() => { setBatchResult(null); setBatchDialogOpen(true); }}
+            title={!dateFrom || !dateTo ? "Set a From and To date first" : undefined}
+          >
+            <FileStack className="mr-1 h-4 w-4" /> Batch Invoice
+          </Button>
+        )}
       </div>
 
       <Card>
@@ -318,6 +389,89 @@ export default function ServiceTicketReview() {
               </div>
             </div>
           ) : null}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={batchDialogOpen} onOpenChange={closeBatchDialog}>
+        <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2"><FileStack className="h-4 w-4" /> Batch Invoice</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            {dateFrom && dateTo ? `${dateFrom} through ${dateTo}` : "Set a From and To date to preview."}
+          </p>
+
+          {!batchResult ? (
+            <div className="space-y-3">
+              {batchPreviewLoading ? (
+                <div className="py-6 text-center text-sm text-muted-foreground">Loading eligible tickets...</div>
+              ) : !batchPreview?.length ? (
+                <div className="py-6 text-center text-sm text-muted-foreground">No finalized, billing-ready tickets without an invoice in this date range.</div>
+              ) : (
+                <>
+                  <div className="rounded-md border bg-muted/20 p-3 text-sm">
+                    <span className="font-medium">{batchPreview.length}</span> ticket{batchPreview.length === 1 ? "" : "s"} eligible, totaling <span className="font-medium">{formatCents(batchPreviewTotalCents)}</span>
+                  </div>
+                  <div className="max-h-64 space-y-1 overflow-y-auto">
+                    {batchPreview.map((record) => {
+                      const service = record.serviceId ? serviceById.get(record.serviceId) : undefined;
+                      const customer = customerById.get(record.customerId);
+                      const location = record.locationId ? locationById.get(record.locationId) : undefined;
+                      const serviceType = serviceTypeById.get(record.serviceTypeId || service?.serviceTypeId || "");
+                      return (
+                        <div key={record.id} className="flex items-center justify-between gap-3 rounded-md px-2 py-1.5 text-sm hover:bg-muted/20">
+                          <div className="min-w-0">
+                            <p className="truncate font-medium">{getCustomerLabel(customer, location)}</p>
+                            <p className="truncate text-xs text-muted-foreground">{serviceType?.name || "Service"}</p>
+                          </div>
+                          <span className="shrink-0 font-medium">{service?.priceCents != null ? formatCents(service.priceCents) : "Not set"}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
+              <div className="flex justify-end gap-2">
+                <Button type="button" variant="outline" onClick={() => setBatchDialogOpen(false)}>Cancel</Button>
+                <Button
+                  type="button"
+                  onClick={() => batchGenerateMutation.mutate()}
+                  disabled={!batchPreview?.length || batchGenerateMutation.isPending}
+                >
+                  Generate {batchPreview?.length ? `${batchPreview.length} ` : ""}Invoice{batchPreview?.length === 1 ? "" : "s"}
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <div className="rounded-md border bg-muted/20 p-3 text-sm">
+                <span className="font-medium">{batchResult.invoiced.length}</span> invoice{batchResult.invoiced.length === 1 ? "" : "s"} generated, totaling <span className="font-medium">{formatCents(batchResult.totalAmountCents)}</span>
+                {batchResult.skipped.length > 0 && <span> - {batchResult.skipped.length} skipped</span>}
+              </div>
+              {batchResult.skipped.length > 0 && (
+                <div className="space-y-1">
+                  <p className="text-xs uppercase tracking-wide text-muted-foreground">Skipped</p>
+                  {batchResult.skipped.map((item) => (
+                    <div key={item.serviceRecordId} className="rounded-md border border-destructive/30 bg-destructive/5 px-2 py-1.5 text-xs">
+                      {item.reason}
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div className="flex justify-end gap-2">
+                <Button type="button" variant="outline" onClick={() => setBatchDialogOpen(false)}>Close</Button>
+                {canSendInvoice && batchResult.invoiced.length > 0 && (
+                  <Button
+                    type="button"
+                    onClick={() => batchSendMutation.mutate(batchResult.invoiced.map((item) => item.invoiceId))}
+                    disabled={batchSendMutation.isPending}
+                  >
+                    <Send className="mr-1 h-4 w-4" /> Send All
+                  </Button>
+                )}
+              </div>
+            </div>
+          )}
         </DialogContent>
       </Dialog>
     </div>
