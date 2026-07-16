@@ -22,7 +22,7 @@ import { normalizePhone } from "@shared/phone";
 import { ZodError, z } from "zod";
 import type { Request } from "express";
 import { requirePermission } from "./auth";
-import { PERMISSIONS, type UserRole } from "@shared/permissions";
+import { can, PERMISSIONS, type UserRole } from "@shared/permissions";
 import { runBillingCycle } from "./jobs/billing-run";
 
 function handleZodError(res: any, error: ZodError) {
@@ -1321,6 +1321,15 @@ export async function registerRoutes(
   app.post("/api/agreements/:id/cancel", async (req, res) => {
     try {
       const validated = cancelAgreementSchema.parse(req.body);
+      // The override path (overrideApplied + a caller-supplied
+      // cancellationFeeAmountCents) is what actually waives or changes the
+      // policy's cancellation fee - previously reachable by any
+      // authenticated user with no role check at all, despite the RBAC
+      // matrix marking "Waive cancellation fee" manager/admin only. A plain
+      // cancellation (no override) stays open to any office role.
+      if (validated.overrideApplied && !can(req.user!.role, PERMISSIONS.WAIVE_CANCELLATION_FEE)) {
+        return res.status(403).json({ message: "You don't have permission to override the cancellation fee" });
+      }
       const data = await req.storage.cancelAgreement({
         agreementId: req.params.id,
         ...validated,
@@ -1724,10 +1733,32 @@ export async function registerRoutes(
     }
   });
 
-  app.patch("/api/invoices/:id", async (req, res) => {
+  // Deliberately narrow: this used to accept insertInvoiceSchema.partial(),
+  // which let any authenticated user rewrite amountCents/taxCents/
+  // totalAmountCents/customerId/serviceRecordId/billingProfileSnapshot/
+  // taxSnapshot on an already-issued invoice with no permission check at
+  // all, and set status: "VOID" directly - completely bypassing
+  // VOID_INVOICE and the immutable-snapshot guarantee unit 11's tax engine
+  // and unit 10's invoice model are built on. The only real caller is the
+  // "Mark Paid" action (client/src/pages/invoices.tsx), which only ever
+  // sends status + paidDate - this schema matches that exactly. Voiding
+  // still requires the dedicated, VOID_INVOICE-gated /void route below.
+  const updateInvoiceStatusSchema = z.object({
+    status: z.enum(["OPEN", "PARTIALLY_PAID", "PAID"]).optional(),
+    paidDate: z.string().nullable().optional(),
+    dueDate: z.string().nullable().optional(),
+    notes: z.string().nullable().optional(),
+  });
+
+  app.patch("/api/invoices/:id", requirePermission(PERMISSIONS.SEND_INVOICE), async (req, res) => {
     try {
-      const validated = insertInvoiceSchema.partial().parse(req.body);
-      const data = await req.storage.updateInvoice(req.params.id, validated);
+      const validated = updateInvoiceStatusSchema.parse(req.body);
+      const data = await req.storage.updateInvoice(req.params.id, {
+        status: validated.status,
+        notes: validated.notes,
+        paidDate: validated.paidDate === undefined ? undefined : validated.paidDate ? new Date(validated.paidDate) : null,
+        dueDate: validated.dueDate === undefined ? undefined : validated.dueDate ? new Date(validated.dueDate) : null,
+      });
       if (!data) return res.status(404).json({ message: "Invoice not found" });
       res.json(data);
     } catch (e: any) {
@@ -1772,7 +1803,7 @@ export async function registerRoutes(
     res.json(data);
   });
 
-  app.post("/api/tax-rates", async (req, res) => {
+  app.post("/api/tax-rates", requirePermission(PERMISSIONS.MANAGE_SETTINGS), async (req, res) => {
     try {
       const validated = insertTaxRateSchema.parse(req.body);
       const data = await req.storage.createTaxRate(validated);
@@ -1783,7 +1814,7 @@ export async function registerRoutes(
     }
   });
 
-  app.patch("/api/tax-rates/:id", async (req, res) => {
+  app.patch("/api/tax-rates/:id", requirePermission(PERMISSIONS.MANAGE_SETTINGS), async (req, res) => {
     try {
       const validated = insertTaxRateSchema.partial().parse(req.body);
       const data = await req.storage.updateTaxRate(req.params.id, validated);
@@ -1802,7 +1833,7 @@ export async function registerRoutes(
     res.json(data);
   });
 
-  app.post("/api/tax-rules", async (req, res) => {
+  app.post("/api/tax-rules", requirePermission(PERMISSIONS.MANAGE_SETTINGS), async (req, res) => {
     try {
       const validated = insertTaxRuleSchema.parse(req.body);
       const data = await req.storage.createTaxRule(validated);
@@ -1813,7 +1844,7 @@ export async function registerRoutes(
     }
   });
 
-  app.patch("/api/tax-rules/:id", async (req, res) => {
+  app.patch("/api/tax-rules/:id", requirePermission(PERMISSIONS.MANAGE_SETTINGS), async (req, res) => {
     try {
       const validated = insertTaxRuleSchema.partial().parse(req.body);
       const data = await req.storage.updateTaxRule(req.params.id, validated);
@@ -1831,7 +1862,7 @@ export async function registerRoutes(
     res.json(data);
   });
 
-  app.post("/api/tax-exemption-certificates", async (req, res) => {
+  app.post("/api/tax-exemption-certificates", requirePermission(PERMISSIONS.MANAGE_SETTINGS), async (req, res) => {
     try {
       const validated = insertTaxExemptionCertificateSchema.parse(req.body);
       const data = await req.storage.createTaxExemptionCertificate(validated);
