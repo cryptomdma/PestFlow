@@ -240,6 +240,13 @@ export interface GenerateScheduleDrivenInvoiceInput {
   nextBillingDate: string | null;
 }
 
+export interface BatchGenerateResult {
+  totalEligible: number;
+  invoiced: Array<{ serviceRecordId: string; invoiceId: string; invoiceNumber: string; totalAmountCents: number }>;
+  skipped: Array<{ serviceRecordId: string; reason: string }>;
+  totalAmountCents: number;
+}
+
 export interface SaveScopedNoteInput {
   scope: "ACCOUNT" | "LOCATION";
   accountId?: string | null;
@@ -377,9 +384,12 @@ export interface IStorage {
   getInvoice(id: string): Promise<Invoice | undefined>;
   getInvoiceLineItems(invoiceId: string): Promise<InvoiceLineItem[]>;
   getServiceRecordsReadyForBilling(): Promise<ServiceRecord[]>;
+  getServiceRecordsReadyForBillingInRange(dateFrom: string, dateTo: string): Promise<ServiceRecord[]>;
   createManualInvoice(input: CreateManualInvoiceInput): Promise<Invoice>;
   generateInvoiceFromServiceRecord(serviceRecordId: string): Promise<Invoice>;
   generateScheduleDrivenInvoice(input: GenerateScheduleDrivenInvoiceInput): Promise<Invoice>;
+  batchGenerateInvoicesForDateRange(dateFrom: string, dateTo: string): Promise<BatchGenerateResult>;
+  batchSendInvoices(invoiceIds: string[]): Promise<Invoice[]>;
   updateInvoice(id: string, data: Partial<InsertInvoice>): Promise<Invoice | undefined>;
   voidInvoice(id: string): Promise<Invoice | undefined>;
 
@@ -3493,10 +3503,74 @@ export class DatabaseStorage implements IStorage {
     );
 
     // Agreement-generated services are billed through the agreement's
-    // billing plan (not built yet), never invoiced per service record - see
-    // generateInvoiceFromServiceRecord. Excluded here too so nothing shows a
-    // "Generate Invoice" action that's guaranteed to fail.
+    // billing plan (server/jobs/billing-run.ts), never invoiced per service
+    // record - see generateInvoiceFromServiceRecord. Excluded here too so
+    // nothing shows a "Generate Invoice" action that's guaranteed to fail.
     return uninvoiced.filter((record) => !record.serviceId || !agreementServiceIds.has(record.serviceId));
+  }
+
+  // Same eligibility rule as getServiceRecordsReadyForBilling, narrowed to a
+  // date range - the shared basis for both the batch-invoicing preview and
+  // the actual generate step, so a record shown in preview is guaranteed to
+  // still be eligible when generate runs moments later (unless someone
+  // else invoiced it in between, which generateInvoiceFromServiceRecord's
+  // own idempotency check still catches).
+  async getServiceRecordsReadyForBillingInRange(dateFrom: string, dateTo: string): Promise<ServiceRecord[]> {
+    const eligible = await this.getServiceRecordsReadyForBilling();
+    return eligible.filter((record) => {
+      const dateOnly = new Date(record.postedAt ?? record.serviceDate).toISOString().slice(0, 10);
+      return dateOnly >= dateFrom && dateOnly <= dateTo;
+    });
+  }
+
+  // Idempotent by construction (PLAN_BILLING_V1.md §1.6.1): reuses
+  // generateInvoiceFromServiceRecord's own pre-check + unique-index catch
+  // for every record, so running this twice over the same date range
+  // produces zero duplicate invoices - the second run simply finds nothing
+  // left in getServiceRecordsReadyForBillingInRange to generate. One
+  // record's failure doesn't abort the batch; it's collected in `skipped`
+  // with the reason so the office can see exactly what needs attention.
+  async batchGenerateInvoicesForDateRange(dateFrom: string, dateTo: string): Promise<BatchGenerateResult> {
+    const eligible = await this.getServiceRecordsReadyForBillingInRange(dateFrom, dateTo);
+    const result: BatchGenerateResult = { totalEligible: eligible.length, invoiced: [], skipped: [], totalAmountCents: 0 };
+
+    for (const record of eligible) {
+      try {
+        const invoice = await this.generateInvoiceFromServiceRecord(record.id);
+        result.invoiced.push({
+          serviceRecordId: record.id,
+          invoiceId: invoice.id,
+          invoiceNumber: invoice.invoiceNumber,
+          totalAmountCents: invoice.totalAmountCents,
+        });
+        result.totalAmountCents += invoice.totalAmountCents;
+      } catch (err: any) {
+        result.skipped.push({ serviceRecordId: record.id, reason: err?.message ?? "Unknown error" });
+      }
+    }
+
+    return result;
+  }
+
+  async batchSendInvoices(invoiceIds: string[]): Promise<Invoice[]> {
+    const sent: Invoice[] = [];
+    for (const id of invoiceIds) {
+      const [invoice] = await db.select().from(invoices).where(and(eq(invoices.orgId, this.orgId), eq(invoices.id, id)));
+      if (!invoice || invoice.status === "VOID") {
+        continue;
+      }
+
+      const [updated] = await db
+        .update(invoices)
+        .set({ sentAt: invoice.sentAt ?? new Date() })
+        .where(and(eq(invoices.orgId, this.orgId), eq(invoices.id, id)))
+        .returning();
+      if (updated) {
+        sent.push(updated);
+      }
+    }
+
+    return sent;
   }
 
   // Atomic per-org counter: the first call for an org takes the plain
