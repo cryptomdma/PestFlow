@@ -23,6 +23,7 @@ import { ZodError, z } from "zod";
 import type { Request } from "express";
 import { requirePermission } from "./auth";
 import { PERMISSIONS, type UserRole } from "@shared/permissions";
+import { runBillingCycle } from "./jobs/billing-run";
 
 function handleZodError(res: any, error: ZodError) {
   const messages = error.errors.map((e) => `${e.path.join(".")}: ${e.message}`).join(", ");
@@ -1733,6 +1734,18 @@ export async function registerRoutes(
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
       res.status(400).json({ message: e.message });
+    }
+  });
+
+  // Billing Run - manual trigger for ops/catch-up. The real trigger is the
+  // nightly cron (server/jobs/billing-run.ts); this exists so an admin
+  // isn't stuck waiting for 2am to force a run or verify one worked.
+  app.post("/api/billing-run", requirePermission(PERMISSIONS.MANAGE_SETTINGS), async (req, res) => {
+    try {
+      const result = await runBillingCycle();
+      res.json(result);
+    } catch (e: any) {
+      res.status(500).json({ message: e.message });
     }
   });
 

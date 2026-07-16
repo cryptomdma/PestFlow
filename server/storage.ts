@@ -15,6 +15,7 @@ import {
   serviceRecords, productApplications, materialProducts, targetPests, invoices, invoiceLineItems, invoiceCounters, communications,
   billingProfiles, billingProfileTemplates, customerNotes,
   taxRates, taxRules, taxExemptionCertificates,
+  billingEvents,
   noteRevisions,
   users,
   type User, type InsertUser,
@@ -46,6 +47,7 @@ import {
   type TaxRate, type InsertTaxRate,
   type TaxRule, type InsertTaxRule,
   type TaxExemptionCertificate, type InsertTaxExemptionCertificate,
+  type BillingEvent,
   type CustomerNote,
   type NoteRevision,
 } from "@shared/schema";
@@ -228,6 +230,16 @@ export interface CreateManualInvoiceInput {
   notes?: string | null;
 }
 
+export interface GenerateScheduleDrivenInvoiceInput {
+  agreementId: string;
+  periodKey: string;
+  amountCents: number;
+  // Set on the agreement in the same transaction as the invoice, so the
+  // charge and the schedule advance atomically - never out of sync even
+  // across a crash between the two.
+  nextBillingDate: string | null;
+}
+
 export interface SaveScopedNoteInput {
   scope: "ACCOUNT" | "LOCATION";
   accountId?: string | null;
@@ -367,6 +379,7 @@ export interface IStorage {
   getServiceRecordsReadyForBilling(): Promise<ServiceRecord[]>;
   createManualInvoice(input: CreateManualInvoiceInput): Promise<Invoice>;
   generateInvoiceFromServiceRecord(serviceRecordId: string): Promise<Invoice>;
+  generateScheduleDrivenInvoice(input: GenerateScheduleDrivenInvoiceInput): Promise<Invoice>;
   updateInvoice(id: string, data: Partial<InsertInvoice>): Promise<Invoice | undefined>;
   voidInvoice(id: string): Promise<Invoice | undefined>;
 
@@ -453,7 +466,11 @@ function addMonths(dateOnly: string, months: number) {
   return next.toISOString().slice(0, 10);
 }
 
-function advanceAgreementDate(dateOnly: string, recurrenceUnit: string, recurrenceInterval: number) {
+// Exported so server/jobs/billing-run.ts can step a billing cadence with
+// the exact same calendar-month arithmetic used for service generation and
+// expectedServiceCount, rather than a second, potentially-diverging
+// implementation.
+export function advanceAgreementDate(dateOnly: string, recurrenceUnit: string, recurrenceInterval: number) {
   const step = Math.max(recurrenceInterval || 1, 1);
 
   switch (recurrenceUnit) {
@@ -1028,6 +1045,24 @@ export class DatabaseStorage implements IStorage {
     const recurrenceUnit = agreementData.recurrenceUnit ?? template?.defaultRecurrenceUnit ?? "MONTH";
     const recurrenceInterval = agreementData.recurrenceInterval ?? template?.defaultRecurrenceInterval ?? 1;
 
+    // Only schedule-driven plans (chargeTrigger = ON_SCHEDULE) get a
+    // nextBillingDate at all - PER_SERVICE/INSTALLMENT agreements bill some
+    // other way and are never picked up by the nightly run. RECURRING_INTERVAL
+    // bills immediately at signup for period 1 unless the plan's initial
+    // charge already covers that period, in which case billing starts one
+    // interval out (PLAN_BILLING_V1.md §1.2). PREPAID_TERM bills the full
+    // contract price once, at signup.
+    let nextBillingDate: string | null = null;
+    if (billingPlan?.chargeTrigger === "ON_SCHEDULE") {
+      if (billingPlan.billingMode === "PREPAID_TERM") {
+        nextBillingDate = startDate;
+      } else if (billingPlan.billingMode === "RECURRING_INTERVAL") {
+        nextBillingDate = billingPlan.initialChargeCoversFirstPeriod
+          ? advanceAgreementDate(startDate, billingPlan.intervalUnit ?? "MONTH", billingPlan.intervalCount ?? 1)
+          : startDate;
+      }
+    }
+
     return {
       customerId: agreementData.customerId,
       locationId: agreementData.locationId,
@@ -1049,6 +1084,7 @@ export class DatabaseStorage implements IStorage {
       billingFrequency: agreementData.billingFrequency ?? template?.defaultBillingFrequency ?? null,
       priceCents: agreementData.priceCents ?? template?.defaultPriceCents ?? null,
       expectedServiceCount: agreementData.expectedServiceCount ?? computeExpectedServiceCount(startDate, termUnit, termInterval, recurrenceUnit, recurrenceInterval),
+      nextBillingDate: agreementData.nextBillingDate ?? nextBillingDate,
       recurrenceUnit,
       recurrenceInterval,
       generationLeadDays: agreementData.generationLeadDays ?? template?.defaultGenerationLeadDays ?? 14,
@@ -3791,10 +3827,152 @@ export class DatabaseStorage implements IStorage {
         quantity: 1,
         unitPriceCents: priceCents,
         amountCents: priceCents,
-        taxable: false,
-        taxCents: 0,
+        taxable: taxDecision.taxable,
+        taxCents: taxDecision.taxCents,
         sortOrder: 0,
       });
+
+      return invoice;
+    });
+  }
+
+  // Schedule-driven per PLAN_BILLING_V1.md §1.6 path 2 - the primary path
+  // for agreement revenue. Called by the nightly billing run
+  // (server/jobs/billing-run.ts) once per due period; idempotent via the
+  // permanent unique index on billing_events (agreementId, periodKey), with
+  // both a pre-check and a catch on a genuine race, same shape as
+  // generateInvoiceFromServiceRecord.
+  async generateScheduleDrivenInvoice(input: GenerateScheduleDrivenInvoiceInput): Promise<Invoice> {
+    return db.transaction(async (tx) => {
+      const [agreement] = await tx.select().from(agreements).where(and(eq(agreements.orgId, this.orgId), eq(agreements.id, input.agreementId)));
+      if (!agreement) {
+        throw new Error("Agreement not found");
+      }
+
+      const [existingEvent] = await tx
+        .select()
+        .from(billingEvents)
+        .where(and(eq(billingEvents.orgId, this.orgId), eq(billingEvents.agreementId, input.agreementId), eq(billingEvents.periodKey, input.periodKey)));
+      if (existingEvent?.invoiceId) {
+        const [existingInvoice] = await tx.select().from(invoices).where(and(eq(invoices.orgId, this.orgId), eq(invoices.id, existingEvent.invoiceId)));
+        if (existingInvoice) {
+          // Still advance nextBillingDate even on this already-billed path -
+          // it should be a no-op in normal operation (creating the event and
+          // advancing the date are atomic in the same transaction below), but
+          // if this period is ever revisited with a stale nextBillingDate
+          // anyway (a manual re-trigger, a bug elsewhere), the agreement must
+          // not get stuck re-attempting an already-billed period forever.
+          if (agreement.nextBillingDate !== input.nextBillingDate) {
+            await tx
+              .update(agreements)
+              .set({ nextBillingDate: input.nextBillingDate as any, updatedAt: new Date() })
+              .where(and(eq(agreements.orgId, this.orgId), eq(agreements.id, agreement.id)));
+          }
+          return existingInvoice;
+        }
+      }
+
+      let billingProfileSnapshot: Record<string, unknown> | null = null;
+      let dueDate: Date | null = null;
+      let accountId: string | null = null;
+      if (agreement.locationId) {
+        const [location] = await tx.select().from(locations).where(and(eq(locations.orgId, this.orgId), eq(locations.id, agreement.locationId)));
+        accountId = location?.accountId ?? null;
+
+        const resolvedProfile = await this.resolveBillingProfileForLocation(agreement.locationId);
+        if (resolvedProfile) {
+          billingProfileSnapshot = {
+            profileId: resolvedProfile.id,
+            label: resolvedProfile.label,
+            billingType: resolvedProfile.billingType,
+            invoiceTerms: resolvedProfile.invoiceTerms,
+            billingName: resolvedProfile.billingName,
+            billingAddress: resolvedProfile.billingAddress,
+            snapshottedAt: new Date().toISOString(),
+          };
+          dueDate = computeDueDateFromInvoiceTerms(resolvedProfile.invoiceTerms);
+        }
+      }
+
+      const taxDecision = await this.resolveTaxDecision(tx, {
+        accountId,
+        locationId: agreement.locationId,
+        serviceTypeId: agreement.serviceTypeId,
+        amountCents: input.amountCents,
+      });
+
+      const insertInvoiceRow = async () => {
+        const invoiceNumber = await this.getNextInvoiceNumber(tx);
+        const [invoice] = await tx
+          .insert(invoices)
+          .values({
+            orgId: this.orgId,
+            customerId: agreement.customerId,
+            locationId: agreement.locationId ?? null,
+            serviceRecordId: null,
+            invoiceNumber,
+            billingProfileSnapshot,
+            taxSnapshot: taxDecision.snapshot,
+            amountCents: input.amountCents,
+            taxCents: taxDecision.taxCents,
+            totalAmountCents: input.amountCents + taxDecision.taxCents,
+            status: "OPEN",
+            dueDate,
+            notes: null,
+          })
+          .returning();
+        return invoice;
+      };
+
+      let invoice: Invoice;
+      let billingEvent: BillingEvent;
+      try {
+        invoice = await insertInvoiceRow();
+        [billingEvent] = await tx
+          .insert(billingEvents)
+          .values({
+            orgId: this.orgId,
+            agreementId: agreement.id,
+            source: "SCHEDULE_DRIVEN",
+            periodKey: input.periodKey,
+            amountCents: input.amountCents,
+            invoiceId: invoice.id,
+          })
+          .returning();
+      } catch (err: any) {
+        if (err?.code === "23505") {
+          const [raceWinner] = await tx
+            .select()
+            .from(billingEvents)
+            .where(and(eq(billingEvents.orgId, this.orgId), eq(billingEvents.agreementId, input.agreementId), eq(billingEvents.periodKey, input.periodKey)));
+          if (raceWinner?.invoiceId) {
+            const [raceInvoice] = await tx.select().from(invoices).where(and(eq(invoices.orgId, this.orgId), eq(invoices.id, raceWinner.invoiceId)));
+            if (raceInvoice) {
+              return raceInvoice;
+            }
+          }
+        }
+        throw err;
+      }
+      void billingEvent;
+
+      await tx.insert(invoiceLineItems).values({
+        orgId: this.orgId,
+        invoiceId: invoice.id,
+        lineType: "SERVICE",
+        description: `${agreement.agreementName} - scheduled charge (${input.periodKey})`,
+        quantity: 1,
+        unitPriceCents: input.amountCents,
+        amountCents: input.amountCents,
+        taxable: taxDecision.taxable,
+        taxCents: taxDecision.taxCents,
+        sortOrder: 0,
+      });
+
+      await tx
+        .update(agreements)
+        .set({ nextBillingDate: input.nextBillingDate as any, updatedAt: new Date() })
+        .where(and(eq(agreements.orgId, this.orgId), eq(agreements.id, agreement.id)));
 
       return invoice;
     });
