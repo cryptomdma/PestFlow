@@ -14,6 +14,7 @@ import {
   appSettings,
   serviceRecords, productApplications, materialProducts, targetPests, invoices, invoiceLineItems, invoiceCounters, communications,
   billingProfiles, billingProfileTemplates, customerNotes,
+  taxRates, taxRules, taxExemptionCertificates,
   noteRevisions,
   users,
   type User, type InsertUser,
@@ -42,6 +43,9 @@ import {
   type Communication, type InsertCommunication,
   type BillingProfile, type InsertBillingProfile,
   type BillingProfileTemplate, type InsertBillingProfileTemplate,
+  type TaxRate, type InsertTaxRate,
+  type TaxRule, type InsertTaxRule,
+  type TaxExemptionCertificate, type InsertTaxExemptionCertificate,
   type CustomerNote,
   type NoteRevision,
 } from "@shared/schema";
@@ -365,6 +369,15 @@ export interface IStorage {
   generateInvoiceFromServiceRecord(serviceRecordId: string): Promise<Invoice>;
   updateInvoice(id: string, data: Partial<InsertInvoice>): Promise<Invoice | undefined>;
   voidInvoice(id: string): Promise<Invoice | undefined>;
+
+  getTaxRates(includeInactive?: boolean): Promise<TaxRate[]>;
+  createTaxRate(data: InsertTaxRate): Promise<TaxRate>;
+  updateTaxRate(id: string, data: Partial<InsertTaxRate>): Promise<TaxRate | undefined>;
+  getTaxRules(includeInactive?: boolean): Promise<TaxRule[]>;
+  createTaxRule(data: InsertTaxRule): Promise<TaxRule>;
+  updateTaxRule(id: string, data: Partial<InsertTaxRule>): Promise<TaxRule | undefined>;
+  getTaxExemptionCertificates(accountId: string): Promise<TaxExemptionCertificate[]>;
+  createTaxExemptionCertificate(data: InsertTaxExemptionCertificate): Promise<TaxExemptionCertificate>;
 
   getCommunications(customerId: string): Promise<Communication[]>;
   getCommunicationsByLocation(locationId: string): Promise<Communication[]>;
@@ -3485,6 +3498,13 @@ export class DatabaseStorage implements IStorage {
           serviceRecordId: null,
           invoiceNumber,
           billingProfileSnapshot: null,
+          // The manual/ad-hoc path keeps its existing direct tax entry
+          // rather than running the tax engine - it isn't tied to a
+          // specific service or location, so there's nothing for
+          // resolveTaxDecision to key off of. Snapshotted as "manual" so
+          // it's still visible in the invoice's tax history, just not
+          // engine-derived.
+          taxSnapshot: { taxable: taxCents > 0, reason: "MANUAL", taxCents, snapshottedAt: new Date().toISOString() },
           amountCents: input.amountCents,
           taxCents,
           totalAmountCents,
@@ -3509,6 +3529,145 @@ export class DatabaseStorage implements IStorage {
 
       return invoice;
     });
+  }
+
+  // Decision order per PLAN_BILLING_V1.md §1.5: exemption certificate ->
+  // tax rule (service type x location type, most specific wins) -> tax
+  // rate -> snapshot everything onto the invoice. Never recomputed once
+  // snapshotted (see the tax_snapshot column comment in shared/schema.ts).
+  // No rule match defaults to taxable=true (safer against under-collecting
+  // than silently exempting); no active rate on a taxable line snapshots
+  // taxable=true with $0 tax rather than guessing a rate, so a missing
+  // Settings configuration is visible instead of silently wrong.
+  private async resolveTaxDecision(
+    tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+    input: { accountId: string | null; locationId: string | null; serviceTypeId: string | null; amountCents: number },
+  ): Promise<{ taxable: boolean; taxCents: number; snapshot: Record<string, unknown> }> {
+    const today = new Date().toISOString().slice(0, 10);
+
+    if (input.accountId) {
+      const certificates = await tx.select().from(taxExemptionCertificates).where(and(eq(taxExemptionCertificates.orgId, this.orgId), eq(taxExemptionCertificates.accountId, input.accountId)));
+      const activeCertificate = certificates.find((cert) => !cert.expiresAt || cert.expiresAt >= today);
+      if (activeCertificate) {
+        return {
+          taxable: false,
+          taxCents: 0,
+          snapshot: {
+            taxable: false,
+            reason: "EXEMPTION_CERTIFICATE",
+            certificateId: activeCertificate.id,
+            certificateNumber: activeCertificate.certificateNumber,
+            snapshottedAt: new Date().toISOString(),
+          },
+        };
+      }
+    }
+
+    let locationType: string | null = null;
+    if (input.locationId) {
+      const [location] = await tx.select().from(locations).where(and(eq(locations.orgId, this.orgId), eq(locations.id, input.locationId)));
+      locationType = location?.propertyType ?? null;
+    }
+
+    const rules = await tx.select().from(taxRules).where(and(eq(taxRules.orgId, this.orgId), eq(taxRules.isActive, true)));
+    const matchedRule =
+      rules.find((r) => r.serviceTypeId && r.serviceTypeId === input.serviceTypeId && r.locationType && r.locationType === locationType) ??
+      rules.find((r) => r.serviceTypeId && r.serviceTypeId === input.serviceTypeId && !r.locationType) ??
+      rules.find((r) => !r.serviceTypeId && r.locationType && r.locationType === locationType) ??
+      rules.find((r) => !r.serviceTypeId && !r.locationType);
+
+    const taxable = matchedRule ? matchedRule.taxable : true;
+    if (!taxable) {
+      return {
+        taxable: false,
+        taxCents: 0,
+        snapshot: {
+          taxable: false,
+          reason: "TAX_RULE",
+          ruleId: matchedRule!.id,
+          snapshottedAt: new Date().toISOString(),
+        },
+      };
+    }
+
+    const rates = await tx.select().from(taxRates).where(and(eq(taxRates.orgId, this.orgId), eq(taxRates.isActive, true)));
+    const activeRates = rates.filter((r) => r.effectiveFrom <= today && (!r.effectiveTo || r.effectiveTo >= today));
+    const applicableRate = activeRates.find((r) => r.isDefault) ?? activeRates[0];
+
+    if (!applicableRate) {
+      return {
+        taxable: true,
+        taxCents: 0,
+        snapshot: { taxable: true, reason: "NO_ACTIVE_RATE", ruleId: matchedRule?.id ?? null, snapshottedAt: new Date().toISOString() },
+      };
+    }
+
+    const taxCents = Math.round((input.amountCents * applicableRate.rateBasisPoints) / 10000);
+    return {
+      taxable: true,
+      taxCents,
+      snapshot: {
+        taxable: true,
+        reason: matchedRule ? "TAX_RULE" : "DEFAULT",
+        ruleId: matchedRule?.id ?? null,
+        rateId: applicableRate.id,
+        rateName: applicableRate.name,
+        jurisdiction: applicableRate.jurisdiction,
+        rateBasisPoints: applicableRate.rateBasisPoints,
+        snapshottedAt: new Date().toISOString(),
+      },
+    };
+  }
+
+  async getTaxRates(includeInactive = false): Promise<TaxRate[]> {
+    if (includeInactive) {
+      return db.select().from(taxRates).where(eq(taxRates.orgId, this.orgId)).orderBy(asc(taxRates.name));
+    }
+    return db.select().from(taxRates).where(and(eq(taxRates.orgId, this.orgId), eq(taxRates.isActive, true))).orderBy(asc(taxRates.name));
+  }
+
+  async createTaxRate(data: InsertTaxRate): Promise<TaxRate> {
+    const [rate] = await db.insert(taxRates).values({ ...data, orgId: this.orgId }).returning();
+    return rate;
+  }
+
+  async updateTaxRate(id: string, data: Partial<InsertTaxRate>): Promise<TaxRate | undefined> {
+    const [rate] = await db
+      .update(taxRates)
+      .set({ ...data, updatedAt: new Date() })
+      .where(and(eq(taxRates.orgId, this.orgId), eq(taxRates.id, id)))
+      .returning();
+    return rate;
+  }
+
+  async getTaxRules(includeInactive = false): Promise<TaxRule[]> {
+    if (includeInactive) {
+      return db.select().from(taxRules).where(eq(taxRules.orgId, this.orgId));
+    }
+    return db.select().from(taxRules).where(and(eq(taxRules.orgId, this.orgId), eq(taxRules.isActive, true)));
+  }
+
+  async createTaxRule(data: InsertTaxRule): Promise<TaxRule> {
+    const [rule] = await db.insert(taxRules).values({ ...data, orgId: this.orgId }).returning();
+    return rule;
+  }
+
+  async updateTaxRule(id: string, data: Partial<InsertTaxRule>): Promise<TaxRule | undefined> {
+    const [rule] = await db
+      .update(taxRules)
+      .set({ ...data, updatedAt: new Date() })
+      .where(and(eq(taxRules.orgId, this.orgId), eq(taxRules.id, id)))
+      .returning();
+    return rule;
+  }
+
+  async getTaxExemptionCertificates(accountId: string): Promise<TaxExemptionCertificate[]> {
+    return db.select().from(taxExemptionCertificates).where(and(eq(taxExemptionCertificates.orgId, this.orgId), eq(taxExemptionCertificates.accountId, accountId)));
+  }
+
+  async createTaxExemptionCertificate(data: InsertTaxExemptionCertificate): Promise<TaxExemptionCertificate> {
+    const [certificate] = await db.insert(taxExemptionCertificates).values({ ...data, orgId: this.orgId }).returning();
+    return certificate;
   }
 
   // Agreement Services never emit billing events (PLAN_BILLING_V1.md §1.1 -
@@ -3556,7 +3715,11 @@ export class DatabaseStorage implements IStorage {
 
       let billingProfileSnapshot: Record<string, unknown> | null = null;
       let dueDate: Date | null = null;
+      let accountId: string | null = null;
       if (record.locationId) {
+        const [location] = await tx.select().from(locations).where(and(eq(locations.orgId, this.orgId), eq(locations.id, record.locationId)));
+        accountId = location?.accountId ?? null;
+
         const resolvedProfile = await this.resolveBillingProfileForLocation(record.locationId);
         if (resolvedProfile) {
           billingProfileSnapshot = {
@@ -3572,6 +3735,13 @@ export class DatabaseStorage implements IStorage {
         }
       }
 
+      const taxDecision = await this.resolveTaxDecision(tx, {
+        accountId,
+        locationId: record.locationId,
+        serviceTypeId: record.serviceTypeId,
+        amountCents: priceCents,
+      });
+
       const insertInvoiceRow = async () => {
         const invoiceNumber = await this.getNextInvoiceNumber(tx);
         const [invoice] = await tx
@@ -3583,9 +3753,10 @@ export class DatabaseStorage implements IStorage {
             serviceRecordId: record.id,
             invoiceNumber,
             billingProfileSnapshot,
+            taxSnapshot: taxDecision.snapshot,
             amountCents: priceCents,
-            taxCents: 0,
-            totalAmountCents: priceCents,
+            taxCents: taxDecision.taxCents,
+            totalAmountCents: priceCents + taxDecision.taxCents,
             status: "OPEN",
             dueDate,
             notes: null,
