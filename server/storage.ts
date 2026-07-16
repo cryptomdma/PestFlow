@@ -16,6 +16,7 @@ import {
   billingProfiles, billingProfileTemplates, customerNotes,
   taxRates, taxRules, taxExemptionCertificates,
   billingEvents,
+  documents, organizations,
   noteRevisions,
   users,
   type User, type InsertUser,
@@ -48,12 +49,17 @@ import {
   type TaxRule, type InsertTaxRule,
   type TaxExemptionCertificate, type InsertTaxExemptionCertificate,
   type BillingEvent,
+  type Document,
+  type Organization, type InsertOrganization,
   type CustomerNote,
   type NoteRevision,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, inArray, sql, gte, lte, asc, desc, ne, isNull } from "drizzle-orm";
 import { PLACEHOLDER_LOCATION_NAME, PLACEHOLDER_LOCATION_NOTE } from "./account-bootstrap";
+import { createHash } from "crypto";
+import type { InvoiceDocumentContext } from "./documents/types";
+import { renderInvoicePdf } from "./documents/invoice-pdf";
 import { can, PERMISSIONS, type UserRole } from "@shared/permissions";
 import { computeProductionValueCents } from "@shared/production-value";
 
@@ -378,6 +384,9 @@ export interface IStorage {
   getProductApplicationsByServiceRecord(serviceRecordId: string): Promise<ProductApplication[]>;
   createProductApplication(data: InsertProductApplication): Promise<ProductApplication>;
 
+  getOrganization(): Promise<Organization | undefined>;
+  updateOrganizationBranding(data: Partial<InsertOrganization>): Promise<Organization | undefined>;
+
   getInvoices(): Promise<Invoice[]>;
   getInvoicesByLocation(locationId: string): Promise<Invoice[]>;
   getLocationBalancesByCustomer(customerId: string): Promise<LocationBalanceSummary[]>;
@@ -392,6 +401,10 @@ export interface IStorage {
   batchSendInvoices(invoiceIds: string[]): Promise<Invoice[]>;
   updateInvoice(id: string, data: Partial<InsertInvoice>): Promise<Invoice | undefined>;
   voidInvoice(id: string): Promise<Invoice | undefined>;
+
+  getInvoiceDocumentContext(invoiceId: string): Promise<InvoiceDocumentContext | undefined>;
+  getOrCreateInvoiceDocument(invoiceId: string): Promise<Document | undefined>;
+  getDocument(id: string): Promise<Document | undefined>;
 
   getTaxRates(includeInactive?: boolean): Promise<TaxRate[]>;
   createTaxRate(data: InsertTaxRate): Promise<TaxRate>;
@@ -3441,6 +3454,20 @@ export class DatabaseStorage implements IStorage {
     return pa;
   }
 
+  async getOrganization(): Promise<Organization | undefined> {
+    const [org] = await db.select().from(organizations).where(eq(organizations.id, this.orgId));
+    return org;
+  }
+
+  async updateOrganizationBranding(data: Partial<InsertOrganization>): Promise<Organization | undefined> {
+    const [org] = await db
+      .update(organizations)
+      .set({ ...data, updatedAt: new Date() })
+      .where(eq(organizations.id, this.orgId))
+      .returning();
+    return org;
+  }
+
   async getInvoices(): Promise<Invoice[]> {
     return db.select().from(invoices).where(eq(invoices.orgId, this.orgId));
   }
@@ -4064,6 +4091,125 @@ export class DatabaseStorage implements IStorage {
       .where(and(eq(invoices.orgId, this.orgId), eq(invoices.id, id)))
       .returning();
     return inv;
+  }
+
+  // Everything here is drawn from the invoice's own frozen data
+  // (billingProfileSnapshot, line items, totals) or org branding - never a
+  // live join back to the customer/location's current state, so the
+  // rendered document matches what the invoice said at issue even if the
+  // customer moved or the org's branding changed since. issueDate comes
+  // from invoice.createdAt, not the current time, which is what makes
+  // renderInvoicePdf's output reproducible byte-for-byte on a later call.
+  async getInvoiceDocumentContext(invoiceId: string): Promise<InvoiceDocumentContext | undefined> {
+    const [invoice] = await db.select().from(invoices).where(and(eq(invoices.orgId, this.orgId), eq(invoices.id, invoiceId)));
+    if (!invoice) {
+      return undefined;
+    }
+
+    const [org] = await db.select().from(organizations).where(eq(organizations.id, this.orgId));
+    const [customer] = await db.select().from(customers).where(and(eq(customers.orgId, this.orgId), eq(customers.id, invoice.customerId)));
+    const lineItems = await db
+      .select()
+      .from(invoiceLineItems)
+      .where(and(eq(invoiceLineItems.orgId, this.orgId), eq(invoiceLineItems.invoiceId, invoiceId)))
+      .orderBy(asc(invoiceLineItems.sortOrder));
+
+    const snapshot = invoice.billingProfileSnapshot as { billingName?: string | null; billingAddress?: string | null } | null;
+    let billToAddress = snapshot?.billingAddress || null;
+    if (!billToAddress && invoice.locationId) {
+      const [location] = await db.select().from(locations).where(and(eq(locations.orgId, this.orgId), eq(locations.id, invoice.locationId)));
+      if (location) {
+        billToAddress = [location.address, location.city, location.state, location.zip].filter(Boolean).join(", ");
+      }
+    }
+
+    const customerName = customer ? `${customer.firstName} ${customer.lastName}`.trim() : "";
+    const billToName = snapshot?.billingName || customerName || customer?.companyName || "Customer";
+
+    return {
+      invoiceNumber: invoice.invoiceNumber,
+      publicId: invoice.publicId,
+      issueDate: invoice.createdAt.toISOString().slice(0, 10),
+      dueDate: invoice.dueDate ? new Date(invoice.dueDate).toISOString().slice(0, 10) : null,
+      status: invoice.status,
+      billToName,
+      billToAddress,
+      lineItems: lineItems.map((item) => ({
+        description: item.description,
+        quantity: item.quantity,
+        unitPriceCents: item.unitPriceCents,
+        amountCents: item.amountCents,
+        taxable: item.taxable,
+      })),
+      subtotalCents: invoice.amountCents,
+      taxCents: invoice.taxCents ?? 0,
+      totalCents: invoice.totalAmountCents,
+      notes: invoice.notes,
+      branding: {
+        orgName: org?.name ?? "PestFlow",
+        logoUrl: org?.logoUrl ?? null,
+        primaryColorHex: org?.primaryColorHex ?? null,
+        remitToName: org?.remitToName ?? null,
+        remitToAddress: org?.remitToAddress ?? null,
+        remitToEmail: org?.remitToEmail ?? null,
+        remitToPhone: org?.remitToPhone ?? null,
+      },
+    };
+  }
+
+  // Idempotent: one INVOICE document per invoice (enforced by the partial
+  // unique index in document-bootstrap.ts), since renderInvoicePdf is
+  // deterministic and re-rendering would only ever produce a byte-identical
+  // copy - there's nothing gained by storing it twice, and the original is
+  // what "what you sent is what you can reproduce" refers to.
+  async getOrCreateInvoiceDocument(invoiceId: string): Promise<Document | undefined> {
+    const [existing] = await db
+      .select()
+      .from(documents)
+      .where(and(eq(documents.orgId, this.orgId), eq(documents.invoiceId, invoiceId), eq(documents.kind, "INVOICE")));
+    if (existing) {
+      return existing;
+    }
+
+    const context = await this.getInvoiceDocumentContext(invoiceId);
+    if (!context) {
+      return undefined;
+    }
+
+    const pdfBuffer = await renderInvoicePdf(context);
+    const contentHash = createHash("sha256").update(pdfBuffer).digest("hex");
+    const contentBase64 = pdfBuffer.toString("base64");
+
+    try {
+      const [document] = await db
+        .insert(documents)
+        .values({
+          orgId: this.orgId,
+          kind: "INVOICE",
+          invoiceId,
+          contentHash,
+          contentBase64,
+          mimeType: "application/pdf",
+        })
+        .returning();
+      return document;
+    } catch (err: any) {
+      if (err?.code === "23505") {
+        const [raceWinner] = await db
+          .select()
+          .from(documents)
+          .where(and(eq(documents.orgId, this.orgId), eq(documents.invoiceId, invoiceId), eq(documents.kind, "INVOICE")));
+        if (raceWinner) {
+          return raceWinner;
+        }
+      }
+      throw err;
+    }
+  }
+
+  async getDocument(id: string): Promise<Document | undefined> {
+    const [doc] = await db.select().from(documents).where(and(eq(documents.orgId, this.orgId), eq(documents.id, id)));
+    return doc;
   }
 
   async getCommunications(customerId: string): Promise<Communication[]> {
