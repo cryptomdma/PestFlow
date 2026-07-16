@@ -22,7 +22,7 @@ export default function Dashboard() {
   const communicationsCount = communications?.length || 0;
   const paidRevenueCents =
     invoices
-      ?.filter((invoice) => invoice.status === "paid")
+      ?.filter((invoice) => invoice.status === "PAID")
       .reduce((sum, invoice) => sum + invoice.totalAmountCents, 0) || 0;
 
   const quickLinks = [

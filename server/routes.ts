@@ -1590,18 +1590,50 @@ export async function registerRoutes(
   });
 
   // Invoices
+  const manualInvoiceSchema = z.object({
+    customerId: z.string(),
+    locationId: z.string().nullable().optional(),
+    description: z.string().nullable().optional(),
+    amountCents: z.number().int().nonnegative(),
+    taxCents: z.number().int().nonnegative().nullable().optional(),
+    dueDate: z.string().nullable().optional(),
+    notes: z.string().nullable().optional(),
+  });
+
   app.get("/api/invoices", async (req, res) => {
     const data = await req.storage.getInvoices();
     res.json(data);
   });
 
-  app.post("/api/invoices", async (req, res) => {
+  app.get("/api/invoices/ready-for-billing", async (req, res) => {
+    const data = await req.storage.getServiceRecordsReadyForBilling();
+    res.json(data);
+  });
+
+  app.get("/api/invoices/:id/line-items", async (req, res) => {
+    const data = await req.storage.getInvoiceLineItems(req.params.id);
+    res.json(data);
+  });
+
+  app.post("/api/invoices", requirePermission(PERMISSIONS.GENERATE_INVOICE), async (req, res) => {
     try {
-      const validated = insertInvoiceSchema.parse(req.body);
-      const data = await req.storage.createInvoice(validated);
+      const validated = manualInvoiceSchema.parse(req.body);
+      const data = await req.storage.createManualInvoice({
+        ...validated,
+        dueDate: validated.dueDate ? new Date(validated.dueDate) : null,
+      });
       res.status(201).json(data);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/invoices/generate-from-service-record/:serviceRecordId", requirePermission(PERMISSIONS.GENERATE_INVOICE), async (req, res) => {
+    try {
+      const data = await req.storage.generateInvoiceFromServiceRecord(req.params.serviceRecordId);
+      res.status(201).json(data);
+    } catch (e: any) {
       res.status(400).json({ message: e.message });
     }
   });
@@ -1616,6 +1648,12 @@ export async function registerRoutes(
       if (e instanceof ZodError) return handleZodError(res, e);
       res.status(400).json({ message: e.message });
     }
+  });
+
+  app.post("/api/invoices/:id/void", requirePermission(PERMISSIONS.VOID_INVOICE), async (req, res) => {
+    const data = await req.storage.voidInvoice(req.params.id);
+    if (!data) return res.status(404).json({ message: "Invoice not found" });
+    res.json(data);
   });
 
   // Communications

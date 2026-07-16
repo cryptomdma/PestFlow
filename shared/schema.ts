@@ -529,21 +529,60 @@ export const targetPests = pgTable("target_pests", {
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
+// Per-org atomic invoice numbering. Incremented inside the creating
+// transaction with a SELECT ... FOR UPDATE row lock (see
+// getNextInvoiceNumber in storage.ts) rather than a global Postgres
+// sequence, per PLAN_BILLING_V1.md §1.3.
+export const invoiceCounters = pgTable("invoice_counters", {
+  orgId: varchar("org_id").primaryKey(),
+  nextNumber: integer("next_number").notNull().default(1),
+});
+
 export const invoices = pgTable("invoices", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   orgId: varchar("org_id").notNull(),
   customerId: varchar("customer_id").notNull().references(() => customers.id),
   locationId: varchar("location_id").references(() => locations.id),
+  // One non-void invoice per service record, enforced by a partial unique
+  // index (see invoice-bootstrap.ts) rather than a plain unique constraint,
+  // so a voided invoice frees the service record for a corrected one.
   serviceRecordId: varchar("service_record_id").references(() => serviceRecords.id),
   invoiceNumber: text("invoice_number").notNull(),
+  publicId: varchar("public_id").notNull().default(sql`gen_random_uuid()`),
+  // jsonb snapshot (terms, delivery method, remit-to) resolved from
+  // resolveBillingProfileForLocation at issue time - not a live join, so a
+  // later billing profile edit never changes an already-created invoice.
+  billingProfileSnapshot: jsonb("billing_profile_snapshot"),
   amountCents: integer("amount_cents").notNull(),
   taxCents: integer("tax_cents").default(0),
   totalAmountCents: integer("total_amount_cents").notNull(),
-  status: text("status").notNull().default("pending"),
+  // DRAFT | OPEN | PARTIALLY_PAID | PAID | VOID. "Sent" is deliberately not
+  // a status - see sentAt below.
+  status: text("status").notNull().default("OPEN"),
   dueDate: timestamp("due_date"),
+  sentAt: timestamp("sent_at"),
   paidDate: timestamp("paid_date"),
   notes: text("notes"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+// One line per invoice for now (SERVICE for a generated invoice, ADJUSTMENT
+// for the manual/ad-hoc path) - description/price are a snapshot taken at
+// creation, never a live join to the service or price book.
+export const invoiceLineItems = pgTable("invoice_line_items", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: varchar("org_id").notNull(),
+  invoiceId: varchar("invoice_id").notNull().references(() => invoices.id),
+  serviceId: varchar("service_id").references(() => services.id),
+  serviceRecordId: varchar("service_record_id").references(() => serviceRecords.id),
+  lineType: text("line_type").notNull().default("ADJUSTMENT"), // SERVICE | ADDON | SURCHARGE | FEE | DISCOUNT | ADJUSTMENT
+  description: text("description").notNull(),
+  quantity: integer("quantity").notNull().default(1),
+  unitPriceCents: integer("unit_price_cents").notNull(),
+  amountCents: integer("amount_cents").notNull(),
+  taxable: boolean("taxable").notNull().default(false),
+  taxCents: integer("tax_cents").notNull().default(0),
+  sortOrder: integer("sort_order"),
 });
 
 export const communications = pgTable("communications", {
@@ -640,7 +679,8 @@ export const insertOpportunityActivitySchema = createInsertSchema(opportunityAct
 export const insertProductApplicationSchema = createInsertSchema(productApplications).omit({ orgId: true, id: true });
 export const insertMaterialProductSchema = createInsertSchema(materialProducts).omit({ orgId: true, id: true, createdAt: true, updatedAt: true });
 export const insertTargetPestSchema = createInsertSchema(targetPests).omit({ orgId: true, id: true, createdAt: true, updatedAt: true });
-export const insertInvoiceSchema = createInsertSchema(invoices).omit({ orgId: true, id: true, createdAt: true });
+export const insertInvoiceSchema = createInsertSchema(invoices).omit({ orgId: true, id: true, createdAt: true, publicId: true, invoiceNumber: true });
+export const insertInvoiceLineItemSchema = createInsertSchema(invoiceLineItems).omit({ orgId: true, id: true, invoiceId: true });
 export const insertCommunicationSchema = createInsertSchema(communications).omit({ orgId: true, id: true });
 export const insertAuditLogSchema = createInsertSchema(auditLogs).omit({ orgId: true, id: true, createdAt: true });
 export const insertUserSchema = createInsertSchema(users).omit({ orgId: true, id: true, createdAt: true, updatedAt: true });
@@ -697,6 +737,8 @@ export type TargetPest = typeof targetPests.$inferSelect;
 export type InsertTargetPest = z.infer<typeof insertTargetPestSchema>;
 export type Invoice = typeof invoices.$inferSelect;
 export type InsertInvoice = z.infer<typeof insertInvoiceSchema>;
+export type InvoiceLineItem = typeof invoiceLineItems.$inferSelect;
+export type InsertInvoiceLineItem = z.infer<typeof insertInvoiceLineItemSchema>;
 export type Communication = typeof communications.$inferSelect;
 export type InsertCommunication = z.infer<typeof insertCommunicationSchema>;
 export type AuditLog = typeof auditLogs.$inferSelect;

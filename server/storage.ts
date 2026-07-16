@@ -12,7 +12,7 @@ import {
   agreementCancellationPolicies,
   billingPlans,
   appSettings,
-  serviceRecords, productApplications, materialProducts, targetPests, invoices, communications,
+  serviceRecords, productApplications, materialProducts, targetPests, invoices, invoiceLineItems, invoiceCounters, communications,
   billingProfiles, billingProfileTemplates, customerNotes,
   noteRevisions,
   users,
@@ -38,6 +38,7 @@ import {
   type MaterialProduct, type InsertMaterialProduct,
   type TargetPest, type InsertTargetPest,
   type Invoice, type InsertInvoice,
+  type InvoiceLineItem,
   type Communication, type InsertCommunication,
   type BillingProfile, type InsertBillingProfile,
   type BillingProfileTemplate, type InsertBillingProfileTemplate,
@@ -213,6 +214,16 @@ export interface ApplyOpportunityDispositionInput {
   actor?: AuditActor;
 }
 
+export interface CreateManualInvoiceInput {
+  customerId: string;
+  locationId?: string | null;
+  description?: string | null;
+  amountCents: number;
+  taxCents?: number | null;
+  dueDate?: Date | null;
+  notes?: string | null;
+}
+
 export interface SaveScopedNoteInput {
   scope: "ACCOUNT" | "LOCATION";
   accountId?: string | null;
@@ -348,8 +359,12 @@ export interface IStorage {
   getInvoicesByLocation(locationId: string): Promise<Invoice[]>;
   getLocationBalancesByCustomer(customerId: string): Promise<LocationBalanceSummary[]>;
   getInvoice(id: string): Promise<Invoice | undefined>;
-  createInvoice(data: InsertInvoice): Promise<Invoice>;
+  getInvoiceLineItems(invoiceId: string): Promise<InvoiceLineItem[]>;
+  getServiceRecordsReadyForBilling(): Promise<ServiceRecord[]>;
+  createManualInvoice(input: CreateManualInvoiceInput): Promise<Invoice>;
+  generateInvoiceFromServiceRecord(serviceRecordId: string): Promise<Invoice>;
   updateInvoice(id: string, data: Partial<InsertInvoice>): Promise<Invoice | undefined>;
+  voidInvoice(id: string): Promise<Invoice | undefined>;
 
   getCommunications(customerId: string): Promise<Communication[]>;
   getCommunicationsByLocation(locationId: string): Promise<Communication[]>;
@@ -439,6 +454,26 @@ function advanceAgreementDate(dateOnly: string, recurrenceUnit: string, recurren
     default:
       return addMonths(dateOnly, step);
   }
+}
+
+function computeDueDateFromInvoiceTerms(invoiceTerms: string | null): Date | null {
+  const days: Record<string, number> = {
+    DUE_ON_RECEIPT: 0,
+    NET_15: 15,
+    NET_30: 30,
+    NET_60: 60,
+  };
+  if (!invoiceTerms || !(invoiceTerms in days)) {
+    return null;
+  }
+
+  return addDaysToDate(new Date(), days[invoiceTerms]);
+}
+
+function addDaysToDate(date: Date, days: number): Date {
+  const next = new Date(date);
+  next.setUTCDate(next.getUTCDate() + days);
+  return next;
 }
 
 // How many times generateServiceForAgreement would actually fire between
@@ -3360,7 +3395,7 @@ export class DatabaseStorage implements IStorage {
     const balances = new Map<string, LocationBalanceSummary>();
 
     for (const invoice of customerInvoices) {
-      if (!invoice.locationId) {
+      if (!invoice.locationId || invoice.status === "VOID") {
         continue;
       }
 
@@ -3375,7 +3410,7 @@ export class DatabaseStorage implements IStorage {
       current.totalInvoicedCents += invoiceTotalCents;
       current.invoiceCount += 1;
 
-      if (invoice.status !== "paid") {
+      if (invoice.status !== "PAID") {
         current.openBalanceCents += invoiceTotalCents;
       }
 
@@ -3390,13 +3425,221 @@ export class DatabaseStorage implements IStorage {
     return inv;
   }
 
-  async createInvoice(data: InsertInvoice): Promise<Invoice> {
-    const [inv] = await db.insert(invoices).values({ ...data, orgId: this.orgId }).returning();
-    return inv;
+  async getInvoiceLineItems(invoiceId: string): Promise<InvoiceLineItem[]> {
+    return db.select().from(invoiceLineItems).where(and(eq(invoiceLineItems.orgId, this.orgId), eq(invoiceLineItems.invoiceId, invoiceId))).orderBy(asc(invoiceLineItems.sortOrder));
+  }
+
+  async getServiceRecordsReadyForBilling(): Promise<ServiceRecord[]> {
+    const readyRecords = await db.select().from(serviceRecords).where(and(eq(serviceRecords.orgId, this.orgId), eq(serviceRecords.readyForBilling, true)));
+    const alreadyInvoiced = await db.select().from(invoices).where(and(eq(invoices.orgId, this.orgId), ne(invoices.status, "VOID")));
+    const invoicedServiceRecordIds = new Set(alreadyInvoiced.map((invoice) => invoice.serviceRecordId).filter((id): id is string => !!id));
+    const uninvoiced = readyRecords.filter((record) => !invoicedServiceRecordIds.has(record.id));
+
+    const serviceIds = uninvoiced.map((record) => record.serviceId).filter((id): id is string => !!id);
+    const linkedServices = serviceIds.length
+      ? await db.select().from(services).where(and(eq(services.orgId, this.orgId), inArray(services.id, serviceIds)))
+      : [];
+    const agreementServiceIds = new Set(
+      linkedServices.filter((service) => service.agreementId || service.source === "AGREEMENT_GENERATED").map((service) => service.id),
+    );
+
+    // Agreement-generated services are billed through the agreement's
+    // billing plan (not built yet), never invoiced per service record - see
+    // generateInvoiceFromServiceRecord. Excluded here too so nothing shows a
+    // "Generate Invoice" action that's guaranteed to fail.
+    return uninvoiced.filter((record) => !record.serviceId || !agreementServiceIds.has(record.serviceId));
+  }
+
+  // Atomic per-org counter: the first call for an org takes the plain
+  // insert path (nextNumber = 1); every call after that hits the conflict
+  // and increments in the same statement. No separate SELECT ... FOR UPDATE
+  // needed - the upsert itself is the lock.
+  private async getNextInvoiceNumber(tx: Parameters<Parameters<typeof db.transaction>[0]>[0]): Promise<string> {
+    const [counter] = await tx
+      .insert(invoiceCounters)
+      .values({ orgId: this.orgId, nextNumber: 1 })
+      .onConflictDoUpdate({
+        target: invoiceCounters.orgId,
+        set: { nextNumber: sql`${invoiceCounters.nextNumber} + 1` },
+      })
+      .returning();
+
+    return `INV-${String(counter.nextNumber).padStart(6, "0")}`;
+  }
+
+  // Preserves the existing manual/ad-hoc invoice path (not tied to a
+  // Service Record) as an ADJUSTMENT line item, per PLAN_BILLING_V1.md
+  // §1.3's line-type taxonomy.
+  async createManualInvoice(input: CreateManualInvoiceInput): Promise<Invoice> {
+    return db.transaction(async (tx) => {
+      const taxCents = input.taxCents ?? 0;
+      const totalAmountCents = input.amountCents + taxCents;
+      const invoiceNumber = await this.getNextInvoiceNumber(tx);
+
+      const [invoice] = await tx
+        .insert(invoices)
+        .values({
+          orgId: this.orgId,
+          customerId: input.customerId,
+          locationId: input.locationId ?? null,
+          serviceRecordId: null,
+          invoiceNumber,
+          billingProfileSnapshot: null,
+          amountCents: input.amountCents,
+          taxCents,
+          totalAmountCents,
+          status: "OPEN",
+          dueDate: input.dueDate ?? null,
+          notes: input.notes?.trim() || null,
+        })
+        .returning();
+
+      await tx.insert(invoiceLineItems).values({
+        orgId: this.orgId,
+        invoiceId: invoice.id,
+        lineType: "ADJUSTMENT",
+        description: input.description?.trim() || "Manual adjustment",
+        quantity: 1,
+        unitPriceCents: input.amountCents,
+        amountCents: input.amountCents,
+        taxable: taxCents > 0,
+        taxCents,
+        sortOrder: 0,
+      });
+
+      return invoice;
+    });
+  }
+
+  // Agreement Services never emit billing events (PLAN_BILLING_V1.md §1.1 -
+  // the Billing Plan's schedule is the only source of agreement revenue, not
+  // built yet as of Phase 1 unit 12), so this only ever bills non-agreement /
+  // COD work. Idempotent: a double-click or re-run for the same service
+  // record returns the existing invoice instead of erroring or duplicating,
+  // via both a pre-check and a catch on the partial unique index in case of
+  // a genuine race.
+  async generateInvoiceFromServiceRecord(serviceRecordId: string): Promise<Invoice> {
+    return db.transaction(async (tx) => {
+      const [record] = await tx.select().from(serviceRecords).where(and(eq(serviceRecords.orgId, this.orgId), eq(serviceRecords.id, serviceRecordId)));
+      if (!record) {
+        throw new Error("Service record not found");
+      }
+      if (!record.readyForBilling) {
+        throw new Error("Service record is not finalized/ready for billing");
+      }
+
+      const [existingInvoice] = await tx
+        .select()
+        .from(invoices)
+        .where(and(eq(invoices.orgId, this.orgId), eq(invoices.serviceRecordId, serviceRecordId), ne(invoices.status, "VOID")));
+      if (existingInvoice) {
+        return existingInvoice;
+      }
+
+      let service: Service | undefined;
+      if (record.serviceId) {
+        [service] = await tx.select().from(services).where(and(eq(services.orgId, this.orgId), eq(services.id, record.serviceId)));
+      }
+      if (service?.agreementId || service?.source === "AGREEMENT_GENERATED") {
+        throw new Error("Agreement-generated services are billed through the agreement's billing plan, not invoiced per service record");
+      }
+
+      const priceCents = service?.priceCents ?? null;
+      if (priceCents == null) {
+        throw new Error("Service has no price set; cannot generate an invoice");
+      }
+
+      const [serviceType] = record.serviceTypeId
+        ? await tx.select().from(serviceTypes).where(and(eq(serviceTypes.orgId, this.orgId), eq(serviceTypes.id, record.serviceTypeId)))
+        : [undefined];
+      const description = `${serviceType?.name ?? "Service"} - ${new Date(record.serviceDate).toLocaleDateString()}`;
+
+      let billingProfileSnapshot: Record<string, unknown> | null = null;
+      let dueDate: Date | null = null;
+      if (record.locationId) {
+        const resolvedProfile = await this.resolveBillingProfileForLocation(record.locationId);
+        if (resolvedProfile) {
+          billingProfileSnapshot = {
+            profileId: resolvedProfile.id,
+            label: resolvedProfile.label,
+            billingType: resolvedProfile.billingType,
+            invoiceTerms: resolvedProfile.invoiceTerms,
+            billingName: resolvedProfile.billingName,
+            billingAddress: resolvedProfile.billingAddress,
+            snapshottedAt: new Date().toISOString(),
+          };
+          dueDate = computeDueDateFromInvoiceTerms(resolvedProfile.invoiceTerms);
+        }
+      }
+
+      const insertInvoiceRow = async () => {
+        const invoiceNumber = await this.getNextInvoiceNumber(tx);
+        const [invoice] = await tx
+          .insert(invoices)
+          .values({
+            orgId: this.orgId,
+            customerId: record.customerId,
+            locationId: record.locationId ?? null,
+            serviceRecordId: record.id,
+            invoiceNumber,
+            billingProfileSnapshot,
+            amountCents: priceCents,
+            taxCents: 0,
+            totalAmountCents: priceCents,
+            status: "OPEN",
+            dueDate,
+            notes: null,
+          })
+          .returning();
+        return invoice;
+      };
+
+      let invoice: Invoice;
+      try {
+        invoice = await insertInvoiceRow();
+      } catch (err: any) {
+        if (err?.code === "23505") {
+          const [raceWinner] = await tx
+            .select()
+            .from(invoices)
+            .where(and(eq(invoices.orgId, this.orgId), eq(invoices.serviceRecordId, serviceRecordId), ne(invoices.status, "VOID")));
+          if (raceWinner) {
+            return raceWinner;
+          }
+        }
+        throw err;
+      }
+
+      await tx.insert(invoiceLineItems).values({
+        orgId: this.orgId,
+        invoiceId: invoice.id,
+        serviceId: service?.id ?? null,
+        serviceRecordId: record.id,
+        lineType: "SERVICE",
+        description,
+        quantity: 1,
+        unitPriceCents: priceCents,
+        amountCents: priceCents,
+        taxable: false,
+        taxCents: 0,
+        sortOrder: 0,
+      });
+
+      return invoice;
+    });
   }
 
   async updateInvoice(id: string, data: Partial<InsertInvoice>): Promise<Invoice | undefined> {
     const [inv] = await db.update(invoices).set(data).where(and(eq(invoices.orgId, this.orgId), eq(invoices.id, id))).returning();
+    return inv;
+  }
+
+  async voidInvoice(id: string): Promise<Invoice | undefined> {
+    const [inv] = await db
+      .update(invoices)
+      .set({ status: "VOID" })
+      .where(and(eq(invoices.orgId, this.orgId), eq(invoices.id, id)))
+      .returning();
     return inv;
   }
 
