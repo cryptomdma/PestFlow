@@ -21,6 +21,7 @@ import { bootstrapTax } from "./tax-bootstrap";
 import { bootstrapBillingRun } from "./billing-run-bootstrap";
 import { scheduleBillingRun } from "./jobs/billing-run";
 import { bootstrapDocuments } from "./document-bootstrap";
+import { bootstrapProductionValueLedger } from "./production-value-ledger-bootstrap";
 
 const app = express();
 const httpServer = createServer(app);
@@ -95,6 +96,7 @@ app.use((req, res, next) => {
   await bootstrapOutbox().catch((e) => console.error("Outbox bootstrap error:", e));
   await bootstrapInvoices().catch((e) => console.error("Invoice bootstrap error:", e));
   await bootstrapDocuments().catch((e) => console.error("Document bootstrap error:", e));
+  await bootstrapProductionValueLedger().catch((e) => console.error("Production value ledger bootstrap error:", e));
   await bootstrapTax().catch((e) => console.error("Tax bootstrap error:", e));
   await bootstrapBillingRun().catch((e) => console.error("Billing run bootstrap error:", e));
   await bootstrapTenancy().catch((e) => console.error("Tenancy bootstrap error:", e));

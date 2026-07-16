@@ -17,6 +17,7 @@ import {
   taxRates, taxRules, taxExemptionCertificates,
   billingEvents,
   documents, organizations,
+  productionValueEntries,
   noteRevisions,
   users,
   type User, type InsertUser,
@@ -51,6 +52,7 @@ import {
   type BillingEvent,
   type Document,
   type Organization, type InsertOrganization,
+  type ProductionValueEntry,
   type CustomerNote,
   type NoteRevision,
 } from "@shared/schema";
@@ -386,6 +388,9 @@ export interface IStorage {
 
   getOrganization(): Promise<Organization | undefined>;
   updateOrganizationBranding(data: Partial<InsertOrganization>): Promise<Organization | undefined>;
+
+  getProductionValueEntriesByAgreement(agreementId: string): Promise<ProductionValueEntry[]>;
+  getProductionValueEntriesByTechnician(technicianId: string): Promise<ProductionValueEntry[]>;
 
   getInvoices(): Promise<Invoice[]>;
   getInvoicesByLocation(locationId: string): Promise<Invoice[]>;
@@ -1354,6 +1359,156 @@ export class DatabaseStorage implements IStorage {
     if (updatedAgreement) {
       await this.generateServiceForAgreement(tx, updatedAgreement);
     }
+  }
+
+  // PLAN_BILLING_V1.md §1.6.2: append-only comp basis, frozen at office
+  // finalization, never edited. Called once per first-time finalization
+  // (the caller already guards on !existingRecord.confirmed); the select
+  // here is a second, independent idempotency guard against a reopen ->
+  // refinalize cycle, which resets confirmed to false and would otherwise
+  // double-count through that same call site.
+  //
+  // Basis: an agreement-linked service counts toward
+  // SCHEDULED_AGREEMENT_SERVICE until the agreement's expectedServiceCount
+  // slots are full (production value = contractPrice / expectedServiceCount,
+  // same formula as shared/production-value.ts); anything finalized after
+  // that is an unplanned extra visit - a callback - which gets basis
+  // CALLBACK and $0, so the ledger's total for an agreement can never
+  // exceed its contract price no matter how many callbacks occur. A
+  // service with no agreementId is a genuine one-time job and is credited
+  // its own full price.
+  private async createProductionValueEntriesForFinalizedRecord(
+    tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+    record: ServiceRecord,
+    service: Service,
+    finalizedAt: Date,
+  ): Promise<void> {
+    const [existingEntry] = await tx
+      .select()
+      .from(productionValueEntries)
+      .where(and(
+        eq(productionValueEntries.orgId, this.orgId),
+        eq(productionValueEntries.serviceRecordId, record.id),
+        ne(productionValueEntries.basis, "SURCHARGE"),
+      ));
+    if (existingEntry) {
+      return;
+    }
+
+    let agreement: Agreement | undefined;
+    if (service.agreementId) {
+      [agreement] = await tx.select().from(agreements).where(and(eq(agreements.orgId, this.orgId), eq(agreements.id, service.agreementId)));
+    }
+
+    let basis: string;
+    let productionValueCents: number;
+    let scheduledCount = 0;
+
+    if (agreement) {
+      const expectedCount = agreement.expectedServiceCount ?? 1;
+      const [scheduledCountRow] = await tx
+        .select({ count: sql<number>`count(*)::int` })
+        .from(productionValueEntries)
+        .where(and(
+          eq(productionValueEntries.orgId, this.orgId),
+          eq(productionValueEntries.agreementId, agreement.id),
+          eq(productionValueEntries.basis, "SCHEDULED_AGREEMENT_SERVICE"),
+        ));
+      scheduledCount = scheduledCountRow?.count ?? 0;
+
+      if (scheduledCount < expectedCount) {
+        basis = "SCHEDULED_AGREEMENT_SERVICE";
+        productionValueCents = computeProductionValueCents(agreement.priceCents, agreement.expectedServiceCount) ?? 0;
+      } else {
+        basis = "CALLBACK";
+        productionValueCents = 0;
+      }
+    } else {
+      basis = "ONE_TIME_SERVICE";
+      productionValueCents = service.priceCents ?? 0;
+    }
+
+    await tx.insert(productionValueEntries).values({
+      orgId: this.orgId,
+      serviceRecordId: record.id,
+      technicianId: record.technicianId,
+      technicianName: record.technicianName,
+      agreementId: agreement?.id ?? null,
+      serviceTypeId: record.serviceTypeId,
+      basis,
+      productionValueCents,
+      contractPriceCentsSnapshot: agreement?.priceCents ?? null,
+      expectedServiceCountSnapshot: agreement?.expectedServiceCount ?? null,
+      finalizedAt,
+    });
+
+    if (agreement && basis === "SCHEDULED_AGREEMENT_SERVICE" && scheduledCount === 0) {
+      await this.createSurchargeEntryIfConfigured(tx, agreement, record, finalizedAt);
+    }
+  }
+
+  // "an initialChargeCollectedBy = TECH_AT_FIRST_SERVICE field surcharge
+  // produces a basis = SURCHARGE entry credited to the collecting
+  // technician." Reads the agreement's own frozen billingPlanSnapshot
+  // (unit 8), not the live billing plan - if the plan changes later, an
+  // agreement that already had its first service finalized keeps the
+  // terms it was sold under. Fires once per agreement, at the finalization
+  // that fills the agreement's first SCHEDULED_AGREEMENT_SERVICE slot -
+  // there is no separate "collect a surcharge in the field" action in this
+  // codebase yet, so this is the one point where TECH_AT_FIRST_SERVICE
+  // actually resolves to an event.
+  private async createSurchargeEntryIfConfigured(
+    tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+    agreement: Agreement,
+    record: ServiceRecord,
+    finalizedAt: Date,
+  ): Promise<void> {
+    const snapshot = agreement.billingPlanSnapshot as { initialChargeType?: string | null; initialChargeCollectedBy?: string | null; initialChargeCents?: number | null } | null;
+    if (!snapshot?.initialChargeType || snapshot.initialChargeCollectedBy !== "TECH_AT_FIRST_SERVICE" || !snapshot.initialChargeCents) {
+      return;
+    }
+
+    const [existingSurcharge] = await tx
+      .select()
+      .from(productionValueEntries)
+      .where(and(
+        eq(productionValueEntries.orgId, this.orgId),
+        eq(productionValueEntries.agreementId, agreement.id),
+        eq(productionValueEntries.basis, "SURCHARGE"),
+      ));
+    if (existingSurcharge) {
+      return;
+    }
+
+    await tx.insert(productionValueEntries).values({
+      orgId: this.orgId,
+      serviceRecordId: record.id,
+      technicianId: record.technicianId,
+      technicianName: record.technicianName,
+      agreementId: agreement.id,
+      serviceTypeId: record.serviceTypeId,
+      basis: "SURCHARGE",
+      productionValueCents: snapshot.initialChargeCents,
+      contractPriceCentsSnapshot: null,
+      expectedServiceCountSnapshot: null,
+      finalizedAt,
+    });
+  }
+
+  async getProductionValueEntriesByAgreement(agreementId: string): Promise<ProductionValueEntry[]> {
+    return db
+      .select()
+      .from(productionValueEntries)
+      .where(and(eq(productionValueEntries.orgId, this.orgId), eq(productionValueEntries.agreementId, agreementId)))
+      .orderBy(asc(productionValueEntries.finalizedAt));
+  }
+
+  async getProductionValueEntriesByTechnician(technicianId: string): Promise<ProductionValueEntry[]> {
+    return db
+      .select()
+      .from(productionValueEntries)
+      .where(and(eq(productionValueEntries.orgId, this.orgId), eq(productionValueEntries.technicianId, technicianId)))
+      .orderBy(asc(productionValueEntries.finalizedAt));
   }
 
   async getCustomers(): Promise<Customer[]> {
@@ -3292,6 +3447,7 @@ export class DatabaseStorage implements IStorage {
 
         if (completedService && !existingRecord.confirmed) {
           await this.advanceAgreementForCompletedService(tx, completedService);
+          await this.createProductionValueEntriesForFinalizedRecord(tx, record, completedService, now);
         }
       }
 
