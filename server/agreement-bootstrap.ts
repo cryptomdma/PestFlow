@@ -232,9 +232,17 @@ export async function bootstrapAgreements(): Promise<void> {
   `);
   await db.execute(sql`
     INSERT INTO billing_plans (name, description, charge_trigger, billing_mode, interval_unit, interval_count, anchor_mode, proration_rule)
-    SELECT 'Annual Prepaid', 'Bills the full term up front at agreement start.', 'ON_AGREEMENT_START', 'PREPAID_TERM', 'YEAR', 1, 'SIGNUP_DATE', 'NONE'
+    SELECT 'Annual Prepaid', 'Bills the full term up front at agreement start.', 'ON_SCHEDULE', 'PREPAID_TERM', 'YEAR', 1, 'SIGNUP_DATE', 'NONE'
     WHERE NOT EXISTS (SELECT 1 FROM billing_plans WHERE name = 'Annual Prepaid')
   `);
+  // PREPAID_TERM belongs on the ON_SCHEDULE path (a single-installment
+  // schedule that fires once, at start) - ON_AGREEMENT_START is a distinct
+  // mechanic (the down-payment/cleanout "initial charge", driven by
+  // initialChargeType, not billingMode). This plan was seeded with the
+  // wrong trigger before the billing run (Phase 1 unit 12) clarified the
+  // distinction; correct it in place for any DB that already has the old
+  // value, without disturbing anything else about the row.
+  await db.execute(sql`UPDATE billing_plans SET charge_trigger = 'ON_SCHEDULE' WHERE name = 'Annual Prepaid' AND billing_mode = 'PREPAID_TERM' AND charge_trigger = 'ON_AGREEMENT_START'`);
   await db.execute(sql`
     INSERT INTO billing_plans (name, description, charge_trigger, billing_mode)
     SELECT 'COD (Per Service)', 'Non-agreement / one-time work, billed on completion of each service.', 'ON_SERVICE_COMPLETION', 'PER_SERVICE'

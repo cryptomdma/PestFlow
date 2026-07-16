@@ -18,6 +18,8 @@ import { bootstrapBillingProfiles } from "./billing-profile-bootstrap";
 import { backfillExpectedServiceCounts } from "./production-value-backfill";
 import { bootstrapInvoices } from "./invoice-bootstrap";
 import { bootstrapTax } from "./tax-bootstrap";
+import { bootstrapBillingRun } from "./billing-run-bootstrap";
+import { scheduleBillingRun } from "./jobs/billing-run";
 
 const app = express();
 const httpServer = createServer(app);
@@ -92,6 +94,7 @@ app.use((req, res, next) => {
   await bootstrapOutbox().catch((e) => console.error("Outbox bootstrap error:", e));
   await bootstrapInvoices().catch((e) => console.error("Invoice bootstrap error:", e));
   await bootstrapTax().catch((e) => console.error("Tax bootstrap error:", e));
+  await bootstrapBillingRun().catch((e) => console.error("Billing run bootstrap error:", e));
   await bootstrapTenancy().catch((e) => console.error("Tenancy bootstrap error:", e));
   await bootstrapMoney().catch((e) => console.error("Money bootstrap error:", e));
   await backfillExpectedServiceCounts().catch((e) => console.error("Production value backfill error:", e));
@@ -102,6 +105,7 @@ app.use((req, res, next) => {
   // so it must run after bootstrapCanonicalAccounts().
   await bootstrapBillingProfiles().catch((e) => console.error("Billing profile bootstrap error:", e));
   await bootstrapCanonicalNotes().catch((e) => console.error("Note bootstrap error:", e));
+  scheduleBillingRun();
   await registerRoutes(httpServer, app);
 
   app.use((err: any, _req: Request, res: Response, next: NextFunction) => {

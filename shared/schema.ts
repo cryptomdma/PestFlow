@@ -317,6 +317,15 @@ export const agreements = pgTable("agreements", {
   // computed at read time as priceCents / expectedServiceCount - see
   // shared/production-value.ts.
   expectedServiceCount: integer("expected_service_count"),
+  // When the agreement's Billing Plan (chargeTrigger = ON_SCHEDULE) next owes
+  // a charge - independent of nextServiceDate, since billing cadence and
+  // service cadence are different concepts (PLAN_BILLING_V1.md §1.2: "a
+  // quarterly pest agreement is billed monthly"). Null for agreements with
+  // no billing plan, or one that isn't schedule-driven. Advanced by the
+  // nightly billing run (server/jobs/billing-run.ts) after each charge; set
+  // to null once the term is exhausted or a one-time PREPAID_TERM charge
+  // has fired.
+  nextBillingDate: date("next_billing_date"),
   recurrenceUnit: text("recurrence_unit").notNull().default("MONTH"),
   recurrenceInterval: integer("recurrence_interval").notNull().default(1),
   generationLeadDays: integer("generation_lead_days").notNull().default(14),
@@ -634,6 +643,25 @@ export const invoiceLineItems = pgTable("invoice_line_items", {
   sortOrder: integer("sort_order"),
 });
 
+// A charge that is due: source records why (SCHEDULE_DRIVEN from the
+// nightly billing run; SERVICE_DRIVEN and INITIAL_CHARGE are the other two
+// sources from PLAN_BILLING_V1.md §1.6, not built yet - unit 10's
+// generateInvoiceFromServiceRecord covers path 1 already without going
+// through this table). periodKey identifies the billing cycle within the
+// agreement (its scheduled charge date) - the unique index on
+// (agreementId, periodKey) is what makes the nightly run idempotent: a
+// double-run or a manual re-trigger can never bill the same period twice.
+export const billingEvents = pgTable("billing_events", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: varchar("org_id").notNull(),
+  agreementId: varchar("agreement_id").notNull().references(() => agreements.id),
+  source: text("source").notNull(), // SCHEDULE_DRIVEN | SERVICE_DRIVEN | INITIAL_CHARGE
+  periodKey: text("period_key").notNull(),
+  amountCents: integer("amount_cents").notNull(),
+  invoiceId: varchar("invoice_id").references(() => invoices.id),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
 export const communications = pgTable("communications", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   orgId: varchar("org_id").notNull(),
@@ -730,6 +758,7 @@ export const insertMaterialProductSchema = createInsertSchema(materialProducts).
 export const insertTargetPestSchema = createInsertSchema(targetPests).omit({ orgId: true, id: true, createdAt: true, updatedAt: true });
 export const insertInvoiceSchema = createInsertSchema(invoices).omit({ orgId: true, id: true, createdAt: true, publicId: true, invoiceNumber: true });
 export const insertInvoiceLineItemSchema = createInsertSchema(invoiceLineItems).omit({ orgId: true, id: true, invoiceId: true });
+export const insertBillingEventSchema = createInsertSchema(billingEvents).omit({ orgId: true, id: true, createdAt: true });
 export const insertTaxRateSchema = createInsertSchema(taxRates).omit({ orgId: true, id: true, createdAt: true, updatedAt: true });
 export const insertTaxRuleSchema = createInsertSchema(taxRules).omit({ orgId: true, id: true, createdAt: true, updatedAt: true });
 export const insertTaxExemptionCertificateSchema = createInsertSchema(taxExemptionCertificates).omit({ orgId: true, id: true, createdAt: true });
@@ -791,6 +820,8 @@ export type Invoice = typeof invoices.$inferSelect;
 export type InsertInvoice = z.infer<typeof insertInvoiceSchema>;
 export type InvoiceLineItem = typeof invoiceLineItems.$inferSelect;
 export type InsertInvoiceLineItem = z.infer<typeof insertInvoiceLineItemSchema>;
+export type BillingEvent = typeof billingEvents.$inferSelect;
+export type InsertBillingEvent = z.infer<typeof insertBillingEventSchema>;
 export type TaxRate = typeof taxRates.$inferSelect;
 export type InsertTaxRate = z.infer<typeof insertTaxRateSchema>;
 export type TaxRule = typeof taxRules.$inferSelect;
