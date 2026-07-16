@@ -1621,6 +1621,19 @@ export async function registerRoutes(
     }
   });
 
+  // Production Value Ledger (PLAN_BILLING_V1.md §1.6.2) - append-only,
+  // read-only from the API; entries are only ever created internally by
+  // finalizeServiceRecord.
+  app.get("/api/agreements/:agreementId/production-value-entries", requirePermission(PERMISSIONS.VIEW_PRODUCTION_VALUE), async (req, res) => {
+    const data = await req.storage.getProductionValueEntriesByAgreement(req.params.agreementId);
+    res.json(data);
+  });
+
+  app.get("/api/technicians/:technicianId/production-value-entries", requirePermission(PERMISSIONS.VIEW_PRODUCTION_VALUE), async (req, res) => {
+    const data = await req.storage.getProductionValueEntriesByTechnician(req.params.technicianId);
+    res.json(data);
+  });
+
   // Invoices
   const manualInvoiceSchema = z.object({
     customerId: z.string(),

@@ -683,6 +683,33 @@ export const documents = pgTable("documents", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
+// Append-only, immutable comp basis ledger - PLAN_BILLING_V1.md §1.6.2:
+// "PestFlow computes earnings. QuickBooks pays them." Phase 1 builds only
+// this basis; the comp-plan/rate engine that reads it is Phase 2/3. Never
+// updated or deleted once written (see storage.ts - IStorage exposes no
+// update/delete for this table, only create-via-finalizeServiceRecord and
+// reads) - corrections are new adjustment entries, never mutations, same
+// discipline as invoices and credit memos. technicianId/technicianName are
+// a snapshot of serviceRecords' own technician snapshot, not a live join -
+// changing a technician's profile later must never alter historical
+// earnings basis.
+export const productionValueEntries = pgTable("production_value_entries", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: varchar("org_id").notNull(),
+  serviceRecordId: varchar("service_record_id").notNull().references(() => serviceRecords.id),
+  technicianId: varchar("technician_id"),
+  technicianName: text("technician_name"),
+  agreementId: varchar("agreement_id").references(() => agreements.id),
+  serviceTypeId: varchar("service_type_id").references(() => serviceTypes.id),
+  // SCHEDULED_AGREEMENT_SERVICE | ONE_TIME_SERVICE | CALLBACK | SURCHARGE
+  basis: text("basis").notNull(),
+  productionValueCents: integer("production_value_cents").notNull(),
+  contractPriceCentsSnapshot: integer("contract_price_cents_snapshot"),
+  expectedServiceCountSnapshot: integer("expected_service_count_snapshot"),
+  finalizedAt: timestamp("finalized_at").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
 export const communications = pgTable("communications", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   orgId: varchar("org_id").notNull(),
@@ -791,6 +818,7 @@ export const insertInvoiceSchema = createInsertSchema(invoices).omit({ orgId: tr
 export const insertInvoiceLineItemSchema = createInsertSchema(invoiceLineItems).omit({ orgId: true, id: true, invoiceId: true });
 export const insertBillingEventSchema = createInsertSchema(billingEvents).omit({ orgId: true, id: true, createdAt: true });
 export const insertDocumentSchema = createInsertSchema(documents).omit({ orgId: true, id: true, createdAt: true });
+export const insertProductionValueEntrySchema = createInsertSchema(productionValueEntries).omit({ orgId: true, id: true, createdAt: true });
 export const insertTaxRateSchema = createInsertSchema(taxRates).omit({ orgId: true, id: true, createdAt: true, updatedAt: true });
 export const insertTaxRuleSchema = createInsertSchema(taxRules).omit({ orgId: true, id: true, createdAt: true, updatedAt: true });
 export const insertTaxExemptionCertificateSchema = createInsertSchema(taxExemptionCertificates).omit({ orgId: true, id: true, createdAt: true });
@@ -856,6 +884,8 @@ export type BillingEvent = typeof billingEvents.$inferSelect;
 export type InsertBillingEvent = z.infer<typeof insertBillingEventSchema>;
 export type Document = typeof documents.$inferSelect;
 export type InsertDocument = z.infer<typeof insertDocumentSchema>;
+export type ProductionValueEntry = typeof productionValueEntries.$inferSelect;
+export type InsertProductionValueEntry = z.infer<typeof insertProductionValueEntrySchema>;
 export type TaxRate = typeof taxRates.$inferSelect;
 export type InsertTaxRate = z.infer<typeof insertTaxRateSchema>;
 export type TaxRule = typeof taxRules.$inferSelect;
