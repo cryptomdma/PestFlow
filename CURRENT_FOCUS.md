@@ -1,26 +1,26 @@
 # Current Focus
 
-## Active Goal
+## Active goal
 Phase 1 — Billing core: appointment-anchored invoicing wired to finalization, payments-lite ledger
 (cash/check, unapplied balances, application/release), COA as payment application, and the promotion of
 `audit_logs` to the system-wide immutable financial history.
 
-## Current branch
-Per working pass (small branches, PR + merge each pass):
-1. `feature/phase-1-appointment-status-enum` — D1a hardening + casing normalization migration
-2. `feature/phase-1-invoice-appointment-anchor` — D1 anchoring + idempotency index move
-3. `feature/phase-1-finalize-invoice-wiring` — D2 generate-or-adopt + prompt + settings
-4. `feature/phase-1-payments-lite` — D5 ledger + applications + pending confirmation
-5. `feature/phase-1-coa-and-field-display` — D6
-6. `feature/phase-1-audit-promotion` — D7
-7. `feature/phase-1-legacy-billing-frequency-removal` — D9
+## Status
+Pass 0 (docs cleanup) is done. Next up: **Pass 1 — `feature/phase-1-appointment-status-enum`** (D1a).
 
-## Reference documents
-- `PLAN_BILLING_V1.md` — architecture baseline
-- `PLAN_BILLING_V1_1.md` — **decision record; governs on conflict**
-- `CANONICAL_DOMAIN_RULES_V1.md` — canon; update to V2 as Phase 1 lands
+Full ordered plan, impact analysis, conflict resolutions, and per-pass verification steps live in
+`PLAN_BILLING_V1_1_EXECUTION.md` — read it before starting a pass, and update its "Pass status" table
+when a pass finishes. This file only tracks the one-line "where are we" pointer; the execution doc is
+the source of truth for what each pass actually does.
 
-## Constraints
+## Reference documents, in reading order
+1. `AGENT_WORKING_AGREEMENT.md` — how a session works here (one pass, one branch, when to stop)
+2. `CANONICAL_DOMAIN_RULES_V1.md` — canonical domain model; measure any change against this
+3. `PLAN_BILLING_V1_1.md` — the settled decision record (D1-D9); governs over any older billing doc
+4. `PLAN_BILLING_V1_1_EXECUTION.md` — the ordered, impact-analyzed execution plan for D1-D9
+5. This file — current status pointer only
+
+## Constraints (apply to every pass below)
 - Finalization remains the authoritative completion event. Pre-finalization invoices are DRAFT-only;
   issuing early requires `ISSUE_INVOICE_PREFINALIZATION` (Manager+) and flags the ticket.
 - Agreement revenue comes only from the nightly billing run. Agreement-covered services appear on visit
@@ -32,8 +32,5 @@ Per working pass (small branches, PR + merge each pass):
 - All money integer cents; all tables org-scoped; no route trusts a client-supplied actor.
 - Not in this phase: Stripe/card processing (Phase 2), QBO sync, unschedule action, preferred-tech
   behavior, opportunity taxonomy migration, proposal generator, tech payment-collection UI relabel
-  (lands immediately after payments-lite as its own pass).
-
-## Verification targets
-See `PLAN_BILLING_V1_1.md` § Verification targets — treat each as an acceptance test before the pass's
-PR merges.
+  (lands immediately after payments-lite as its own pass), Services-tab PENDING_SCHEDULING-vs-SCHEDULED
+  display clarity (a real, separately-noted UI gap — not a billing concern).
