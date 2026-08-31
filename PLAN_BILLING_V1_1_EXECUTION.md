@@ -17,7 +17,7 @@ grounded in what the code and data actually do, not what the decision record ass
 |---|---|---|---|
 | 0 | `docs/pass-0-cleanup` | — (docs cleanup) | Done |
 | 1 | `feature/phase-1-appointment-status-enum` | D1a | Done |
-| 2 | `feature/phase-1-audit-log-infrastructure` | D7 (infra half) | Not started |
+| 2 | `feature/phase-1-audit-log-infrastructure` | D7 (infra half) | Done |
 | 3 | `feature/phase-1-invoice-appointment-anchor` | D1 | Not started |
 | 4 | `feature/phase-1-draft-invoice-lifecycle` | D3, Q3 | Not started |
 | 5 | `feature/phase-1-finalize-invoice-wiring` | D2 | Not started |
@@ -285,6 +285,38 @@ Key choices:
 | 7 | `feature/phase-1-coa-and-field-display` | D6 | Tech ticket / appointment-detail UI (Price / COA applied / Due today), `BILLABLE` vs `PRODUCTION` service designation, billing-plan pill on agreement card | No | — | `npm run check`; boot ×2; manual UI: COA application changes "due today" without touching price, production value, or tax basis |
 | 8 | `feature/phase-1-audit-log-backfill` | D7 (remainder) | Add `recordAuditLog()` calls to pre-existing financial mutation points D7 lists that passes 3-7 didn't already cover — e.g. price override in the field-ticket flow, ticket reopen | No | — | `npm run check`; boot ×2; PowerShell: exercise each listed mutation, confirm an audit row with correct before/after/actor appears |
 | 9 | `feature/phase-1-legacy-billing-frequency-removal` | D9 | Drop `agreementTemplates.defaultBillingFrequency` / `agreements.billingFrequency` columns; remove all read/write sites from §1's D9 table | Yes — column drop, guarded by an `information_schema.columns` existence check per this repo's established pattern (`money-bootstrap.ts` precedent) | — (cleanup) | `npm run check`; boot ×2; confirm the 9 "legacy text, no plan" agreements and 2 "neither" agreements are surfaced in a pre-migration report before the column drop runs |
+
+**Shipped in Pass 2, for Passes 3-8 to call** — the audit helper's actual signature, so no later pass
+has to re-derive it:
+
+```ts
+// server/storage.ts, private on DatabaseStorage. Call from INSIDE the same
+// db.transaction() as the mutation, passing that tx.
+private async recordAuditLogTx(tx: AuditLogWriter, entry: AuditLogEntry): Promise<void>
+
+// Public on IStorage. Only for mutations that genuinely aren't transactional.
+async recordAuditLog(entry: AuditLogEntry): Promise<void>
+
+interface AuditLogEntry {
+  entityType: AuditEntityType;   // union in shared/audit.ts - add a member, don't pass a string
+  entityId: string;
+  action: AuditAction;           // same union file, past-tense snake_case
+  actor?: AuditActor | null;     // from routes.ts getAuditActor(req); omit = system actor
+  before?: unknown;              // whole-row snapshot; omit for a create
+  after?: unknown;               // whole-row snapshot; omit for a delete
+}
+```
+
+`orgId` and `createdAt` are set by the helper — don't pass them. Pass whole rows to `before`/`after`
+rather than pre-flattened prose: the client diffs them at read time via `diffAuditSnapshots()`, which
+already filters `id`/`orgId`/`updatedAt` noise. Adding a new entity or action means adding a union
+member in `shared/audit.ts` plus its display label — that edit is the guard against the vocabulary
+drift D1a had to clean up, not a nuisance.
+
+Reads: `getAuditLogsForEntity(entityType, entityId, limit?)` for one record's trail, and
+`getAuditLogsForLocation(locationId, limit?)` for the location History panel's rollup. As passes 3-8
+land, add each new financial entity to the `refs` list inside `getAuditLogsForLocation()` so its
+events surface on that panel — there is deliberately no second rollup query.
 
 **Design note carried into Pass 4**: D3's "flags the linked ticket(s) for review" has no existing
 "flagged" concept in the schema. Reuse/extend `serviceRecords.ticketStatus` (currently

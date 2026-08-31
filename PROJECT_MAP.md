@@ -23,7 +23,7 @@ Mechanical reference only — stack, entry points, directories, environment. For
   (PDF/HTML rendering)
 - `client/` — frontend app (`src/pages/`, `src/components/`, `src/lib/`)
 - `shared/` — schema, types, and cross-cutting constants shared by both client and server
-  (`schema.ts`, `permissions.ts`, `money.ts`, `production-value.ts`)
+  (`schema.ts`, `permissions.ts`, `money.ts`, `production-value.ts`, `audit.ts`)
 - `script/` — build/util scripts
 
 ## Migration convention

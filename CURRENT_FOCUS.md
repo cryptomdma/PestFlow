@@ -6,10 +6,15 @@ Phase 1 — Billing core: appointment-anchored invoicing wired to finalization, 
 `audit_logs` to the system-wide immutable financial history.
 
 ## Status
-Pass 1 (`feature/phase-1-appointment-status-enum`, D1a) is pushed and awaiting merge — `appointments.status`
-is now the four-value enum `SCHEDULED | IN_PROGRESS | COMPLETED | CANCELED`, enforced server-side by
-`appointmentStatusSchema` and normalized on every boot. Next up once it merges: **Pass 2 —
-`feature/phase-1-audit-log-infrastructure`** (D7, infra half).
+Pass 1 (`feature/phase-1-appointment-status-enum`, D1a) merged as PR #56.
+
+Pass 2 (`feature/phase-1-audit-log-infrastructure`, D7 infra half) is pushed and awaiting merge —
+`audit_logs` now has a single `recordAuditLog()` write helper on `DatabaseStorage` (transaction-aware),
+a read-only `GET /api/audit-logs`, and a History tab on the location screen. The entity/action
+vocabulary lives in `shared/audit.ts` as compile-time unions. The exact helper signature passes 3-8
+should call is written out in `PLAN_BILLING_V1_1_EXECUTION.md` under "Shipped in Pass 2" — read that
+rather than re-deriving it. Next up once it merges: **Pass 3 —
+`feature/phase-1-invoice-appointment-anchor`** (D1).
 
 Full ordered plan, impact analysis, conflict resolutions, and per-pass verification steps live in
 `PLAN_BILLING_V1_1_EXECUTION.md` — read it before starting a pass, and update its "Pass status" table

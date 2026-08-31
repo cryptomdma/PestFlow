@@ -55,9 +55,11 @@ import {
   type ProductionValueEntry,
   type CustomerNote,
   type NoteRevision,
+  type AuditLog,
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, and, inArray, sql, gte, lte, asc, desc, ne, isNull } from "drizzle-orm";
+import { eq, and, or, inArray, sql, gte, lte, asc, desc, ne, isNull } from "drizzle-orm";
+import type { AuditAction, AuditEntityType } from "@shared/audit";
 import { PLACEHOLDER_LOCATION_NAME, PLACEHOLDER_LOCATION_NOTE } from "./account-bootstrap";
 import { createHash } from "crypto";
 import type { InvoiceDocumentContext } from "./documents/types";
@@ -92,6 +94,31 @@ export interface AuditActor {
   userId?: string | null;
   actorLabel?: string | null;
 }
+
+// One audit row. `before`/`after` are whole-row snapshots (or the relevant
+// subset of one) written straight to jsonb; the client diffs them at read time
+// via diffAuditSnapshots(), so callers should not pre-flatten them into prose.
+export interface AuditLogEntry {
+  entityType: AuditEntityType;
+  entityId: string;
+  action: AuditAction;
+  actor?: AuditActor | null;
+  /** State before the mutation. Omit for a create. */
+  before?: unknown;
+  /** State after the mutation. Omit for a delete. */
+  after?: unknown;
+}
+
+// Structural minimum recordAuditLog() needs from its caller: satisfied by both
+// `db` and a transaction handle, so a caller already inside db.transaction()
+// passes its `tx` and gets the audit row committed atomically with the
+// mutation it describes.
+type AuditLogWriter = Pick<typeof db, "insert">;
+
+// Callers may ask for more, but a history panel that renders thousands of rows
+// helps nobody and the table only grows from here.
+const AUDIT_LOG_DEFAULT_LIMIT = 100;
+const AUDIT_LOG_MAX_LIMIT = 500;
 
 export interface CreateCustomerWithPrimaryLocationInput {
   customer: InsertCustomer;
@@ -426,6 +453,20 @@ export interface IStorage {
   createCommunication(data: InsertCommunication): Promise<Communication>;
 
   getLocationScopedCounts(locationId: string): Promise<{ contacts: number; appointments: number; agreements: number; services: number; invoices: number; communications: number; opportunities: number }>;
+
+  // Append-only by decision (D7): a write and two reads, deliberately no
+  // update or delete counterpart on this interface or on any route.
+  recordAuditLog(entry: AuditLogEntry): Promise<void>;
+  getAuditLogsForEntity(entityType: string, entityId: string, limit?: number): Promise<AuditLog[]>;
+  getAuditLogsForLocation(locationId: string, limit?: number): Promise<AuditLog[]>;
+}
+
+function clampAuditLogLimit(limit: number | undefined): number {
+  if (!limit || !Number.isFinite(limit) || limit <= 0) {
+    return AUDIT_LOG_DEFAULT_LIMIT;
+  }
+
+  return Math.min(Math.floor(limit), AUDIT_LOG_MAX_LIMIT);
 }
 
 function normalizeDateOnly(value: string | Date | null | undefined): string | null {
@@ -576,6 +617,80 @@ function resolveAgreementStartDateFromValues(
 
 export class DatabaseStorage implements IStorage {
   constructor(private readonly orgId: string) {}
+
+  // The one write path into audit_logs (D7). Call this from inside the same
+  // db.transaction() as the mutation being recorded, passing that `tx`: an
+  // audit row that outlived a rolled-back payment would be worse than no row,
+  // and a mutation that committed without its row is the gap D7 exists to
+  // close. Use the public recordAuditLog() below only where the mutation
+  // genuinely isn't transactional.
+  //
+  // `actor` comes from the session (routes.ts getAuditActor), never from the
+  // request body - no route trusts a client-supplied actor. Passing no actor
+  // records a null one, which is how system-driven writes (the nightly billing
+  // run) should appear; don't invent a placeholder user for them.
+  private async recordAuditLogTx(tx: AuditLogWriter, entry: AuditLogEntry): Promise<void> {
+    await tx.insert(auditLogs).values({
+      orgId: this.orgId,
+      entityType: entry.entityType,
+      entityId: entry.entityId,
+      action: entry.action,
+      userId: entry.actor?.userId || null,
+      actorLabel: entry.actor?.actorLabel || null,
+      beforeJson: entry.before ?? null,
+      afterJson: entry.after ?? null,
+    });
+  }
+
+  async recordAuditLog(entry: AuditLogEntry): Promise<void> {
+    await this.recordAuditLogTx(db, entry);
+  }
+
+  // Every audit row for one entity, newest first. `createdAt` defaults to
+  // now(), which in Postgres is transaction-start time - two rows written in
+  // one transaction share a timestamp exactly - so id is the tiebreaker that
+  // keeps paging and rendering order stable.
+  async getAuditLogsForEntity(entityType: string, entityId: string, limit?: number): Promise<AuditLog[]> {
+    return db
+      .select()
+      .from(auditLogs)
+      .where(and(eq(auditLogs.orgId, this.orgId), eq(auditLogs.entityType, entityType), eq(auditLogs.entityId, entityId)))
+      .orderBy(desc(auditLogs.createdAt), desc(auditLogs.id))
+      .limit(clampAuditLogLimit(limit));
+  }
+
+  // What the location screen's History panel renders: the location row plus the
+  // legacy customer record that owns it, since one profile edit writes both.
+  // As passes 3-8 land, the financial records anchored to this location
+  // (invoices, payments, credit memos, service tickets) get added to `refs`
+  // here - extend this list rather than adding a second rollup query.
+  async getAuditLogsForLocation(locationId: string, limit?: number): Promise<AuditLog[]> {
+    const [location] = await db
+      .select({ customerId: locations.customerId })
+      .from(locations)
+      .where(and(eq(locations.orgId, this.orgId), eq(locations.id, locationId)));
+
+    if (!location) {
+      return [];
+    }
+
+    const refs: Array<{ entityType: AuditEntityType; entityId: string }> = [
+      { entityType: "location", entityId: locationId },
+      { entityType: "customer", entityId: location.customerId },
+    ];
+
+    return db
+      .select()
+      .from(auditLogs)
+      .where(
+        and(
+          eq(auditLogs.orgId, this.orgId),
+          or(...refs.map((ref) => and(eq(auditLogs.entityType, ref.entityType), eq(auditLogs.entityId, ref.entityId)))),
+        ),
+      )
+      .orderBy(desc(auditLogs.createdAt), desc(auditLogs.id))
+      .limit(clampAuditLogLimit(limit));
+  }
 
   private isPlaceholderLocation(location: { name: string; notes: string | null }) {
     return location.name === PLACEHOLDER_LOCATION_NAME && location.notes === PLACEHOLDER_LOCATION_NOTE;
@@ -1593,15 +1708,13 @@ export class DatabaseStorage implements IStorage {
         .where(and(eq(locations.orgId, this.orgId), eq(locations.id, input.locationId)))
         .returning();
 
-      await tx.insert(auditLogs).values({
-        orgId: this.orgId,
+      await this.recordAuditLogTx(tx, {
         entityType: "location",
         entityId: updatedLocation.id,
         action: "update",
-        userId: input.actor?.userId || null,
-        actorLabel: input.actor?.actorLabel || null,
-        beforeJson: existingLocation,
-        afterJson: updatedLocation,
+        actor: input.actor,
+        before: existingLocation,
+        after: updatedLocation,
       });
 
       let updatedCustomer: Customer | undefined;
@@ -1613,15 +1726,13 @@ export class DatabaseStorage implements IStorage {
           .returning();
         updatedCustomer = customer;
 
-        await tx.insert(auditLogs).values({
-          orgId: this.orgId,
+        await this.recordAuditLogTx(tx, {
           entityType: "customer",
           entityId: customer.id,
           action: "update",
-          userId: input.actor?.userId || null,
-          actorLabel: input.actor?.actorLabel || null,
-          beforeJson: existingCustomer,
-          afterJson: customer,
+          actor: input.actor,
+          before: existingCustomer,
+          after: customer,
         });
       }
 
