@@ -600,9 +600,17 @@ export const invoices = pgTable("invoices", {
   orgId: varchar("org_id").notNull(),
   customerId: varchar("customer_id").notNull().references(() => customers.id),
   locationId: varchar("location_id").references(() => locations.id),
+  // The billing anchor, per PLAN_BILLING_V1_1.md D1: the customer experienced
+  // one visit, so one appointment gets one invoice with one line per finalized
+  // Service Record on it. An invoice sets exactly ONE of these two columns and
+  // never both - appointmentId for visit work, serviceRecordId as the fallback
+  // for appointment-less one-offs. Manual and schedule-driven (agreement)
+  // invoices set neither: they aren't anchored to a visit at all.
+  appointmentId: varchar("appointment_id").references(() => appointments.id),
   // One non-void invoice per service record, enforced by a partial unique
   // index (see invoice-bootstrap.ts) rather than a plain unique constraint,
-  // so a voided invoice frees the service record for a corrected one.
+  // so a voided invoice frees the service record for a corrected one. A
+  // matching index exists on appointmentId; the two are mutually exclusive.
   serviceRecordId: varchar("service_record_id").references(() => serviceRecords.id),
   invoiceNumber: text("invoice_number").notNull(),
   publicId: varchar("public_id").notNull().default(sql`gen_random_uuid()`),
@@ -628,16 +636,22 @@ export const invoices = pgTable("invoices", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
-// One line per invoice for now (SERVICE for a generated invoice, ADJUSTMENT
-// for the manual/ad-hoc path) - description/price are a snapshot taken at
-// creation, never a live join to the service or price book.
+// One line per finalized Service Record on the invoice's appointment (D1),
+// or a single ADJUSTMENT line for the manual/ad-hoc path - description/price
+// are a snapshot taken at creation, never a live join to the service or price
+// book.
 export const invoiceLineItems = pgTable("invoice_line_items", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   orgId: varchar("org_id").notNull(),
   invoiceId: varchar("invoice_id").notNull().references(() => invoices.id),
   serviceId: varchar("service_id").references(() => services.id),
   serviceRecordId: varchar("service_record_id").references(() => serviceRecords.id),
-  lineType: text("line_type").notNull().default("ADJUSTMENT"), // SERVICE | ADDON | SURCHARGE | FEE | DISCOUNT | ADJUSTMENT
+  // SERVICE | AGREEMENT_COVERED | ADDON | SURCHARGE | FEE | DISCOUNT | ADJUSTMENT.
+  // AGREEMENT_COVERED (PLAN_BILLING_V1_1_EXECUTION.md §2.1) is the visible-but-
+  // not-chargeable line for work the agreement's billing plan already bills
+  // through the nightly run: always $0 and non-taxable, structurally distinct
+  // from a chargeable line so it can never drift into one and double-bill.
+  lineType: text("line_type").notNull().default("ADJUSTMENT"),
   description: text("description").notNull(),
   quantity: integer("quantity").notNull().default(1),
   unitPriceCents: integer("unit_price_cents").notNull(),

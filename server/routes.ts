@@ -1743,7 +1743,7 @@ export async function registerRoutes(
 
   app.post("/api/invoices/generate-from-service-record/:serviceRecordId", requirePermission(PERMISSIONS.GENERATE_INVOICE), async (req, res) => {
     try {
-      const data = await req.storage.generateInvoiceFromServiceRecord(req.params.serviceRecordId);
+      const data = await req.storage.generateInvoiceFromServiceRecord(req.params.serviceRecordId, getAuditActor(req));
       res.status(201).json(data);
     } catch (e: any) {
       res.status(400).json({ message: e.message });
@@ -1772,7 +1772,7 @@ export async function registerRoutes(
   app.post("/api/invoices/batch-generate", requirePermission(PERMISSIONS.GENERATE_INVOICE), async (req, res) => {
     try {
       const { dateFrom, dateTo } = batchDateRangeSchema.parse(req.body);
-      const data = await req.storage.batchGenerateInvoicesForDateRange(dateFrom, dateTo);
+      const data = await req.storage.batchGenerateInvoicesForDateRange(dateFrom, dateTo, getAuditActor(req));
       res.json(data);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);

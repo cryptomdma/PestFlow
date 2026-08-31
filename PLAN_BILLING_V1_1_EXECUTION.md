@@ -18,7 +18,7 @@ grounded in what the code and data actually do, not what the decision record ass
 | 0 | `docs/pass-0-cleanup` | — (docs cleanup) | Done |
 | 1 | `feature/phase-1-appointment-status-enum` | D1a | Done |
 | 2 | `feature/phase-1-audit-log-infrastructure` | D7 (infra half) | Done |
-| 3 | `feature/phase-1-invoice-appointment-anchor` | D1 | Not started |
+| 3 | `feature/phase-1-invoice-appointment-anchor` | D1 | Done |
 | 4 | `feature/phase-1-draft-invoice-lifecycle` | D3, Q3 | Not started |
 | 5 | `feature/phase-1-finalize-invoice-wiring` | D2 | Not started |
 | 6 | `feature/phase-1-payments-lite` | D5, D4 | Not started |
@@ -317,6 +317,38 @@ Reads: `getAuditLogsForEntity(entityType, entityId, limit?)` for one record's tr
 `getAuditLogsForLocation(locationId, limit?)` for the location History panel's rollup. As passes 3-8
 land, add each new financial entity to the `refs` list inside `getAuditLogsForLocation()` so its
 events surface on that panel — there is deliberately no second rollup query.
+
+**Shipped in Pass 3, for Passes 4-5 to build on** — D2's generate-or-adopt hook and D3's DRAFT
+lifecycle both act on the anchor this pass introduced, so they should reuse these rather than
+re-resolving a visit:
+
+```ts
+// server/storage.ts, private on DatabaseStorage. Every non-cancelled Service on
+// the appointment paired with its Service Record, resolved through
+// getLinkedServicesForAppointmentTx - the same rollup finalizeServiceRecord uses.
+private async getAppointmentBillingGroupTx(tx, appointmentId):
+  Promise<{ appointment: Appointment; services: Service[]; records: ServiceRecord[] } | null>
+
+// Public. Anchors on record.appointmentId when there is one, otherwise falls
+// back to the per-service-record anchor. Idempotent from ANY ticket on the visit.
+async generateInvoiceFromServiceRecord(serviceRecordId: string, actor?: AuditActor | null): Promise<Invoice>
+```
+
+Behavior worth knowing before Pass 4/5 touches it:
+- **Both anchors are checked before inserting**, in this order: a non-void invoice on the appointment,
+  then a non-void invoice on *any* ticket of the visit. The second check is what keeps pre-D1 rows
+  honest — `appointment_id` was deliberately **not** backfilled onto them (two pre-D1 invoices can
+  share one appointment, which the new partial unique index would reject), so a service-record-anchored
+  invoice is treated as already covering its visit.
+- **Partial finalization is refused, not deferred**: generation throws
+  `Appointment has N of M services finalized; ...`, and `getServiceRecordsReadyForBilling()` withholds
+  the visit entirely until every non-cancelled linked Service is finalized. So the eligibility list and
+  generation agree — a listed ticket always generates.
+- `getServiceRecordsReadyForBilling()` returns **every** ticket on an eligible visit, not one per
+  visit. Callers that mean "how many invoices will this produce" must group by anchor first;
+  `batchGenerateInvoicesForDateRange()` does, and reports `totalVisits` alongside `totalEligible`.
+- Generated invoices are still inserted as `OPEN` and audit-logged as `invoice_issued`. When Pass 4
+  introduces real DRAFT creation, that action/status pair is the thing to revisit.
 
 **Design note carried into Pass 4**: D3's "flags the linked ticket(s) for review" has no existing
 "flagged" concept in the schema. Reuse/extend `serviceRecords.ticketStatus` (currently

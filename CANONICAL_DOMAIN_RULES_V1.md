@@ -847,11 +847,33 @@ Opportunities are not Appointments and do not automatically schedule work. They 
 
 Billing output generated from service or manual billing actions.
 
+### Canonical rule — the billing anchor
+
+An Invoice anchors to the **Appointment**, not the Service Record (PLAN_BILLING_V1.1 D1). The customer
+experienced one visit, so one visit produces one invoice carrying one line per finalized Service Record
+on it, plus any add-on/surcharge/discount lines.
+
+* at most one non-void invoice per `appointmentId`
+* work with no appointment (direct one-offs) falls back to at most one non-void invoice per
+  `serviceRecordId`
+* an invoice sets **exactly one** of `{appointmentId, serviceRecordId}` at the header, never both;
+  manual and schedule-driven (agreement) invoices set neither
+* both rules are enforced by partial unique indexes, not by convention, so voiding an invoice frees the
+  visit for a corrected one
+* an invoice is generated only once **all** Services linked to the appointment are finalized. Partial
+  finalization does not invoice.
+
+Agreement-covered Services appear on the visit invoice as `AGREEMENT_COVERED` lines: always $0, always
+non-taxable, and never accompanied by a `billing_events` row. They are display-only truth for the
+customer — the nightly billing run remains the one and only source of agreement revenue.
+
 ### Required fields
 
 * id
 * accountId
 * locationId nullable
+* appointmentId nullable — the billing anchor for visit work
+* serviceRecordId nullable — the fallback anchor for appointment-less work
 * billingProfileId nullable
 * invoiceNumber
 * status (`draft` | `posted` | `sent` | `partially_paid` | `paid` | `void`)

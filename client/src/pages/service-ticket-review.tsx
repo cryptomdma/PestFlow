@@ -19,8 +19,9 @@ import type { Appointment, Customer, Location, ProductApplication, Service, Serv
 
 interface BatchGenerateResult {
   totalEligible: number;
-  invoiced: Array<{ serviceRecordId: string; invoiceId: string; invoiceNumber: string; totalAmountCents: number }>;
-  skipped: Array<{ serviceRecordId: string; reason: string }>;
+  totalVisits: number;
+  invoiced: Array<{ appointmentId: string | null; serviceRecordIds: string[]; invoiceId: string; invoiceNumber: string; totalAmountCents: number }>;
+  skipped: Array<{ appointmentId: string | null; serviceRecordIds: string[]; reason: string }>;
   totalAmountCents: number;
 }
 
@@ -182,12 +183,28 @@ export default function ServiceTicketReview() {
     if (!open) setBatchResult(null);
   };
 
+  const isAgreementCovered = (service?: Service) => !!service && (!!service.agreementId || service.source === "AGREEMENT_GENERATED");
+
+  // Agreement-covered tickets bill at $0 on the visit invoice (the nightly run
+  // is the only source of agreement revenue), so they're listed but contribute
+  // nothing to the preview total.
   const batchPreviewTotalCents = useMemo(() => {
     return (batchPreview ?? []).reduce((sum, record) => {
       const service = record.serviceId ? serviceById.get(record.serviceId) : undefined;
+      if (isAgreementCovered(service)) return sum;
       return sum + (service?.priceCents ?? 0);
     }, 0);
   }, [batchPreview, serviceById]);
+
+  // One invoice per visit, not per ticket (D1): two finalized tickets on one
+  // appointment produce a single invoice, so the count the office is promised
+  // has to be the number of anchors.
+  const batchPreviewVisitCount = useMemo(() => {
+    const anchors = new Set(
+      (batchPreview ?? []).map((record) => (record.appointmentId ? `appointment:${record.appointmentId}` : `serviceRecord:${record.id}`)),
+    );
+    return anchors.size;
+  }, [batchPreview]);
 
   return (
     <div className="p-4 sm:p-6 space-y-5">
@@ -410,7 +427,7 @@ export default function ServiceTicketReview() {
               ) : (
                 <>
                   <div className="rounded-md border bg-muted/20 p-3 text-sm">
-                    <span className="font-medium">{batchPreview.length}</span> ticket{batchPreview.length === 1 ? "" : "s"} eligible, totaling <span className="font-medium">{formatCents(batchPreviewTotalCents)}</span>
+                    <span className="font-medium">{batchPreview.length}</span> ticket{batchPreview.length === 1 ? "" : "s"} eligible across <span className="font-medium">{batchPreviewVisitCount}</span> visit{batchPreviewVisitCount === 1 ? "" : "s"}, totaling <span className="font-medium">{formatCents(batchPreviewTotalCents)}</span>
                   </div>
                   <div className="max-h-64 space-y-1 overflow-y-auto">
                     {batchPreview.map((record) => {
@@ -424,7 +441,9 @@ export default function ServiceTicketReview() {
                             <p className="truncate font-medium">{getCustomerLabel(customer, location)}</p>
                             <p className="truncate text-xs text-muted-foreground">{serviceType?.name || "Service"}</p>
                           </div>
-                          <span className="shrink-0 font-medium">{service?.priceCents != null ? formatCents(service.priceCents) : "Not set"}</span>
+                          <span className="shrink-0 font-medium">
+                            {isAgreementCovered(service) ? "Covered by agreement" : service?.priceCents != null ? formatCents(service.priceCents) : "Not set"}
+                          </span>
                         </div>
                       );
                     })}
@@ -438,7 +457,7 @@ export default function ServiceTicketReview() {
                   onClick={() => batchGenerateMutation.mutate()}
                   disabled={!batchPreview?.length || batchGenerateMutation.isPending}
                 >
-                  Generate {batchPreview?.length ? `${batchPreview.length} ` : ""}Invoice{batchPreview?.length === 1 ? "" : "s"}
+                  Generate {batchPreviewVisitCount ? `${batchPreviewVisitCount} ` : ""}Invoice{batchPreviewVisitCount === 1 ? "" : "s"}
                 </Button>
               </div>
             </div>
@@ -452,7 +471,7 @@ export default function ServiceTicketReview() {
                 <div className="space-y-1">
                   <p className="text-xs uppercase tracking-wide text-muted-foreground">Skipped</p>
                   {batchResult.skipped.map((item) => (
-                    <div key={item.serviceRecordId} className="rounded-md border border-destructive/30 bg-destructive/5 px-2 py-1.5 text-xs">
+                    <div key={item.appointmentId ?? item.serviceRecordIds.join(",")} className="rounded-md border border-destructive/30 bg-destructive/5 px-2 py-1.5 text-xs">
                       {item.reason}
                     </div>
                   ))}
