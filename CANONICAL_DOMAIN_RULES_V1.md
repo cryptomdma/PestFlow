@@ -981,16 +981,32 @@ Examples:
 
 ### Definition
 
-Audit trail for field changes and meaningful actions.
+Audit trail for field changes and meaningful actions. Promoted by PLAN_BILLING_V1.1 D7 from a
+single legacy write path to the system-wide immutable history.
 
 ### Canonical rule
 
 Admin audit logging should record **any/all field changes**.
 
+The table is **append-only**. Rows are never updated or deleted — not by a route, not by a storage
+method. A correction is a new forward row describing the correction, never a rollback of the log.
+"Revert to previous state" is itself a recorded change.
+
+Writes go through the single `recordAuditLog()` helper in `server/storage.ts`, called from inside
+the same transaction as the mutation being recorded so the row commits or rolls back with it. The
+actor comes from the session; no route accepts a client-supplied actor. A null actor means a
+system-driven write (e.g. the nightly billing run) — not an unknown user.
+
+`entity_type` and `action` are plain text columns constrained at compile time by the
+`AuditEntityType` / `AuditAction` unions in `shared/audit.ts`, so the vocabulary can't drift the
+way `appointments.status` did before D1a.
+
 ### Fields
 
 * id
+* orgId
 * userId nullable
+* actorLabel nullable
 * entityType
 * entityId
 * action
@@ -1148,6 +1164,7 @@ Examples:
 * Service History
 * Invoices
 * Comms
+* History (the location's slice of the AuditLog — see §17)
 
 ## 4. Notes UX
 

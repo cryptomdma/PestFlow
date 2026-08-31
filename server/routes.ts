@@ -105,6 +105,36 @@ export async function registerRoutes(
       });
     }
   });
+  // Two ways to ask, one route: `locationId` for the location screen's rollup,
+  // `entityType`+`entityId` for one record's own trail (what passes 3-8 need
+  // for an invoice or a payment). entityType stays a free string rather than
+  // the AuditEntityType union - it filters rows that predate the union and may
+  // hold anything.
+  const auditLogQuerySchema = z
+    .object({
+      locationId: z.string().min(1).optional(),
+      entityType: z.string().min(1).optional(),
+      entityId: z.string().min(1).optional(),
+      limit: z.coerce.number().int().positive().optional(),
+    })
+    .superRefine((value, ctx) => {
+      const byEntity = !!value.entityType && !!value.entityId;
+      if (!value.locationId && !byEntity) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["locationId"],
+          message: "Provide either locationId, or both entityType and entityId",
+        });
+      }
+
+      if (value.locationId && (value.entityType || value.entityId)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["locationId"],
+          message: "locationId cannot be combined with entityType/entityId",
+        });
+      }
+    });
   const updateContactSchema = insertContactSchema
     .pick({
       firstName: true,
@@ -914,6 +944,28 @@ export async function registerRoutes(
         ...validated,
         actor: getAuditActor(req),
       });
+      res.json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  // Audit history (D7). This is the whole API surface for audit_logs and it is
+  // read-only on purpose: the table is append-only, so no POST/PATCH/DELETE
+  // counterpart may be added here. Rows are written only by storage-layer
+  // recordAuditLog() calls, from the session actor, never from a request body.
+  //
+  // Not permission-gated, matching every other read route in this file (only
+  // mutations carry requirePermission). Who may read financial history is a
+  // domain decision the decision record hasn't made - see the follow-ups in
+  // the Pass 2 summary.
+  app.get("/api/audit-logs", async (req, res) => {
+    try {
+      const query = auditLogQuerySchema.parse(req.query);
+      const data = query.locationId
+        ? await req.storage.getAuditLogsForLocation(query.locationId, query.limit)
+        : await req.storage.getAuditLogsForEntity(query.entityType!, query.entityId!, query.limit);
       res.json(data);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);

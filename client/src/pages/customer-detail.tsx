@@ -35,6 +35,7 @@ import { OpportunityHistoryDialog } from "@/components/opportunity-history-dialo
 import { OpportunityConvertDialog } from "@/components/opportunity-convert-dialog";
 import { ServiceCompletionDialog } from "@/components/service-completion-dialog";
 import { formatPhoneDisplay } from "@shared/phone";
+import { describeAuditAction, describeAuditEntityType, diffAuditSnapshots } from "@shared/audit";
 import { dollarsToCents, centsToDollars, centsToDollarString } from "@shared/money";
 import {
   ArrowLeft, Mail, Phone, MapPin, Plus, Calendar, FileText, MessageSquare,
@@ -42,7 +43,7 @@ import {
   History,
   CreditCard, KeyRound, Ruler, ChevronUp, Check, Link2, Target,
 } from "lucide-react";
-import type { Customer, Contact, Location, Appointment, Invoice, Service, ServiceRecord, ProductApplication, Communication, CustomerNote, BillingProfile, NoteRevision, Agreement, AgreementCancellationPolicy, AgreementTemplate, ServiceType, Technician, Opportunity, OpportunityDisposition } from "@shared/schema";
+import type { AuditLog, Customer, Contact, Location, Appointment, Invoice, Service, ServiceRecord, ProductApplication, Communication, CustomerNote, BillingProfile, NoteRevision, Agreement, AgreementCancellationPolicy, AgreementTemplate, ServiceType, Technician, Opportunity, OpportunityDisposition } from "@shared/schema";
 
 interface CustomerDetailCompatResponse {
   legacyCustomer: Customer;
@@ -421,6 +422,115 @@ function NoteHistorySheet({
         </div>
       </SheetContent>
     </Sheet>
+  );
+}
+
+function formatAuditFieldName(field: string) {
+  return field
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/_/g, " ")
+    .replace(/^./, (character) => character.toUpperCase());
+}
+
+function formatAuditValue(value: unknown) {
+  if (value === null || value === undefined || value === "") {
+    return "—";
+  }
+
+  if (typeof value === "boolean") {
+    return value ? "Yes" : "No";
+  }
+
+  if (typeof value === "string" || typeof value === "number") {
+    return String(value);
+  }
+
+  return JSON.stringify(value);
+}
+
+// The location's slice of the system-wide audit history (PLAN_BILLING_V1_1 D7).
+// Today the only writer is the location/customer profile edit; as the billing
+// passes land, invoice, payment, and credit-memo events appear here through the
+// same route with no change on this side. Read-only by design - audit_logs is
+// append-only, so this panel never offers an edit or delete control.
+function LocationHistoryTab({ locationId }: { locationId: string }) {
+  const { data: entries, isLoading, error } = useQuery<AuditLog[]>({
+    queryKey: [`/api/audit-logs?locationId=${locationId}`],
+    enabled: !!locationId,
+  });
+
+  if (isLoading) {
+    return (
+      <div className="space-y-3" data-testid="loading-location-history">
+        <Skeleton className="h-24 w-full" />
+        <Skeleton className="h-24 w-full" />
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <Card>
+        <CardContent className="text-center py-8" data-testid="error-location-history">
+          <History className="h-8 w-8 mx-auto text-muted-foreground/30 mb-2" />
+          <p className="text-sm text-destructive">Unable to load history for this location</p>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (!entries || entries.length === 0) {
+    return (
+      <Card>
+        <CardContent className="text-center py-8" data-testid="empty-location-history">
+          <History className="h-8 w-8 mx-auto text-muted-foreground/30 mb-2" />
+          <p className="text-sm text-muted-foreground">No recorded changes for this location yet</p>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <>
+      {entries.map((entry) => {
+        const changes = diffAuditSnapshots(entry.beforeJson, entry.afterJson);
+
+        return (
+          <Card key={entry.id} data-testid={`card-audit-log-${entry.id}`}>
+            <CardContent className="p-4">
+              <div className="flex items-center gap-2 flex-wrap">
+                <Badge variant="outline" className="text-xs">{describeAuditEntityType(entry.entityType)}</Badge>
+                <Badge variant="secondary" className="text-xs">{describeAuditAction(entry.action)}</Badge>
+                <span className="text-xs text-muted-foreground">{formatRevisionTimestamp(entry.createdAt)}</span>
+              </div>
+              <p className="text-xs text-muted-foreground mt-1">
+                By: {entry.actorLabel?.trim() || "System"}
+              </p>
+              {changes.length > 0 ? (
+                <div className="mt-3 rounded-md border bg-muted/20 p-3 space-y-1.5">
+                  {changes.map((change) => (
+                    <div key={change.field} className="text-xs flex flex-wrap gap-x-2">
+                      <span className="font-medium text-foreground">{formatAuditFieldName(change.field)}</span>
+                      <span className="text-muted-foreground line-through break-all [overflow-wrap:anywhere]">
+                        {formatAuditValue(change.before)}
+                      </span>
+                      <span className="text-muted-foreground">→</span>
+                      <span className="text-foreground break-all [overflow-wrap:anywhere]">
+                        {formatAuditValue(change.after)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="mt-3 text-xs italic text-muted-foreground">
+                  Recorded with no field-level differences.
+                </p>
+              )}
+            </CardContent>
+          </Card>
+        );
+      })}
+    </>
   );
 }
 
@@ -2999,7 +3109,7 @@ export default function CustomerDetail() {
   const requestedTab = searchParams.get("tab");
 
   useEffect(() => {
-    if (requestedTab && ["contacts", "agreements", "services", "invoices", "communications", "opportunities"].includes(requestedTab)) {
+    if (requestedTab && ["contacts", "agreements", "services", "invoices", "communications", "opportunities", "history"].includes(requestedTab)) {
       setActiveTab(requestedTab);
     }
   }, [requestedTab]);
@@ -3397,6 +3507,9 @@ export default function CustomerDetail() {
             <TabsTrigger value="opportunities" data-testid="tab-opportunities"><Target className="h-3 w-3 mr-1" /> Opportunities ({locationCounts?.opportunities ?? 0})</TabsTrigger>
             <TabsTrigger value="invoices" data-testid="tab-invoices"><FileText className="h-3 w-3 mr-1" /> Invoices ({locationCounts?.invoices ?? 0})</TabsTrigger>
             <TabsTrigger value="comms" data-testid="tab-comms"><MessageSquare className="h-3 w-3 mr-1" /> Comms ({locationCounts?.communications ?? 0})</TabsTrigger>
+            {/* No count: audit rows aren't part of the location-counts rollup, and a
+                "(0)" that never moves would read as broken rather than empty. */}
+            <TabsTrigger value="history" data-testid="tab-history"><History className="h-3 w-3 mr-1" /> History</TabsTrigger>
           </TabsList>
 
           <TabsContent value="contacts" className="mt-4 space-y-3">
@@ -3525,6 +3638,10 @@ export default function CustomerDetail() {
                 </CardContent>
               </Card>
             ))}
+          </TabsContent>
+
+          <TabsContent value="history" className="mt-4 space-y-3">
+            <LocationHistoryTab locationId={activeLocationId} />
           </TabsContent>
         </Tabs>
       </div>
