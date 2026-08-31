@@ -17,7 +17,7 @@ export default function Dashboard() {
   const loading = customersLoading || appointmentsLoading || servicesLoading || invoicesLoading || communicationsLoading;
   const activeCustomers = customers?.filter((customer) => customer.status === "active").length || 0;
   const upcomingAppointments =
-    appointments?.filter((appointment) => new Date(appointment.scheduledDate) >= new Date() && appointment.status !== "canceled").length || 0;
+    appointments?.filter((appointment) => new Date(appointment.scheduledDate) >= new Date() && appointment.status !== "CANCELED").length || 0;
   const completedServices = services?.filter((service) => service.confirmed).length || 0;
   const communicationsCount = communications?.length || 0;
   const paidRevenueCents =

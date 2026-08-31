@@ -968,7 +968,7 @@ export class DatabaseStorage implements IStorage {
       return;
     }
 
-    const nextStatus = appointment.status === "canceled"
+    const nextStatus = appointment.status === "CANCELED"
         ? "CANCELLED"
         : "SCHEDULED";
 
@@ -2134,7 +2134,7 @@ export class DatabaseStorage implements IStorage {
           await tx
             .update(services)
             .set({
-              status: appointment.status === "completed" ? "COMPLETED" : appointment.status === "canceled" ? "CANCELLED" : "SCHEDULED",
+              status: appointment.status === "COMPLETED" ? "COMPLETED" : appointment.status === "CANCELED" ? "CANCELLED" : "SCHEDULED",
               assignedTechnicianId: appointment.assignedTechnicianId || null,
               updatedAt: new Date(),
             })
@@ -2167,7 +2167,7 @@ export class DatabaseStorage implements IStorage {
           await tx
             .update(services)
             .set({
-              status: appointment.status === "completed" ? "COMPLETED" : appointment.status === "canceled" ? "CANCELLED" : "SCHEDULED",
+              status: appointment.status === "COMPLETED" ? "COMPLETED" : appointment.status === "CANCELED" ? "CANCELLED" : "SCHEDULED",
               assignedTechnicianId: appointment.assignedTechnicianId || null,
               updatedAt: new Date(),
             })
@@ -2739,13 +2739,13 @@ export class DatabaseStorage implements IStorage {
       if (cancelScheduledAppointments) {
         const scheduledAppointments = await tx.select().from(appointments).where(and(eq(appointments.orgId, this.orgId), eq(appointments.agreementId, agreement.id)));
         for (const appointment of scheduledAppointments) {
-          if (appointment.status === "completed" || appointment.status === "canceled") continue;
-          await tx.update(appointments).set({ status: "canceled" }).where(and(eq(appointments.orgId, this.orgId), eq(appointments.id, appointment.id)));
+          if (appointment.status === "COMPLETED" || appointment.status === "CANCELED") continue;
+          await tx.update(appointments).set({ status: "CANCELED" }).where(and(eq(appointments.orgId, this.orgId), eq(appointments.id, appointment.id)));
         }
 
         for (const service of agreementServices) {
           if (!service.appointmentId || service.status === "COMPLETED" || service.status === "CANCELLED") continue;
-          await tx.update(appointments).set({ status: "canceled" }).where(and(eq(appointments.orgId, this.orgId), eq(appointments.id, service.appointmentId)));
+          await tx.update(appointments).set({ status: "CANCELED" }).where(and(eq(appointments.orgId, this.orgId), eq(appointments.id, service.appointmentId)));
           await tx.update(services).set({ status: "CANCELLED", updatedAt: cancelledAt }).where(and(eq(services.orgId, this.orgId), eq(services.id, service.id)));
         }
       }
@@ -3015,7 +3015,7 @@ export class DatabaseStorage implements IStorage {
       const [updatedAppointment] = await tx
         .update(appointments)
         .set({
-          status: "canceled",
+          status: "CANCELED",
           cancelReason: reason,
           cancelNotes: notes,
           cancelRequestedAt: now,
@@ -3102,7 +3102,7 @@ export class DatabaseStorage implements IStorage {
         .update(appointments)
         .set({
           timeInAt: existingAppointment.timeInAt ?? new Date(),
-          status: existingAppointment.status === "completed" ? existingAppointment.status : "in_progress",
+          status: existingAppointment.status === "COMPLETED" ? existingAppointment.status : "IN_PROGRESS",
         })
         .where(and(eq(appointments.orgId, this.orgId), eq(appointments.id, id)))
         .returning();
@@ -3140,7 +3140,7 @@ export class DatabaseStorage implements IStorage {
         eq(appointments.assignedTechnicianId, technicianId),
         gte(appointments.scheduledDate, dayStart),
         lte(appointments.scheduledDate, dayEnd),
-        ne(appointments.status, "canceled"),
+        ne(appointments.status, "CANCELED"),
       ))
       .orderBy(asc(appointments.scheduledDate));
 
@@ -3375,7 +3375,7 @@ export class DatabaseStorage implements IStorage {
         const trackingMode = await this.getServiceTimeTrackingMode();
         const timeOutAt = trackingMode === "AUTO_TIMEOUT_ON_TICKET_POST" && !appointment.timeOutAt ? new Date() : appointment.timeOutAt ?? null;
         const durationMinutes = timeOutAt ? calculateDurationMinutes(appointment.timeInAt, timeOutAt) : appointment.durationMinutes ?? null;
-        const nextAppointmentStatus = appointment.status === "scheduled" ? "in_progress" : appointment.status;
+        const nextAppointmentStatus = appointment.status === "SCHEDULED" ? "IN_PROGRESS" : appointment.status;
 
         [updatedAppointment] = await tx
           .update(appointments)
@@ -3468,7 +3468,7 @@ export class DatabaseStorage implements IStorage {
           if (allFinalized) {
             const timeOutAt = appointment.timeOutAt ?? now;
             await tx.update(appointments).set({
-              status: "completed",
+              status: "COMPLETED",
               timeOutAt,
               durationMinutes: calculateDurationMinutes(appointment.timeInAt, timeOutAt) ?? appointment.durationMinutes ?? null,
             }).where(and(eq(appointments.orgId, this.orgId), eq(appointments.id, appointment.id)));
@@ -3511,8 +3511,8 @@ export class DatabaseStorage implements IStorage {
 
       if (record.appointmentId) {
         const [appointment] = await tx.select().from(appointments).where(and(eq(appointments.orgId, this.orgId), eq(appointments.id, record.appointmentId)));
-        if (appointment?.status === "completed") {
-          await tx.update(appointments).set({ status: appointment.timeInAt ? "in_progress" : "scheduled" }).where(and(eq(appointments.orgId, this.orgId), eq(appointments.id, appointment.id)));
+        if (appointment?.status === "COMPLETED") {
+          await tx.update(appointments).set({ status: appointment.timeInAt ? "IN_PROGRESS" : "SCHEDULED" }).where(and(eq(appointments.orgId, this.orgId), eq(appointments.id, appointment.id)));
         }
       }
 

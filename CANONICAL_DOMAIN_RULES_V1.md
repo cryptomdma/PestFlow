@@ -691,7 +691,13 @@ A scheduled dispatch placement for one or more Services.
 * routeDate nullable
 * routeSequence nullable
 * estimatedDurationMinutes nullable
-* status (`scheduled` | `confirmed` | `in_progress` | `completed` | `canceled` | `rescheduled` | `issue`)
+* status (`SCHEDULED` | `IN_PROGRESS` | `COMPLETED` | `CANCELED`) — hardened to this
+  four-value enum in Pass 1 (D1a) and enforced by `appointmentStatusSchema` in `routes.ts`.
+  Note the single-L `CANCELED` is deliberately distinct from Service's double-L `CANCELLED`;
+  the cross-table sync sites in `storage.ts` translate between the two vocabularies.
+  `confirmed`, `rescheduled`, and `issue` appeared in the original sketch of this entity but
+  were never implemented — a reschedule request is carried by the `rescheduleRequested` /
+  `rescheduleRequestedAt` fields on a `CANCELED` appointment, not by a status value.
 * notes nullable
 * createdAt
 * updatedAt

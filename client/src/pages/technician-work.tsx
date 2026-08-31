@@ -225,7 +225,7 @@ export default function TechnicianWork() {
                     <p className="mt-2 text-sm text-muted-foreground">{serviceLabels.join(", ")}</p>
                   </div>
                   <div className="flex flex-col items-end gap-2">
-                    <Badge variant={visit.appointment.status === "completed" ? "default" : "secondary"}>{visit.appointment.status}</Badge>
+                    <Badge variant={visit.appointment.status === "COMPLETED" ? "default" : "secondary"}>{visit.appointment.status}</Badge>
                     <span className="text-xs text-muted-foreground">{completedCount}/{visit.services.length} posted</span>
                   </div>
                 </div>
@@ -269,7 +269,7 @@ export default function TechnicianWork() {
                       Time Out
                     </Button>
                   ) : null}
-                  {detailVisit.appointment.status !== "canceled" && detailVisit.appointment.status !== "completed" ? (
+                  {detailVisit.appointment.status !== "CANCELED" && detailVisit.appointment.status !== "COMPLETED" ? (
                     <>
                       <Button type="button" size="sm" variant="outline" onClick={() => openCancelAction("reschedule")}>
                         Request Reschedule
@@ -280,7 +280,7 @@ export default function TechnicianWork() {
                     </>
                   ) : null}
                 </div>
-                {detailVisit.appointment.status === "canceled" && (
+                {detailVisit.appointment.status === "CANCELED" && (
                   <div className="mt-3 rounded-md border border-destructive/30 bg-destructive/10 p-2 text-sm">
                     <p className="font-medium text-destructive">Appointment canceled</p>
                     {"cancelReason" in detailVisit.appointment && detailVisit.appointment.cancelReason ? (

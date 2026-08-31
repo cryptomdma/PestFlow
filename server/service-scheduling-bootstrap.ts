@@ -71,6 +71,21 @@ export async function bootstrapServiceSchedulingFoundation(): Promise<void> {
   await db.execute(sql`ALTER TABLE appointments ADD COLUMN IF NOT EXISTS reschedule_requested boolean NOT NULL DEFAULT false`);
   await db.execute(sql`ALTER TABLE appointments ADD COLUMN IF NOT EXISTS reschedule_requested_at timestamp`);
 
+  // appointments.status had no server-side enum until D1a, so it accepted any
+  // caller-supplied string and drifted to lowercase. Normalize the legacy
+  // vocabulary onto SCHEDULED | IN_PROGRESS | COMPLETED | CANCELED. Idempotent:
+  // once a row is uppercased no WHERE clause matches it again. The orphan
+  // 'pending' value was a dropdown option with no distinct meaning - an
+  // appointment row only exists once dispatch places it on a real date, so
+  // "not fully scheduled yet" is services.status = 'PENDING_SCHEDULING', not an
+  // appointment state (PLAN_BILLING_V1_1_EXECUTION.md §5 Q4).
+  await db.execute(sql`UPDATE appointments SET status = 'SCHEDULED' WHERE status = 'scheduled'`);
+  await db.execute(sql`UPDATE appointments SET status = 'IN_PROGRESS' WHERE status = 'in_progress'`);
+  await db.execute(sql`UPDATE appointments SET status = 'COMPLETED' WHERE status = 'completed'`);
+  await db.execute(sql`UPDATE appointments SET status = 'CANCELED' WHERE status = 'canceled'`);
+  await db.execute(sql`UPDATE appointments SET status = 'SCHEDULED' WHERE status = 'pending'`);
+  await db.execute(sql`ALTER TABLE appointments ALTER COLUMN status SET DEFAULT 'SCHEDULED'`);
+
   await db.execute(sql`ALTER TABLE service_records ADD COLUMN IF NOT EXISTS service_id varchar`);
   await db.execute(sql`ALTER TABLE service_records ADD COLUMN IF NOT EXISTS technician_id varchar`);
   await db.execute(sql`ALTER TABLE service_records ADD COLUMN IF NOT EXISTS technician_license_number text`);

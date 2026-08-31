@@ -222,11 +222,11 @@ export async function seedDatabase() {
   ].map(withOrg)).returning();
 
   const [a1, a2, a3, a4, a5] = await db.insert(appointments).values([
-    { customerId: c1.id, locationId: l1.id, serviceId: svc1.id, serviceTypeId: st1.id, scheduledDate: twoDaysAgo, status: "completed", assignedTo: "Jake Miller", assignedTechnicianId: tech1.id, notes: "Monthly prevention service" },
-    { customerId: c2.id, locationId: l2.id, serviceId: svc2.id, serviceTypeId: st5.id, scheduledDate: yesterday, status: "completed", assignedTo: "Jake Miller", assignedTechnicianId: tech1.id, notes: "Monthly kitchen service" },
-    { customerId: c3.id, locationId: l4.id, serviceId: svc3.id, serviceTypeId: st2.id, scheduledDate: tomorrow, status: "scheduled", assignedTo: "Jake Miller", assignedTechnicianId: tech1.id, notes: "Annual termite inspection" },
-    { customerId: c4.id, locationId: l5.id, serviceId: svc4.id, serviceTypeId: st1.id, scheduledDate: threeDays, status: "scheduled", assignedTo: "Sam Torres", assignedTechnicianId: tech2.id, notes: "Quarterly service - all common areas" },
-    { customerId: c2.id, locationId: l3.id, serviceId: svc5.id, serviceTypeId: st5.id, scheduledDate: nextWeek, status: "scheduled", assignedTo: "Jake Miller", assignedTechnicianId: tech1.id, notes: "Monthly kitchen service - Westside" },
+    { customerId: c1.id, locationId: l1.id, serviceId: svc1.id, serviceTypeId: st1.id, scheduledDate: twoDaysAgo, status: "COMPLETED", assignedTo: "Jake Miller", assignedTechnicianId: tech1.id, notes: "Monthly prevention service" },
+    { customerId: c2.id, locationId: l2.id, serviceId: svc2.id, serviceTypeId: st5.id, scheduledDate: yesterday, status: "COMPLETED", assignedTo: "Jake Miller", assignedTechnicianId: tech1.id, notes: "Monthly kitchen service" },
+    { customerId: c3.id, locationId: l4.id, serviceId: svc3.id, serviceTypeId: st2.id, scheduledDate: tomorrow, status: "SCHEDULED", assignedTo: "Jake Miller", assignedTechnicianId: tech1.id, notes: "Annual termite inspection" },
+    { customerId: c4.id, locationId: l5.id, serviceId: svc4.id, serviceTypeId: st1.id, scheduledDate: threeDays, status: "SCHEDULED", assignedTo: "Sam Torres", assignedTechnicianId: tech2.id, notes: "Quarterly service - all common areas" },
+    { customerId: c2.id, locationId: l3.id, serviceId: svc5.id, serviceTypeId: st5.id, scheduledDate: nextWeek, status: "SCHEDULED", assignedTo: "Jake Miller", assignedTechnicianId: tech1.id, notes: "Monthly kitchen service - Westside" },
   ].map(withOrg)).returning();
 
   const [sr1, sr2] = await db.insert(serviceRecords).values([
