@@ -124,6 +124,9 @@ export async function registerRoutes(
   }, z.coerce.date().nullable());
   const technicianStatusSchema = z.enum(["ACTIVE", "INACTIVE", "TERMINATED"]);
   const serviceStatusSchema = z.enum(["DRAFT", "PENDING_SCHEDULING", "SCHEDULED", "COMPLETED", "CANCELLED"]);
+  // Single-L CANCELED is intentional and distinct from serviceStatusSchema's
+  // CANCELLED - appointments and services keep separate vocabularies.
+  const appointmentStatusSchema = z.enum(["SCHEDULED", "IN_PROGRESS", "COMPLETED", "CANCELED"]);
   const serviceSourceSchema = z.enum(["MANUAL", "AGREEMENT_GENERATED", "AGREEMENT_INITIAL"]);
   const agreementSchedulingModeSchema = z.enum(["AUTO_ELIGIBLE", "CONTACT_REQUIRED", "MANUAL"]);
   const technicianSchema = insertTechnicianSchema.extend({
@@ -167,6 +170,9 @@ export async function registerRoutes(
     scheduledEndDate: nullableDateSchema.optional(),
     timeInAt: nullableDateSchema.optional(),
     timeOutAt: nullableDateSchema.optional(),
+    // Optional, not required: the column has a SCHEDULED default and internal
+    // creators omit it. Present-but-invalid still fails validation.
+    status: appointmentStatusSchema.optional(),
   });
   const updateAppointmentSchema = appointmentSchema.partial();
   const serviceRecordSchema = insertServiceRecordSchema.omit({ serviceDate: true }).extend({

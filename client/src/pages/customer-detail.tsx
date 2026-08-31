@@ -2076,7 +2076,7 @@ function AgreementsTab({
           .map((agreement) => {
             const linkedAppointments = (appointmentsByAgreementId.get(agreement.id) ?? [])
               .sort((a, b) => new Date(a.scheduledDate).getTime() - new Date(b.scheduledDate).getTime());
-            const nextGeneratedAppointment = linkedAppointments.find((appointment) => appointment.status !== "completed" && appointment.status !== "canceled");
+            const nextGeneratedAppointment = linkedAppointments.find((appointment) => appointment.status !== "COMPLETED" && appointment.status !== "CANCELED");
             const linkedServices = (servicesByAgreementId.get(agreement.id) ?? [])
               .sort((a, b) => (a.generatedForDate || a.dueDate || "").localeCompare(b.generatedForDate || b.dueDate || ""));
             const nextGeneratedService = linkedServices.find((service) => service.status !== "COMPLETED" && service.status !== "CANCELLED");

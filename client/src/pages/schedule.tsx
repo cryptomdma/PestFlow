@@ -181,7 +181,7 @@ function AppointmentSheet({
   const [assignedTechnicianId, setAssignedTechnicianId] = useState<string>("");
   const [scheduledDate, setScheduledDate] = useState("");
   const [scheduledEndDate, setScheduledEndDate] = useState("");
-  const [status, setStatus] = useState("scheduled");
+  const [status, setStatus] = useState("SCHEDULED");
   const [lockTime, setLockTime] = useState(false);
   const [lockTechnician, setLockTechnician] = useState(false);
   const [notes, setNotes] = useState("");
@@ -191,7 +191,7 @@ function AppointmentSheet({
     setAssignedTechnicianId(appointment.assignedTechnicianId || "");
     setScheduledDate(formatDateTimeLocalValue(appointment.scheduledDate));
     setScheduledEndDate(formatDateTimeLocalValue(appointment.scheduledEndDate));
-    setStatus(appointment.status || "scheduled");
+    setStatus(appointment.status || "SCHEDULED");
     setLockTime(appointment.lockTime ?? false);
     setLockTechnician(appointment.lockTechnician ?? false);
     setNotes(appointment.notes || "");
@@ -264,11 +264,10 @@ function AppointmentSheet({
                 onChange={(event) => setStatus(event.target.value)}
                 className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
               >
-                <option value="scheduled">Scheduled</option>
-                <option value="in_progress">In Progress</option>
-                <option value="completed">Completed</option>
-                <option value="canceled">Canceled</option>
-                <option value="pending">Pending</option>
+                <option value="SCHEDULED">Scheduled</option>
+                <option value="IN_PROGRESS">In Progress</option>
+                <option value="COMPLETED">Completed</option>
+                <option value="CANCELED">Canceled</option>
               </select>
             </div>
 
@@ -295,12 +294,12 @@ function AppointmentSheet({
             </div>
 
             <div className="flex items-center justify-end gap-2">
-              {status !== "canceled" ? (
+              {status !== "CANCELED" ? (
                 <Button type="button" variant="destructive" onClick={() => onSave({
                   assignedTechnicianId: assignedTechnicianId || null,
                   scheduledDate: new Date(scheduledDate).toISOString(),
                   scheduledEndDate: scheduledEndDate ? new Date(scheduledEndDate).toISOString() : null,
-                  status: "canceled",
+                  status: "CANCELED",
                   lockTime,
                   lockTechnician,
                   notes: notes.trim() || null,
@@ -569,7 +568,7 @@ export default function Schedule() {
         generatedForDate: service.source === "AGREEMENT_GENERATED" ? service.generatedForDate || service.dueDate || null : null,
         scheduledDate: slotDate.toISOString(),
         scheduledEndDate: endDate ? endDate.toISOString() : null,
-        status: "scheduled",
+        status: "SCHEDULED",
         lockTime: false,
         lockTechnician: false,
         notes: service.notes || null,
@@ -583,7 +582,7 @@ export default function Schedule() {
           await apiRequest("PATCH", `/api/services/${serviceId}`, {
             appointmentId: createdAppointment.id,
             assignedTechnicianId: createdAppointment.assignedTechnicianId || null,
-            status: createdAppointment.status === "completed" ? "COMPLETED" : createdAppointment.status === "canceled" ? "CANCELLED" : "SCHEDULED",
+            status: createdAppointment.status === "COMPLETED" ? "COMPLETED" : createdAppointment.status === "CANCELED" ? "CANCELLED" : "SCHEDULED",
           });
         }));
       }
@@ -612,7 +611,7 @@ export default function Schedule() {
         await apiRequest("PATCH", `/api/services/${serviceId}`, {
           appointmentId: appointment.id,
           assignedTechnicianId: appointment.assignedTechnicianId || null,
-          status: appointment.status === "completed" ? "COMPLETED" : appointment.status === "canceled" ? "CANCELLED" : "SCHEDULED",
+          status: appointment.status === "COMPLETED" ? "COMPLETED" : appointment.status === "CANCELED" ? "CANCELLED" : "SCHEDULED",
         });
       }));
       return service;
@@ -960,20 +959,20 @@ export default function Schedule() {
                               const anyTicketPosted = linkedServiceRecords.length > 0 || linkedServices.some((service) => service.status === "COMPLETED");
                               const allTicketsFinalized = linkedServices.length > 0
                                 && linkedServices.every((service) => serviceRecordByServiceId.get(service.id)?.confirmed);
-                              const isCompletedAppointment = appointment.status === "completed" && allTicketsFinalized;
+                              const isCompletedAppointment = appointment.status === "COMPLETED" && allTicketsFinalized;
                               const isPendingOfficeReview = anyTicketPosted && !allTicketsFinalized;
-                              const statusTone = appointment.status === "canceled"
+                              const statusTone = appointment.status === "CANCELED"
                                 ? "border-red-600 bg-red-50 text-red-950"
                                 : isCompletedAppointment
                                   ? "border-green-600 bg-green-100 text-green-950"
-                                  : isPendingOfficeReview || appointment.status === "in_progress"
+                                  : isPendingOfficeReview || appointment.status === "IN_PROGRESS"
                                     ? "border-yellow-500 bg-yellow-50 text-yellow-950"
                                     : "border-blue-500 bg-blue-50 text-blue-950";
-                              const mutedTextTone = appointment.status === "canceled"
+                              const mutedTextTone = appointment.status === "CANCELED"
                                 ? "text-red-900"
                                 : isCompletedAppointment
                                   ? "text-green-900"
-                                  : isPendingOfficeReview || appointment.status === "in_progress"
+                                  : isPendingOfficeReview || appointment.status === "IN_PROGRESS"
                                     ? "text-yellow-900"
                                     : "text-blue-900";
                               const locationHref = location ? `/customers/${appointment.customerId}?locationId=${location.id}` : `/customers/${appointment.customerId}`;

@@ -215,7 +215,11 @@ export const appointments = pgTable("appointments", {
   timeInLng: decimal("time_in_lng", { precision: 10, scale: 7 }),
   timeOutLat: decimal("time_out_lat", { precision: 10, scale: 7 }),
   timeOutLng: decimal("time_out_lng", { precision: 10, scale: 7 }),
-  status: text("status").notNull().default("scheduled"),
+  // SCHEDULED | IN_PROGRESS | COMPLETED | CANCELED - enforced by
+  // appointmentStatusSchema in routes.ts. Note the single-L CANCELED here is
+  // deliberate and does NOT match services.status's CANCELLED; the cross-table
+  // sync sites in storage.ts translate between the two vocabularies.
+  status: text("status").notNull().default("SCHEDULED"),
   cancelReason: text("cancel_reason"),
   cancelNotes: text("cancel_notes"),
   cancelRequestedAt: timestamp("cancel_requested_at"),

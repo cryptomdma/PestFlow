@@ -16,7 +16,7 @@ grounded in what the code and data actually do, not what the decision record ass
 | # | Branch | Decisions | Status |
 |---|---|---|---|
 | 0 | `docs/pass-0-cleanup` | — (docs cleanup) | Done |
-| 1 | `feature/phase-1-appointment-status-enum` | D1a | Not started |
+| 1 | `feature/phase-1-appointment-status-enum` | D1a | Done |
 | 2 | `feature/phase-1-audit-log-infrastructure` | D7 (infra half) | Not started |
 | 3 | `feature/phase-1-invoice-appointment-anchor` | D1 | Not started |
 | 4 | `feature/phase-1-draft-invoice-lifecycle` | D3, Q3 | Not started |
