@@ -2,6 +2,7 @@ import cron from "node-cron";
 import { and, eq, isNotNull, lte } from "drizzle-orm";
 import { db } from "../db";
 import { agreements, billingPlans } from "@shared/schema";
+import { isScheduleBilledPlan } from "@shared/billing-plan";
 import { advanceAgreementDate, computeExpectedServiceCount, createOrgScopedStorage } from "../storage";
 
 function todayDateOnly(): string {
@@ -39,16 +40,14 @@ export async function runBillingCycle(): Promise<BillingRunResult> {
       }
 
       const [plan] = await db.select().from(billingPlans).where(and(eq(billingPlans.orgId, agreement.orgId), eq(billingPlans.id, agreement.billingPlanId)));
-      if (!plan || plan.chargeTrigger !== "ON_SCHEDULE") {
-        result.skipped += 1;
-        continue;
-      }
 
-      // PER_SERVICE is inherently service-driven, never schedule-driven
-      // (path 1, already covered by generateInvoiceFromServiceRecord).
-      // INSTALLMENT needs its own count/remaining-balance tracking, deferred
-      // to a future pass rather than approximated here.
-      if (plan.billingMode !== "RECURRING_INTERVAL" && plan.billingMode !== "PREPAID_TERM") {
+      // Skipped here means "the visit invoice charges for this instead" -
+      // PER_SERVICE is inherently service-driven (path 1, handled by
+      // generateInvoiceFromServiceRecord), ON_AGREEMENT_START charges once up
+      // front, and INSTALLMENT needs its own remaining-balance tracking,
+      // deferred rather than approximated here. Both sides read this one
+      // predicate so a plan can never be skipped by both of them.
+      if (!isScheduleBilledPlan(plan)) {
         result.skipped += 1;
         continue;
       }

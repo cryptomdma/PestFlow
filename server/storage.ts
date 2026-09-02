@@ -66,6 +66,7 @@ import type { InvoiceDocumentContext } from "./documents/types";
 import { renderInvoicePdf } from "./documents/invoice-pdf";
 import { can, PERMISSIONS, type UserRole } from "@shared/permissions";
 import { computeProductionValueCents } from "@shared/production-value";
+import { isScheduleBilledPlan } from "@shared/billing-plan";
 
 export interface CustomerDetailCompatProjection {
   legacyCustomer: Customer;
@@ -3808,10 +3809,11 @@ export class DatabaseStorage implements IStorage {
   // than listed and then rejected by generation.
   //
   // Agreement-generated services are no longer excluded (they used to be, since
-  // generation rejected them outright). They now ride along on the visit invoice
-  // as $0 AGREEMENT_COVERED lines - visible to the customer, never chargeable,
-  // never a billing_events row. Agreement revenue still comes only from the
-  // nightly run (server/jobs/billing-run.ts); see §2.1 of the execution plan.
+  // generation rejected them outright). They now ride along on the visit
+  // invoice, at $0 when the nightly run bills their plan and at a real amount
+  // when it does not - see resolveServiceLineBillingTx, which owns that
+  // decision. Listing them here is what makes a COD agreement's visits billable
+  // at all; excluding them was why that work was never invoiced.
   async getServiceRecordsReadyForBilling(): Promise<ServiceRecord[]> {
     const readyRecords = await db.select().from(serviceRecords).where(and(eq(serviceRecords.orgId, this.orgId), eq(serviceRecords.readyForBilling, true)));
     const alreadyInvoiced = await db.select().from(invoices).where(and(eq(invoices.orgId, this.orgId), ne(invoices.status, "VOID")));
@@ -4162,17 +4164,126 @@ export class DatabaseStorage implements IStorage {
     return { appointment, services: activeServices, records };
   }
 
+  // Each agreement behind a visit's services, paired with its live Billing
+  // Plan. Deliberately the LIVE plan row rather than agreement.billingPlanSnapshot:
+  // the nightly run reads the live plan too (server/jobs/billing-run.ts), and if
+  // these two read different sources, editing a plan in Settings would silently
+  // desync what the run charges from what the visit invoice zeroes out.
+  private async resolveAgreementBillingContextTx(
+    tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+    agreementIds: string[],
+  ): Promise<Map<string, { agreement: Agreement; plan: BillingPlan | undefined }>> {
+    const uniqueIds = Array.from(new Set(agreementIds));
+    if (!uniqueIds.length) {
+      return new Map();
+    }
+
+    const agreementRows = await tx.select().from(agreements).where(and(eq(agreements.orgId, this.orgId), inArray(agreements.id, uniqueIds)));
+    const planIds = agreementRows.map((agreement) => agreement.billingPlanId).filter((id): id is string => !!id);
+    const planRows = planIds.length
+      ? await tx.select().from(billingPlans).where(and(eq(billingPlans.orgId, this.orgId), inArray(billingPlans.id, Array.from(new Set(planIds)))))
+      : [];
+    const planById = new Map(planRows.map((plan) => [plan.id, plan]));
+
+    return new Map(
+      agreementRows.map((agreement) => [
+        agreement.id,
+        { agreement, plan: agreement.billingPlanId ? planById.get(agreement.billingPlanId) : undefined },
+      ]),
+    );
+  }
+
+  // What one finalized Service Record contributes to its visit invoice.
+  //
+  // The rule is a single question: does the nightly run bill this agreement's
+  // plan (isScheduleBilledPlan)? If yes, the customer already pays on the plan's
+  // cadence and the visit line is $0. If no - COD, per-service, charge-at-start,
+  // installment, or no plan at all - the VISIT is the billing event and the line
+  // must carry a real amount. Getting this wrong in the permissive direction is
+  // how work gets silently performed for free, so the fallbacks below only ever
+  // reach $0 by an explicit decision, never by absence of data.
+  //
+  // Callbacks: the production ledger already classified this record at
+  // finalization (basis CALLBACK once the agreement's contracted service slots
+  // are full - see createProductionValueEntriesForFinalizedRecord). This reads
+  // that classification but NOT its amount; production value is technician
+  // credit and billable is what the customer owes (D6's PRODUCTION vs BILLABLE),
+  // and they must stay free to diverge. A callback with no price set is warranty
+  // work at no charge; one with a price set is charged that price, which is how
+  // a "chargeable callback" service type is configured.
+  private async resolveServiceLineBillingTx(
+    tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+    input: {
+      record: ServiceRecord;
+      service: Service | undefined;
+      agreementContext: { agreement: Agreement; plan: BillingPlan | undefined } | undefined;
+    },
+  ): Promise<{ lineType: "SERVICE" | "AGREEMENT_COVERED"; amountCents: number; coverageNote: string | null }> {
+    const { record, service, agreementContext } = input;
+
+    if (!agreementContext) {
+      // Non-agreement / COD work: the service's own price is the only source.
+      const priceCents = service?.priceCents ?? null;
+      if (priceCents == null) {
+        throw new Error("Service has no price set; cannot generate an invoice");
+      }
+      return { lineType: "SERVICE", amountCents: priceCents, coverageNote: null };
+    }
+
+    if (isScheduleBilledPlan(agreementContext.plan)) {
+      // Visible as work performed, never chargeable, never a billing_events row.
+      // A price stamped on the service is deliberately ignored here rather than
+      // charged - the customer is already paying for this visit on the plan's
+      // schedule, so honoring it would bill them twice. Extra work on a covered
+      // visit belongs on an ADDON line, which Phase 1 does not build.
+      return { lineType: "AGREEMENT_COVERED", amountCents: 0, coverageNote: "covered by agreement" };
+    }
+
+    const priceCents = service?.priceCents ?? null;
+
+    const [productionEntry] = await tx
+      .select()
+      .from(productionValueEntries)
+      .where(and(
+        eq(productionValueEntries.orgId, this.orgId),
+        eq(productionValueEntries.serviceRecordId, record.id),
+        ne(productionValueEntries.basis, "SURCHARGE"),
+      ));
+    if (productionEntry?.basis === "CALLBACK") {
+      return priceCents != null && priceCents > 0
+        ? { lineType: "SERVICE", amountCents: priceCents, coverageNote: "callback" }
+        : { lineType: "AGREEMENT_COVERED", amountCents: 0, coverageNote: "warranty callback - no charge" };
+    }
+
+    // A contracted visit on a plan the nightly run does not bill. The per-visit
+    // price is the contract price spread across the agreement's snapshotted
+    // expected service count - the same arithmetic production value uses, but
+    // resolved here as a BILLABLE amount in its own right so the two can be
+    // changed independently later.
+    const billableCents = priceCents ?? computeProductionValueCents(agreementContext.agreement.priceCents, agreementContext.agreement.expectedServiceCount);
+    if (billableCents == null) {
+      throw new Error(
+        "Agreement has no billing plan and no price to bill per visit; set the agreement's billing plan or price before invoicing",
+      );
+    }
+
+    return { lineType: "SERVICE", amountCents: billableCents, coverageNote: null };
+  }
+
   // D1: the customer experienced one visit, so the invoice anchors on the
   // APPOINTMENT and carries one line per finalized Service Record on it. Work
   // with no appointment (direct one-offs) keeps the old per-service-record
   // anchor as a fallback; an invoice sets exactly one of the two, never both.
   //
-  // Agreement-generated services are no longer rejected outright. They appear
-  // as $0, non-taxable AGREEMENT_COVERED lines - visible to the customer as
-  // work performed, structurally incapable of being charged, and never written
-  // to billing_events. The nightly run (server/jobs/billing-run.ts) remains the
-  // one and only source of agreement revenue; §2.1 of the execution plan is the
-  // guard this implements.
+  // Agreement-generated services are no longer rejected outright. Whether one
+  // is chargeable is decided per line by resolveServiceLineBillingTx, keyed on
+  // the single question of whether the nightly run bills that agreement's plan.
+  // Schedule-billed work becomes a $0, non-taxable AGREEMENT_COVERED line -
+  // visible to the customer as work performed, structurally incapable of being
+  // charged, and never written to billing_events, so the nightly run
+  // (server/jobs/billing-run.ts) stays the one and only source of agreement
+  // revenue (§2.1). Everything else - COD, per-service, no plan - is billed
+  // here, because for those plans the visit IS the billing event.
   //
   // Idempotent: a double-click or re-run against any ticket on the visit
   // returns the existing invoice instead of erroring or duplicating, via a
@@ -4262,6 +4373,11 @@ export class DatabaseStorage implements IStorage {
         : [];
       const serviceTypeById = new Map(serviceTypeRows.map((serviceType) => [serviceType.id, serviceType]));
 
+      const agreementContextById = await this.resolveAgreementBillingContextTx(
+        tx,
+        billingServices.map((service) => service.agreementId).filter((id): id is string => !!id),
+      );
+
       let billingProfileSnapshot: Record<string, unknown> | null = null;
       let dueDate: Date | null = null;
       let accountId: string | null = null;
@@ -4300,15 +4416,20 @@ export class DatabaseStorage implements IStorage {
         const service = billingRecord.serviceId ? serviceById.get(billingRecord.serviceId) : undefined;
         const serviceTypeId = billingRecord.serviceTypeId ?? service?.serviceTypeId ?? null;
         const serviceType = serviceTypeId ? serviceTypeById.get(serviceTypeId) : undefined;
-        const description = `${serviceType?.name ?? "Service"} - ${new Date(billingRecord.serviceDate).toLocaleDateString()}`;
-        const agreementCovered = !!service?.agreementId || service?.source === "AGREEMENT_GENERATED";
+        const baseDescription = `${serviceType?.name ?? "Service"} - ${new Date(billingRecord.serviceDate).toLocaleDateString()}`;
+        const billing = await this.resolveServiceLineBillingTx(tx, {
+          record: billingRecord,
+          service,
+          agreementContext: service?.agreementId ? agreementContextById.get(service.agreementId) : undefined,
+        });
+        const description = billing.coverageNote ? `${baseDescription} (${billing.coverageNote})` : baseDescription;
 
-        if (agreementCovered) {
+        if (billing.lineType === "AGREEMENT_COVERED") {
           lines.push({
             serviceId: service?.id ?? null,
             serviceRecordId: billingRecord.id,
             lineType: "AGREEMENT_COVERED",
-            description: `${description} (covered by agreement)`,
+            description,
             unitPriceCents: 0,
             amountCents: 0,
             taxable: false,
@@ -4317,16 +4438,11 @@ export class DatabaseStorage implements IStorage {
           continue;
         }
 
-        const priceCents = service?.priceCents ?? null;
-        if (priceCents == null) {
-          throw new Error("Service has no price set; cannot generate an invoice");
-        }
-
         const taxDecision = await this.resolveTaxDecision(tx, {
           accountId,
           locationId: billingRecord.locationId,
           serviceTypeId,
-          amountCents: priceCents,
+          amountCents: billing.amountCents,
         });
         taxSnapshots.push({ serviceRecordId: billingRecord.id, ...taxDecision.snapshot });
 
@@ -4335,8 +4451,8 @@ export class DatabaseStorage implements IStorage {
           serviceRecordId: billingRecord.id,
           lineType: "SERVICE",
           description,
-          unitPriceCents: priceCents,
-          amountCents: priceCents,
+          unitPriceCents: billing.amountCents,
+          amountCents: billing.amountCents,
           taxable: taxDecision.taxable,
           taxCents: taxDecision.taxCents,
         });

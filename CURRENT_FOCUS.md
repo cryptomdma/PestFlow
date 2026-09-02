@@ -15,11 +15,12 @@ a single transaction-aware `recordAuditLog()` write helper on `DatabaseStorage`,
 Pass 3 (`feature/phase-1-invoice-appointment-anchor`, D1) is pushed and awaiting merge — invoices now
 anchor on `appointmentId` (one visit, one invoice, one line per finalized Service Record), with
 `serviceRecordId` kept as the fallback anchor for appointment-less one-offs and two mutually-exclusive
-partial unique indexes enforcing both. Agreement-covered work rides along as $0 `AGREEMENT_COVERED`
-lines and still never produces a `billing_events` row. Generation is audit-logged as `invoice_issued`
-and surfaces on the location History tab. The helper signatures and the behavior passes 4-5 need to
-know are written out in `PLAN_BILLING_V1_1_EXECUTION.md` under "Shipped in Pass 3" — read that rather
-than re-deriving it. Next up once it merges: **Pass 4 —
+partial unique indexes enforcing both. Whether an agreement service is $0 or chargeable is decided by
+one shared predicate — `isScheduleBilledPlan()` in `shared/billing-plan.ts`, read by both the nightly
+run and invoice generation so they can never disagree about who bills a visit. Generation is
+audit-logged as `invoice_issued` and surfaces on the location History tab. The helper signatures and
+the behavior passes 4-5 need to know are written out in `PLAN_BILLING_V1_1_EXECUTION.md` under
+"Shipped in Pass 3" — read that rather than re-deriving it. Next up once it merges: **Pass 4 —
 `feature/phase-1-draft-invoice-lifecycle`** (D3, Q3).
 
 Full ordered plan, impact analysis, conflict resolutions, and per-pass verification steps live in
@@ -37,8 +38,10 @@ the source of truth for what each pass actually does.
 ## Constraints (apply to every pass below)
 - Finalization remains the authoritative completion event. Pre-finalization invoices are DRAFT-only;
   issuing early requires `ISSUE_INVOICE_PREFINALIZATION` (Manager+) and flags the ticket.
-- Agreement revenue comes only from the nightly billing run. Agreement-covered services appear on visit
-  invoices at $0 billable. Never emit service-driven billing events for agreement work.
+- Agreement revenue comes only from the nightly billing run **for plans the run actually bills**
+  (`isScheduleBilledPlan()`); those services appear on visit invoices at $0 billable. Every other plan
+  — COD/per-service, charge-at-start, installment, or no plan — makes the visit the billing event and
+  the line carries a real amount. Never emit service-driven billing events for agreement work either way.
 - Price is never mutated by COA, deposits, or applications. Status fields derive from amounts and are
   never hand-set.
 - Payments, applications, credit memos, and audit logs are append-only. Corrections are new records
@@ -48,3 +51,15 @@ the source of truth for what each pass actually does.
   behavior, opportunity taxonomy migration, proposal generator, tech payment-collection UI relabel
   (lands immediately after payments-lite as its own pass), Services-tab PENDING_SCHEDULING-vs-SCHEDULED
   display clarity (a real, separately-noted UI gap — not a billing concern).
+- Also not in this phase, each documented where it belongs rather than scheduled here:
+  - **Billing Plan required on every Agreement** — backfill the 11 plan-less agreements, then
+    `billingPlanId NOT NULL` + zod + creation UI + template propagation. Until then a plan-less
+    agreement bills COD per visit. Owner-confirmed direction; sequence it before D9's column drop,
+    which resolves the same rows.
+  - **Explicit callback designation** on Service (defaulted from ServiceType), and **callback→source
+    attribution** — see `CANONICAL_DOMAIN_RULES_V1.md` §10 "Warranty callbacks". Today a callback is
+    inferred from a filled-slot counter, which mis-attributes production value when a callback lands
+    mid-term.
+  - **Service-level cancel / return-to-queue** — cancelling or rescheduling ONE service on a
+    multi-service appointment. Only the appointment-wide path exists, and the schedule screen's
+    "Cancel Service" button actually cancels the whole appointment (dev behavior rule 6).

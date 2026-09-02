@@ -176,6 +176,14 @@ exclusion is simply removed to make that possible, nothing left in the code stop
 from acquiring a nonzero `amountCents` line or a `billingEvents` row outside the nightly run — that is
 exactly how a customer gets billed twice.
 
+> **Correction, from building it in Pass 3.** This section (and §1's impact-table row) says to include
+> agreement services "as a $0 line," full stop. That is wrong for any agreement whose plan the nightly
+> run does not bill — `ON_SERVICE_COMPLETION`/`PER_SERVICE` (COD), `ON_AGREEMENT_START`, `INSTALLMENT`,
+> or no plan at all. The run skips exactly those (`billing-run.ts` gate), so zeroing them on the visit
+> invoice means **nobody bills the work** — silently, which is worse than the loud error the old
+> reject-outright behavior produced. The guard below is correct only for schedule-billed plans; the
+> implemented rule is `isScheduleBilledPlan()`, and everything else is billed at the visit.
+
 **Concrete guard, to be built in Pass 3 (D1) and enforced through Pass 5 (D2):**
 - Add `AGREEMENT_COVERED` to `invoiceLineItems.lineType`'s existing set (`SERVICE | ADDON | SURCHARGE |
   FEE | DISCOUNT | ADJUSTMENT`) — structurally distinct from a chargeable line, not just a $0 amount
@@ -332,6 +340,15 @@ private async getAppointmentBillingGroupTx(tx, appointmentId):
 // Public. Anchors on record.appointmentId when there is one, otherwise falls
 // back to the per-service-record anchor. Idempotent from ANY ticket on the visit.
 async generateInvoiceFromServiceRecord(serviceRecordId: string, actor?: AuditActor | null): Promise<Invoice>
+
+// server/storage.ts, private. Decides what ONE finalized Service Record
+// contributes to the visit invoice. Any pass that adds a new way to price a
+// line should extend this rather than branching on agreementId at a call site.
+private async resolveServiceLineBillingTx(tx, { record, service, agreementContext }):
+  Promise<{ lineType: "SERVICE" | "AGREEMENT_COVERED"; amountCents: number; coverageNote: string | null }>
+
+// shared/billing-plan.ts. The ONE predicate deciding who bills a visit.
+export function isScheduleBilledPlan(plan): boolean
 ```
 
 Behavior worth knowing before Pass 4/5 touches it:
@@ -349,6 +366,20 @@ Behavior worth knowing before Pass 4/5 touches it:
   `batchGenerateInvoicesForDateRange()` does, and reports `totalVisits` alongside `totalEligible`.
 - Generated invoices are still inserted as `OPEN` and audit-logged as `invoice_issued`. When Pass 4
   introduces real DRAFT creation, that action/status pair is the thing to revisit.
+- **`AGREEMENT_COVERED` is not "has an agreementId"** — it is "the nightly run bills this agreement's
+  plan," via `isScheduleBilledPlan()`. §2.1 below was written as though the two were the same; they
+  are not, and treating them as the same is how a COD agreement's work gets billed by nobody. A
+  covered line ignores any stamped `service.priceCents` rather than charging it (charging would
+  double-bill against the plan's own cadence); extra work on a covered visit wants an `ADDON` line,
+  which Phase 1 does not build.
+- A non-schedule-billed agreement visit is priced as `service.priceCents ?? contract price ÷
+  agreement.expectedServiceCount`. That arithmetic matches production value, but it is resolved as a
+  BILLABLE amount in its own right (D6's `BILLABLE` vs `PRODUCTION`) so the two stay free to diverge —
+  do not collapse them into one call.
+- Callbacks bill $0 unless a price is stamped. Generation reads the production ledger's `CALLBACK`
+  **basis** (not its amount) so billable and production always agree on what a callback is. That basis
+  is itself inferred from a filled-slot counter and is order-dependent — see the roadmap note in
+  `CANONICAL_DOMAIN_RULES_V1.md` §10 on making the designation explicit on Service.
 
 **Design note carried into Pass 4**: D3's "flags the linked ticket(s) for review" has no existing
 "flagged" concept in the schema. Reuse/extend `serviceRecords.ticketStatus` (currently
