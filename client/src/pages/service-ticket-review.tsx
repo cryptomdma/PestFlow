@@ -17,6 +17,12 @@ import { can, PERMISSIONS } from "@shared/permissions";
 import { CheckCircle2, ClipboardCheck, FileStack, RotateCcw, Send } from "lucide-react";
 import type { Appointment, Customer, Location, ProductApplication, Service, ServiceRecord, ServiceType, Technician } from "@shared/schema";
 
+interface BatchInvoicePreviewRow extends ServiceRecord {
+  billingLineType: "SERVICE" | "AGREEMENT_COVERED" | null;
+  billableAmountCents: number | null;
+  billingNote: string | null;
+}
+
 interface BatchGenerateResult {
   totalEligible: number;
   totalVisits: number;
@@ -147,7 +153,7 @@ export default function ServiceTicketReview() {
     onError: (error: Error) => toast({ title: "Unable to reopen ticket", description: error.message, variant: "destructive" }),
   });
 
-  const { data: batchPreview, isLoading: batchPreviewLoading } = useQuery<ServiceRecord[]>({
+  const { data: batchPreview, isLoading: batchPreviewLoading } = useQuery<BatchInvoicePreviewRow[]>({
     queryKey: [`/api/invoices/batch-preview?dateFrom=${dateFrom}&dateTo=${dateTo}`],
     enabled: batchDialogOpen && !!dateFrom && !!dateTo,
   });
@@ -183,18 +189,14 @@ export default function ServiceTicketReview() {
     if (!open) setBatchResult(null);
   };
 
-  const isAgreementCovered = (service?: Service) => !!service && (!!service.agreementId || service.source === "AGREEMENT_GENERATED");
-
-  // Agreement-covered tickets bill at $0 on the visit invoice (the nightly run
-  // is the only source of agreement revenue), so they're listed but contribute
-  // nothing to the preview total.
+  // Whether a ticket is covered and what it bills are resolved by the SERVER
+  // (getBatchInvoicePreviewForDateRange), through the same code generation uses.
+  // Deliberately not re-derived here from agreementId: coverage depends on the
+  // agreement's billing plan, and a client-side guess is how the preview ends up
+  // promising "$0, covered" for COD agreement work that then bills a real amount.
   const batchPreviewTotalCents = useMemo(() => {
-    return (batchPreview ?? []).reduce((sum, record) => {
-      const service = record.serviceId ? serviceById.get(record.serviceId) : undefined;
-      if (isAgreementCovered(service)) return sum;
-      return sum + (service?.priceCents ?? 0);
-    }, 0);
-  }, [batchPreview, serviceById]);
+    return (batchPreview ?? []).reduce((sum, record) => sum + (record.billableAmountCents ?? 0), 0);
+  }, [batchPreview]);
 
   // One invoice per visit, not per ticket (D1): two finalized tickets on one
   // appointment produce a single invoice, so the count the office is promised
@@ -442,7 +444,13 @@ export default function ServiceTicketReview() {
                             <p className="truncate text-xs text-muted-foreground">{serviceType?.name || "Service"}</p>
                           </div>
                           <span className="shrink-0 font-medium">
-                            {isAgreementCovered(service) ? "Covered by agreement" : service?.priceCents != null ? formatCents(service.priceCents) : "Not set"}
+                            {record.billingLineType === "AGREEMENT_COVERED"
+                              ? record.billingNote === "warranty callback - no charge"
+                                ? "Callback - no charge"
+                                : "Covered by agreement"
+                              : record.billableAmountCents != null
+                                ? formatCents(record.billableAmountCents)
+                                : "Cannot bill"}
                           </span>
                         </div>
                       );

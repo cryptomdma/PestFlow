@@ -1,5 +1,6 @@
 import PDFDocument from "pdfkit";
 import { formatCents } from "@shared/money";
+import { NO_CHARGE_LABEL } from "@shared/invoice-status";
 import type { InvoiceDocumentContext } from "./types";
 
 // Deterministic PDF generation: the same context must always produce the
@@ -38,7 +39,7 @@ export function renderInvoicePdf(context: InvoiceDocumentContext): Promise<Buffe
     doc.text(`Invoice ${context.invoiceNumber}`, { align: "right" });
     doc.text(`Issued: ${context.issueDate}`, { align: "right" });
     if (context.dueDate) doc.text(`Due: ${context.dueDate}`, { align: "right" });
-    doc.text(`Status: ${context.status}`, { align: "right" });
+    doc.text(`Status: ${context.noChargeCoveredByAgreement ? "No Charge" : context.status}`, { align: "right" });
 
     doc.moveDown(1.5);
     const partiesY = doc.y;
@@ -84,8 +85,19 @@ export function renderInvoicePdf(context: InvoiceDocumentContext): Promise<Buffe
     };
     totalLine("Subtotal", formatCents(context.subtotalCents));
     totalLine("Tax", formatCents(context.taxCents));
-    totalLine("Total", formatCents(context.totalCents), true);
+    totalLine(context.noChargeCoveredByAgreement ? "Amount Due" : "Total", formatCents(context.totalCents), true);
     doc.font("Helvetica");
+
+    // The agreement absorbed this visit, so say that rather than letting the
+    // derived "PAID" imply the customer settled a bill.
+    if (context.noChargeCoveredByAgreement) {
+      const bannerY = totalsY + 6;
+      doc.roundedRect(320, bannerY, 225, 26, 4).strokeColor(accentColor).stroke();
+      doc.font("Helvetica-Bold").fontSize(10).fillColor(accentColor)
+        .text(NO_CHARGE_LABEL, 324, bannerY + 8, { width: 217, align: "center" });
+      doc.font("Helvetica").fillColor("#111827");
+      totalsY = bannerY + 32;
+    }
 
     if (context.notes) {
       doc.moveDown(2);

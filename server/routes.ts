@@ -1761,7 +1761,7 @@ export async function registerRoutes(
   app.get("/api/invoices/batch-preview", requirePermission(PERMISSIONS.GENERATE_INVOICE), async (req, res) => {
     try {
       const { dateFrom, dateTo } = batchDateRangeSchema.parse(req.query);
-      const data = await req.storage.getServiceRecordsReadyForBillingInRange(dateFrom, dateTo);
+      const data = await req.storage.getBatchInvoicePreviewForDateRange(dateFrom, dateTo);
       res.json(data);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);

@@ -147,7 +147,7 @@ function ReadyToBillSection() {
     <Card>
       <CardHeader>
         <CardTitle className="text-base font-semibold flex items-center gap-2"><ReceiptText className="h-4 w-4" /> Ready to Bill</CardTitle>
-        <p className="text-xs text-muted-foreground">Finalized service tickets awaiting an invoice. Tickets on the same appointment bill together as one visit invoice; agreement-covered work appears on it at $0.</p>
+        <p className="text-xs text-muted-foreground">Finalized service tickets awaiting an invoice. Tickets on the same appointment bill together as one visit invoice. Work on an agreement billed by its plan appears at $0; agreement work billed per visit is charged here.</p>
       </CardHeader>
       <CardContent className="space-y-2">
         {readyRecords.map((record) => {

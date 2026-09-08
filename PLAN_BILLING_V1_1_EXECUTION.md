@@ -349,6 +349,23 @@ private async resolveServiceLineBillingTx(tx, { record, service, agreementContex
 
 // shared/billing-plan.ts. The ONE predicate deciding who bills a visit.
 export function isScheduleBilledPlan(plan): boolean
+
+// shared/invoice-status.ts. Status is DERIVED FROM AMOUNTS, never assigned.
+// Call this at every point that changes what an invoice is owed; never write a
+// status literal at a call site. DRAFT and VOID pass through untouched, so
+// Pass 4 can introduce DRAFT without this flipping one to PAID, and Pass 6's
+// apply/release must call it rather than computing its own status.
+export function deriveInvoiceStatus({ totalAmountCents, amountPaidCents?, currentStatus? }): InvoiceStatus
+
+// Same file. A $0 visit whose every line is AGREEMENT_COVERED. Customer-facing
+// documents render "No Charge - Covered by Service Agreement" instead of the
+// derived "PAID" - correct bookkeeping, honest document, no fifth status value.
+export function isFullyAgreementCovered({ totalAmountCents, lines }): boolean
+
+// server/storage.ts, public. Batch-preview rows with billing resolved SERVER-side
+// through the same resolver generation uses. The client must never re-derive
+// coverage from agreementId.
+async getBatchInvoicePreviewForDateRange(dateFrom, dateTo): Promise<BatchInvoicePreviewRow[]>
 ```
 
 Behavior worth knowing before Pass 4/5 touches it:
@@ -376,6 +393,19 @@ Behavior worth knowing before Pass 4/5 touches it:
   agreement.expectedServiceCount`. That arithmetic matches production value, but it is resolved as a
   BILLABLE amount in its own right (D6's `BILLABLE` vs `PRODUCTION`) so the two stay free to diverge —
   do not collapse them into one call.
+- **Never write an invoice status literal.** All three creation paths call `deriveInvoiceStatus()`, so a
+  fully covered $0 visit lands `PAID` on the same rule that marks a settled invoice — no branch on
+  coverage anywhere. What the customer is *told* is a render-layer concern
+  (`isFullyAgreementCovered` → "No Charge - Covered by Service Agreement" in the HTML and PDF
+  renderers), never a fifth status value.
+- **No 23505 catch inside a generation transaction.** Postgres aborts the whole transaction on a
+  constraint violation, so a recovery `SELECT` in that block fails 25P02 and can never return the race
+  winner — verified directly against the dev DB. `generateInvoiceFromServiceRecord` catches outside the
+  transaction and re-looks-up via `findExistingInvoiceForVisit()`. `generateScheduleDrivenInvoice()`
+  still has the old in-transaction catch; it is the nightly run and was left alone this pass, but it is
+  the same latent bug.
+- Batch grouping expands each visit to **all** its eligible tickets, not just the ones inside the date
+  range, because generation bills the whole appointment regardless of the range.
 - Callbacks bill $0 unless a price is stamped. Generation reads the production ledger's `CALLBACK`
   **basis** (not its amount) so billable and production always agree on what a callback is. That basis
   is itself inferred from a filled-slot counter and is order-dependent — see the roadmap note in

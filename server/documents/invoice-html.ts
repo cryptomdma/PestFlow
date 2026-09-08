@@ -1,4 +1,5 @@
 import { formatCents } from "@shared/money";
+import { NO_CHARGE_LABEL } from "@shared/invoice-status";
 import type { InvoiceDocumentContext } from "./types";
 
 function escapeHtml(value: string): string {
@@ -49,6 +50,7 @@ export function renderInvoiceHtml(context: InvoiceDocumentContext): string {
   .totals div { display: flex; justify-content: space-between; padding: 4px 0; }
   .totals .total { font-weight: bold; border-top: 1px solid #d1d5db; padding-top: 8px; font-size: 15px; }
   .notes { margin-top: 24px; font-size: 12px; color: #4b5563; white-space: pre-line; }
+  .covered { margin-top: 16px; margin-left: auto; width: 260px; text-align: center; border: 1px solid ${accentColor}; border-radius: 6px; padding: 10px 8px; font-size: 13px; font-weight: bold; color: ${accentColor}; }
 </style>
 </head>
 <body>
@@ -58,7 +60,7 @@ export function renderInvoiceHtml(context: InvoiceDocumentContext): string {
       <div><strong>Invoice ${escapeHtml(context.invoiceNumber)}</strong></div>
       <div>Issued: ${escapeHtml(context.issueDate)}</div>
       ${context.dueDate ? `<div>Due: ${escapeHtml(context.dueDate)}</div>` : ""}
-      <div>Status: ${escapeHtml(context.status)}</div>
+      <div>Status: ${escapeHtml(context.noChargeCoveredByAgreement ? "No Charge" : context.status)}</div>
     </div>
   </div>
   <div class="parties">
@@ -82,8 +84,9 @@ export function renderInvoiceHtml(context: InvoiceDocumentContext): string {
   <div class="totals">
     <div><span>Subtotal</span><span>${formatCents(context.subtotalCents)}</span></div>
     <div><span>Tax</span><span>${formatCents(context.taxCents)}</span></div>
-    <div class="total"><span>Total</span><span>${formatCents(context.totalCents)}</span></div>
+    <div class="total"><span>${context.noChargeCoveredByAgreement ? "Amount Due" : "Total"}</span><span>${formatCents(context.totalCents)}</span></div>
   </div>
+  ${context.noChargeCoveredByAgreement ? `<div class="covered">${escapeHtml(NO_CHARGE_LABEL)}</div>` : ""}
   ${context.notes ? `<div class="notes">${escapeHtml(context.notes)}</div>` : ""}
 </body>
 </html>`;
