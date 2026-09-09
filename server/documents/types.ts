@@ -33,6 +33,17 @@ export interface InvoiceDocumentContext {
   subtotalCents: number;
   taxCents: number;
   totalCents: number;
+  /**
+   * The visit was fully covered by the customer's service agreement and no
+   * money moved (`isFullyAgreementCovered` in shared/invoice-status.ts).
+   *
+   * The invoice's stored status for such a row derives to PAID, which is
+   * correct bookkeeping but the wrong story to print: the customer did not
+   * settle a bill, their agreement absorbed the visit. Renderers show
+   * "No Charge - Covered by Service Agreement" instead. Resolved once, here, so
+   * every customer-facing document tells the same story without re-deriving it.
+   */
+  noChargeCoveredByAgreement: boolean;
   notes: string | null;
   branding: InvoiceDocumentBranding;
 }

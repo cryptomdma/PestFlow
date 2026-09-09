@@ -66,6 +66,8 @@ import type { InvoiceDocumentContext } from "./documents/types";
 import { renderInvoicePdf } from "./documents/invoice-pdf";
 import { can, PERMISSIONS, type UserRole } from "@shared/permissions";
 import { computeProductionValueCents } from "@shared/production-value";
+import { isScheduleBilledPlan } from "@shared/billing-plan";
+import { deriveInvoiceStatus, isFullyAgreementCovered } from "@shared/invoice-status";
 
 export interface CustomerDetailCompatProjection {
   legacyCustomer: Customer;
@@ -275,10 +277,28 @@ export interface GenerateScheduleDrivenInvoiceInput {
   nextBillingDate: string | null;
 }
 
+// Reported per visit, not per ticket (PLAN_BILLING_V1_1_EXECUTION.md §2.3):
+// once invoices anchor on the appointment, two finalized tickets on one
+// appointment are one invoice, and a report that counted them separately would
+// tell the office "1 invoiced + 1 skipped: already invoiced" for what was, from
+// their side of the counter, a single visit. `totalEligible` still counts
+// tickets (what the preview lists); `totalVisits` is how many invoices the run
+// can produce at most.
+// A batch-preview row: the eligible ticket plus what it will actually bill,
+// resolved by the server. `billingLineType: null` means the ticket cannot be
+// billed as things stand and `billingNote` carries the reason - shown in the
+// preview rather than hidden, since generate would report the same reason.
+export interface BatchInvoicePreviewRow extends ServiceRecord {
+  billingLineType: "SERVICE" | "AGREEMENT_COVERED" | null;
+  billableAmountCents: number | null;
+  billingNote: string | null;
+}
+
 export interface BatchGenerateResult {
   totalEligible: number;
-  invoiced: Array<{ serviceRecordId: string; invoiceId: string; invoiceNumber: string; totalAmountCents: number }>;
-  skipped: Array<{ serviceRecordId: string; reason: string }>;
+  totalVisits: number;
+  invoiced: Array<{ appointmentId: string | null; serviceRecordIds: string[]; invoiceId: string; invoiceNumber: string; totalAmountCents: number }>;
+  skipped: Array<{ appointmentId: string | null; serviceRecordIds: string[]; reason: string }>;
   totalAmountCents: number;
 }
 
@@ -426,10 +446,11 @@ export interface IStorage {
   getInvoiceLineItems(invoiceId: string): Promise<InvoiceLineItem[]>;
   getServiceRecordsReadyForBilling(): Promise<ServiceRecord[]>;
   getServiceRecordsReadyForBillingInRange(dateFrom: string, dateTo: string): Promise<ServiceRecord[]>;
+  getBatchInvoicePreviewForDateRange(dateFrom: string, dateTo: string): Promise<BatchInvoicePreviewRow[]>;
   createManualInvoice(input: CreateManualInvoiceInput): Promise<Invoice>;
-  generateInvoiceFromServiceRecord(serviceRecordId: string): Promise<Invoice>;
+  generateInvoiceFromServiceRecord(serviceRecordId: string, actor?: AuditActor | null): Promise<Invoice>;
   generateScheduleDrivenInvoice(input: GenerateScheduleDrivenInvoiceInput): Promise<Invoice>;
-  batchGenerateInvoicesForDateRange(dateFrom: string, dateTo: string): Promise<BatchGenerateResult>;
+  batchGenerateInvoicesForDateRange(dateFrom: string, dateTo: string, actor?: AuditActor | null): Promise<BatchGenerateResult>;
   batchSendInvoices(invoiceIds: string[]): Promise<Invoice[]>;
   updateInvoice(id: string, data: Partial<InsertInvoice>): Promise<Invoice | undefined>;
   voidInvoice(id: string): Promise<Invoice | undefined>;
@@ -660,10 +681,11 @@ export class DatabaseStorage implements IStorage {
   }
 
   // What the location screen's History panel renders: the location row plus the
-  // legacy customer record that owns it, since one profile edit writes both.
-  // As passes 3-8 land, the financial records anchored to this location
-  // (invoices, payments, credit memos, service tickets) get added to `refs`
-  // here - extend this list rather than adding a second rollup query.
+  // legacy customer record that owns it (since one profile edit writes both),
+  // plus the location's invoices as of D1. As passes 4-8 land, the remaining
+  // financial records anchored to this location (payments, credit memos,
+  // service tickets) get added to `refs` here - extend this list rather than
+  // adding a second rollup query.
   async getAuditLogsForLocation(locationId: string, limit?: number): Promise<AuditLog[]> {
     const [location] = await db
       .select({ customerId: locations.customerId })
@@ -674,10 +696,20 @@ export class DatabaseStorage implements IStorage {
       return [];
     }
 
-    const refs: Array<{ entityType: AuditEntityType; entityId: string }> = [
-      { entityType: "location", entityId: locationId },
-      { entityType: "customer", entityId: location.customerId },
+    // Invoices anchored to this location (D1). Collected as ids rather than
+    // joined, because audit_logs.entity_id is plain text with no FK - the
+    // entity type is what gives it meaning.
+    const locationInvoices = await db
+      .select({ id: invoices.id })
+      .from(invoices)
+      .where(and(eq(invoices.orgId, this.orgId), eq(invoices.locationId, locationId)));
+
+    const allRefs: Array<{ entityType: AuditEntityType; entityIds: string[] }> = [
+      { entityType: "location", entityIds: [locationId] },
+      { entityType: "customer", entityIds: [location.customerId] },
+      { entityType: "invoice", entityIds: locationInvoices.map((invoice) => invoice.id) },
     ];
+    const refs = allRefs.filter((ref) => ref.entityIds.length > 0);
 
     return db
       .select()
@@ -685,7 +717,7 @@ export class DatabaseStorage implements IStorage {
       .where(
         and(
           eq(auditLogs.orgId, this.orgId),
-          or(...refs.map((ref) => and(eq(auditLogs.entityType, ref.entityType), eq(auditLogs.entityId, ref.entityId)))),
+          or(...refs.map((ref) => and(eq(auditLogs.entityType, ref.entityType), inArray(auditLogs.entityId, ref.entityIds)))),
         ),
       )
       .orderBy(desc(auditLogs.createdAt), desc(auditLogs.id))
@@ -3782,25 +3814,64 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(invoiceLineItems).where(and(eq(invoiceLineItems.orgId, this.orgId), eq(invoiceLineItems.invoiceId, invoiceId))).orderBy(asc(invoiceLineItems.sortOrder));
   }
 
+  // Eligibility is per visit as of D1, not per ticket: a record is ready when
+  // its appointment has no non-void invoice yet AND every non-cancelled service
+  // on that appointment is finalized. Partial finalization does not invoice
+  // (D1, "generation timing"), so a half-finished visit is withheld here rather
+  // than listed and then rejected by generation.
+  //
+  // Agreement-generated services are no longer excluded (they used to be, since
+  // generation rejected them outright). They now ride along on the visit
+  // invoice, at $0 when the nightly run bills their plan and at a real amount
+  // when it does not - see resolveServiceLineBillingTx, which owns that
+  // decision. Listing them here is what makes a COD agreement's visits billable
+  // at all; excluding them was why that work was never invoiced.
   async getServiceRecordsReadyForBilling(): Promise<ServiceRecord[]> {
     const readyRecords = await db.select().from(serviceRecords).where(and(eq(serviceRecords.orgId, this.orgId), eq(serviceRecords.readyForBilling, true)));
     const alreadyInvoiced = await db.select().from(invoices).where(and(eq(invoices.orgId, this.orgId), ne(invoices.status, "VOID")));
     const invoicedServiceRecordIds = new Set(alreadyInvoiced.map((invoice) => invoice.serviceRecordId).filter((id): id is string => !!id));
-    const uninvoiced = readyRecords.filter((record) => !invoicedServiceRecordIds.has(record.id));
+    const invoicedAppointmentIds = new Set(alreadyInvoiced.map((invoice) => invoice.appointmentId).filter((id): id is string => !!id));
 
-    const serviceIds = uninvoiced.map((record) => record.serviceId).filter((id): id is string => !!id);
-    const linkedServices = serviceIds.length
-      ? await db.select().from(services).where(and(eq(services.orgId, this.orgId), inArray(services.id, serviceIds)))
-      : [];
-    const agreementServiceIds = new Set(
-      linkedServices.filter((service) => service.agreementId || service.source === "AGREEMENT_GENERATED").map((service) => service.id),
+    // Pre-D1 invoices anchor on a service record even when that record sits on
+    // an appointment. Such an invoice still covers the visit, so it blocks the
+    // appointment too - otherwise the visit would look uninvoiced and generation
+    // would issue a second invoice for the same work.
+    for (const record of readyRecords) {
+      if (record.appointmentId && invoicedServiceRecordIds.has(record.id)) {
+        invoicedAppointmentIds.add(record.appointmentId);
+      }
+    }
+
+    const uninvoiced = readyRecords.filter(
+      (record) => !invoicedServiceRecordIds.has(record.id) && !(record.appointmentId && invoicedAppointmentIds.has(record.appointmentId)),
     );
 
-    // Agreement-generated services are billed through the agreement's
-    // billing plan (server/jobs/billing-run.ts), never invoiced per service
-    // record - see generateInvoiceFromServiceRecord. Excluded here too so
-    // nothing shows a "Generate Invoice" action that's guaranteed to fail.
-    return uninvoiced.filter((record) => !record.serviceId || !agreementServiceIds.has(record.serviceId));
+    const appointmentIds = Array.from(new Set(uninvoiced.map((record) => record.appointmentId).filter((id): id is string => !!id)));
+    if (!appointmentIds.length) {
+      return uninvoiced;
+    }
+
+    const billingReadyServiceIds = new Set(readyRecords.map((record) => record.serviceId).filter((id): id is string => !!id));
+    const appointmentRows = await db.select().from(appointments).where(and(eq(appointments.orgId, this.orgId), inArray(appointments.id, appointmentIds)));
+
+    const fullyFinalizedAppointmentIds = new Set<string>();
+    for (const appointment of appointmentRows) {
+      const linkedServices = await this.getLinkedServicesForAppointmentTx(db as any, appointment.id, appointment.serviceId);
+      // No `length > 0` guard: an appointment with nothing active left on it is
+      // orphaned, not half-finished. That happens when the visit is cancelled or
+      // rescheduled after a ticket was finalized - requestAppointmentCancelOrReschedule
+      // detaches every linked service (appointmentId: null) - and withholding
+      // the finalized ticket would strand completed, billable work with no way
+      // to invoice it from the UI. Generation treats the same case as billable
+      // (its unfinalized check is vacuously satisfied), so eligibility has to
+      // agree or the two disagree about the same record.
+      const activeServices = linkedServices.filter((service) => service.status !== "CANCELLED");
+      if (activeServices.every((service) => billingReadyServiceIds.has(service.id))) {
+        fullyFinalizedAppointmentIds.add(appointment.id);
+      }
+    }
+
+    return uninvoiced.filter((record) => !record.appointmentId || fullyFinalizedAppointmentIds.has(record.appointmentId));
   }
 
   // Same eligibility rule as getServiceRecordsReadyForBilling, narrowed to a
@@ -3817,29 +3888,106 @@ export class DatabaseStorage implements IStorage {
     });
   }
 
+  // What the batch-invoicing dialog lists, with each ticket's billing resolved
+  // SERVER-SIDE through the same resolveServiceLineBillingTx that generation
+  // uses. The client must not re-derive coverage from `agreementId`: that is
+  // the drift isScheduleBilledPlan exists to prevent, and a preview that says
+  // "covered, $0" for a COD agreement ticket that then bills a real amount is
+  // exactly the bug this pass fixed on the server.
+  async getBatchInvoicePreviewForDateRange(dateFrom: string, dateTo: string): Promise<BatchInvoicePreviewRow[]> {
+    const eligible = await this.getServiceRecordsReadyForBillingInRange(dateFrom, dateTo);
+    if (!eligible.length) {
+      return [];
+    }
+
+    const serviceIds = eligible.map((record) => record.serviceId).filter((id): id is string => !!id);
+    const eligibleServices = serviceIds.length
+      ? await db.select().from(services).where(and(eq(services.orgId, this.orgId), inArray(services.id, serviceIds)))
+      : [];
+    const serviceById = new Map(eligibleServices.map((service) => [service.id, service]));
+    const agreementContextById = await this.resolveAgreementBillingContextTx(
+      db as any,
+      eligibleServices.map((service) => service.agreementId).filter((id): id is string => !!id),
+    );
+
+    const rows: BatchInvoicePreviewRow[] = [];
+    for (const record of eligible) {
+      const service = record.serviceId ? serviceById.get(record.serviceId) : undefined;
+      try {
+        const billing = await this.resolveServiceLineBillingTx(db as any, {
+          record,
+          service,
+          agreementContext: service?.agreementId ? agreementContextById.get(service.agreementId) : undefined,
+        });
+        rows.push({ ...record, billingLineType: billing.lineType, billableAmountCents: billing.amountCents, billingNote: billing.coverageNote });
+      } catch (err: any) {
+        // Preview must show the ticket that will fail, not hide it - generate
+        // would report the same reason as a skip.
+        rows.push({ ...record, billingLineType: null, billableAmountCents: null, billingNote: err?.message ?? "Cannot be billed" });
+      }
+    }
+
+    return rows;
+  }
+
   // Idempotent by construction (PLAN_BILLING_V1.md §1.6.1): reuses
   // generateInvoiceFromServiceRecord's own pre-check + unique-index catch
-  // for every record, so running this twice over the same date range
+  // for every anchor, so running this twice over the same date range
   // produces zero duplicate invoices - the second run simply finds nothing
   // left in getServiceRecordsReadyForBillingInRange to generate. One
-  // record's failure doesn't abort the batch; it's collected in `skipped`
+  // visit's failure doesn't abort the batch; it's collected in `skipped`
   // with the reason so the office can see exactly what needs attention.
-  async batchGenerateInvoicesForDateRange(dateFrom: string, dateTo: string): Promise<BatchGenerateResult> {
+  async batchGenerateInvoicesForDateRange(dateFrom: string, dateTo: string, actor?: AuditActor | null): Promise<BatchGenerateResult> {
     const eligible = await this.getServiceRecordsReadyForBillingInRange(dateFrom, dateTo);
-    const result: BatchGenerateResult = { totalEligible: eligible.length, invoiced: [], skipped: [], totalAmountCents: 0 };
 
+    // Group by billing anchor before looping (§2.3). Idempotency would stop the
+    // second call for a shared appointment from duplicating anything, but it
+    // would still be a wasted round-trip reported as a skip, and "1 invoiced,
+    // 1 skipped" reads like a failure for what is one clean visit invoice.
+    // Grouped from the FULL eligible set, not just the in-range slice: a visit
+    // straddling the range boundary (two tickets posted either side of
+    // midnight) is still one appointment, and generation bills every finalized
+    // ticket on it regardless of the range. Grouping only the in-range records
+    // would promise the office one ticket and hand them an invoice covering
+    // two.
+    const allEligible = await this.getServiceRecordsReadyForBilling();
+    const eligibleByAppointmentId = new Map<string, ServiceRecord[]>();
+    for (const record of allEligible) {
+      if (!record.appointmentId) continue;
+      const siblings = eligibleByAppointmentId.get(record.appointmentId) ?? [];
+      siblings.push(record);
+      eligibleByAppointmentId.set(record.appointmentId, siblings);
+    }
+
+    const groups = new Map<string, { appointmentId: string | null; records: ServiceRecord[] }>();
     for (const record of eligible) {
+      const key = record.appointmentId ? `appointment:${record.appointmentId}` : `serviceRecord:${record.id}`;
+      if (groups.has(key)) continue;
+      groups.set(key, {
+        appointmentId: record.appointmentId ?? null,
+        records: record.appointmentId ? eligibleByAppointmentId.get(record.appointmentId) ?? [record] : [record],
+      });
+    }
+
+    // Counted from the groups, so it matches what actually gets invoiced when a
+    // visit reaches past the range boundary rather than under-reporting it.
+    const totalEligible = Array.from(groups.values()).reduce((sum, group) => sum + group.records.length, 0);
+    const result: BatchGenerateResult = { totalEligible, totalVisits: groups.size, invoiced: [], skipped: [], totalAmountCents: 0 };
+
+    for (const group of Array.from(groups.values())) {
+      const serviceRecordIds = group.records.map((record) => record.id);
       try {
-        const invoice = await this.generateInvoiceFromServiceRecord(record.id);
+        const invoice = await this.generateInvoiceFromServiceRecord(group.records[0].id, actor);
         result.invoiced.push({
-          serviceRecordId: record.id,
+          appointmentId: group.appointmentId,
+          serviceRecordIds,
           invoiceId: invoice.id,
           invoiceNumber: invoice.invoiceNumber,
           totalAmountCents: invoice.totalAmountCents,
         });
         result.totalAmountCents += invoice.totalAmountCents;
       } catch (err: any) {
-        result.skipped.push({ serviceRecordId: record.id, reason: err?.message ?? "Unknown error" });
+        result.skipped.push({ appointmentId: group.appointmentId, serviceRecordIds, reason: err?.message ?? "Unknown error" });
       }
     }
 
@@ -3912,7 +4060,7 @@ export class DatabaseStorage implements IStorage {
           amountCents: input.amountCents,
           taxCents,
           totalAmountCents,
-          status: "OPEN",
+          status: deriveInvoiceStatus({ totalAmountCents }),
           dueDate: input.dueDate ?? null,
           notes: input.notes?.trim() || null,
         })
@@ -4074,14 +4222,209 @@ export class DatabaseStorage implements IStorage {
     return certificate;
   }
 
-  // Agreement Services never emit billing events (PLAN_BILLING_V1.md §1.1 -
-  // the Billing Plan's schedule is the only source of agreement revenue, not
-  // built yet as of Phase 1 unit 12), so this only ever bills non-agreement /
-  // COD work. Idempotent: a double-click or re-run for the same service
-  // record returns the existing invoice instead of erroring or duplicating,
-  // via both a pre-check and a catch on the partial unique index in case of
-  // a genuine race.
-  async generateInvoiceFromServiceRecord(serviceRecordId: string): Promise<Invoice> {
+  // Every non-cancelled Service on the appointment, paired with its finalized
+  // Service Record. The appointment->services half reuses
+  // getLinkedServicesForAppointmentTx (canon rule 10: one resolver, no parallel
+  // join) so the visit rollup here agrees exactly with the one
+  // finalizeServiceRecord uses to decide an appointment is complete.
+  private async getAppointmentBillingGroupTx(
+    tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+    appointmentId: string,
+  ): Promise<{ appointment: Appointment; services: Service[]; records: ServiceRecord[] } | null> {
+    const [appointment] = await tx.select().from(appointments).where(and(eq(appointments.orgId, this.orgId), eq(appointments.id, appointmentId)));
+    if (!appointment) {
+      return null;
+    }
+
+    const linkedServices = await this.getLinkedServicesForAppointmentTx(tx, appointment.id, appointment.serviceId);
+    const activeServices = linkedServices.filter((service) => service.status !== "CANCELLED");
+    const serviceIds = activeServices.map((service) => service.id);
+    const records = serviceIds.length
+      ? await tx.select().from(serviceRecords).where(and(eq(serviceRecords.orgId, this.orgId), inArray(serviceRecords.serviceId, serviceIds)))
+      : [];
+
+    return { appointment, services: activeServices, records };
+  }
+
+  // Each agreement behind a visit's services, paired with its live Billing
+  // Plan. Deliberately the LIVE plan row rather than agreement.billingPlanSnapshot:
+  // the nightly run reads the live plan too (server/jobs/billing-run.ts), and if
+  // these two read different sources, editing a plan in Settings would silently
+  // desync what the run charges from what the visit invoice zeroes out.
+  private async resolveAgreementBillingContextTx(
+    tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+    agreementIds: string[],
+  ): Promise<Map<string, { agreement: Agreement; plan: BillingPlan | undefined }>> {
+    const uniqueIds = Array.from(new Set(agreementIds));
+    if (!uniqueIds.length) {
+      return new Map();
+    }
+
+    const agreementRows = await tx.select().from(agreements).where(and(eq(agreements.orgId, this.orgId), inArray(agreements.id, uniqueIds)));
+    const planIds = agreementRows.map((agreement) => agreement.billingPlanId).filter((id): id is string => !!id);
+    const planRows = planIds.length
+      ? await tx.select().from(billingPlans).where(and(eq(billingPlans.orgId, this.orgId), inArray(billingPlans.id, Array.from(new Set(planIds)))))
+      : [];
+    const planById = new Map(planRows.map((plan) => [plan.id, plan]));
+
+    return new Map(
+      agreementRows.map((agreement) => [
+        agreement.id,
+        { agreement, plan: agreement.billingPlanId ? planById.get(agreement.billingPlanId) : undefined },
+      ]),
+    );
+  }
+
+  // What one finalized Service Record contributes to its visit invoice.
+  //
+  // The rule is a single question: does the nightly run bill this agreement's
+  // plan (isScheduleBilledPlan)? If yes, the customer already pays on the plan's
+  // cadence and the visit line is $0. If no - COD, per-service, charge-at-start,
+  // installment, or no plan at all - the VISIT is the billing event and the line
+  // must carry a real amount. Getting this wrong in the permissive direction is
+  // how work gets silently performed for free, so the fallbacks below only ever
+  // reach $0 by an explicit decision, never by absence of data.
+  //
+  // Callbacks: the production ledger already classified this record at
+  // finalization (basis CALLBACK once the agreement's contracted service slots
+  // are full - see createProductionValueEntriesForFinalizedRecord). This reads
+  // that classification but NOT its amount; production value is technician
+  // credit and billable is what the customer owes (D6's PRODUCTION vs BILLABLE),
+  // and they must stay free to diverge. A callback with no price set is warranty
+  // work at no charge; one with a price set is charged that price, which is how
+  // a "chargeable callback" service type is configured.
+  private async resolveServiceLineBillingTx(
+    tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+    input: {
+      record: ServiceRecord;
+      service: Service | undefined;
+      agreementContext: { agreement: Agreement; plan: BillingPlan | undefined } | undefined;
+    },
+  ): Promise<{ lineType: "SERVICE" | "AGREEMENT_COVERED"; amountCents: number; coverageNote: string | null }> {
+    const { record, service, agreementContext } = input;
+
+    if (!agreementContext) {
+      // Non-agreement / COD work: the service's own price is the only source.
+      const priceCents = service?.priceCents ?? null;
+      if (priceCents == null) {
+        throw new Error("Service has no price set; cannot generate an invoice");
+      }
+      return { lineType: "SERVICE", amountCents: priceCents, coverageNote: null };
+    }
+
+    if (isScheduleBilledPlan(agreementContext.plan)) {
+      // Visible as work performed, never chargeable, never a billing_events row.
+      // A price stamped on the service is deliberately ignored here rather than
+      // charged - the customer is already paying for this visit on the plan's
+      // schedule, so honoring it would bill them twice. Extra work on a covered
+      // visit belongs on an ADDON line, which Phase 1 does not build.
+      return { lineType: "AGREEMENT_COVERED", amountCents: 0, coverageNote: "covered by agreement" };
+    }
+
+    const priceCents = service?.priceCents ?? null;
+
+    const [productionEntry] = await tx
+      .select()
+      .from(productionValueEntries)
+      .where(and(
+        eq(productionValueEntries.orgId, this.orgId),
+        eq(productionValueEntries.serviceRecordId, record.id),
+        ne(productionValueEntries.basis, "SURCHARGE"),
+      ));
+    if (productionEntry?.basis === "CALLBACK") {
+      return priceCents != null && priceCents > 0
+        ? { lineType: "SERVICE", amountCents: priceCents, coverageNote: "callback" }
+        : { lineType: "AGREEMENT_COVERED", amountCents: 0, coverageNote: "warranty callback - no charge" };
+    }
+
+    // A contracted visit on a plan the nightly run does not bill. The per-visit
+    // price is the contract price spread across the agreement's snapshotted
+    // expected service count - the same arithmetic production value uses, but
+    // resolved here as a BILLABLE amount in its own right so the two can be
+    // changed independently later.
+    const billableCents = priceCents ?? computeProductionValueCents(agreementContext.agreement.priceCents, agreementContext.agreement.expectedServiceCount);
+    if (billableCents == null) {
+      // Name the actual missing piece. A plan-less agreement and an agreement on
+      // a plan the nightly run skips (INSTALLMENT, ON_AGREEMENT_START) both land
+      // here, and telling an operator "no billing plan" when one is plainly set
+      // sends them to the wrong screen.
+      throw new Error(
+        agreementContext.plan
+          ? `Agreement is on the "${agreementContext.plan.name}" billing plan, which is not billed by the nightly run, and has no price to bill per visit; set the agreement's price or the service's price before invoicing`
+          : "Agreement has no billing plan and no price to bill per visit; set the agreement's billing plan or price before invoicing",
+      );
+    }
+
+    return { lineType: "SERVICE", amountCents: billableCents, coverageNote: null };
+  }
+
+  // D1: the customer experienced one visit, so the invoice anchors on the
+  // APPOINTMENT and carries one line per finalized Service Record on it. Work
+  // with no appointment (direct one-offs) keeps the old per-service-record
+  // anchor as a fallback; an invoice sets exactly one of the two, never both.
+  //
+  // Agreement-generated services are no longer rejected outright. Whether one
+  // is chargeable is decided per line by resolveServiceLineBillingTx, keyed on
+  // the single question of whether the nightly run bills that agreement's plan.
+  // Schedule-billed work becomes a $0, non-taxable AGREEMENT_COVERED line -
+  // visible to the customer as work performed, structurally incapable of being
+  // charged, and never written to billing_events, so the nightly run
+  // (server/jobs/billing-run.ts) stays the one and only source of agreement
+  // revenue (§2.1). Everything else - COD, per-service, no plan - is billed
+  // here, because for those plans the visit IS the billing event.
+  //
+  // Idempotent: a double-click or re-run against any ticket on the visit
+  // returns the existing invoice instead of erroring or duplicating, via a
+  // pre-check on both anchors plus a catch on the partial unique index in case
+  // of a genuine race.
+  async generateInvoiceFromServiceRecord(serviceRecordId: string, actor?: AuditActor | null): Promise<Invoice> {
+    try {
+      return await this.generateInvoiceFromServiceRecordTx(serviceRecordId, actor);
+    } catch (err: any) {
+      // Race recovery, deliberately OUT here rather than inside the
+      // transaction: a unique-index violation aborts the whole transaction in
+      // Postgres, so any statement after it fails 25P02 and a recovery lookup
+      // in that block could never return the winner. By this point the failed
+      // transaction has rolled back, so a fresh read succeeds.
+      if (err?.code === "23505") {
+        const raceWinner = await this.findExistingInvoiceForVisit(serviceRecordId);
+        if (raceWinner) {
+          return raceWinner;
+        }
+      }
+      throw err;
+    }
+  }
+
+  // Whichever anchor already carries a non-void invoice for this ticket's
+  // visit - the same two-anchor lookup generation does as its pre-check, run on
+  // a fresh connection so it is usable after a rolled-back attempt.
+  private async findExistingInvoiceForVisit(serviceRecordId: string): Promise<Invoice | undefined> {
+    const [record] = await db.select().from(serviceRecords).where(and(eq(serviceRecords.orgId, this.orgId), eq(serviceRecords.id, serviceRecordId)));
+    if (!record) {
+      return undefined;
+    }
+
+    if (record.appointmentId) {
+      const [byAppointment] = await db
+        .select()
+        .from(invoices)
+        .where(and(eq(invoices.orgId, this.orgId), eq(invoices.appointmentId, record.appointmentId), ne(invoices.status, "VOID")));
+      if (byAppointment) {
+        return byAppointment;
+      }
+    }
+
+    const group = record.appointmentId ? await this.getAppointmentBillingGroupTx(db as any, record.appointmentId) : null;
+    const recordIds = Array.from(new Set([record.id, ...(group?.records ?? []).map((linkedRecord) => linkedRecord.id)]));
+    const [byServiceRecord] = await db
+      .select()
+      .from(invoices)
+      .where(and(eq(invoices.orgId, this.orgId), inArray(invoices.serviceRecordId, recordIds), ne(invoices.status, "VOID")));
+    return byServiceRecord;
+  }
+
+  private async generateInvoiceFromServiceRecordTx(serviceRecordId: string, actor?: AuditActor | null): Promise<Invoice> {
     return db.transaction(async (tx) => {
       const [record] = await tx.select().from(serviceRecords).where(and(eq(serviceRecords.orgId, this.orgId), eq(serviceRecords.id, serviceRecordId)));
       if (!record) {
@@ -4091,31 +4434,84 @@ export class DatabaseStorage implements IStorage {
         throw new Error("Service record is not finalized/ready for billing");
       }
 
-      const [existingInvoice] = await tx
+      const group = record.appointmentId ? await this.getAppointmentBillingGroupTx(tx, record.appointmentId) : null;
+
+      // Anchor resolution. A record whose appointment row has vanished falls
+      // back to the per-record anchor rather than failing the invoice.
+      const anchorAppointmentId = group?.appointment.id ?? null;
+      let billingRecords: ServiceRecord[] = [record];
+
+      if (group) {
+        const finalizedByServiceId = new Map(
+          group.records.filter((linkedRecord) => linkedRecord.readyForBilling && linkedRecord.serviceId).map((linkedRecord) => [linkedRecord.serviceId!, linkedRecord]),
+        );
+        const unfinalized = group.services.filter((service) => !finalizedByServiceId.has(service.id));
+        if (unfinalized.length) {
+          // Partial finalization does not invoice (D1). Withholding here is
+          // what makes "one visit, one invoice" true - invoicing the finalized
+          // half would strand the rest of the visit with no anchor left.
+          throw new Error(
+            `Appointment has ${group.services.length - unfinalized.length} of ${group.services.length} services finalized; all must be finalized before the visit is invoiced`,
+          );
+        }
+
+        billingRecords = group.services
+          .map((service) => finalizedByServiceId.get(service.id)!)
+          .sort((a, b) => new Date(a.serviceDate).getTime() - new Date(b.serviceDate).getTime() || a.id.localeCompare(b.id));
+
+        // The triggering record can sit on the appointment without a linked
+        // service (legacy data); bill it anyway rather than dropping it.
+        if (!billingRecords.some((billingRecord) => billingRecord.id === record.id)) {
+          billingRecords = [...billingRecords, record];
+        }
+      }
+
+      const billingRecordIds = billingRecords.map((billingRecord) => billingRecord.id);
+
+      if (anchorAppointmentId) {
+        const [existingByAppointment] = await tx
+          .select()
+          .from(invoices)
+          .where(and(eq(invoices.orgId, this.orgId), eq(invoices.appointmentId, anchorAppointmentId), ne(invoices.status, "VOID")));
+        if (existingByAppointment) {
+          return existingByAppointment;
+        }
+      }
+
+      // Also covers the pre-D1 shape: an invoice anchored to any one ticket on
+      // this visit already bills that visit, and is returned instead of joined
+      // by a second one. Those rows are never re-anchored - see the index
+      // comment in invoice-bootstrap.ts.
+      const [existingByServiceRecord] = await tx
         .select()
         .from(invoices)
-        .where(and(eq(invoices.orgId, this.orgId), eq(invoices.serviceRecordId, serviceRecordId), ne(invoices.status, "VOID")));
-      if (existingInvoice) {
-        return existingInvoice;
+        .where(and(eq(invoices.orgId, this.orgId), inArray(invoices.serviceRecordId, billingRecordIds), ne(invoices.status, "VOID")));
+      if (existingByServiceRecord) {
+        return existingByServiceRecord;
       }
 
-      let service: Service | undefined;
-      if (record.serviceId) {
-        [service] = await tx.select().from(services).where(and(eq(services.orgId, this.orgId), eq(services.id, record.serviceId)));
-      }
-      if (service?.agreementId || service?.source === "AGREEMENT_GENERATED") {
-        throw new Error("Agreement-generated services are billed through the agreement's billing plan, not invoiced per service record");
-      }
+      const billingServiceIds = billingRecords.map((billingRecord) => billingRecord.serviceId).filter((id): id is string => !!id);
+      const billingServices = billingServiceIds.length
+        ? await tx.select().from(services).where(and(eq(services.orgId, this.orgId), inArray(services.id, billingServiceIds)))
+        : [];
+      const serviceById = new Map(billingServices.map((service) => [service.id, service]));
 
-      const priceCents = service?.priceCents ?? null;
-      if (priceCents == null) {
-        throw new Error("Service has no price set; cannot generate an invoice");
-      }
+      const serviceTypeIds = Array.from(
+        new Set(
+          billingRecords
+            .flatMap((billingRecord) => [billingRecord.serviceTypeId, billingRecord.serviceId ? serviceById.get(billingRecord.serviceId)?.serviceTypeId ?? null : null])
+            .filter((id): id is string => !!id),
+        ),
+      );
+      const serviceTypeRows = serviceTypeIds.length
+        ? await tx.select().from(serviceTypes).where(and(eq(serviceTypes.orgId, this.orgId), inArray(serviceTypes.id, serviceTypeIds)))
+        : [];
+      const serviceTypeById = new Map(serviceTypeRows.map((serviceType) => [serviceType.id, serviceType]));
 
-      const [serviceType] = record.serviceTypeId
-        ? await tx.select().from(serviceTypes).where(and(eq(serviceTypes.orgId, this.orgId), eq(serviceTypes.id, record.serviceTypeId)))
-        : [undefined];
-      const description = `${serviceType?.name ?? "Service"} - ${new Date(record.serviceDate).toLocaleDateString()}`;
+      const agreementContextById = await this.resolveAgreementBillingContextTx(
+        tx,
+        billingServices.map((service) => service.agreementId).filter((id): id is string => !!id),
+      );
 
       let billingProfileSnapshot: Record<string, unknown> | null = null;
       let dueDate: Date | null = null;
@@ -4139,12 +4535,77 @@ export class DatabaseStorage implements IStorage {
         }
       }
 
-      const taxDecision = await this.resolveTaxDecision(tx, {
-        accountId,
-        locationId: record.locationId,
-        serviceTypeId: record.serviceTypeId,
-        amountCents: priceCents,
-      });
+      const lines: Array<{
+        serviceId: string | null;
+        serviceRecordId: string;
+        lineType: "SERVICE" | "AGREEMENT_COVERED";
+        description: string;
+        unitPriceCents: number;
+        amountCents: number;
+        taxable: boolean;
+        taxCents: number;
+      }> = [];
+      const taxSnapshots: Array<Record<string, unknown>> = [];
+
+      for (const billingRecord of billingRecords) {
+        const service = billingRecord.serviceId ? serviceById.get(billingRecord.serviceId) : undefined;
+        const serviceTypeId = billingRecord.serviceTypeId ?? service?.serviceTypeId ?? null;
+        const serviceType = serviceTypeId ? serviceTypeById.get(serviceTypeId) : undefined;
+        const baseDescription = `${serviceType?.name ?? "Service"} - ${new Date(billingRecord.serviceDate).toLocaleDateString()}`;
+        const billing = await this.resolveServiceLineBillingTx(tx, {
+          record: billingRecord,
+          service,
+          agreementContext: service?.agreementId ? agreementContextById.get(service.agreementId) : undefined,
+        });
+        const description = billing.coverageNote ? `${baseDescription} (${billing.coverageNote})` : baseDescription;
+
+        if (billing.lineType === "AGREEMENT_COVERED") {
+          lines.push({
+            serviceId: service?.id ?? null,
+            serviceRecordId: billingRecord.id,
+            lineType: "AGREEMENT_COVERED",
+            description,
+            unitPriceCents: 0,
+            amountCents: 0,
+            taxable: false,
+            taxCents: 0,
+          });
+          continue;
+        }
+
+        const taxDecision = await this.resolveTaxDecision(tx, {
+          accountId,
+          locationId: billingRecord.locationId,
+          serviceTypeId,
+          amountCents: billing.amountCents,
+        });
+        taxSnapshots.push({ serviceRecordId: billingRecord.id, ...taxDecision.snapshot });
+
+        lines.push({
+          serviceId: service?.id ?? null,
+          serviceRecordId: billingRecord.id,
+          lineType: "SERVICE",
+          description,
+          unitPriceCents: billing.amountCents,
+          amountCents: billing.amountCents,
+          taxable: taxDecision.taxable,
+          taxCents: taxDecision.taxCents,
+        });
+      }
+
+      const amountCents = lines.reduce((sum, line) => sum + line.amountCents, 0);
+      const taxCents = lines.reduce((sum, line) => sum + line.taxCents, 0);
+
+      // A single chargeable line keeps the pre-D1 snapshot shape verbatim, so
+      // nothing reading an existing invoice's tax history has to learn a second
+      // format. Multi-line visits snapshot each line's decision; a fully
+      // agreement-covered visit has no decision to make.
+      const taxSnapshot =
+        taxSnapshots.length === 1
+          ? taxSnapshots[0]
+          : taxSnapshots.length === 0
+            ? { taxable: false, reason: "AGREEMENT_COVERED", taxCents: 0, snapshottedAt: new Date().toISOString() }
+            : { taxable: taxCents > 0, reason: "PER_LINE", taxCents, lines: taxSnapshots, snapshottedAt: new Date().toISOString() };
 
       const insertInvoiceRow = async () => {
         const invoiceNumber = await this.getNextInvoiceNumber(tx);
@@ -4154,14 +4615,21 @@ export class DatabaseStorage implements IStorage {
             orgId: this.orgId,
             customerId: record.customerId,
             locationId: record.locationId ?? null,
-            serviceRecordId: record.id,
+            appointmentId: anchorAppointmentId,
+            serviceRecordId: anchorAppointmentId ? null : record.id,
             invoiceNumber,
             billingProfileSnapshot,
-            taxSnapshot: taxDecision.snapshot,
-            amountCents: priceCents,
-            taxCents: taxDecision.taxCents,
-            totalAmountCents: priceCents + taxDecision.taxCents,
-            status: "OPEN",
+            taxSnapshot,
+            amountCents,
+            taxCents,
+            totalAmountCents: amountCents + taxCents,
+            // Derived, never assigned (shared/invoice-status.ts). A fully
+            // agreement-covered visit totals $0, so this yields PAID on exactly
+            // the same rule that marks a settled invoice - no branch on
+            // coverage anywhere. Customer-facing documents render such an
+            // invoice as "No Charge - Covered by Service Agreement" rather than
+            // "PAID"; that story belongs at the render layer, not this column.
+            status: deriveInvoiceStatus({ totalAmountCents: amountCents + taxCents }),
             dueDate,
             notes: null,
           })
@@ -4169,35 +4637,36 @@ export class DatabaseStorage implements IStorage {
         return invoice;
       };
 
-      let invoice: Invoice;
-      try {
-        invoice = await insertInvoiceRow();
-      } catch (err: any) {
-        if (err?.code === "23505") {
-          const [raceWinner] = await tx
-            .select()
-            .from(invoices)
-            .where(and(eq(invoices.orgId, this.orgId), eq(invoices.serviceRecordId, serviceRecordId), ne(invoices.status, "VOID")));
-          if (raceWinner) {
-            return raceWinner;
-          }
-        }
-        throw err;
-      }
+      // No 23505 catch here on purpose. Postgres aborts the whole transaction
+      // on a constraint violation - every later statement fails 25P02 ("current
+      // transaction is aborted") - so a recovery SELECT inside this block can
+      // never run. The losing side of a race is recovered by the caller below,
+      // after the transaction has rolled back.
+      const invoice = await insertInvoiceRow();
 
-      await tx.insert(invoiceLineItems).values({
-        orgId: this.orgId,
-        invoiceId: invoice.id,
-        serviceId: service?.id ?? null,
-        serviceRecordId: record.id,
-        lineType: "SERVICE",
-        description,
-        quantity: 1,
-        unitPriceCents: priceCents,
-        amountCents: priceCents,
-        taxable: taxDecision.taxable,
-        taxCents: taxDecision.taxCents,
-        sortOrder: 0,
+      await tx.insert(invoiceLineItems).values(
+        lines.map((line, index) => ({
+          orgId: this.orgId,
+          invoiceId: invoice.id,
+          serviceId: line.serviceId,
+          serviceRecordId: line.serviceRecordId,
+          lineType: line.lineType,
+          description: line.description,
+          quantity: 1,
+          unitPriceCents: line.unitPriceCents,
+          amountCents: line.amountCents,
+          taxable: line.taxable,
+          taxCents: line.taxCents,
+          sortOrder: index,
+        })),
+      );
+
+      await this.recordAuditLogTx(tx, {
+        entityType: "invoice",
+        entityId: invoice.id,
+        action: "invoice_issued",
+        actor,
+        after: invoice,
       });
 
       return invoice;
@@ -4284,7 +4753,7 @@ export class DatabaseStorage implements IStorage {
             amountCents: input.amountCents,
             taxCents: taxDecision.taxCents,
             totalAmountCents: input.amountCents + taxDecision.taxCents,
-            status: "OPEN",
+            status: deriveInvoiceStatus({ totalAmountCents: input.amountCents + taxDecision.taxCents }),
             dueDate,
             notes: null,
           })
@@ -4411,6 +4880,7 @@ export class DatabaseStorage implements IStorage {
       subtotalCents: invoice.amountCents,
       taxCents: invoice.taxCents ?? 0,
       totalCents: invoice.totalAmountCents,
+      noChargeCoveredByAgreement: isFullyAgreementCovered({ totalAmountCents: invoice.totalAmountCents, lines: lineItems }),
       notes: invoice.notes,
       branding: {
         orgName: org?.name ?? "PestFlow",

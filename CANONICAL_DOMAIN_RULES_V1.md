@@ -664,6 +664,65 @@ A Service may exist before it is scheduled. Services are the queueable work unit
 * Agreement-generated Services do not imply an Appointment exists
 * One Appointment may contain multiple Services
 
+### Pricing rule
+
+An agreement-generated Service carries **no durable price of its own**
+(`priceCents` is null). The Agreement holds the price; the per-visit amount is
+derived at read time from `agreement.priceCents / agreement.expectedServiceCount`
+so an agreement price edit is reflected immediately instead of leaving generated
+Services holding stale copies. Price is also **locked in the technician ticket
+flow** for agreement work — overriding it requires `ADJUST_PRICE_AGREEMENT`.
+
+A stamped `priceCents` therefore means one of exactly two things: a non-agreement
+Service's own price, or a deliberate override. Both outrank the derived amount.
+
+### Service designation and warranty callbacks (not yet modeled — roadmap)
+
+**A callback is a kind of work, not a position in a counter.** A re-treatment, a
+warranty return, a follow-up on a conducive-conditions problem — it is a callback
+because of what it is, and it stays $0 covered whether it falls inside the
+agreement's service interval or outside it. An Agreement schedules interval-based
+Services (quarterly, monthly); a callback within that window is still covered
+work, not the next scheduled visit.
+
+**Resolved design, to be built.** `ServiceType` carries a **category** —
+`CALLBACK | PRODUCTION | SERVICE` (billable) — set in Settings → Service Types.
+The instance-level designation lives on **Service**, defaulted from its
+ServiceType, the same shape as price (type default, instance override). A
+CALLBACK Service **must** link to a previous Service — agreement or otherwise —
+chosen at scheduling time, so warranty history and callback rates are answerable
+per original service. That attribution is required, not optional: an unattributed
+callback is invisible to exactly the analysis callbacks exist to support.
+
+Chargeability stays per-instance: no price set means warranty work at no charge,
+a price set means it bills that amount (some operators deliberately charge for
+callbacks caused by customer non-compliance — a messy structure on a German roach
+job — as a behavioral lever).
+
+**What the code does in the meantime, and why it is wrong.** Callbacks are
+currently *inferred*, not declared: `createProductionValueEntriesForFinalizedRecord()`
+assigns basis `CALLBACK` (and $0 production value) once the Agreement's
+`expectedServiceCount` slots are full, and invoice generation reads that basis to
+decide a line is no-charge. The proxy is wrong in both directions:
+
+* a genuine callback performed *inside* the interval consumes a scheduled slot,
+  so it is credited and **billed** as a scheduled visit
+* the last genuine scheduled visit is then classified `CALLBACK` and credited $0
+
+The agreement total stays correctly capped at contract price, but per-technician
+attribution is wrong and — on any agreement the nightly run does not bill — a
+warranty callback can be charged to the customer. Until the designation exists,
+office review before sending is the only guard.
+
+**Attribution today** exists only for non-agreement follow-up, and only via the
+Opportunity flow: `opportunities.sourceServiceRecordId` / `sourceServiceId` point
+back at the originating record and `convertedServiceId` points forward at the new
+Service. Agreement work never gets an Opportunity at all
+(`ensureOpportunityForServiceRecordTx()` returns early when
+`linkedService.agreementId` is set), and a callback placed directly on the board
+has no link either way. `serviceRecords.followUpRequired` / `followUpNotes` record
+that a follow-up is *needed*, never which visit a later Service *answered*.
+
 ---
 
 ## 11. Appointment
@@ -847,11 +906,52 @@ Opportunities are not Appointments and do not automatically schedule work. They 
 
 Billing output generated from service or manual billing actions.
 
+### Canonical rule — the billing anchor
+
+An Invoice anchors to the **Appointment**, not the Service Record (PLAN_BILLING_V1.1 D1). The customer
+experienced one visit, so one visit produces one invoice carrying one line per finalized Service Record
+on it, plus any add-on/surcharge/discount lines.
+
+* at most one non-void invoice per `appointmentId`
+* work with no appointment (direct one-offs) falls back to at most one non-void invoice per
+  `serviceRecordId`
+* an invoice sets **exactly one** of `{appointmentId, serviceRecordId}` at the header, never both;
+  manual and schedule-driven (agreement) invoices set neither
+* both rules are enforced by partial unique indexes, not by convention, so voiding an invoice frees the
+  visit for a corrected one
+* an invoice is generated only once **all** Services linked to the appointment are finalized. Partial
+  finalization does not invoice.
+
+### Canonical rule — what an agreement Service costs on a visit invoice
+
+There is exactly one question: **does the nightly billing run bill this Agreement's Billing Plan?**
+(`isScheduleBilledPlan()` in `shared/billing-plan.ts` — the single predicate both sides read, so the
+run and the invoice can never disagree about who charges for a visit.)
+
+* **Yes** (`ON_SCHEDULE` + `RECURRING_INTERVAL`/`PREPAID_TERM`) — the customer already pays on the
+  plan's cadence, so the visit line is an `AGREEMENT_COVERED` line: always $0, always non-taxable,
+  never accompanied by a `billing_events` row. Display-only truth for the customer; the nightly run
+  remains the one and only source of that agreement's revenue.
+* **No** (`ON_SERVICE_COMPLETION`, `PER_SERVICE`, `ON_AGREEMENT_START`, `INSTALLMENT`, or no plan) —
+  the **visit is the billing event** and the line carries a real amount: the Service's own price if
+  one is stamped, otherwise the contract price spread across the Agreement's snapshotted
+  `expectedServiceCount`. A warranty callback is the one $0 case here, and it is $0 by explicit
+  decision rather than by absence of data.
+
+Never infer coverage from the mere presence of an `agreementId`. An agreement whose plan the nightly
+run skips is billed by nobody if the visit invoice also zeroes it, and that failure is silent.
+
+**Every Agreement is meant to carry a Billing Plan.** Until `billingPlanId` is required, a plan-less
+Agreement is treated as COD and billed per visit — the visible failure, deliberately chosen over the
+silent one. An Agreement with neither a plan nor a price refuses to invoice rather than guessing.
+
 ### Required fields
 
 * id
 * accountId
 * locationId nullable
+* appointmentId nullable — the billing anchor for visit work
+* serviceRecordId nullable — the fallback anchor for appointment-less work
 * billingProfileId nullable
 * invoiceNumber
 * status (`draft` | `posted` | `sent` | `partially_paid` | `paid` | `void`)

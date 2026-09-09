@@ -2728,6 +2728,18 @@ function ServicesTab({
     }
     return map;
   }, [serviceRecords]);
+  const invoiceByAppointmentId = useMemo(() => {
+    const map = new Map<string, Invoice>();
+    for (const invoice of invoices ?? []) {
+      if (invoice.appointmentId) map.set(invoice.appointmentId, invoice);
+    }
+    return map;
+  }, [invoices]);
+  // Both anchors (D1): the per-service-record one for appointment-less work and
+  // for invoices issued before the visit anchor existed, then the appointment
+  // one, where a single invoice covers every service on the visit. The
+  // appointment pass runs second so a visit invoice wins over a legacy
+  // per-ticket row for the same service.
   const invoiceByServiceId = useMemo(() => {
     const map = new Map<string, Invoice>();
     for (const invoice of invoices ?? []) {
@@ -2736,8 +2748,13 @@ function ServicesTab({
         map.set(matchedServiceRecord.serviceId, invoice);
       }
     }
+    for (const service of services ?? []) {
+      if (!service.appointmentId) continue;
+      const invoice = invoiceByAppointmentId.get(service.appointmentId);
+      if (invoice) map.set(service.id, invoice);
+    }
     return map;
-  }, [invoices, serviceRecords]);
+  }, [invoiceByAppointmentId, invoices, serviceRecords, services]);
   const productApplicationsByServiceRecordId = useMemo(() => {
     const map = new Map<string, ProductApplication[]>();
     for (const application of productApplications ?? []) {

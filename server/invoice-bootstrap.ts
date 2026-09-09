@@ -11,6 +11,7 @@ export async function bootstrapInvoices(): Promise<void> {
       id varchar PRIMARY KEY DEFAULT gen_random_uuid(),
       customer_id varchar NOT NULL REFERENCES customers(id),
       location_id varchar REFERENCES locations(id),
+      appointment_id varchar REFERENCES appointments(id),
       service_record_id varchar REFERENCES service_records(id),
       invoice_number text NOT NULL,
       public_id varchar NOT NULL DEFAULT gen_random_uuid(),
@@ -27,6 +28,7 @@ export async function bootstrapInvoices(): Promise<void> {
     )
   `);
 
+  await db.execute(sql`ALTER TABLE invoices ADD COLUMN IF NOT EXISTS appointment_id varchar REFERENCES appointments(id)`);
   await db.execute(sql`ALTER TABLE invoices ADD COLUMN IF NOT EXISTS public_id varchar DEFAULT gen_random_uuid()`);
   await db.execute(sql`ALTER TABLE invoices ADD COLUMN IF NOT EXISTS billing_profile_snapshot jsonb`);
   await db.execute(sql`ALTER TABLE invoices ADD COLUMN IF NOT EXISTS sent_at timestamp`);
@@ -49,6 +51,20 @@ export async function bootstrapInvoices(): Promise<void> {
     CREATE UNIQUE INDEX IF NOT EXISTS invoices_service_record_id_non_void_uidx
     ON invoices (service_record_id)
     WHERE status != 'VOID' AND service_record_id IS NOT NULL
+  `);
+  // The D1 sibling of the index above: one non-void invoice per appointment,
+  // because the customer experienced one visit. Deliberately a second partial
+  // index rather than a replacement - the two anchors are mutually exclusive
+  // (an invoice sets exactly one), and appointment-less one-off work still
+  // needs the service-record anchor. No backfill of appointment_id onto
+  // existing service-record-anchored invoices: two pre-D1 invoices can share
+  // one appointment, which this index would then reject. Those rows keep their
+  // original anchor, and generation treats a service-record-anchored invoice on
+  // any of a visit's tickets as already covering that visit.
+  await db.execute(sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS invoices_appointment_id_non_void_uidx
+    ON invoices (appointment_id)
+    WHERE status != 'VOID' AND appointment_id IS NOT NULL
   `);
 
   await db.execute(sql`

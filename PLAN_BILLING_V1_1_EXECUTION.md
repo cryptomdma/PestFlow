@@ -18,7 +18,7 @@ grounded in what the code and data actually do, not what the decision record ass
 | 0 | `docs/pass-0-cleanup` | — (docs cleanup) | Done |
 | 1 | `feature/phase-1-appointment-status-enum` | D1a | Done |
 | 2 | `feature/phase-1-audit-log-infrastructure` | D7 (infra half) | Done |
-| 3 | `feature/phase-1-invoice-appointment-anchor` | D1 | Not started |
+| 3 | `feature/phase-1-invoice-appointment-anchor` | D1 | Done |
 | 4 | `feature/phase-1-draft-invoice-lifecycle` | D3, Q3 | Not started |
 | 5 | `feature/phase-1-finalize-invoice-wiring` | D2 | Not started |
 | 6 | `feature/phase-1-payments-lite` | D5, D4 | Not started |
@@ -176,6 +176,14 @@ exclusion is simply removed to make that possible, nothing left in the code stop
 from acquiring a nonzero `amountCents` line or a `billingEvents` row outside the nightly run — that is
 exactly how a customer gets billed twice.
 
+> **Correction, from building it in Pass 3.** This section (and §1's impact-table row) says to include
+> agreement services "as a $0 line," full stop. That is wrong for any agreement whose plan the nightly
+> run does not bill — `ON_SERVICE_COMPLETION`/`PER_SERVICE` (COD), `ON_AGREEMENT_START`, `INSTALLMENT`,
+> or no plan at all. The run skips exactly those (`billing-run.ts` gate), so zeroing them on the visit
+> invoice means **nobody bills the work** — silently, which is worse than the loud error the old
+> reject-outright behavior produced. The guard below is correct only for schedule-billed plans; the
+> implemented rule is `isScheduleBilledPlan()`, and everything else is billed at the visit.
+
 **Concrete guard, to be built in Pass 3 (D1) and enforced through Pass 5 (D2):**
 - Add `AGREEMENT_COVERED` to `invoiceLineItems.lineType`'s existing set (`SERVICE | ADDON | SURCHARGE |
   FEE | DISCOUNT | ADJUSTMENT`) — structurally distinct from a chargeable line, not just a $0 amount
@@ -317,6 +325,97 @@ Reads: `getAuditLogsForEntity(entityType, entityId, limit?)` for one record's tr
 `getAuditLogsForLocation(locationId, limit?)` for the location History panel's rollup. As passes 3-8
 land, add each new financial entity to the `refs` list inside `getAuditLogsForLocation()` so its
 events surface on that panel — there is deliberately no second rollup query.
+
+**Shipped in Pass 3, for Passes 4-5 to build on** — D2's generate-or-adopt hook and D3's DRAFT
+lifecycle both act on the anchor this pass introduced, so they should reuse these rather than
+re-resolving a visit:
+
+```ts
+// server/storage.ts, private on DatabaseStorage. Every non-cancelled Service on
+// the appointment paired with its Service Record, resolved through
+// getLinkedServicesForAppointmentTx - the same rollup finalizeServiceRecord uses.
+private async getAppointmentBillingGroupTx(tx, appointmentId):
+  Promise<{ appointment: Appointment; services: Service[]; records: ServiceRecord[] } | null>
+
+// Public. Anchors on record.appointmentId when there is one, otherwise falls
+// back to the per-service-record anchor. Idempotent from ANY ticket on the visit.
+async generateInvoiceFromServiceRecord(serviceRecordId: string, actor?: AuditActor | null): Promise<Invoice>
+
+// server/storage.ts, private. Decides what ONE finalized Service Record
+// contributes to the visit invoice. Any pass that adds a new way to price a
+// line should extend this rather than branching on agreementId at a call site.
+private async resolveServiceLineBillingTx(tx, { record, service, agreementContext }):
+  Promise<{ lineType: "SERVICE" | "AGREEMENT_COVERED"; amountCents: number; coverageNote: string | null }>
+
+// shared/billing-plan.ts. The ONE predicate deciding who bills a visit.
+export function isScheduleBilledPlan(plan): boolean
+
+// shared/invoice-status.ts. Status is DERIVED FROM AMOUNTS, never assigned.
+// Call this at every point that changes what an invoice is owed; never write a
+// status literal at a call site. DRAFT and VOID pass through untouched, so
+// Pass 4 can introduce DRAFT without this flipping one to PAID, and Pass 6's
+// apply/release must call it rather than computing its own status.
+export function deriveInvoiceStatus({ totalAmountCents, amountPaidCents?, currentStatus? }): InvoiceStatus
+
+// Same file. A $0 visit whose every line is AGREEMENT_COVERED. Customer-facing
+// documents render "No Charge - Covered by Service Agreement" instead of the
+// derived "PAID" - correct bookkeeping, honest document, no fifth status value.
+export function isFullyAgreementCovered({ totalAmountCents, lines }): boolean
+
+// server/storage.ts, public. Batch-preview rows with billing resolved SERVER-side
+// through the same resolver generation uses. The client must never re-derive
+// coverage from agreementId.
+async getBatchInvoicePreviewForDateRange(dateFrom, dateTo): Promise<BatchInvoicePreviewRow[]>
+```
+
+Behavior worth knowing before Pass 4/5 touches it:
+- **Both anchors are checked before inserting**, in this order: a non-void invoice on the appointment,
+  then a non-void invoice on *any* ticket of the visit. The second check is what keeps pre-D1 rows
+  honest — `appointment_id` was deliberately **not** backfilled onto them (two pre-D1 invoices can
+  share one appointment, which the new partial unique index would reject), so a service-record-anchored
+  invoice is treated as already covering its visit.
+- **Partial finalization is refused, not deferred**: generation throws
+  `Appointment has N of M services finalized; ...`, and `getServiceRecordsReadyForBilling()` withholds
+  the visit entirely until every non-cancelled linked Service is finalized. So the eligibility list and
+  generation agree — a listed ticket always generates.
+- `getServiceRecordsReadyForBilling()` returns **every** ticket on an eligible visit, not one per
+  visit. Callers that mean "how many invoices will this produce" must group by anchor first;
+  `batchGenerateInvoicesForDateRange()` does, and reports `totalVisits` alongside `totalEligible`.
+- Generated invoices are still inserted as `OPEN` and audit-logged as `invoice_issued`. When Pass 4
+  introduces real DRAFT creation, that action/status pair is the thing to revisit.
+- **`AGREEMENT_COVERED` is not "has an agreementId"** — it is "the nightly run bills this agreement's
+  plan," via `isScheduleBilledPlan()`. §2.1 below was written as though the two were the same; they
+  are not, and treating them as the same is how a COD agreement's work gets billed by nobody. A
+  covered line ignores any stamped `service.priceCents` rather than charging it (charging would
+  double-bill against the plan's own cadence); extra work on a covered visit wants an `ADDON` line,
+  which Phase 1 does not build.
+- A non-schedule-billed agreement visit is priced as `service.priceCents ?? contract price ÷
+  agreement.expectedServiceCount`. That arithmetic matches production value, but it is resolved as a
+  BILLABLE amount in its own right (D6's `BILLABLE` vs `PRODUCTION`) so the two stay free to diverge —
+  do not collapse them into one call.
+- **Never write an invoice status literal.** All three creation paths call `deriveInvoiceStatus()`, so a
+  fully covered $0 visit lands `PAID` on the same rule that marks a settled invoice — no branch on
+  coverage anywhere. What the customer is *told* is a render-layer concern
+  (`isFullyAgreementCovered` → "No Charge - Covered by Service Agreement" in the HTML and PDF
+  renderers), never a fifth status value.
+- **No 23505 catch inside a generation transaction.** Postgres aborts the whole transaction on a
+  constraint violation, so a recovery `SELECT` in that block fails 25P02 and can never return the race
+  winner — verified directly against the dev DB. `generateInvoiceFromServiceRecord` catches outside the
+  transaction and re-looks-up via `findExistingInvoiceForVisit()`. `generateScheduleDrivenInvoice()`
+  still has the old in-transaction catch; it is the nightly run and was left alone this pass, but it is
+  the same latent bug.
+- Batch grouping expands each visit to **all** its eligible tickets, not just the ones inside the date
+  range, because generation bills the whole appointment regardless of the range.
+- **Live-testing finding: no UI attaches a Billing Plan to an Agreement**, so every agreement has
+  `billingPlanId = null` and the schedule-billed branch above is currently unreachable outside the
+  API. The billing engine is built and configurable in Settings but unwired at the agreement form.
+  **Pass 5 (D2) should not land before that selector exists** — auto-generating on finalization while
+  the plan-less default is COD would start charging agreement customers per visit automatically. See
+  the follow-up list in `CURRENT_FOCUS.md`.
+- Callbacks bill $0 unless a price is stamped. Generation reads the production ledger's `CALLBACK`
+  **basis** (not its amount) so billable and production always agree on what a callback is. That basis
+  is itself inferred from a filled-slot counter and is order-dependent — see the roadmap note in
+  `CANONICAL_DOMAIN_RULES_V1.md` §10 on making the designation explicit on Service.
 
 **Design note carried into Pass 4**: D3's "flags the linked ticket(s) for review" has no existing
 "flagged" concept in the schema. Reuse/extend `serviceRecords.ticketStatus` (currently
