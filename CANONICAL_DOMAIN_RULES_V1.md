@@ -676,42 +676,52 @@ flow** for agreement work — overriding it requires `ADJUST_PRICE_AGREEMENT`.
 A stamped `priceCents` therefore means one of exactly two things: a non-agreement
 Service's own price, or a deliberate override. Both outrank the derived amount.
 
-### Warranty callbacks (not yet modeled — roadmap)
+### Service designation and warranty callbacks (not yet modeled — roadmap)
 
-A **callback** is an unplanned extra visit under an Agreement, beyond its
-contracted service count: re-treatment, a warranty return, a follow-up on a
-conducive-conditions problem. Two gaps exist today and neither is scheduled work
-yet:
+**A callback is a kind of work, not a position in a counter.** A re-treatment, a
+warranty return, a follow-up on a conducive-conditions problem — it is a callback
+because of what it is, and it stays $0 covered whether it falls inside the
+agreement's service interval or outside it. An Agreement schedules interval-based
+Services (quarterly, monthly); a callback within that window is still covered
+work, not the next scheduled visit.
 
-**1. There is no callback designation.** Callbacks are inferred, not declared —
-`createProductionValueEntriesForFinalizedRecord()` assigns basis `CALLBACK` (and
-$0 production value) once the Agreement's `expectedServiceCount` slots are full.
-That proxy is order-dependent: a callback performed *before* the contracted
-visits are used up consumes a scheduled slot and is credited as one, and the last
-genuine scheduled visit is then credited $0 instead. The agreement total stays
-correctly capped at contract price, but per-technician attribution is wrong.
+**Resolved design, to be built.** `ServiceType` carries a **category** —
+`CALLBACK | PRODUCTION | SERVICE` (billable) — set in Settings → Service Types.
+The instance-level designation lives on **Service**, defaulted from its
+ServiceType, the same shape as price (type default, instance override). A
+CALLBACK Service **must** link to a previous Service — agreement or otherwise —
+chosen at scheduling time, so warranty history and callback rates are answerable
+per original service. That attribution is required, not optional: an unattributed
+callback is invisible to exactly the analysis callbacks exist to support.
 
-Resolved design, to be built: the flag lives on **Service**, with `ServiceType`
-supplying the default — the same shape as price (type default, instance
-override). Whether a callback is chargeable is configurable per instance:
-no price set means warranty work at no charge, a price set means it is billed
-that amount. Both the production basis and the billable amount then read a
-declared fact instead of inferring one from a counter.
+Chargeability stays per-instance: no price set means warranty work at no charge,
+a price set means it bills that amount (some operators deliberately charge for
+callbacks caused by customer non-compliance — a messy structure on a German roach
+job — as a behavioral lever).
 
-**2. There is no attribution from a callback back to the visit that caused it.**
-The chain exists only for non-agreement follow-up, and only when the callback was
-created through the Opportunity flow: `opportunities.sourceServiceRecordId` /
-`sourceServiceId` point back at the originating record, and `convertedServiceId`
-points forward at the new Service. Agreement work never gets an Opportunity at
-all (`ensureOpportunityForServiceRecordTx()` returns early when
-`linkedService.agreementId` is set), and a callback the dispatcher places directly
-on the board has no link either way. `serviceRecords.followUpRequired` /
-`followUpNotes` record that a follow-up is *needed*, never which visit a later
-Service *answered*.
+**What the code does in the meantime, and why it is wrong.** Callbacks are
+currently *inferred*, not declared: `createProductionValueEntriesForFinalizedRecord()`
+assigns basis `CALLBACK` (and $0 production value) once the Agreement's
+`expectedServiceCount` slots are full, and invoice generation reads that basis to
+decide a line is no-charge. The proxy is wrong in both directions:
 
-The model needs a direct source link on Service (e.g. `sourceServiceRecordId`),
-independent of the Opportunity path, so warranty history and callback rates are
-answerable per original service.
+* a genuine callback performed *inside* the interval consumes a scheduled slot,
+  so it is credited and **billed** as a scheduled visit
+* the last genuine scheduled visit is then classified `CALLBACK` and credited $0
+
+The agreement total stays correctly capped at contract price, but per-technician
+attribution is wrong and — on any agreement the nightly run does not bill — a
+warranty callback can be charged to the customer. Until the designation exists,
+office review before sending is the only guard.
+
+**Attribution today** exists only for non-agreement follow-up, and only via the
+Opportunity flow: `opportunities.sourceServiceRecordId` / `sourceServiceId` point
+back at the originating record and `convertedServiceId` points forward at the new
+Service. Agreement work never gets an Opportunity at all
+(`ensureOpportunityForServiceRecordTx()` returns early when
+`linkedService.agreementId` is set), and a callback placed directly on the board
+has no link either way. `serviceRecords.followUpRequired` / `followUpNotes` record
+that a follow-up is *needed*, never which visit a later Service *answered*.
 
 ---
 

@@ -406,6 +406,12 @@ Behavior worth knowing before Pass 4/5 touches it:
   the same latent bug.
 - Batch grouping expands each visit to **all** its eligible tickets, not just the ones inside the date
   range, because generation bills the whole appointment regardless of the range.
+- **Live-testing finding: no UI attaches a Billing Plan to an Agreement**, so every agreement has
+  `billingPlanId = null` and the schedule-billed branch above is currently unreachable outside the
+  API. The billing engine is built and configurable in Settings but unwired at the agreement form.
+  **Pass 5 (D2) should not land before that selector exists** — auto-generating on finalization while
+  the plan-less default is COD would start charging agreement customers per visit automatically. See
+  the follow-up list in `CURRENT_FOCUS.md`.
 - Callbacks bill $0 unless a price is stamped. Generation reads the production ledger's `CALLBACK`
   **basis** (not its amount) so billable and production always agree on what a callback is. That basis
   is itself inferred from a filled-slot counter and is order-dependent — see the roadmap note in
