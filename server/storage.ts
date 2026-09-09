@@ -557,13 +557,27 @@ function addMonths(dateOnly: string, months: number) {
 }
 
 // Exported so server/jobs/billing-run.ts can step a billing cadence with
-// the exact same calendar-month arithmetic used for service generation and
+// the exact same calendar arithmetic used for service generation and
 // expectedServiceCount, rather than a second, potentially-diverging
 // implementation.
+//
+// Two vocabularies feed this. Service recurrence (agreements.recurrenceUnit)
+// offers MONTH | QUARTER | YEAR | CUSTOM. Billing cadence
+// (billingPlans.intervalUnit) offers DAY | WEEK | MONTH | QUARTER | YEAR - a
+// superset. DAY and WEEK had no case here and fell through to `default`,
+// silently advancing by a MONTH: a daily plan on a one-year term billed 12
+// periods instead of 365, so computeExpectedServiceCount() divided the
+// contract price by 12 and every charge was ~30x the correct amount. That was
+// unreachable until agreements could carry a plan at all, which is why it
+// surfaces with this pass rather than with the billing run that introduced it.
 export function advanceAgreementDate(dateOnly: string, recurrenceUnit: string, recurrenceInterval: number) {
   const step = Math.max(recurrenceInterval || 1, 1);
 
   switch (recurrenceUnit) {
+    case "DAY":
+      return addDays(dateOnly, step);
+    case "WEEK":
+      return addDays(dateOnly, step * 7);
     case "QUARTER":
       return addMonths(dateOnly, step * 3);
     case "YEAR":

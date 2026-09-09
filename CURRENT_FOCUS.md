@@ -30,7 +30,16 @@ Billing Plan selector in place of the free-typed billing-frequency input, and at
 set neither, so an edited agreement looked correctly configured and was never billed by anyone. The
 attachment rules (mid-term anchoring, the two refusals that prevent double-billing, and what is
 deliberately still legacy) are written out in `PLAN_BILLING_V1_1_EXECUTION.md` under "Shipped in
-Pass 3.5". Next up once it merges: **Pass 4 — `feature/phase-1-draft-invoice-lifecycle`** (D3, Q3).
+Pass 3.5". It also fixes `advanceAgreementDate()`, which had no `DAY`/`WEEK` case and so billed a
+daily or weekly plan monthly, at roughly 30x the correct per-period amount — unreachable until
+agreements could carry a plan.
+
+Next up once it merges: **Pass 4 — `feature/phase-1-draft-invoice-lifecycle`** (D3, Q3). Newly
+sequenced behind it: **Pass 5.5 — `feature/phase-1-initial-charge-to-agreement`**, an owner correction
+to D4 moving the down-payment type/amount off the shared Billing Plan and onto the Agreement and
+Agreement Template, where a per-sale amount derived from contract price belongs. It must land before
+Pass 6 turns that block into a real receivable. See D4's correction note in `PLAN_BILLING_V1_1.md` and
+the Pass 5.5 section of `PLAN_BILLING_V1_1_EXECUTION.md`.
 
 Full ordered plan, impact analysis, conflict resolutions, and per-pass verification steps live in
 `PLAN_BILLING_V1_1_EXECUTION.md` — read it before starting a pass, and update its "Pass status" table

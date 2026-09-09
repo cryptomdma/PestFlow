@@ -22,6 +22,7 @@ grounded in what the code and data actually do, not what the decision record ass
 | 3.5 | `feature/phase-1-agreement-billing-plan-selector` | — (gap found in Pass 3 live testing) | Pushed, awaiting merge |
 | 4 | `feature/phase-1-draft-invoice-lifecycle` | D3, Q3 | Not started |
 | 5 | `feature/phase-1-finalize-invoice-wiring` | D2 | Not started |
+| 5.5 | `feature/phase-1-initial-charge-to-agreement` | D4 (owner correction) | Not started |
 | 6 | `feature/phase-1-payments-lite` | D5, D4 | Not started |
 | 7 | `feature/phase-1-coa-and-field-display` | D6 | Not started |
 | 8 | `feature/phase-1-audit-log-backfill` | D7 (remainder) | Not started |
@@ -471,9 +472,59 @@ Behavior worth knowing before a later pass changes it:
 - "Today" here is **UTC** (`new Date().toISOString().slice(0, 10)`), matching `billing-run.ts`'s own
   `todayDateOnly()` and every date helper in `storage.ts`. Attaching a plan late in a US evening
   therefore shows tomorrow's date; the run uses the same clock, so no period is skipped or doubled.
+- **`advanceAgreementDate()` gained `DAY` and `WEEK` cases.** `billingPlans.intervalUnit` offers both
+  and the Settings plan form lets you pick them, but neither had a case, so both fell through to
+  `default` and advanced by a **month**: a daily plan on a one-year term made
+  `computeExpectedServiceCount()` return 12 instead of 365, so every charge was the contract price
+  divided by 12 — roughly 30x correct — and billed monthly. Pre-existing, but unreachable until this
+  pass let an agreement carry a plan at all, so it ships as part of it. Nothing uses `DAY`/`WEEK` for
+  service *recurrence* (that dropdown offers `MONTH | QUARTER | YEAR | CUSTOM`, and no stored row
+  holds either value), so the shared function's other caller is unaffected.
 - **Still legacy, still D9's job**: `agreements.billingFrequency` and
   `agreementTemplates.defaultBillingFrequency` columns, and the server-side normalize/propagation
   writes. Pass 3.5 removed only the inputs and the one list-card that displayed the free text.
+
+**Pass 5.5 — move the initial charge off the Billing Plan** (owner correction to D4, 2026-09-09; the
+full reasoning is in `PLAN_BILLING_V1_1.md` D4 and is not repeated here).
+
+A Billing Plan says *how and when* a customer is charged and is shared across agreements. The
+down-payment **amount** is a term of one sale, derived from that agreement's contract price. Today
+`initialChargeType`/`initialChargeCents` sit on `billing_plans`, so a $200 down payment applies to
+every agreement on that plan whatever its price, and "half down" cannot be expressed at all.
+
+| | Moves | Stays |
+|---|---|---|
+| `initialChargeType` | → `agreement_templates.default_initial_charge_type`, `agreements.initial_charge_type` | |
+| `initialChargeCents` | → `agreement_templates.default_initial_charge_cents`, `agreements.initial_charge_cents` | |
+| amount **mode** (flat vs. percent of contract) | new field, needed for "half down" — D4's own example | |
+| `initialChargeCoversFirstPeriod` | | `billing_plans` — pure cadence semantics |
+| `fieldAddableSurcharge` | | `billing_plans` — plan-level permission |
+| `initialChargeCollectedBy` | **open question** — see D4's correction note | |
+
+Template→agreement propagation mirrors `defaultPriceCents` → `priceCents`, which
+`buildAgreementInsertFromTemplate` already does; reuse that shape rather than inventing a second one.
+
+**Why it sequences here — after Pass 5, before Pass 6.** Pass 6 (D4/D5) is where the initial charge
+becomes a real issued invoice. If it is built against `billingPlanSnapshot.initialChargeCents` and the
+fields move afterwards, a financial path gets rewritten right after shipping — the same retrofit
+mistake §2.4 moved audit logging forward to avoid. It is independent of Passes 4 and 5, which never
+touch the initial charge, so it does not block them. Pulling it earlier is defensible if the owner
+wants the model correct before more agreements freeze the current shape into `billingPlanSnapshot`;
+the migration's shape is the same either way, only the row count differs.
+
+**Migration notes for whoever takes it:**
+- `billingPlanSnapshot` on `agreements` carries the old `initialCharge*` keys (4 of 8 snapshots in the
+  dev DB today). Snapshots are deliberately frozen history — read them to backfill the new agreement
+  columns, then leave the JSON alone rather than rewriting it.
+- `createSurchargeEntryIfConfigured()` (`storage.ts`) reads `initialChargeType`,
+  `initialChargeCollectedBy` and `initialChargeCents` off that snapshot to credit technician
+  production value. It is live — 3 `SURCHARGE` entries exist — and must follow the fields.
+- `buildBillingPlanSnapshot()` stops carrying whatever moves.
+- Settings' `BillingPlanForm` loses the moved inputs; `AgreementTemplateForm` and the agreement form
+  gain them, next to Price rather than next to the plan selector.
+- Only one plan currently sets an initial charge (`Unit 15 Surcharge Test Plan`,
+  `CLEANOUT_SURCHARGE`/$50/`TECH_AT_FIRST_SERVICE`), so the data migration is small — but it is real
+  money attached to real production credit, not disposable test data.
 
 **Design note carried into Pass 4**: D3's "flags the linked ticket(s) for review" has no existing
 "flagged" concept in the schema. Reuse/extend `serviceRecords.ticketStatus` (currently

@@ -69,11 +69,36 @@ The half-down-at-scheduling case is served by unapplied payments, not by pre-cre
    *"Apply $X location balance to this invoice?"* — designated balances are suggested first.
 3. Remaining balance = invoice total − applied payments. Computed, never stored by hand.
 
-Structured agreement down payments (half-down as a *term of sale*) use the Billing Plan's
-`initialCharge*` block → a real issued invoice at agreement start. Three tools, three jobs:
-- **Billing Plan initial charge** → contractual deposit, proper receivable.
+Structured agreement down payments (half-down as a *term of sale*) use the `initialCharge*` block →
+a real issued invoice at agreement start. Three tools, three jobs:
+- **Agreement initial charge** → contractual deposit, proper receivable.
 - **Unapplied payment (designated)** → ad-hoc deposit/pre-payment.
 - **Draft invoice** → office preparing a bill early. Not a wallet.
+
+> **Owner correction (2026-09-09): the initial charge belongs to the Agreement, not the Billing Plan.**
+> This section originally said "the Billing Plan's `initialCharge*` block," and the schema built it
+> there. That is wrong. A Billing Plan says **how and when** a customer is charged; it is shared by
+> every agreement using it. The down-payment **amount** is a term of *one sale* and is derived from
+> that agreement's contract price — a flat `initialChargeCents` on a shared plan forces the same
+> down payment onto every agreement regardless of price, and cannot express "half down" at all, which
+> is the exact case this section exists to serve.
+>
+> Splitting the block by that test:
+> - **Moves to Agreement / Agreement Template** (what is being sold): `initialChargeType`,
+>   `initialChargeCents`. Template carries the default, the agreement carries the actual, the same
+>   `defaultPriceCents` → `priceCents` relationship the rest of the form already uses.
+> - **Stays on the Billing Plan** (how the charge interacts with the cadence):
+>   `initialChargeCoversFirstPeriod` — purely "does the up-front money buy period 1," which is a
+>   billing-arrangement question — and `fieldAddableSurcharge`, a plan-level permission.
+> - **Open question for the owner**: `initialChargeCollectedBy` (`OFFICE_AT_SIGNING` |
+>   `TECH_AT_FIRST_SERVICE`). It does not affect the billing arrangement, so by the test above it is
+>   per-sale and moves with the amount — but it is also arguably plan policy. It currently drives
+>   technician production credit (`createSurchargeEntryIfConfigured`), so whichever way it goes, that
+>   read has to follow it.
+>
+> Expressing "half down" properly also wants an amount **mode** (flat cents vs. percent of contract
+> price) alongside the amount, rather than only flat cents. Sequenced as Pass 5.5 in
+> `PLAN_BILLING_V1_1_EXECUTION.md` — it must land before Pass 6 builds D4's receivable.
 
 ## D5. Payments-lite ships in Phase 1
 
