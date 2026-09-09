@@ -37,13 +37,14 @@ import { ServiceCompletionDialog } from "@/components/service-completion-dialog"
 import { formatPhoneDisplay } from "@shared/phone";
 import { describeAuditAction, describeAuditEntityType, diffAuditSnapshots } from "@shared/audit";
 import { dollarsToCents, centsToDollars, centsToDollarString } from "@shared/money";
+import { describeBillingPlanBehavior } from "@shared/billing-plan";
 import {
   ArrowLeft, Mail, Phone, MapPin, Plus, Calendar, FileText, MessageSquare,
   ClipboardList, Building2, User, ChevronDown, ArrowUpRight, StickyNote,
   History,
   CreditCard, KeyRound, Ruler, ChevronUp, Check, Link2, Target,
 } from "lucide-react";
-import type { AuditLog, Customer, Contact, Location, Appointment, Invoice, Service, ServiceRecord, ProductApplication, Communication, CustomerNote, BillingProfile, NoteRevision, Agreement, AgreementCancellationPolicy, AgreementTemplate, ServiceType, Technician, Opportunity, OpportunityDisposition } from "@shared/schema";
+import type { AuditLog, Customer, Contact, Location, Appointment, Invoice, Service, ServiceRecord, ProductApplication, Communication, CustomerNote, BillingPlan, BillingProfile, NoteRevision, Agreement, AgreementCancellationPolicy, AgreementTemplate, ServiceType, Technician, Opportunity, OpportunityDisposition } from "@shared/schema";
 
 interface CustomerDetailCompatResponse {
   legacyCustomer: Customer;
@@ -244,7 +245,7 @@ function buildAgreementFormState(agreement?: Agreement | null, template?: Agreem
     termInterval,
     renewalDate: agreement?.renewalDate ?? (startDate ? addAgreementInterval(startDate, termUnit, parseInt(termInterval, 10)) : ""),
     nextServiceDate: agreement?.nextServiceDate ?? (startDate ? addAgreementInterval(startDate, recurrenceUnit, parseInt(recurrenceInterval, 10)) : ""),
-    billingFrequency: agreement?.billingFrequency ?? template?.defaultBillingFrequency ?? "",
+    billingPlanId: agreement?.billingPlanId ?? template?.billingPlanId ?? "",
     price: agreement?.priceCents != null
       ? centsToDollarString(agreement.priceCents)
       : template?.defaultPriceCents != null
@@ -1432,6 +1433,14 @@ function AgreementForm({
   const isEditMode = !!currentAgreement;
   const { data: serviceTypes } = useQuery<ServiceType[]>({ queryKey: ["/api/service-types"] });
   const { data: agreementTemplates } = useQuery<AgreementTemplate[]>({ queryKey: ["/api/agreement-templates"] });
+  // Inactive plans are fetched too, so an agreement already carrying a retired
+  // plan still renders its own plan name instead of silently reading as
+  // plan-less - the same reason activeTemplates keeps the current template.
+  const { data: billingPlans } = useQuery<BillingPlan[]>({ queryKey: ["/api/billing-plans?includeInactive=true"] });
+  const selectableBillingPlans = useMemo(
+    () => (billingPlans ?? []).filter((plan) => plan.isActive || plan.id === currentAgreement?.billingPlanId),
+    [billingPlans, currentAgreement?.billingPlanId],
+  );
   const activeTemplates = useMemo(() => {
     return (agreementTemplates ?? [])
       .filter((template) => template.isActive || template.id === currentAgreement?.agreementTemplateId)
@@ -1452,6 +1461,11 @@ function AgreementForm({
   const [renewalDateOverridden, setRenewalDateOverridden] = useState(false);
   const [nextServiceDateOverridden, setNextServiceDateOverridden] = useState(false);
   const [linkDialogOpen, setLinkDialogOpen] = useState(false);
+  const selectedBillingPlan = useMemo(
+    () => (billingPlans ?? []).find((plan) => plan.id === form.billingPlanId) ?? null,
+    [billingPlans, form.billingPlanId],
+  );
+  const billingPlanChanged = form.billingPlanId !== (currentAgreement?.billingPlanId ?? "");
 
   useEffect(() => {
     if (draftAgreement && !agreement) {
@@ -1532,7 +1546,7 @@ function AgreementForm({
     termInterval: parseInt(data.termInterval, 10),
     renewalDate: data.renewalDate || null,
     nextServiceDate: data.nextServiceDate,
-    billingFrequency: data.billingFrequency.trim() || null,
+    billingPlanId: data.billingPlanId || null,
     priceCents: dollarsToCents(data.price),
     recurrenceUnit: data.recurrenceUnit,
     recurrenceInterval: parseInt(data.recurrenceInterval, 10),
@@ -1774,6 +1788,36 @@ function AgreementForm({
         <div className="space-y-1.5"><Label>Next Service Date</Label><Input type="date" value={form.nextServiceDate} onChange={(e) => { setNextServiceDateOverridden(true); setForm((prev) => ({ ...prev, nextServiceDate: e.target.value })); }} /></div>
       </div>
       <div className="space-y-1">
+        <h3 className="text-sm font-semibold">Billing</h3>
+        <p className="text-sm text-muted-foreground">The Billing Plan decides how this agreement is charged. Plans are configured in Settings.</p>
+      </div>
+      <div className="space-y-1.5">
+        <Label>Billing Plan</Label>
+        <Select value={form.billingPlanId || "NONE"} onValueChange={(value) => setForm((prev) => ({ ...prev, billingPlanId: value === "NONE" ? "" : value }))}>
+          <SelectTrigger data-testid="select-agreement-billing-plan"><SelectValue placeholder="Select a billing plan" /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="NONE">No billing plan (bills at each visit)</SelectItem>
+            {selectableBillingPlans.map((plan) => (
+              <SelectItem key={plan.id} value={plan.id}>{plan.name}{plan.isActive ? "" : " (inactive)"}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <p className="text-xs text-muted-foreground">{describeBillingPlanBehavior(selectedBillingPlan)}</p>
+        {isEditMode && (
+          billingPlanChanged ? (
+            <p className="text-xs text-muted-foreground">
+              Saving re-anchors this agreement's billing schedule. Scheduled billing starts on the later of the agreement start date and today - periods that already elapsed are never back-billed.
+            </p>
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              {currentAgreement?.nextBillingDate
+                ? `Next scheduled billing: ${formatDateOnly(currentAgreement.nextBillingDate)}.`
+                : "Not on a billing schedule - each visit is the billing event."}
+            </p>
+          )
+        )}
+      </div>
+      <div className="space-y-1">
         <h3 className="text-sm font-semibold">Contract / Document</h3>
         <p className="text-sm text-muted-foreground">This MVP stores a contract link because the app does not yet have a dedicated file upload pipeline.</p>
       </div>
@@ -1878,10 +1922,7 @@ function AgreementForm({
                 </SelectContent>
               </Select>
             </div>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div className="space-y-1.5"><Label>Billing Frequency Override</Label><Input value={form.billingFrequency} onChange={(e) => setForm((prev) => ({ ...prev, billingFrequency: e.target.value }))} /></div>
-              <div className="space-y-1.5"><Label>Agreement Type Override</Label><Input value={form.agreementType} onChange={(e) => setForm((prev) => ({ ...prev, agreementType: e.target.value }))} /></div>
-            </div>
+            <div className="space-y-1.5"><Label>Agreement Type Override</Label><Input value={form.agreementType} onChange={(e) => setForm((prev) => ({ ...prev, agreementType: e.target.value }))} /></div>
             <div className="space-y-1">
               <h3 className="text-sm font-semibold">Service Details</h3>
               <p className="text-sm text-muted-foreground">Use these only when this location needs service behavior that differs from the template defaults.</p>

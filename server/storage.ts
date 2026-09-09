@@ -1024,6 +1024,144 @@ export class DatabaseStorage implements IStorage {
     };
   }
 
+  // The nightly run only ever looks at agreements with a nextBillingDate
+  // (`isNotNull(agreements.nextBillingDate)` in server/jobs/billing-run.ts),
+  // so this arithmetic is the single thing deciding whether a schedule-billed
+  // agreement is billed at all. Only schedule-billed plans get a date -
+  // everything else, and no plan, bills at the visit instead, via the same
+  // isScheduleBilledPlan() predicate invoice generation reads.
+  //
+  // `applyInitialChargeSkip` is true only when billing starts on the
+  // agreement's own start date. A plan with initialChargeCoversFirstPeriod
+  // skips period 1 because its initial charge paid for it - and that charge
+  // only ever fires at the agreement's FIRST service
+  // (createSurchargeEntryIfConfigured, which returns early once a slot is
+  // filled). Applying the skip to a plan attached mid-term would therefore
+  // skip a period nobody ever collected, so the update path passes false.
+  private computeNextBillingDateForPlan(
+    plan: BillingPlan | null | undefined,
+    anchorDate: string,
+    applyInitialChargeSkip: boolean,
+  ): string | null {
+    if (!isScheduleBilledPlan(plan)) {
+      return null;
+    }
+
+    if (plan!.billingMode === "PREPAID_TERM") {
+      return anchorDate;
+    }
+
+    return applyInitialChargeSkip && plan!.initialChargeCoversFirstPeriod
+      ? advanceAgreementDate(anchorDate, plan!.intervalUnit ?? "MONTH", plan!.intervalCount ?? 1)
+      : anchorDate;
+  }
+
+  // Attaching, switching, or clearing an agreement's Billing Plan has to move
+  // nextBillingDate and billingPlanSnapshot with it. Without this, an
+  // agreement edited to add a plan looks correctly configured everywhere in
+  // the UI and is never billed by anyone: only the creation path
+  // (buildAgreementInsertFromTemplate) ever set nextBillingDate, and the
+  // nightly run filters on it. Silently billing nothing is the failure mode
+  // isScheduleBilledPlan() exists to prevent, so the update path now resolves
+  // the same three fields the creation path does.
+  private async resolveBillingPlanChangeTx(
+    tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+    existing: Agreement,
+    payload: Partial<InsertAgreement>,
+  ): Promise<void> {
+    const planChanged = payload.billingPlanId !== undefined
+      && (payload.billingPlanId || null) !== (existing.billingPlanId ?? null);
+
+    // Agreements already sitting in the state this pass exists to end - a plan
+    // attached (through the API, before any selector existed) but no
+    // nextBillingDate - are repaired by any edit that reaches here. Without
+    // this they are unfixable through the UI: re-picking the plan already on
+    // the agreement is not a change, so the branch above would skip it, and
+    // the only workaround would be to clear the plan, save, and re-attach it.
+    const needsScheduleRepair = !planChanged && !!existing.billingPlanId && !existing.nextBillingDate;
+    if (!planChanged && !needsScheduleRepair) {
+      return;
+    }
+
+    const nextPlanId = planChanged ? (payload.billingPlanId || null) : (existing.billingPlanId ?? null);
+    const [plan] = nextPlanId
+      ? await tx.select().from(billingPlans).where(and(eq(billingPlans.orgId, this.orgId), eq(billingPlans.id, nextPlanId)))
+      : [undefined];
+    if (nextPlanId && !plan) {
+      throw new Error("Billing plan not found");
+    }
+
+    // The snapshot is the terms the customer was SOLD, frozen at attachment -
+    // an unrelated edit must never rewrite it, which is the same guarantee
+    // resolveAgreementBillingPlanSnapshot() and createSurchargeEntryIfConfigured
+    // depend on. So it moves only when the plan itself moves. An explicitly
+    // supplied snapshot or date still wins, matching
+    // buildAgreementInsertFromTemplate's override-wins/derive-otherwise shape.
+    if (planChanged && payload.billingPlanSnapshot === undefined) {
+      payload.billingPlanSnapshot = this.buildBillingPlanSnapshot(plan);
+    }
+    if (payload.nextBillingDate === undefined) {
+      payload.nextBillingDate = await this.resolveNextBillingDateForPlanChangeTx(tx, existing, payload, plan);
+    }
+  }
+
+  // What nextBillingDate becomes when a plan is attached to, or swapped on, an
+  // agreement that already exists. Four rules, in order:
+  //
+  // 1. Not schedule-billed (COD, installment, charge-at-start, or cleared) -
+  //    null. The visit is the billing event; a leftover date would bill the
+  //    same work a second time from the nightly run.
+  // 2. Already on a schedule - keep the existing date. Switching cadence
+  //    mid-term re-anchors from the charge already owed, so the new plan's
+  //    interval steps forward from there: no period skipped, none billed twice.
+  // 3. Never billed on a schedule - anchor on the LATER of the agreement's
+  //    start date and today. Anchoring on an elapsed start date would make the
+  //    nightly run back-bill one period per night for every period since
+  //    signup - a surprise charge nobody authorized. Periods that elapsed
+  //    plan-less were billed at the visit (or not at all) and stay that way;
+  //    billing history back is a deliberate act, done with a manual invoice.
+  // 4. Refuse in the two cases where starting a schedule would bill work twice
+  //    or outside the contract: the agreement already carries billing_events
+  //    (a schedule that already ran - re-anchoring a PREPAID_TERM plan here
+  //    would charge the whole contract price a second time under a new period
+  //    key), or the anchor already sits past the term end. Both leave
+  //    nextBillingDate null, which the agreement form shows as "not on a
+  //    billing schedule" rather than hiding.
+  private async resolveNextBillingDateForPlanChangeTx(
+    tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+    existing: Agreement,
+    payload: Partial<InsertAgreement>,
+    plan: BillingPlan | undefined,
+  ): Promise<string | null> {
+    if (!isScheduleBilledPlan(plan)) {
+      return null;
+    }
+    if (existing.nextBillingDate) {
+      return existing.nextBillingDate;
+    }
+
+    const startDate = (payload.startDate as string | undefined) || existing.startDate;
+    const termUnit = payload.termUnit ?? existing.termUnit;
+    const termInterval = payload.termInterval ?? existing.termInterval;
+    const today = new Date().toISOString().slice(0, 10);
+    const anchorDate = startDate > today ? startDate : today;
+
+    if (anchorDate >= advanceAgreementDate(startDate, termUnit, termInterval)) {
+      return null;
+    }
+
+    const [priorBillingEvent] = await tx
+      .select()
+      .from(billingEvents)
+      .where(and(eq(billingEvents.orgId, this.orgId), eq(billingEvents.agreementId, existing.id)))
+      .limit(1);
+    if (priorBillingEvent) {
+      return null;
+    }
+
+    return this.computeNextBillingDateForPlan(plan, anchorDate, anchorDate === startDate);
+  }
+
   private normalizeTechnicianInsert(data: InsertTechnician): InsertTechnician {
     return {
       ...data,
@@ -1210,7 +1348,14 @@ export class DatabaseStorage implements IStorage {
     const template = input.agreementTemplateId ? await this.getAgreementTemplate(input.agreementTemplateId) : undefined;
     const policyId = input.agreement.cancellationPolicyId ?? template?.cancellationPolicyId ?? null;
     const policy = policyId ? await this.getAgreementCancellationPolicy(policyId) : undefined;
-    const billingPlanId = input.agreement.billingPlanId ?? template?.billingPlanId ?? null;
+    // `undefined` means the caller said nothing about a plan, so the template's
+    // plan propagates; an explicit `null` means the agreement form's "No
+    // billing plan" was chosen and must stick. `??` would collapse those two
+    // into one, silently re-attaching the template's plan to an agreement the
+    // office deliberately left plan-less (COD per visit).
+    const billingPlanId = input.agreement.billingPlanId !== undefined
+      ? input.agreement.billingPlanId
+      : template?.billingPlanId ?? null;
     const billingPlan = billingPlanId ? await this.getBillingPlan(billingPlanId) : undefined;
     const agreementData = input.agreement;
 
@@ -1220,23 +1365,16 @@ export class DatabaseStorage implements IStorage {
     const recurrenceUnit = agreementData.recurrenceUnit ?? template?.defaultRecurrenceUnit ?? "MONTH";
     const recurrenceInterval = agreementData.recurrenceInterval ?? template?.defaultRecurrenceInterval ?? 1;
 
-    // Only schedule-driven plans (chargeTrigger = ON_SCHEDULE) get a
-    // nextBillingDate at all - PER_SERVICE/INSTALLMENT agreements bill some
-    // other way and are never picked up by the nightly run. RECURRING_INTERVAL
-    // bills immediately at signup for period 1 unless the plan's initial
-    // charge already covers that period, in which case billing starts one
-    // interval out (PLAN_BILLING_V1.md §1.2). PREPAID_TERM bills the full
-    // contract price once, at signup.
-    let nextBillingDate: string | null = null;
-    if (billingPlan?.chargeTrigger === "ON_SCHEDULE") {
-      if (billingPlan.billingMode === "PREPAID_TERM") {
-        nextBillingDate = startDate;
-      } else if (billingPlan.billingMode === "RECURRING_INTERVAL") {
-        nextBillingDate = billingPlan.initialChargeCoversFirstPeriod
-          ? advanceAgreementDate(startDate, billingPlan.intervalUnit ?? "MONTH", billingPlan.intervalCount ?? 1)
-          : startDate;
-      }
-    }
+    // Only schedule-driven plans get a nextBillingDate at all - PER_SERVICE /
+    // INSTALLMENT / charge-at-start agreements bill some other way and are
+    // never picked up by the nightly run. RECURRING_INTERVAL bills immediately
+    // at signup for period 1 unless the plan's initial charge already covers
+    // that period, in which case billing starts one interval out
+    // (PLAN_BILLING_V1.md §1.2); PREPAID_TERM bills the full contract price
+    // once, at signup. Creation anchors on the agreement's own start date, so
+    // the initial-charge skip applies here - see computeNextBillingDateForPlan
+    // for why the update path passes false.
+    const nextBillingDate = this.computeNextBillingDateForPlan(billingPlan, startDate, true);
 
     return {
       customerId: agreementData.customerId,
@@ -2791,6 +2929,7 @@ export class DatabaseStorage implements IStorage {
         throw new Error("Use the agreement cancellation workflow to cancel agreements");
       }
       const payload = this.normalizeAgreementUpdate(data, actor);
+      await this.resolveBillingPlanChangeTx(tx, existingAgreement, payload);
       const [updatedAgreement] = await tx.update(agreements).set({ ...payload, updatedAt: new Date() }).where(and(eq(agreements.orgId, this.orgId), eq(agreements.id, id))).returning();
       if (!updatedAgreement) {
         return undefined;

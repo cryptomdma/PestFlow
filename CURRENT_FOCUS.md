@@ -12,7 +12,7 @@ a single transaction-aware `recordAuditLog()` write helper on `DatabaseStorage`,
 `GET /api/audit-logs`, and a History tab on the location screen, with the entity/action vocabulary in
 `shared/audit.ts` as compile-time unions.
 
-Pass 3 (`feature/phase-1-invoice-appointment-anchor`, D1) is pushed and awaiting merge — invoices now
+Pass 3 (`feature/phase-1-invoice-appointment-anchor`, D1) merged as PR #58 — invoices now
 anchor on `appointmentId` (one visit, one invoice, one line per finalized Service Record), with
 `serviceRecordId` kept as the fallback anchor for appointment-less one-offs and two mutually-exclusive
 partial unique indexes enforcing both. Whether an agreement service is $0 or chargeable is decided by
@@ -20,8 +20,17 @@ one shared predicate — `isScheduleBilledPlan()` in `shared/billing-plan.ts`, r
 run and invoice generation so they can never disagree about who bills a visit. Generation is
 audit-logged as `invoice_issued` and surfaces on the location History tab. The helper signatures and
 the behavior passes 4-5 need to know are written out in `PLAN_BILLING_V1_1_EXECUTION.md` under
-"Shipped in Pass 3" — read that rather than re-deriving it. Next up once it merges: **Pass 4 —
-`feature/phase-1-draft-invoice-lifecycle`** (D3, Q3).
+"Shipped in Pass 3" — read that rather than re-deriving it.
+
+Pass 3.5 (`feature/phase-1-agreement-billing-plan-selector`) is pushed and awaiting merge — an
+unplanned pass inserted ahead of Pass 4, from Pass 3's live-testing finding that `billingPlanId` had no
+writer anywhere in the client. Both the agreement form and the agreement-template form now carry a real
+Billing Plan selector in place of the free-typed billing-frequency input, and attaching a plan to an
+**existing** agreement now sets `nextBillingDate` and refreshes `billingPlanSnapshot` — it previously
+set neither, so an edited agreement looked correctly configured and was never billed by anyone. The
+attachment rules (mid-term anchoring, the two refusals that prevent double-billing, and what is
+deliberately still legacy) are written out in `PLAN_BILLING_V1_1_EXECUTION.md` under "Shipped in
+Pass 3.5". Next up once it merges: **Pass 4 — `feature/phase-1-draft-invoice-lifecycle`** (D3, Q3).
 
 Full ordered plan, impact analysis, conflict resolutions, and per-pass verification steps live in
 `PLAN_BILLING_V1_1_EXECUTION.md` — read it before starting a pass, and update its "Pass status" table
@@ -53,24 +62,19 @@ the source of truth for what each pass actually does.
   display clarity (a real, separately-noted UI gap — not a billing concern).
 - Also not in this phase, each documented where it belongs rather than scheduled here. The first two
   are the ones that gate real use of the billing engine:
-  - **Attach a Billing Plan to an Agreement (UI) — highest priority of these.** `billingPlanId` appears
-    nowhere in the client outside Settings' own plan CRUD: there is no selector on the agreement form
-    or the agreement template form, and the only writer is template propagation, which cannot be set
-    either. **Every agreement therefore has `billingPlanId = null` and bills COD per visit**, which
-    makes the schedule-billed branch of invoice generation unreachable through the UI. Billing
-    frequency is still free-typed text on both forms (`customer-detail.tsx`, `settings.tsx`) — the
-    legacy field D9 removes. This pass replaces that input with a real plan selector on both forms.
-    **Sequence it before Pass 5 (D2)**: once finalization auto-generates invoices, a plan-less default
-    means agreement customers start getting charged per visit automatically. It is also a prerequisite
-    for D9 (cannot drop `billingFrequency` with no replacement input) and for the required-field work
-    below.
+  - ~~**Attach a Billing Plan to an Agreement (UI).**~~ **Done — Pass 3.5**, pushed as
+    `feature/phase-1-agreement-billing-plan-selector`. Both forms now carry a real plan selector, and
+    plan-attachment-on-update sets the billing schedule instead of silently doing nothing. This
+    unblocks D9's column drop and the required-field work below, and clears the sequencing constraint
+    that Pass 5 (D2) could not land before it.
   - **Open / download / send an invoice document.** `GET /api/invoices/:id/document` renders the PDF
     and has no UI affordance anywhere — no button on the invoice list or detail. Owner calls this
     mandatory, not optional.
   - **Billing Plan required on every Agreement** — backfill the 11 plan-less agreements, then
-    `billingPlanId NOT NULL` + zod + creation UI + template propagation. Blocked on the selector
-    above. Until then a plan-less agreement bills COD per visit. Sequence before D9's column drop,
-    which resolves the same rows.
+    `billingPlanId NOT NULL` + zod. **Unblocked by Pass 3.5**: the creation UI, template propagation,
+    and plan-attachment-on-update all exist now, so what remains is the backfill and the constraint.
+    Until then a plan-less agreement bills COD per visit. Sequence before D9's column drop, which
+    resolves the same rows.
   - **Service designation + callback attribution** — `ServiceType.category`
     (`CALLBACK | PRODUCTION | SERVICE`) in Settings, instance designation on Service, and a required
     link from a callback to the Service it answers. See `CANONICAL_DOMAIN_RULES_V1.md` §10. More

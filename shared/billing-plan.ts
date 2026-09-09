@@ -34,3 +34,46 @@ export function isScheduleBilledPlan(plan: ScheduleBilledPlanFields | null | und
 
   return plan.chargeTrigger === "ON_SCHEDULE" && (plan.billingMode === "RECURRING_INTERVAL" || plan.billingMode === "PREPAID_TERM");
 }
+
+export interface BillingPlanBehaviorFields extends ScheduleBilledPlanFields {
+  intervalUnit?: string | null;
+  intervalCount?: number | null;
+}
+
+/**
+ * One sentence saying what actually happens to money under this plan, shown
+ * under the Billing Plan selector on the agreement and agreement-template
+ * forms so the office can tell a schedule-billed plan from a COD one without
+ * opening Settings.
+ *
+ * Deliberately describes the code that exists rather than the plan's stated
+ * intent: `ON_AGREEMENT_START` and `INSTALLMENT` have no charge-emitting path
+ * anywhere yet, so an agreement carrying one is billed at the visit like any
+ * other non-schedule-billed plan, and a selector that implied otherwise would
+ * be exactly the misleading control dev behavior rule 6 forbids.
+ */
+export function describeBillingPlanBehavior(plan: BillingPlanBehaviorFields | null | undefined): string {
+  if (!plan) {
+    return "No billing plan - every visit is billed at contract price / expected visits (COD).";
+  }
+
+  if (isScheduleBilledPlan(plan)) {
+    if (plan.billingMode === "PREPAID_TERM") {
+      return "Billed once for the full contract term by the nightly billing run. Visits appear on the visit invoice at $0.";
+    }
+
+    const count = plan.intervalCount ?? 1;
+    const unit = (plan.intervalUnit ?? "MONTH").toLowerCase();
+    return `Billed every ${count} ${unit}${count === 1 ? "" : "s"} by the nightly billing run. Visits appear on the visit invoice at $0.`;
+  }
+
+  if (plan.billingMode === "INSTALLMENT") {
+    return "Installment billing is not built yet - until it is, every visit is billed (COD).";
+  }
+
+  if (plan.chargeTrigger === "ON_AGREEMENT_START") {
+    return "Charge-at-agreement-start is not built yet - until it is, every visit is billed (COD).";
+  }
+
+  return "Every visit is billed (COD) - the visit invoice carries the full amount.";
+}

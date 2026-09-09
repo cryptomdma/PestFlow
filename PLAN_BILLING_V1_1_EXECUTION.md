@@ -19,12 +19,18 @@ grounded in what the code and data actually do, not what the decision record ass
 | 1 | `feature/phase-1-appointment-status-enum` | D1a | Done |
 | 2 | `feature/phase-1-audit-log-infrastructure` | D7 (infra half) | Done |
 | 3 | `feature/phase-1-invoice-appointment-anchor` | D1 | Done |
+| 3.5 | `feature/phase-1-agreement-billing-plan-selector` | — (gap found in Pass 3 live testing) | Pushed, awaiting merge |
 | 4 | `feature/phase-1-draft-invoice-lifecycle` | D3, Q3 | Not started |
 | 5 | `feature/phase-1-finalize-invoice-wiring` | D2 | Not started |
 | 6 | `feature/phase-1-payments-lite` | D5, D4 | Not started |
 | 7 | `feature/phase-1-coa-and-field-display` | D6 | Not started |
 | 8 | `feature/phase-1-audit-log-backfill` | D7 (remainder) | Not started |
 | 9 | `feature/phase-1-legacy-billing-frequency-removal` | D9 | Not started |
+
+Pass 3.5 is inserted, not renumbered in: it was not in the original D1-D9 sequence at all, but Pass 3's
+live testing found that `billingPlanId` had no writer anywhere in the client, so every agreement was
+plan-less and the schedule-billed half of the billing engine was unreachable through the app. It is
+numbered 3.5 so passes 4-9 keep the numbers every other document already cites.
 
 Reordered from the original 7-pass sketch for two reasons: (a) audit infrastructure moves from near-last
 to position 2, so passes 3-8 call the already-built helper as they write new financial mutations instead
@@ -150,8 +156,8 @@ since they have no billing data at all. `agreement_templates` is already fully c
 | `storage.ts:760,785` | `defaultBillingFrequency` | write (template insert/update normalize) |
 | `storage.ts:1112` | both | the one place they intersect — template→agreement propagation |
 | `seed.ts:145,167,189` | `defaultBillingFrequency` | write — must delete, or the build breaks (TS excess-property check) |
-| `customer-detail.tsx:246,1425,1772` | both / `billingFrequency` | form init, submit payload, "Billing Frequency Override" input field |
-| `settings.tsx:1026,1051,1119,1778` | `defaultBillingFrequency` | form init, submit payload, input field, list-card display text |
+| ~~`customer-detail.tsx`~~ | — | **Removed in Pass 3.5.** No client file reads or writes either column any more — verified by full-repo grep. Pass 9 is now a server-plus-schema change only |
+| ~~`settings.tsx`~~ | — | **Removed in Pass 3.5**, same as above |
 | `routes.ts` (schema `.extend()` calls) | both | inherited implicitly — no line-level edit needed, resolves when the columns are dropped |
 
 **Confirmed clean**: the nightly billing run (`server/jobs/billing-run.ts`) uses only
@@ -406,16 +412,68 @@ Behavior worth knowing before Pass 4/5 touches it:
   the same latent bug.
 - Batch grouping expands each visit to **all** its eligible tickets, not just the ones inside the date
   range, because generation bills the whole appointment regardless of the range.
-- **Live-testing finding: no UI attaches a Billing Plan to an Agreement**, so every agreement has
-  `billingPlanId = null` and the schedule-billed branch above is currently unreachable outside the
-  API. The billing engine is built and configurable in Settings but unwired at the agreement form.
-  **Pass 5 (D2) should not land before that selector exists** — auto-generating on finalization while
-  the plan-less default is COD would start charging agreement customers per visit automatically. See
-  the follow-up list in `CURRENT_FOCUS.md`.
+- **Live-testing finding: no UI attaches a Billing Plan to an Agreement**, so every agreement had
+  `billingPlanId = null` and the schedule-billed branch above was unreachable outside the API.
+  **Resolved by Pass 3.5** — see "Shipped in Pass 3.5" below. Pass 5 (D2) is no longer blocked on it.
 - Callbacks bill $0 unless a price is stamped. Generation reads the production ledger's `CALLBACK`
   **basis** (not its amount) so billable and production always agree on what a callback is. That basis
   is itself inferred from a filled-slot counter and is order-dependent — see the roadmap note in
   `CANONICAL_DOMAIN_RULES_V1.md` §10 on making the designation explicit on Service.
+
+**Shipped in Pass 3.5, for every later pass that touches an agreement's plan** — the agreement form
+(`customer-detail.tsx`) and the agreement-template form (`settings.tsx`) now carry a real Billing Plan
+selector in place of the free-text billing-frequency input, and attaching a plan on **update** works
+end to end, which it previously did not.
+
+```ts
+// server/storage.ts, private. The one piece of arithmetic deciding whether a
+// schedule-billed agreement is billed at all - the nightly run only ever sees
+// agreements with a nextBillingDate. Creation passes applyInitialChargeSkip
+// true; the update path passes false (see below).
+private computeNextBillingDateForPlan(plan, anchorDate, applyInitialChargeSkip): string | null
+
+// Called from inside updateAgreement()'s transaction. Moves nextBillingDate
+// and billingPlanSnapshot whenever the plan moves.
+private async resolveBillingPlanChangeTx(tx, existing, payload): Promise<void>
+
+// shared/billing-plan.ts. One honest sentence per plan for the two form
+// selectors. Describes the code that EXISTS - ON_AGREEMENT_START and
+// INSTALLMENT have no charge-emitting path, so it says the visit bills them.
+export function describeBillingPlanBehavior(plan): string
+```
+
+Behavior worth knowing before a later pass changes it:
+- **`normalizeAgreementUpdate()` accepted `billingPlanId` and set nothing else.** An agreement edited
+  to add a plan looked correctly configured on every screen and was never billed, because only the
+  creation path ever set `nextBillingDate` and the nightly run filters on it. That is fixed; the shape
+  to preserve is that anything writing `billingPlanId` must also resolve `nextBillingDate`.
+- **Mid-term attachment anchors on the LATER of the agreement's start date and today**, never on an
+  elapsed start date. Anchoring on the start date would make the nightly run back-bill one period per
+  night for every period since signup. Periods that elapsed plan-less were billed at the visit, or not
+  at all, and stay that way — billing history back is a deliberate act with a manual invoice.
+- **Two refusals, both leaving `nextBillingDate` null**: the agreement already carries `billing_events`
+  (a schedule that already ran — re-anchoring a `PREPAID_TERM` plan would charge the full contract
+  price a second time under a new period key), or the anchor already sits past the term end. The form
+  renders both as "Not on a billing schedule" rather than hiding them.
+- **`initialChargeCoversFirstPeriod` is honored at creation and ignored on mid-term attachment.** That
+  charge only ever fires at an agreement's *first* service (`createSurchargeEntryIfConfigured`, which
+  returns early once a slot is filled), so applying the skip to a plan attached mid-term would skip a
+  period nobody ever collected.
+- **The snapshot moves only when the plan moves.** An unrelated edit never rewrites
+  `billingPlanSnapshot` — it is the terms the customer was sold, and both
+  `resolveAgreementBillingPlanSnapshot()` and the TECH_AT_FIRST_SERVICE surcharge depend on that.
+- **Agreements already stuck plan-attached-but-unscheduled are repaired by any edit.** Re-picking the
+  plan already on an agreement is not a change, so without this they were unfixable through the UI.
+  The same two refusals above still apply, so the repair cannot start a duplicate charge.
+- **`buildAgreementInsertFromTemplate` distinguishes `undefined` from `null` for `billingPlanId`**:
+  undefined propagates the template's plan, explicit null means the office chose "No billing plan" and
+  it sticks. The old `??` collapsed the two and would have silently overridden that choice.
+- "Today" here is **UTC** (`new Date().toISOString().slice(0, 10)`), matching `billing-run.ts`'s own
+  `todayDateOnly()` and every date helper in `storage.ts`. Attaching a plan late in a US evening
+  therefore shows tomorrow's date; the run uses the same clock, so no period is skipped or doubled.
+- **Still legacy, still D9's job**: `agreements.billingFrequency` and
+  `agreementTemplates.defaultBillingFrequency` columns, and the server-side normalize/propagation
+  writes. Pass 3.5 removed only the inputs and the one list-card that displayed the free text.
 
 **Design note carried into Pass 4**: D3's "flags the linked ticket(s) for review" has no existing
 "flagged" concept in the schema. Reuse/extend `serviceRecords.ticketStatus` (currently

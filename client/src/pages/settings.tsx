@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -24,6 +24,7 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { dollarsToCents, centsToDollars, centsToDollarString, formatCents } from "@shared/money";
+import { describeBillingPlanBehavior } from "@shared/billing-plan";
 import { Plus, Settings as SettingsIcon, Wrench, FileText, Users, ShieldCheck, FlaskConical, Bug, CreditCard, CalendarClock, Percent, Scale, Building2 } from "lucide-react";
 import type { AgreementCancellationPolicy, AgreementTemplate, BillingPlan, BillingProfileTemplate, MaterialProduct, OpportunityDisposition, Organization, ServiceType, TargetPest, TaxRate, TaxRule, Technician } from "@shared/schema";
 
@@ -1007,11 +1008,13 @@ function AgreementCancellationPolicyForm({ policy, onClose }: { policy?: Agreeme
 function AgreementTemplateForm({
   serviceTypes,
   cancellationPolicies,
+  billingPlans,
   template,
   onClose,
 }: {
   serviceTypes?: ServiceType[];
   cancellationPolicies?: AgreementCancellationPolicy[];
+  billingPlans?: BillingPlan[];
   template?: AgreementTemplate | null;
   onClose: () => void;
 }) {
@@ -1022,8 +1025,8 @@ function AgreementTemplateForm({
     description: template?.description ?? "",
     isActive: template?.isActive ?? true,
     cancellationPolicyId: template?.cancellationPolicyId ?? "",
+    billingPlanId: template?.billingPlanId ?? "",
     defaultAgreementType: template?.defaultAgreementType ?? "",
-    defaultBillingFrequency: template?.defaultBillingFrequency ?? "",
     defaultTermUnit: template?.defaultTermUnit ?? "YEAR",
     defaultTermInterval: template?.defaultTermInterval ? String(template.defaultTermInterval) : "1",
     defaultRecurrenceUnit: template?.defaultRecurrenceUnit ?? "MONTH",
@@ -1040,6 +1043,17 @@ function AgreementTemplateForm({
     internalCode: template?.internalCode ?? "",
   });
 
+  // A retired plan still shows on the template already carrying it, so editing
+  // an unrelated field can't silently drop that template to plan-less.
+  const selectableBillingPlans = useMemo(
+    () => (billingPlans ?? []).filter((plan) => plan.isActive || plan.id === template?.billingPlanId),
+    [billingPlans, template?.billingPlanId],
+  );
+  const selectedBillingPlan = useMemo(
+    () => (billingPlans ?? []).find((plan) => plan.id === form.billingPlanId) ?? null,
+    [billingPlans, form.billingPlanId],
+  );
+
   const mutation = useMutation({
     mutationFn: async (data: typeof form) => {
       const payload = {
@@ -1047,8 +1061,8 @@ function AgreementTemplateForm({
         description: data.description.trim() || null,
         isActive: data.isActive,
         cancellationPolicyId: data.cancellationPolicyId || null,
+        billingPlanId: data.billingPlanId || null,
         defaultAgreementType: data.defaultAgreementType.trim() || null,
-        defaultBillingFrequency: data.defaultBillingFrequency.trim() || null,
         defaultTermUnit: data.defaultTermUnit,
         defaultTermInterval: parseInt(data.defaultTermInterval, 10),
         defaultRecurrenceUnit: data.defaultRecurrenceUnit,
@@ -1114,10 +1128,21 @@ function AgreementTemplateForm({
         </Select>
         <p className="text-xs text-muted-foreground">New location agreements snapshot the selected policy at creation.</p>
       </div>
-      <div className="grid gap-3 sm:grid-cols-2">
-        <div className="space-y-1.5"><Label>Agreement Type</Label><Input value={form.defaultAgreementType} onChange={(e) => setForm((prev) => ({ ...prev, defaultAgreementType: e.target.value }))} /></div>
-        <div className="space-y-1.5"><Label>Billing Frequency</Label><Input value={form.defaultBillingFrequency} onChange={(e) => setForm((prev) => ({ ...prev, defaultBillingFrequency: e.target.value }))} /></div>
+      <div className="space-y-1.5">
+        <Label>Billing Plan</Label>
+        <Select value={form.billingPlanId || "NONE"} onValueChange={(value) => setForm((prev) => ({ ...prev, billingPlanId: value === "NONE" ? "" : value }))}>
+          <SelectTrigger data-testid="select-template-billing-plan"><SelectValue placeholder="Select a billing plan" /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="NONE">No billing plan (bills at each visit)</SelectItem>
+            {selectableBillingPlans.map((plan) => (
+              <SelectItem key={plan.id} value={plan.id}>{plan.name}{plan.isActive ? "" : " (inactive)"}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <p className="text-xs text-muted-foreground">{describeBillingPlanBehavior(selectedBillingPlan)}</p>
+        <p className="text-xs text-muted-foreground">New location agreements start from this plan and snapshot it at creation.</p>
       </div>
+      <div className="space-y-1.5"><Label>Agreement Type</Label><Input value={form.defaultAgreementType} onChange={(e) => setForm((prev) => ({ ...prev, defaultAgreementType: e.target.value }))} /></div>
       <div className="grid gap-3 sm:grid-cols-2">
         <div className="space-y-1.5">
           <Label>Agreement Term Unit</Label>
@@ -1741,7 +1766,7 @@ export default function Settings() {
             <DialogTrigger asChild><Button size="sm" data-testid="button-add-agreement-template" onClick={openCreateTemplate}><Plus className="h-3 w-3 mr-1" /> Add Template</Button></DialogTrigger>
             <DialogContent className="max-w-2xl">
               <DialogHeader><DialogTitle>{editingTemplate ? "Edit Agreement Template" : "New Agreement Template"}</DialogTitle></DialogHeader>
-              <AgreementTemplateForm serviceTypes={serviceTypes} cancellationPolicies={cancellationPolicies} template={editingTemplate} onClose={() => closeTemplateDialog(false)} />
+              <AgreementTemplateForm serviceTypes={serviceTypes} cancellationPolicies={cancellationPolicies} billingPlans={billingPlans} template={editingTemplate} onClose={() => closeTemplateDialog(false)} />
             </DialogContent>
           </Dialog>
         </CardHeader>
@@ -1766,6 +1791,7 @@ export default function Settings() {
                 .map((template) => {
                   const serviceType = serviceTypes?.find((serviceType) => serviceType.id === template.defaultServiceTypeId);
                   const cancellationPolicy = cancellationPolicies?.find((policy) => policy.id === template.cancellationPolicyId);
+                  const billingPlan = billingPlans?.find((plan) => plan.id === template.billingPlanId);
                   return (
                     <div key={template.id} className="flex items-center justify-between gap-3 p-3 rounded-md bg-muted/50" data-testid={`card-agreement-template-${template.id}`}>
                       <div className="min-w-0">
@@ -1775,7 +1801,7 @@ export default function Settings() {
                           {template.internalCode && <Badge variant="outline" className="text-xs">{template.internalCode}</Badge>}
                         </div>
                         <p className="text-xs text-muted-foreground mt-0.5">
-                          {formatTemplateRecurrence(template)} | {formatTemplateTerm(template)} | {template.defaultSchedulingMode || "MANUAL"} | {template.defaultBillingFrequency || "No billing frequency"} | {serviceType?.name || "No service type"}
+                          {formatTemplateRecurrence(template)} | {formatTemplateTerm(template)} | {template.defaultSchedulingMode || "MANUAL"} | {billingPlan?.name || "No billing plan"} | {serviceType?.name || "No service type"}
                         </p>
                         <p className="text-xs text-muted-foreground mt-0.5">
                           Cancellation: {cancellationPolicy ? `${cancellationPolicy.name} (${formatCancellationFee(cancellationPolicy)})` : "No policy assigned"}
