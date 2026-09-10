@@ -97,6 +97,37 @@ the source of truth for what each pass actually does.
     posted, remaining services on that appointment can be cancelled without disturbing the invoice.
   - **Move Batch Invoice from Service Ticket Review to the Invoices screen** — it is an invoicing
     action sitting on a review queue.
+  - **Multi-party production attribution — splits across technicians, plus a salesperson dimension.**
+    Owner-raised 2026-09-10. **Not in the codebase and not in any plan doc** — confirmed by full-repo
+    sweep, not assumed. Today `production_value_entries.technicianId` is a single nullable varchar
+    (not even an FK), so one entry credits exactly one technician; there is no salesperson concept
+    anywhere (`soldBy` / commission / share: zero hits across all `.ts`, `.tsx`, `.md`); and the
+    deleted `PLAN_BILLING_V1.md` assumed a single technician throughout ("production value feeds both
+    analytics and technician comp"). PestPac-style configurable splits are the target shape.
+
+    Sketch, so the next person doesn't re-derive it: keep `production_value_entries` as the "what was
+    earned" fact and add append-only **allocation** rows beneath it — party type
+    (`TECHNICIAN | SALESPERSON`), party reference, and share. Existing entries backfill as one 100%
+    technician allocation, so no history is reinterpreted. Salesperson must be assignable to any
+    **user**, not just a technician, and `technicians`/`users` are separate tables, so the party
+    reference has to span both; assigning or changing sales credit is role-gated
+    (`shared/permissions.ts`). The ledger is append-only per canon, so correcting a split is a new
+    allocation set, never an edit.
+
+    **The real blocker is assignment, not the ledger.** `services.assignedTechnicianId` and
+    `appointments.assignedTechnicianId` are single FKs and there is no crew/assignment join table, so
+    the app cannot even record that two technicians ran a job. That half is **not backfillable** — who
+    else was on a visit is unrecoverable after the fact, while ledger splits can be added later
+    additively. If any part of this is pulled forward, pull forward multi-technician assignment.
+
+    Same principle as Pass 5.5's `initialChargeCollectedBy` finding: credit must key off what was
+    **recorded to have happened**, never inferred from a configuration field.
+  - **`PLAN_BILLING_V1.md` is cited 24 times across 9 files but is not in the repo** — including 9
+    citations in `shared/schema.ts` and 6 in `server/storage.ts`, all pointing at section numbers
+    (`§1.1`, `§1.6 path 2`) that cannot be read. It existed in two early commits and was removed
+    before `origin/main`; `PLAN_BILLING_V1_1.md` still opens by calling itself an addendum to it.
+    Either restore it as a historical reference or repoint the citations — the current state means
+    load-bearing code comments cite a source nobody can open.
   - **`CUSTOM` recurrence silently means "days"** — small, mechanical, worth doing before it spreads.
     `billingPlans.intervalUnit` offers `DAY | WEEK | MONTH | QUARTER | YEAR` and (since Pass 3.5) all
     of them step correctly with any interval count. But the **service recurrence** and **agreement
