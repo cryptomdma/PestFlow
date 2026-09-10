@@ -90,11 +90,28 @@ a real issued invoice at agreement start. Three tools, three jobs:
 > - **Stays on the Billing Plan** (how the charge interacts with the cadence):
 >   `initialChargeCoversFirstPeriod` — purely "does the up-front money buy period 1," which is a
 >   billing-arrangement question — and `fieldAddableSurcharge`, a plan-level permission.
-> - **Open question for the owner**: `initialChargeCollectedBy` (`OFFICE_AT_SIGNING` |
->   `TECH_AT_FIRST_SERVICE`). It does not affect the billing arrangement, so by the test above it is
->   per-sale and moves with the amount — but it is also arguably plan policy. It currently drives
->   technician production credit (`createSurchargeEntryIfConfigured`), so whichever way it goes, that
->   read has to follow it.
+> - **Also moves, resolved 2026-09-10**: `initialChargeCollectedBy`, as an **optional** field —
+>   who *may* collect, not who did. Owner's call, and the right one: it is sale logistics, not a
+>   billing arrangement, and it is meaningless without the amount and type it travels with.
+>
+>     Represented as **one nullable column, not two checkboxes**. The owner's "both or neither" are the
+>     same state — either role may collect — and storing them as two booleans yields two distinct rows
+>     meaning one thing, which is how vocabulary drift starts (see D1a). "Nobody collects it" needs no
+>     representation at all: that is `initialChargeType = NONE`. So three states, no duplicates:
+>     `NULL` = either may collect (the default, so the field is not required),
+>     `OFFICE_AT_SIGNING` = office only, `TECH_AT_FIRST_SERVICE` = technician only. The existing value
+>     names are kept because their suffixes carry *when* the collection happens, which
+>     `createSurchargeEntryIfConfigured()` depends on.
+>
+>     **Consequence that must ship with it:** this field is not a permission today, it is an
+>     *attribution trigger* — `TECH_AT_FIRST_SERVICE` is what causes a technician to receive
+>     production-value credit for the surcharge. Once "either may collect" is expressible, that
+>     inference is no longer sound: the code cannot tell from a permission whether the tech actually
+>     took the money, so it would credit a tech for cash the office banked at signing. Credit has to
+>     key off the **recorded collection event**, which is exactly what D5's payments ledger introduces.
+>     Until that exists, credit only when the technician is the *sole* permitted collector, and
+>     withhold it when either role may collect — a missing credit surfaces at payout, a wrong credit
+>     is silent and gets paid.
 >
 > Expressing "half down" properly also wants an amount **mode** (flat cents vs. percent of contract
 > price) alongside the amount, rather than only flat cents. Sequenced as Pass 5.5 in

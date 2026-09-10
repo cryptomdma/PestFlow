@@ -97,3 +97,13 @@ the source of truth for what each pass actually does.
     posted, remaining services on that appointment can be cancelled without disturbing the invoice.
   - **Move Batch Invoice from Service Ticket Review to the Invoices screen** — it is an invoicing
     action sitting on a review queue.
+  - **`CUSTOM` recurrence silently means "days"** — small, mechanical, worth doing before it spreads.
+    `billingPlans.intervalUnit` offers `DAY | WEEK | MONTH | QUARTER | YEAR` and (since Pass 3.5) all
+    of them step correctly with any interval count. But the **service recurrence** and **agreement
+    term** dropdowns — on both the agreement form and the agreement-template form — offer only
+    `MONTH | QUARTER | YEAR | CUSTOM`, and `advanceAgreementDate()` maps `CUSTOM` to `addDays()`. So
+    "Custom / 7" means "every 7 days" with nothing in the UI saying so, and `CUSTOM(7)` is
+    indistinguishable in behavior from `WEEK(1)`. Replace `CUSTOM` with explicit `DAY` and `WEEK`
+    options on those two dropdowns and migrate `CUSTOM(N)` → `DAY(N)`. Affects 7 agreements and 2
+    templates today, including the Wildlife Trapping Program rows, which are `CUSTOM/7` term *and*
+    recurrence — i.e. the daily-trap-check case this vocabulary was quietly already serving.

@@ -479,7 +479,14 @@ Behavior worth knowing before a later pass changes it:
   divided by 12 — roughly 30x correct — and billed monthly. Pre-existing, but unreachable until this
   pass let an agreement carry a plan at all, so it ships as part of it. Nothing uses `DAY`/`WEEK` for
   service *recurrence* (that dropdown offers `MONTH | QUARTER | YEAR | CUSTOM`, and no stored row
-  holds either value), so the shared function's other caller is unaffected.
+  holds either value), so the shared function's other caller is unaffected. Verified directly against
+  the function: `N x DAY`, `N x WEEK`, `N x MONTH`, `QUARTER` and `YEAR` all step correctly for any
+  interval count, and a one-year term yields 365 / 53 / 12 / 4 / 1 periods respectively — so a plan
+  can now express "every 5 days" or "every 3 weeks" and be priced and billed on it.
+  **Related gap, deliberately not fixed here** (see `CURRENT_FOCUS.md`): the recurrence and term
+  dropdowns still offer `CUSTOM`, which `advanceAgreementDate()` maps to days — `CUSTOM(7)` behaves
+  identically to `WEEK(1)` and nothing in the UI says so. Replacing it needs a data migration on 7
+  agreements and 2 templates, so it is its own change.
 - **Still legacy, still D9's job**: `agreements.billingFrequency` and
   `agreementTemplates.defaultBillingFrequency` columns, and the server-side normalize/propagation
   writes. Pass 3.5 removed only the inputs and the one list-card that displayed the free text.
@@ -497,9 +504,9 @@ every agreement on that plan whatever its price, and "half down" cannot be expre
 | `initialChargeType` | → `agreement_templates.default_initial_charge_type`, `agreements.initial_charge_type` | |
 | `initialChargeCents` | → `agreement_templates.default_initial_charge_cents`, `agreements.initial_charge_cents` | |
 | amount **mode** (flat vs. percent of contract) | new field, needed for "half down" — D4's own example | |
+| `initialChargeCollectedBy` | → same two tables, **nullable**: `NULL` = either role may collect, `OFFICE_AT_SIGNING` = office only, `TECH_AT_FIRST_SERVICE` = tech only | |
 | `initialChargeCoversFirstPeriod` | | `billing_plans` — pure cadence semantics |
 | `fieldAddableSurcharge` | | `billing_plans` — plan-level permission |
-| `initialChargeCollectedBy` | **open question** — see D4's correction note | |
 
 Template→agreement propagation mirrors `defaultPriceCents` → `priceCents`, which
 `buildAgreementInsertFromTemplate` already does; reuse that shape rather than inventing a second one.
@@ -519,6 +526,14 @@ the migration's shape is the same either way, only the row count differs.
 - `createSurchargeEntryIfConfigured()` (`storage.ts`) reads `initialChargeType`,
   `initialChargeCollectedBy` and `initialChargeCents` off that snapshot to credit technician
   production value. It is live — 3 `SURCHARGE` entries exist — and must follow the fields.
+- **`initialChargeCollectedBy` becomes a permission, and that breaks how credit is attributed.**
+  Today `TECH_AT_FIRST_SERVICE` is the *only* signal that a technician collected the money, so the
+  surcharge credit is inferred from it. Once `NULL` ("either role may collect") is expressible, that
+  inference is unsound — it would credit a technician for cash the office banked at signing. This pass
+  must therefore narrow the read to "credit only when the technician is the **sole** permitted
+  collector," and leave a marker for D5: once payments-lite records a collection with an actor,
+  attribution keys off that event instead of off the permission. Withholding an uncertain credit is
+  the visible failure (a tech notices a missing payout); paying a wrong one is the silent one.
 - `buildBillingPlanSnapshot()` stops carrying whatever moves.
 - Settings' `BillingPlanForm` loses the moved inputs; `AgreementTemplateForm` and the agreement form
   gain them, next to Price rather than next to the plan selector.
