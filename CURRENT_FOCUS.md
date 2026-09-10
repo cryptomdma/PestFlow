@@ -12,7 +12,7 @@ a single transaction-aware `recordAuditLog()` write helper on `DatabaseStorage`,
 `GET /api/audit-logs`, and a History tab on the location screen, with the entity/action vocabulary in
 `shared/audit.ts` as compile-time unions.
 
-Pass 3 (`feature/phase-1-invoice-appointment-anchor`, D1) is pushed and awaiting merge — invoices now
+Pass 3 (`feature/phase-1-invoice-appointment-anchor`, D1) merged as PR #58 — invoices now
 anchor on `appointmentId` (one visit, one invoice, one line per finalized Service Record), with
 `serviceRecordId` kept as the fallback anchor for appointment-less one-offs and two mutually-exclusive
 partial unique indexes enforcing both. Whether an agreement service is $0 or chargeable is decided by
@@ -20,8 +20,26 @@ one shared predicate — `isScheduleBilledPlan()` in `shared/billing-plan.ts`, r
 run and invoice generation so they can never disagree about who bills a visit. Generation is
 audit-logged as `invoice_issued` and surfaces on the location History tab. The helper signatures and
 the behavior passes 4-5 need to know are written out in `PLAN_BILLING_V1_1_EXECUTION.md` under
-"Shipped in Pass 3" — read that rather than re-deriving it. Next up once it merges: **Pass 4 —
-`feature/phase-1-draft-invoice-lifecycle`** (D3, Q3).
+"Shipped in Pass 3" — read that rather than re-deriving it.
+
+Pass 3.5 (`feature/phase-1-agreement-billing-plan-selector`) is pushed and awaiting merge — an
+unplanned pass inserted ahead of Pass 4, from Pass 3's live-testing finding that `billingPlanId` had no
+writer anywhere in the client. Both the agreement form and the agreement-template form now carry a real
+Billing Plan selector in place of the free-typed billing-frequency input, and attaching a plan to an
+**existing** agreement now sets `nextBillingDate` and refreshes `billingPlanSnapshot` — it previously
+set neither, so an edited agreement looked correctly configured and was never billed by anyone. The
+attachment rules (mid-term anchoring, the two refusals that prevent double-billing, and what is
+deliberately still legacy) are written out in `PLAN_BILLING_V1_1_EXECUTION.md` under "Shipped in
+Pass 3.5". It also fixes `advanceAgreementDate()`, which had no `DAY`/`WEEK` case and so billed a
+daily or weekly plan monthly, at roughly 30x the correct per-period amount — unreachable until
+agreements could carry a plan.
+
+Next up once it merges: **Pass 4 — `feature/phase-1-draft-invoice-lifecycle`** (D3, Q3). Newly
+sequenced behind it: **Pass 5.5 — `feature/phase-1-initial-charge-to-agreement`**, an owner correction
+to D4 moving the down-payment type/amount off the shared Billing Plan and onto the Agreement and
+Agreement Template, where a per-sale amount derived from contract price belongs. It must land before
+Pass 6 turns that block into a real receivable. See D4's correction note in `PLAN_BILLING_V1_1.md` and
+the Pass 5.5 section of `PLAN_BILLING_V1_1_EXECUTION.md`.
 
 Full ordered plan, impact analysis, conflict resolutions, and per-pass verification steps live in
 `PLAN_BILLING_V1_1_EXECUTION.md` — read it before starting a pass, and update its "Pass status" table
@@ -53,24 +71,21 @@ the source of truth for what each pass actually does.
   display clarity (a real, separately-noted UI gap — not a billing concern).
 - Also not in this phase, each documented where it belongs rather than scheduled here. The first two
   are the ones that gate real use of the billing engine:
-  - **Attach a Billing Plan to an Agreement (UI) — highest priority of these.** `billingPlanId` appears
-    nowhere in the client outside Settings' own plan CRUD: there is no selector on the agreement form
-    or the agreement template form, and the only writer is template propagation, which cannot be set
-    either. **Every agreement therefore has `billingPlanId = null` and bills COD per visit**, which
-    makes the schedule-billed branch of invoice generation unreachable through the UI. Billing
-    frequency is still free-typed text on both forms (`customer-detail.tsx`, `settings.tsx`) — the
-    legacy field D9 removes. This pass replaces that input with a real plan selector on both forms.
-    **Sequence it before Pass 5 (D2)**: once finalization auto-generates invoices, a plan-less default
-    means agreement customers start getting charged per visit automatically. It is also a prerequisite
-    for D9 (cannot drop `billingFrequency` with no replacement input) and for the required-field work
-    below.
+  - ~~**Attach a Billing Plan to an Agreement (UI).**~~ **Done — Pass 3.5**, pushed as
+    `feature/phase-1-agreement-billing-plan-selector`. Both forms now carry a real plan selector, and
+    plan-attachment-on-update sets the billing schedule instead of silently doing nothing. This
+    unblocks D9's column drop and the required-field work below, and clears the sequencing constraint
+    that Pass 5 (D2) could not land before it.
   - **Open / download / send an invoice document.** `GET /api/invoices/:id/document` renders the PDF
     and has no UI affordance anywhere — no button on the invoice list or detail. Owner calls this
     mandatory, not optional.
   - **Billing Plan required on every Agreement** — backfill the 11 plan-less agreements, then
-    `billingPlanId NOT NULL` + zod + creation UI + template propagation. Blocked on the selector
-    above. Until then a plan-less agreement bills COD per visit. Sequence before D9's column drop,
-    which resolves the same rows.
+    `billingPlanId NOT NULL` + zod. **Unblocked by Pass 3.5**: the creation UI, template propagation,
+    and plan-attachment-on-update all exist now, so what remains is the backfill and the constraint.
+    Until then a plan-less agreement bills COD per visit. Sequence before D9's column drop, which
+    resolves the same rows. **Carry sale attribution with it** — a sold-by reference on the agreement,
+    assignable to any user and role-gated — per the compensation entry below: same form, same zod,
+    same propagation path, and it is basis that cannot be reconstructed later.
   - **Service designation + callback attribution** — `ServiceType.category`
     (`CALLBACK | PRODUCTION | SERVICE`) in Settings, instance designation on Service, and a required
     link from a callback to the Service it answers. See `CANONICAL_DOMAIN_RULES_V1.md` §10. More
@@ -84,3 +99,76 @@ the source of truth for what each pass actually does.
     posted, remaining services on that appointment can be cancelled without disturbing the invoice.
   - **Move Batch Invoice from Service Ticket Review to the Invoices screen** — it is an invoicing
     action sitting on a review queue.
+  - **Compensation & attribution — crew splits, sales commission, non-technician payees.**
+    Owner-specified 2026-09-10. **Read `PLAN_BILLING_V1.md` §1.6.2 first.** An earlier version of this
+    entry said the comp model was nowhere in the plan. That was wrong: §1.6.2 ("Compensation — build
+    the basis, defer the engine") already designs it, and it is still the intended direction —
+    `comp_plans` (org-scoped, Settings-configurable, assignable per technician), `comp_components`
+    typed `PERCENT_OF_PRODUCTION | PERCENT_OF_COLLECTED_REVENUE | FLAT_PER_SERVICE | HOURLY | SALARY
+    | COMMISSION_ON_NEW_AGREEMENT | TIERED_BONUS` with per-service-type filters and tiers, and
+    `comp_earnings` as an append-only ledger with **plan and rate snapshotted at time of earning**, so
+    editing a comp plan never retroactively changes what someone was already paid. That covers the
+    owner's bar — "configure to meet nearly any comp plan within reason" — including the company that
+    pays commission on new sales and no production value at all. It is correctly deferred to Phase
+    2/3 and gated on the payment ledger.
+
+    **Two axes, not one pot.** Production value (earned by doing the work — contract price ÷ expected
+    service count, per canon) and commission (earned by selling it, on its own basis and rate) are
+    separate earnings, not one amount divided among parties; one person can draw both for the same
+    job. The owner's scenarios:
+    - a salesperson closes a complex high-ticket job that two or more technicians perform — the
+      salesperson earns commission, the technicians **split** the production value
+    - a technician performs a one-time service **and** sells an annual program — the same person earns
+      the production value of the service *and* commission on the sale
+    - office staff sells over the phone and earns the commission; the technician performs the work and
+      earns the production value
+
+    **Three gaps in §1.6.2, all of them "basis" rather than "engine":**
+    1. **Crew.** `services.assignedTechnicianId` / `appointments.assignedTechnicianId` are single FKs
+       with no join table, so the app cannot record that two technicians ran a job.
+    2. **Split allocation.** `production_value_entries.technicianId` is one nullable varchar, so an
+       entry credits exactly one technician. Needs append-only allocation rows beneath the entry
+       (party, share), corrections being a new allocation set rather than an edit — the same
+       append-only discipline the entry itself already follows.
+    3. **Non-technician payees and sale attribution.** Every §1.6.2 component pays a *technician*, and
+       nothing anywhere records **who sold** an agreement, so `COMMISSION_ON_NEW_AGREEMENT` has no
+       payee to resolve. Needs a sold-by reference assignable to any **user** (`technicians` and
+       `users` are separate tables, so the party reference must span both), plus role-gating on who
+       may assign or change sales credit.
+
+    **Sequencing (owner delegated the call, 2026-09-10):**
+    - **Sale attribution → Phase 1**, riding with the "Billing Plan required on every Agreement" pass
+      above: same form, same zod, same template-propagation path, so it is cheap to do together.
+      §1.6.2's own rule is that Phase 1 builds the basis because "you cannot reconstruct what a
+      technician earned last March if the basis was never recorded" — and *who sold it* is basis.
+    - **Crew assignment → the deferred scheduling pass** (D8, which already collects unschedule and
+      preferred-technician). It is a scheduling capability, not a comp one, and the comp work needs
+      real crew data to allocate against.
+    - **Split allocation → immediately after that pass**, being meaningless without crews.
+    - **The engine → Phase 2/3, unchanged**, per §1.6.2, gated on the payment ledger (Pass 6) and
+      extended so a component can pay a non-technician.
+    - **Nothing needs to jump the queue.** The whole DB is test data and no multi-technician service
+      has been exercised (owner confirmed 2026-09-10), so nothing is being lost today and no schema is
+      locked in. The "unrecoverable after the fact" argument is real but only bites once live.
+
+    When this is scheduled it should graduate to its own plan doc rather than growing here.
+
+    Same principle as Pass 5.5's `initialChargeCollectedBy` finding, which is this problem in
+    miniature: credit must key off what was **recorded to have happened**, never inferred from a
+    configuration field.
+  - ~~**`PLAN_BILLING_V1.md` is cited but missing.**~~ **Resolved 2026-09-10** — restored from git
+    history with a header marking it historical and superseded, so the ~24 `§x.x` citations in
+    `shared/schema.ts`, `server/storage.ts` and elsewhere resolve to something readable. Per the owner
+    it is a **historical reference only: do not cite it in new work**, and it stays off `CLAUDE.md`'s
+    reading list — a stale plan sitting beside the current one is how a fresh session picks up the
+    wrong instructions, which is why it was removed in the first place.
+  - **`CUSTOM` recurrence silently means "days"** — small, mechanical, worth doing before it spreads.
+    `billingPlans.intervalUnit` offers `DAY | WEEK | MONTH | QUARTER | YEAR` and (since Pass 3.5) all
+    of them step correctly with any interval count. But the **service recurrence** and **agreement
+    term** dropdowns — on both the agreement form and the agreement-template form — offer only
+    `MONTH | QUARTER | YEAR | CUSTOM`, and `advanceAgreementDate()` maps `CUSTOM` to `addDays()`. So
+    "Custom / 7" means "every 7 days" with nothing in the UI saying so, and `CUSTOM(7)` is
+    indistinguishable in behavior from `WEEK(1)`. Replace `CUSTOM` with explicit `DAY` and `WEEK`
+    options on those two dropdowns and migrate `CUSTOM(N)` → `DAY(N)`. Affects 7 agreements and 2
+    templates today, including the Wildlife Trapping Program rows, which are `CUSTOM/7` term *and*
+    recurrence — i.e. the daily-trap-check case this vocabulary was quietly already serving.
