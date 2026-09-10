@@ -83,7 +83,9 @@ the source of truth for what each pass actually does.
     `billingPlanId NOT NULL` + zod. **Unblocked by Pass 3.5**: the creation UI, template propagation,
     and plan-attachment-on-update all exist now, so what remains is the backfill and the constraint.
     Until then a plan-less agreement bills COD per visit. Sequence before D9's column drop, which
-    resolves the same rows.
+    resolves the same rows. **Carry sale attribution with it** — a sold-by reference on the agreement,
+    assignable to any user and role-gated — per the compensation entry below: same form, same zod,
+    same propagation path, and it is basis that cannot be reconstructed later.
   - **Service designation + callback attribution** — `ServiceType.category`
     (`CALLBACK | PRODUCTION | SERVICE`) in Settings, instance designation on Service, and a required
     link from a callback to the Service it answers. See `CANONICAL_DOMAIN_RULES_V1.md` §10. More
@@ -97,37 +99,69 @@ the source of truth for what each pass actually does.
     posted, remaining services on that appointment can be cancelled without disturbing the invoice.
   - **Move Batch Invoice from Service Ticket Review to the Invoices screen** — it is an invoicing
     action sitting on a review queue.
-  - **Multi-party production attribution — splits across technicians, plus a salesperson dimension.**
-    Owner-raised 2026-09-10. **Not in the codebase and not in any plan doc** — confirmed by full-repo
-    sweep, not assumed. Today `production_value_entries.technicianId` is a single nullable varchar
-    (not even an FK), so one entry credits exactly one technician; there is no salesperson concept
-    anywhere (`soldBy` / commission / share: zero hits across all `.ts`, `.tsx`, `.md`); and the
-    deleted `PLAN_BILLING_V1.md` assumed a single technician throughout ("production value feeds both
-    analytics and technician comp"). PestPac-style configurable splits are the target shape.
+  - **Compensation & attribution — crew splits, sales commission, non-technician payees.**
+    Owner-specified 2026-09-10. **Read `PLAN_BILLING_V1.md` §1.6.2 first.** An earlier version of this
+    entry said the comp model was nowhere in the plan. That was wrong: §1.6.2 ("Compensation — build
+    the basis, defer the engine") already designs it, and it is still the intended direction —
+    `comp_plans` (org-scoped, Settings-configurable, assignable per technician), `comp_components`
+    typed `PERCENT_OF_PRODUCTION | PERCENT_OF_COLLECTED_REVENUE | FLAT_PER_SERVICE | HOURLY | SALARY
+    | COMMISSION_ON_NEW_AGREEMENT | TIERED_BONUS` with per-service-type filters and tiers, and
+    `comp_earnings` as an append-only ledger with **plan and rate snapshotted at time of earning**, so
+    editing a comp plan never retroactively changes what someone was already paid. That covers the
+    owner's bar — "configure to meet nearly any comp plan within reason" — including the company that
+    pays commission on new sales and no production value at all. It is correctly deferred to Phase
+    2/3 and gated on the payment ledger.
 
-    Sketch, so the next person doesn't re-derive it: keep `production_value_entries` as the "what was
-    earned" fact and add append-only **allocation** rows beneath it — party type
-    (`TECHNICIAN | SALESPERSON`), party reference, and share. Existing entries backfill as one 100%
-    technician allocation, so no history is reinterpreted. Salesperson must be assignable to any
-    **user**, not just a technician, and `technicians`/`users` are separate tables, so the party
-    reference has to span both; assigning or changing sales credit is role-gated
-    (`shared/permissions.ts`). The ledger is append-only per canon, so correcting a split is a new
-    allocation set, never an edit.
+    **Two axes, not one pot.** Production value (earned by doing the work — contract price ÷ expected
+    service count, per canon) and commission (earned by selling it, on its own basis and rate) are
+    separate earnings, not one amount divided among parties; one person can draw both for the same
+    job. The owner's scenarios:
+    - a salesperson closes a complex high-ticket job that two or more technicians perform — the
+      salesperson earns commission, the technicians **split** the production value
+    - a technician performs a one-time service **and** sells an annual program — the same person earns
+      the production value of the service *and* commission on the sale
+    - office staff sells over the phone and earns the commission; the technician performs the work and
+      earns the production value
 
-    **The real blocker is assignment, not the ledger.** `services.assignedTechnicianId` and
-    `appointments.assignedTechnicianId` are single FKs and there is no crew/assignment join table, so
-    the app cannot even record that two technicians ran a job. That half is **not backfillable** — who
-    else was on a visit is unrecoverable after the fact, while ledger splits can be added later
-    additively. If any part of this is pulled forward, pull forward multi-technician assignment.
+    **Three gaps in §1.6.2, all of them "basis" rather than "engine":**
+    1. **Crew.** `services.assignedTechnicianId` / `appointments.assignedTechnicianId` are single FKs
+       with no join table, so the app cannot record that two technicians ran a job.
+    2. **Split allocation.** `production_value_entries.technicianId` is one nullable varchar, so an
+       entry credits exactly one technician. Needs append-only allocation rows beneath the entry
+       (party, share), corrections being a new allocation set rather than an edit — the same
+       append-only discipline the entry itself already follows.
+    3. **Non-technician payees and sale attribution.** Every §1.6.2 component pays a *technician*, and
+       nothing anywhere records **who sold** an agreement, so `COMMISSION_ON_NEW_AGREEMENT` has no
+       payee to resolve. Needs a sold-by reference assignable to any **user** (`technicians` and
+       `users` are separate tables, so the party reference must span both), plus role-gating on who
+       may assign or change sales credit.
 
-    Same principle as Pass 5.5's `initialChargeCollectedBy` finding: credit must key off what was
-    **recorded to have happened**, never inferred from a configuration field.
-  - **`PLAN_BILLING_V1.md` is cited 24 times across 9 files but is not in the repo** — including 9
-    citations in `shared/schema.ts` and 6 in `server/storage.ts`, all pointing at section numbers
-    (`§1.1`, `§1.6 path 2`) that cannot be read. It existed in two early commits and was removed
-    before `origin/main`; `PLAN_BILLING_V1_1.md` still opens by calling itself an addendum to it.
-    Either restore it as a historical reference or repoint the citations — the current state means
-    load-bearing code comments cite a source nobody can open.
+    **Sequencing (owner delegated the call, 2026-09-10):**
+    - **Sale attribution → Phase 1**, riding with the "Billing Plan required on every Agreement" pass
+      above: same form, same zod, same template-propagation path, so it is cheap to do together.
+      §1.6.2's own rule is that Phase 1 builds the basis because "you cannot reconstruct what a
+      technician earned last March if the basis was never recorded" — and *who sold it* is basis.
+    - **Crew assignment → the deferred scheduling pass** (D8, which already collects unschedule and
+      preferred-technician). It is a scheduling capability, not a comp one, and the comp work needs
+      real crew data to allocate against.
+    - **Split allocation → immediately after that pass**, being meaningless without crews.
+    - **The engine → Phase 2/3, unchanged**, per §1.6.2, gated on the payment ledger (Pass 6) and
+      extended so a component can pay a non-technician.
+    - **Nothing needs to jump the queue.** The whole DB is test data and no multi-technician service
+      has been exercised (owner confirmed 2026-09-10), so nothing is being lost today and no schema is
+      locked in. The "unrecoverable after the fact" argument is real but only bites once live.
+
+    When this is scheduled it should graduate to its own plan doc rather than growing here.
+
+    Same principle as Pass 5.5's `initialChargeCollectedBy` finding, which is this problem in
+    miniature: credit must key off what was **recorded to have happened**, never inferred from a
+    configuration field.
+  - ~~**`PLAN_BILLING_V1.md` is cited but missing.**~~ **Resolved 2026-09-10** — restored from git
+    history with a header marking it historical and superseded, so the ~24 `§x.x` citations in
+    `shared/schema.ts`, `server/storage.ts` and elsewhere resolve to something readable. Per the owner
+    it is a **historical reference only: do not cite it in new work**, and it stays off `CLAUDE.md`'s
+    reading list — a stale plan sitting beside the current one is how a fresh session picks up the
+    wrong instructions, which is why it was removed in the first place.
   - **`CUSTOM` recurrence silently means "days"** — small, mechanical, worth doing before it spreads.
     `billingPlans.intervalUnit` offers `DAY | WEEK | MONTH | QUARTER | YEAR` and (since Pass 3.5) all
     of them step correctly with any interval count. But the **service recurrence** and **agreement
