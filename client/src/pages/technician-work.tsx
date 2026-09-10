@@ -10,7 +10,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { ServiceCompletionDialog } from "@/components/service-completion-dialog";
-import { apiRequest, queryClient } from "@/lib/queryClient";
+import { DraftInvoiceVoidPrompt, getDraftInvoiceDecisionRequired, type DraftInvoiceRef } from "@/components/draft-invoice-void-prompt";
+import { useToast } from "@/hooks/use-toast";
+import { apiRequest, getApiErrorMessage, queryClient } from "@/lib/queryClient";
 import { AlertTriangle, CalendarDays, CheckCircle2, ClipboardList, Clock3, MapPin, Navigation } from "lucide-react";
 import type { Appointment, Customer, Location, Service, ServiceRecord, ServiceType, Technician } from "@shared/schema";
 
@@ -88,6 +90,8 @@ export default function TechnicianWork() {
   const [cancelAction, setCancelAction] = useState<"cancel" | "reschedule" | null>(null);
   const [cancelReason, setCancelReason] = useState("");
   const [cancelNotes, setCancelNotes] = useState("");
+  const [draftPrompt, setDraftPrompt] = useState<DraftInvoiceRef[] | null>(null);
+  const { toast } = useToast();
 
   const { data: technicians, isLoading: techniciansLoading } = useQuery<Technician[]>({ queryKey: ["/api/technicians?includeInactive=true"] });
   const { data: serviceTypes } = useQuery<ServiceType[]>({ queryKey: ["/api/service-types"] });
@@ -117,21 +121,39 @@ export default function TechnicianWork() {
     onSuccess: refreshWork,
   });
   const cancelRescheduleMutation = useMutation({
-    mutationFn: async () => {
+    // voidDraftInvoices is undefined on the first attempt; the server answers
+    // 409 if the visit carries a DRAFT invoice (Q3), the prompt below asks,
+    // and the retry carries the answer.
+    mutationFn: async (voidDraftInvoices?: boolean) => {
       if (!detailVisit || !cancelAction) throw new Error("Appointment is not selected");
       const response = await apiRequest("POST", `/api/appointments/${detailVisit.appointment.id}/cancel-reschedule`, {
         reason: cancelReason,
         notes: cancelNotes,
         rescheduleRequested: cancelAction === "reschedule",
+        voidDraftInvoices,
       });
       return response.json();
     },
     onSuccess: () => {
       refreshWork();
+      queryClient.invalidateQueries({ queryKey: ["/api/invoices"] });
+      setDraftPrompt(null);
       setCancelAction(null);
       setCancelReason("");
       setCancelNotes("");
       setDetailVisit(null);
+    },
+    onError: (error: Error) => {
+      const drafts = getDraftInvoiceDecisionRequired(error);
+      if (drafts) {
+        setDraftPrompt(drafts);
+        return;
+      }
+      toast({
+        title: cancelAction === "reschedule" ? "Unable to request reschedule" : "Unable to cancel appointment",
+        description: getApiErrorMessage(error),
+        variant: "destructive",
+      });
     },
   });
 
@@ -393,7 +415,7 @@ export default function TechnicianWork() {
                 type="button"
                 variant={cancelAction === "cancel" ? "destructive" : "default"}
                 disabled={!cancelReason || cancelRescheduleMutation.isPending}
-                onClick={() => cancelRescheduleMutation.mutate()}
+                onClick={() => cancelRescheduleMutation.mutate(undefined)}
               >
                 {cancelRescheduleMutation.isPending ? "Sending..." : cancelAction === "reschedule" ? "Send to Office" : "Cancel and Send to Office"}
               </Button>
@@ -401,6 +423,13 @@ export default function TechnicianWork() {
           </div>
         </DialogContent>
       </Dialog>
+
+      <DraftInvoiceVoidPrompt
+        drafts={draftPrompt}
+        isPending={cancelRescheduleMutation.isPending}
+        onDecide={(voidDraftInvoices) => cancelRescheduleMutation.mutate(voidDraftInvoices)}
+        onBack={() => setDraftPrompt(null)}
+      />
 
       <ServiceCompletionDialog
         open={!!completionContext}

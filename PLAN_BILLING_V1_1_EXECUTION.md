@@ -19,8 +19,8 @@ grounded in what the code and data actually do, not what the decision record ass
 | 1 | `feature/phase-1-appointment-status-enum` | D1a | Done |
 | 2 | `feature/phase-1-audit-log-infrastructure` | D7 (infra half) | Done |
 | 3 | `feature/phase-1-invoice-appointment-anchor` | D1 | Done |
-| 3.5 | `feature/phase-1-agreement-billing-plan-selector` | — (gap found in Pass 3 live testing) | Pushed, awaiting merge |
-| 4 | `feature/phase-1-draft-invoice-lifecycle` | D3, Q3 | Not started |
+| 3.5 | `feature/phase-1-agreement-billing-plan-selector` | — (gap found in Pass 3 live testing) | Done (PR #59) |
+| 4 | `feature/phase-1-draft-invoice-lifecycle` | D3, Q3 | Pushed, awaiting merge |
 | 5 | `feature/phase-1-finalize-invoice-wiring` | D2 | Not started |
 | 5.5 | `feature/phase-1-initial-charge-to-agreement` | D4 (owner correction) | Not started |
 | 6 | `feature/phase-1-payments-lite` | D5, D4 | Not started |
@@ -491,6 +491,107 @@ Behavior worth knowing before a later pass changes it:
   `agreementTemplates.defaultBillingFrequency` columns, and the server-side normalize/propagation
   writes. Pass 3.5 removed only the inputs and the one list-card that displayed the free text.
 
+**Shipped in Pass 4, for Pass 5 (D2) to build on** — the DRAFT lifecycle, the issue transition, the
+review flag, and the Q3 cancel prompt. D2's generate-or-adopt is already half built: generation adopts
+a DRAFT today, so Pass 5 has to call it from finalization and add the setting and the prompt, not
+build adoption.
+
+```ts
+// server/storage.ts, public. A DRAFT against an appointment whose tickets may
+// not exist yet. Prices every active service on the visit as it stands (a
+// service with no ticket -> its contract price; posted-but-unfinalized -> the
+// same). Holds the visit's anchor so generation adopts it. Idempotent: returns
+// the existing DRAFT; throws if the visit already has an ISSUED invoice.
+async createDraftInvoiceForAppointment(appointmentId, actor?): Promise<Invoice>
+
+// Public. DRAFT -> issued. Re-prices lines, tax, billing terms and due date
+// from the visit NOW, stamps issuedAt, audits invoice_issued with before/after.
+// prefinalization "REFUSE" throws PrefinalizationIssueError if any active
+// service lacks a finalized ticket; "OVERRIDE" issues anyway and flags them.
+// Already issued -> returned unchanged. VOID -> throws.
+async issueInvoice(id, { actor?, prefinalization }): Promise<Invoice | undefined>
+
+// Private. The same transition inside an open transaction. Generation calls
+// it to ADOPT a draft found on the anchor (every ticket is finalized by then,
+// so REFUSE cannot fire). This is the hook D2's finalization wiring reuses.
+private async issueInvoiceTx(tx, draft, input): Promise<Invoice>
+
+// Private. One line per VisitBillingUnit { service, record?, serviceDate }
+// through resolveServiceLineBillingTx (record now optional) and the tax
+// engine. Generation, draft creation and issue all price through this - a new
+// line type is added here, once.
+private async buildVisitInvoiceLinesTx(tx, { units, accountId, locationId }): Promise<PricedVisitInvoice>
+
+// Private. Both anchors, appointment first. INCLUDES drafts; anything that
+// means "is this visit billed" also checks isInvoiceIssued().
+private async findInvoiceForVisitTx(tx, appointmentId, serviceRecordIds): Promise<Invoice | undefined>
+
+// Private. Q3, shared by all three cancel paths, given the appointment ids
+// about to be cancelled. undefined -> throws DraftInvoiceDecisionRequiredError
+// (routes answer 409 + draftInvoices); true -> voids in the same tx; false -> keeps.
+private async resolveDraftInvoicesOnCancelTx(tx, appointmentIds, voidDraftInvoices, actor): Promise<void>
+
+// Public. Now transactional and audit-logged (invoice_voided, before/after).
+async voidInvoice(id, actor?): Promise<Invoice | undefined>
+
+// shared/invoice-status.ts. status !== "DRAFT" && status !== "VOID".
+export function isInvoiceIssued(status): boolean
+```
+
+Behavior worth knowing before Pass 5 touches it:
+- **A DRAFT holds the visit's anchor but is not a bill.** The partial unique indexes ignore only VOID,
+  so a DRAFT blocks a second invoice on its appointment - which is exactly what makes adoption work.
+  Everything that means "billed" checks `isInvoiceIssued()`: `getServiceRecordsReadyForBilling()` (a
+  drafted-then-finalized visit stays listed, and Generate issues the draft), `batchSendInvoices()`
+  (skips drafts), the `PATCH /api/invoices/:id` guard (Mark Paid on a draft is refused), and the
+  posting-time flag below. `getLocationBalancesByCustomer()` still sums DRAFT totals into the open
+  balance; Pass 6 rebuilds balances from the ledger and should exclude DRAFT there.
+- **Generation adopts a DRAFT.** `generateInvoiceFromServiceRecord()` on a fully finalized visit that
+  carries a DRAFT issues that draft (re-priced) and returns it - same id, now OPEN/PAID, `issuedAt`
+  set. So D2's "adopt" is: call generate. Pass 5 adds the finalization hook, the `invoiceOnFinalize`
+  setting and the Generate / Generate & Send / Later prompt, nothing else.
+- **Issue re-prices from scratch.** Lines are deleted and rebuilt, tax re-snapshotted, billing profile
+  and due date re-resolved, because a draft's numbers are a preview and terms run from the issue date.
+  Verified live: a service drafted at $110 and posted at $130 issues at $130. `invoices.issuedAt` is
+  the document's issue date (`getInvoiceDocumentContext`), backfilled to `createdAt` for every row
+  that existed before the column.
+- **The override is two-factor**: the role (`ISSUE_INVOICE_PREFINALIZATION`, manager+, in
+  `shared/permissions.ts`) AND `confirmPrefinalization: true` in the body. `POST /api/invoices/:id/issue`
+  answers 403 (`PREFINALIZATION_ISSUE_FORBIDDEN`) without the role and 409
+  (`PREFINALIZATION_ISSUE_REQUIRED`) with the role but no confirmation, both listing
+  `unfinalizedTickets`; the Invoices screen turns the 409 into a confirm dialog.
+- **The review flag is `serviceRecords.ticketStatus = FLAGGED_FOR_REVIEW`**, plus
+  `flaggedAt` / `flaggedByUserId` / `flaggedByLabel` / `flagReason` mirroring the reopen columns, and an
+  audit row `prefinalization_issue_override` on the `service_record` entity (now part of the location
+  History rollup). It fires from two sides: at override time for tickets already posted, and **at
+  posting time** (`flagTicketIfVisitAlreadyInvoicedTx`, in both `completeService` and
+  `createServiceRecord`) for any ticket entering review on a visit whose invoice is already *issued* -
+  which also catches a reopened ticket re-posted after normal invoicing. Posting onto a visit that has
+  only a DRAFT does not flag. A REOPENED ticket keeps REOPENED at override time (the technician still
+  owes the edit) and receives only the flag columns; it flags properly on re-post. A flagged ticket
+  finalizes normally - `finalizeServiceRecord` never guarded on status. Review screen: a filter, a red
+  badge, an amber banner; the technician screen treats it like pending.
+- **Q3 is wired into three cancel paths, not two.** The plan named `cancelAgreement` and
+  `requestAppointmentCancelOrReschedule`; the schedule screen's "Cancel Service" button (and its status
+  dropdown) is a `PATCH /api/appointments/:id { status: "CANCELED" }` through `updateAppointment()`,
+  which now takes `options.voidDraftInvoices`. All three check before writing, so the 409 rolls back
+  cleanly (verified: the refused agreement cancel left the agreement ACTIVE). The client answers all
+  three with one shared `<DraftInvoiceVoidPrompt>` (`client/src/components/draft-invoice-void-prompt.tsx`)
+  and resubmits with the choice. Reschedule requests prompt too - the appointment is CANCELED either
+  way. Cancelling a visit whose invoice is *issued* never prompts; that is a credit-memo question for
+  Pass 6.
+- **Client errors are structured now.** `apiRequest` throws `ApiError { status, body }` with the
+  message unchanged, so every existing toast is untouched; `getApiErrorCode()` and
+  `getApiErrorMessage()` live in `client/src/lib/queryClient.ts`. Anything later that branches on a
+  server code should use these rather than parsing the message text.
+- **A draft's PDF is preview-only.** `getOrCreateInvoiceDocument()` renders a DRAFT (the document says
+  "Status: DRAFT") but never stores it; the stored artifact is created on the first request after
+  issue. `document-info` for a draft returns id `draft-preview-<invoiceId>`.
+- **Deliberately not done**: drafts are appointment-anchored only (no service-record-anchored draft for
+  an appointment-less one-off); `createManualInvoice` stamps `issuedAt` but still writes no audit row
+  (Pass 8); there is still no UI affordance to open any invoice's PDF, draft or issued (see
+  `CURRENT_FOCUS.md`).
+
 **Pass 5.5 — move the initial charge off the Billing Plan** (owner correction to D4, 2026-09-09; the
 full reasoning is in `PLAN_BILLING_V1_1.md` D4 and is not repeated here).
 
@@ -541,9 +642,11 @@ the migration's shape is the same either way, only the row count differs.
   `CLEANOUT_SURCHARGE`/$50/`TECH_AT_FIRST_SERVICE`), so the data migration is small — but it is real
   money attached to real production credit, not disposable test data.
 
-**Design note carried into Pass 4**: D3's "flags the linked ticket(s) for review" has no existing
-"flagged" concept in the schema. Reuse/extend `serviceRecords.ticketStatus` (currently
-`OFFICE_REVIEW_PENDING | FINALIZED | REOPENED`) rather than inventing a parallel flag field.
+**Design note carried into Pass 4** - resolved there: D3's "flags the linked ticket(s) for review" had
+no existing "flagged" concept in the schema. Pass 4 extended `serviceRecords.ticketStatus` with
+`FLAGGED_FOR_REVIEW` (vocabulary now `OFFICE_REVIEW_PENDING | FLAGGED_FOR_REVIEW | FINALIZED |
+REOPENED`) plus the who/when/why columns in the reopen columns' shape, rather than a parallel flag
+field. See "Shipped in Pass 4".
 
 **Everything stays green between passes**: each row's Verify column includes `npm run check` +
 double-boot (bootstrap idempotency) + a live PowerShell/UI smoke test. No pass leaves the app in a

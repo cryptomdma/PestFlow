@@ -24,6 +24,7 @@ export type AuditEntityType =
  *  an audit row records something that already happened. */
 export type AuditAction =
   | "update"
+  | "invoice_drafted"
   | "invoice_issued"
   | "invoice_voided"
   | "invoice_line_edited"
@@ -50,6 +51,7 @@ const ENTITY_TYPE_LABELS: Record<AuditEntityType, string> = {
 
 const ACTION_LABELS: Record<AuditAction, string> = {
   update: "Updated",
+  invoice_drafted: "Draft invoice created",
   invoice_issued: "Invoice issued",
   invoice_voided: "Invoice voided",
   invoice_line_edited: "Line edited",

@@ -68,3 +68,16 @@ export function isFullyAgreementCovered(invoice: {
 }
 
 export const NO_CHARGE_LABEL = "No Charge - Covered by Service Agreement";
+
+/**
+ * Whether an invoice has been issued to the customer - i.e. it is neither a
+ * DRAFT (PLAN_BILLING_V1_1.md D3: office prep/preview, not yet a receivable)
+ * nor VOID. Only issued invoices block a visit from being invoiced again, can
+ * be sent, marked paid, or have money applied against them. A DRAFT occupies
+ * the visit's anchor (the partial unique index ignores only VOID) so that
+ * generation adopts it rather than creating a second invoice, but it is not
+ * money owed until it is issued.
+ */
+export function isInvoiceIssued(status: string | null | undefined): boolean {
+  return status !== "DRAFT" && status !== "VOID";
+}

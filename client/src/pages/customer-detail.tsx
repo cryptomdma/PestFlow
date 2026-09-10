@@ -34,6 +34,9 @@ import { OpportunityDispositionDialog } from "@/components/opportunity-dispositi
 import { OpportunityHistoryDialog } from "@/components/opportunity-history-dialog";
 import { OpportunityConvertDialog } from "@/components/opportunity-convert-dialog";
 import { ServiceCompletionDialog } from "@/components/service-completion-dialog";
+import { DraftInvoiceVoidPrompt, getDraftInvoiceDecisionRequired, type DraftInvoiceRef } from "@/components/draft-invoice-void-prompt";
+import { useAuth } from "@/hooks/use-auth";
+import { can, PERMISSIONS } from "@shared/permissions";
 import { formatPhoneDisplay } from "@shared/phone";
 import { describeAuditAction, describeAuditEntityType, diffAuditSnapshots } from "@shared/audit";
 import { dollarsToCents, centsToDollars, centsToDollarString } from "@shared/money";
@@ -2014,8 +2017,12 @@ function CancelAgreementDialog({
     });
   }, [open, policy]);
 
+  // Q3: undefined on the first attempt; if "Cancel scheduled appointments"
+  // would cancel a visit carrying a DRAFT invoice the server answers 409, the
+  // prompt asks, and the retry carries the decision.
+  const [draftPrompt, setDraftPrompt] = useState<DraftInvoiceRef[] | null>(null);
   const mutation = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (voidDraftInvoices?: boolean) => {
       if (!agreement) throw new Error("Agreement is required");
       const response = await apiRequest("POST", `/api/agreements/${agreement.id}/cancel`, {
         reason: form.reason,
@@ -2028,6 +2035,7 @@ function CancelAgreementDialog({
         overrideApplied: form.overrideApplied,
         overrideReason: form.overrideReason || null,
         cancellationFeeAmountCents: dollarsToCents(form.cancellationFeeAmount),
+        voidDraftInvoices,
       });
       return response.json();
     },
@@ -2042,10 +2050,18 @@ function CancelAgreementDialog({
       queryClient.invalidateQueries({ queryKey: ["/api/communications/by-location", locationId] });
       queryClient.invalidateQueries({ queryKey: ["/api/all-communications"] });
       queryClient.invalidateQueries({ queryKey: ["/api/location-counts", locationId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/invoices/by-location", locationId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/invoices"] });
+      setDraftPrompt(null);
       toast({ title: "Agreement cancelled" });
       onOpenChange(false);
     },
     onError: (err: Error) => {
+      const drafts = getDraftInvoiceDecisionRequired(err);
+      if (drafts) {
+        setDraftPrompt(drafts);
+        return;
+      }
       toast({ title: "Error cancelling agreement", description: err.message, variant: "destructive" });
     },
   });
@@ -2061,6 +2077,7 @@ function CancelAgreementDialog({
   const canSubmit = form.reason.trim() && form.effectiveDate && form.confirmed && (!overrideReasonRequired || form.overrideReason.trim());
 
   return (
+    <>
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-2xl">
         <DialogHeader>
@@ -2107,13 +2124,20 @@ function CancelAgreementDialog({
           </label>
           <div className="flex justify-end gap-2">
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Back</Button>
-            <Button type="button" variant="destructive" disabled={mutation.isPending || !canSubmit} onClick={() => mutation.mutate()}>
+            <Button type="button" variant="destructive" disabled={mutation.isPending || !canSubmit} onClick={() => mutation.mutate(undefined)}>
               {mutation.isPending ? "Cancelling..." : "Confirm Cancellation"}
             </Button>
           </div>
         </div>
       </DialogContent>
     </Dialog>
+    <DraftInvoiceVoidPrompt
+      drafts={draftPrompt}
+      isPending={mutation.isPending}
+      onDecide={(voidDraftInvoices) => mutation.mutate(voidDraftInvoices)}
+      onBack={() => setDraftPrompt(null)}
+    />
+    </>
   );
 }
 
@@ -2640,7 +2664,11 @@ function ServiceDetailModal({
       {invoice && (
         <div className="rounded-md border bg-muted/20 p-3">
           <p className="text-xs uppercase tracking-wide text-muted-foreground">Invoice</p>
-          <p className="mt-1 font-medium">{invoice.invoiceNumber}</p>
+          <p className="mt-1 flex items-center gap-2 font-medium">
+            {invoice.invoiceNumber}
+            <Badge variant={invoice.status === "DRAFT" ? "outline" : "secondary"} className="text-[10px] uppercase tracking-wide">{invoice.status.replaceAll("_", " ")}</Badge>
+          </p>
+          {invoice.status === "DRAFT" ? <p className="mt-1 text-xs text-muted-foreground">Draft - not issued to the customer yet. It is re-priced from the finalized tickets when issued.</p> : null}
         </div>
       )}
       {service.notes && (
@@ -2661,6 +2689,7 @@ function ServiceDetailModal({
           {serviceRecord.finalizedAt && <p><span className="font-medium">Finalized:</span> {formatDateTimeValue(serviceRecord.finalizedAt)}{serviceRecord.finalizedByLabel ? ` by ${serviceRecord.finalizedByLabel}` : ""}</p>}
           {serviceRecord.reopenedAt && <p><span className="font-medium">Reopened:</span> {formatDateTimeValue(serviceRecord.reopenedAt)}{serviceRecord.reopenedByLabel ? ` by ${serviceRecord.reopenedByLabel}` : ""}</p>}
           {serviceRecord.reopenReason && <p><span className="font-medium">Reopen Reason:</span> {serviceRecord.reopenReason}</p>}
+          {serviceRecord.flaggedAt && <p><span className="font-medium">Flagged for Review:</span> {serviceRecord.flagReason || "Visit invoiced before this ticket was finalized"} ({formatDateTimeValue(serviceRecord.flaggedAt)}{serviceRecord.flaggedByLabel ? ` by ${serviceRecord.flaggedByLabel}` : ""})</p>}
           <p><span className="font-medium">Billing Readiness:</span> {serviceRecord.readyForBilling ? "Ready for billing" : "Not billing-ready"}</p>
           {serviceRecord.notes && <p><span className="font-medium">Notes:</span> {serviceRecord.notes}</p>}
           {serviceRecord.areasServiced && <p><span className="font-medium">Derived Areas:</span> {serviceRecord.areasServiced}</p>}
@@ -2741,6 +2770,8 @@ function ServicesTab({
   const [detailService, setDetailService] = useState<Service | null>(null);
   const [completionService, setCompletionService] = useState<Service | null>(null);
   const { toast } = useToast();
+  const { user } = useAuth();
+  const canDraftInvoice = can(user?.role ?? "", PERMISSIONS.GENERATE_INVOICE);
   const { data: services } = useQuery<Service[]>({ queryKey: ["/api/services/by-location", locationId], enabled: !!locationId });
   const { data: serviceTypes } = useQuery<ServiceType[]>({ queryKey: ["/api/service-types"] });
   const { data: technicians } = useQuery<Technician[]>({ queryKey: ["/api/technicians?includeInactive=true"] });
@@ -2893,6 +2924,22 @@ function ServicesTab({
     onError: (error: Error) => toast({ title: "Unable to reopen ticket", description: error.message, variant: "destructive" }),
   });
 
+  // D3: a DRAFT against a visit whose tickets are not finalized yet - office
+  // prep. Issued later from the Invoices screen (or adopted by Generate once
+  // every ticket on the visit is finalized).
+  const draftInvoiceMutation = useMutation({
+    mutationFn: async (appointmentId: string) => {
+      const response = await apiRequest("POST", `/api/invoices/draft-for-appointment/${appointmentId}`, {});
+      return response.json() as Promise<Invoice>;
+    },
+    onSuccess: (invoice) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/invoices/by-location", locationId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/invoices"] });
+      toast({ title: `Draft invoice ${invoice.invoiceNumber} created`, description: "Issue it from the Invoices screen. It is re-priced from the finalized tickets when issued." });
+    },
+    onError: (error: Error) => toast({ title: "Unable to draft invoice", description: error.message, variant: "destructive" }),
+  });
+
   return (
     <div className="space-y-3">
       <div className="flex justify-end">
@@ -2930,9 +2977,13 @@ function ServicesTab({
               ? "Finalized"
               : serviceRecord?.ticketStatus === "REOPENED"
                 ? "Reopened"
-                : serviceRecord
-                  ? "Posted"
-                  : service.status;
+                : serviceRecord?.ticketStatus === "FLAGGED_FOR_REVIEW"
+                  ? "Flagged for review"
+                  : serviceRecord
+                    ? "Posted"
+                    : service.status;
+            const canDraftForVisit =
+              canDraftInvoice && !invoice && !!appointment && appointment.status !== "CANCELED" && appointment.status !== "COMPLETED" && service.status !== "CANCELLED";
             return (
               <div
                 key={service.id}
@@ -2959,16 +3010,30 @@ function ServicesTab({
                 <span className="truncate">{technicianName}</span>
                 <span>
                   {invoice ? (
-                    <button
+                    <span className="flex flex-wrap items-center gap-1">
+                      <button
+                        type="button"
+                        className="text-primary underline"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onOpenInvoices();
+                        }}
+                      >
+                        {invoice.invoiceNumber}
+                      </button>
+                      {invoice.status === "DRAFT" ? <Badge variant="outline" className="h-5 px-1.5 text-[10px]">Draft</Badge> : null}
+                    </span>
+                  ) : canDraftForVisit ? (
+                    <Button
                       type="button"
-                      className="text-primary underline"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        onOpenInvoices();
-                      }}
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 px-2 text-xs"
+                      onClick={(event) => { event.stopPropagation(); draftInvoiceMutation.mutate(appointment!.id); }}
+                      disabled={draftInvoiceMutation.isPending}
                     >
-                      {invoice.invoiceNumber}
-                    </button>
+                      Draft invoice
+                    </Button>
                   ) : "—"}
                 </span>
                 <span className="flex justify-end gap-1">

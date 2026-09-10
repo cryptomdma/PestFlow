@@ -13,7 +13,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
-import { apiRequest, queryClient } from "@/lib/queryClient";
+import { apiRequest, getApiErrorMessage, queryClient } from "@/lib/queryClient";
+import { DraftInvoiceVoidPrompt, getDraftInvoiceDecisionRequired, type DraftInvoiceRef } from "@/components/draft-invoice-void-prompt";
 import { formatCents, dollarsToCents } from "@shared/money";
 import {
   CalendarDays,
@@ -634,6 +635,9 @@ export default function Schedule() {
     onError: (error: Error) => toast({ title: "Unable to add service to visit", description: error.message, variant: "destructive" }),
   });
 
+  // Q3: a status change to CANCELED on a visit with a DRAFT invoice comes back
+  // 409; the prompt asks, and the same payload is resubmitted with the answer.
+  const [draftPrompt, setDraftPrompt] = useState<{ id: string; payload: Record<string, unknown>; drafts: DraftInvoiceRef[] } | null>(null);
   const updateAppointmentMutation = useMutation({
     mutationFn: async ({ id, payload }: { id: string; payload: Record<string, unknown> }) => {
       const response = await apiRequest("PATCH", `/api/appointments/${id}`, payload);
@@ -643,13 +647,22 @@ export default function Schedule() {
       queryClient.invalidateQueries({ queryKey: ["/api/appointments"] });
       queryClient.invalidateQueries({ queryKey: ["/api/services"] });
       queryClient.invalidateQueries({ queryKey: ["/api/services/pending"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/invoices"] });
       queryClient.invalidateQueries({ queryKey: getLocationAppointmentsQueryKey(appointment.locationId) });
       queryClient.invalidateQueries({ queryKey: getLocationServicesQueryKey(appointment.locationId) });
+      setDraftPrompt(null);
       setSelectedAppointmentId(null);
       setEditingAppointmentId((current) => current === appointment.id ? null : current);
       toast({ title: "Appointment updated" });
     },
-    onError: (error: Error) => toast({ title: "Unable to update appointment", description: error.message, variant: "destructive" }),
+    onError: (error: Error, variables) => {
+      const drafts = getDraftInvoiceDecisionRequired(error);
+      if (drafts) {
+        setDraftPrompt({ id: variables.id, payload: variables.payload, drafts });
+        return;
+      }
+      toast({ title: "Unable to update appointment", description: getApiErrorMessage(error), variant: "destructive" });
+    },
   });
 
   const moveWindow = (direction: 1 | -1) => {
@@ -1124,6 +1137,16 @@ export default function Schedule() {
           });
         }}
         isSaving={updateAppointmentMutation.isPending}
+      />
+
+      <DraftInvoiceVoidPrompt
+        drafts={draftPrompt?.drafts ?? null}
+        isPending={updateAppointmentMutation.isPending}
+        onDecide={(voidDraftInvoices) => {
+          if (!draftPrompt) return;
+          updateAppointmentMutation.mutate({ id: draftPrompt.id, payload: { ...draftPrompt.payload, voidDraftInvoices } });
+        }}
+        onBack={() => setDraftPrompt(null)}
       />
 
       <ServiceDetailDialog

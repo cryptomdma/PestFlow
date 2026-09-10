@@ -54,7 +54,14 @@ function formatDuration(minutes: number | null | undefined) {
 function statusLabel(record: ServiceRecord) {
   if (record.confirmed || record.ticketStatus === "FINALIZED") return "Finalized";
   if (record.ticketStatus === "REOPENED") return "Reopened";
+  if (record.ticketStatus === "FLAGGED_FOR_REVIEW") return "Flagged for Review";
   return "Pending Review";
+}
+
+function statusBadgeVariant(record: ServiceRecord): "default" | "secondary" | "destructive" {
+  if (record.confirmed || record.ticketStatus === "FINALIZED") return "default";
+  if (record.ticketStatus === "FLAGGED_FOR_REVIEW") return "destructive";
+  return "secondary";
 }
 
 export default function ServiceTicketReview() {
@@ -111,6 +118,7 @@ export default function ServiceTicketReview() {
       if (statusFilter === "PENDING_REVIEW" && (record.confirmed || record.ticketStatus === "FINALIZED")) return false;
       if (statusFilter === "FINALIZED" && !(record.confirmed || record.ticketStatus === "FINALIZED")) return false;
       if (statusFilter === "REOPENED" && record.ticketStatus !== "REOPENED") return false;
+      if (statusFilter === "FLAGGED_FOR_REVIEW" && record.ticketStatus !== "FLAGGED_FOR_REVIEW") return false;
       if (technicianFilter !== "ALL" && record.technicianId !== technicianFilter) return false;
       if (serviceTypeFilter !== "ALL" && (record.serviceTypeId || service?.serviceTypeId) !== serviceTypeFilter) return false;
       const postedDate = (record.postedAt || record.serviceDate) ? new Date(record.postedAt || record.serviceDate).toISOString().slice(0, 10) : "";
@@ -236,6 +244,7 @@ export default function ServiceTicketReview() {
               <SelectTrigger><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="PENDING_REVIEW">Pending Review</SelectItem>
+                <SelectItem value="FLAGGED_FOR_REVIEW">Flagged for Review</SelectItem>
                 <SelectItem value="FINALIZED">Finalized</SelectItem>
                 <SelectItem value="REOPENED">Reopened</SelectItem>
                 <SelectItem value="ALL">All</SelectItem>
@@ -308,7 +317,7 @@ export default function ServiceTicketReview() {
                   <p className="text-sm">{record.postedAt ? new Date(record.postedAt).toLocaleString() : new Date(record.serviceDate).toLocaleString()}</p>
                   <p className="text-xs text-muted-foreground">Duration {formatDuration(appointment?.durationMinutes)}</p>
                 </div>
-                <Badge variant={record.confirmed ? "default" : "secondary"}>{statusLabel(record)}</Badge>
+                <Badge variant={statusBadgeVariant(record)}>{statusLabel(record)}</Badge>
                 {record.followUpRequired ? <Badge className="bg-red-600 text-white hover:bg-red-600">Follow-up</Badge> : null}
               </button>
             );
@@ -328,9 +337,19 @@ export default function ServiceTicketReview() {
                     <p className="text-sm text-muted-foreground">{serviceTypeById.get(selectedRecord.serviceTypeId || selectedService?.serviceTypeId || "")?.name || "Service"}</p>
                     <p className="text-xs text-muted-foreground">{selectedService?.agreementId ? "Agreement service" : "Non-agreement service"}</p>
                   </div>
-                  <Badge variant={selectedRecord.confirmed ? "default" : "secondary"}>{statusLabel(selectedRecord)}</Badge>
+                  <Badge variant={statusBadgeVariant(selectedRecord)}>{statusLabel(selectedRecord)}</Badge>
                 </div>
               </div>
+              {selectedRecord.flaggedAt ? (
+                <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-amber-950">
+                  <p className="text-sm font-bold uppercase tracking-wide">Flagged for review</p>
+                  <p className="mt-1 text-sm">{selectedRecord.flagReason || "This visit was invoiced before the ticket was finalized."}</p>
+                  <p className="mt-1 text-xs text-amber-900/80">
+                    Flagged {new Date(selectedRecord.flaggedAt).toLocaleString()}{selectedRecord.flaggedByLabel ? ` by ${selectedRecord.flaggedByLabel}` : " automatically when the ticket was posted"}.
+                    The customer already has the invoice; finalize this ticket against it. A price difference needs a correction on the invoice, not a change here.
+                  </p>
+                </div>
+              ) : null}
               <div className="grid gap-3 md:grid-cols-3">
                 <div className="rounded-md border p-3">
                   <p className="text-xs uppercase tracking-wide text-muted-foreground">Technician</p>

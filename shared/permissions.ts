@@ -8,6 +8,10 @@ export const PERMISSIONS = {
   ADJUST_PRICE_AGREEMENT: "adjust_price_agreement",
   ADD_FIELD_SURCHARGE: "add_field_surcharge",
   GENERATE_INVOICE: "generate_invoice",
+  // PLAN_BILLING_V1_1.md D3: issuing a DRAFT invoice while any ticket on its
+  // visit is still unfinalized. Manager+ only, and the tickets it bypasses are
+  // flagged for review (serviceRecords.ticketStatus FLAGGED_FOR_REVIEW).
+  ISSUE_INVOICE_PREFINALIZATION: "issue_invoice_prefinalization",
   SEND_INVOICE: "send_invoice",
   VOID_INVOICE: "void_invoice",
   ISSUE_CREDIT_MEMO: "issue_credit_memo",
@@ -51,6 +55,7 @@ const ROLE_PERMISSIONS: Record<UserRole, ReadonlySet<Permission>> = {
     PERMISSIONS.ADJUST_PRICE_AGREEMENT,
     PERMISSIONS.ADD_FIELD_SURCHARGE,
     PERMISSIONS.GENERATE_INVOICE,
+    PERMISSIONS.ISSUE_INVOICE_PREFINALIZATION,
     PERMISSIONS.SEND_INVOICE,
     PERMISSIONS.VOID_INVOICE,
     PERMISSIONS.ISSUE_CREDIT_MEMO,

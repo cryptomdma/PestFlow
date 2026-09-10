@@ -409,7 +409,20 @@ export const serviceRecords = pgTable("service_records", {
   followUpNotes: text("follow_up_notes"),
   customerSignature: boolean("customer_signature").default(false),
   confirmed: boolean("confirmed").default(false),
+  // OFFICE_REVIEW_PENDING | FLAGGED_FOR_REVIEW | FINALIZED | REOPENED.
+  // FLAGGED_FOR_REVIEW (PLAN_BILLING_V1_1.md D3) is "pending review, and the
+  // visit's invoice was already issued before this ticket was finalized" - a
+  // manager's ISSUE_INVOICE_PREFINALIZATION override, or a ticket posted onto
+  // an already-invoiced visit. It is still an unfinalized ticket; the office
+  // finalizes it the same way, knowing the invoice is out. The flagged* /
+  // flagReason columns record who and why, mirroring the reopen columns. A
+  // REOPENED ticket keeps REOPENED (the technician still owes an edit) and
+  // carries only the flag columns; it becomes FLAGGED_FOR_REVIEW when re-posted.
   ticketStatus: text("ticket_status").notNull().default("OFFICE_REVIEW_PENDING"),
+  flaggedAt: timestamp("flagged_at"),
+  flaggedByUserId: varchar("flagged_by_user_id"),
+  flaggedByLabel: text("flagged_by_label"),
+  flagReason: text("flag_reason"),
   postedAt: timestamp("posted_at"),
   finalizedAt: timestamp("finalized_at"),
   finalizedByUserId: varchar("finalized_by_user_id"),
@@ -627,8 +640,16 @@ export const invoices = pgTable("invoices", {
   taxCents: integer("tax_cents").default(0),
   totalAmountCents: integer("total_amount_cents").notNull(),
   // DRAFT | OPEN | PARTIALLY_PAID | PAID | VOID. "Sent" is deliberately not
-  // a status - see sentAt below.
+  // a status - see sentAt below. DRAFT (PLAN_BILLING_V1_1.md D3) is an
+  // office-prep invoice that may exist before the visit's tickets are
+  // finalized; it is not a receivable until issued, and issuing recomputes
+  // its lines, tax, terms and due date from the visit as it stands then.
   status: text("status").notNull().default("OPEN"),
+  // When the invoice became a receivable. Set at creation for every path that
+  // issues directly, and at the DRAFT -> issued transition otherwise, so a
+  // draft prepared on the 1st and issued on the 15th prints the 15th as its
+  // issue date and dates its terms from there. Null only while DRAFT.
+  issuedAt: timestamp("issued_at"),
   dueDate: timestamp("due_date"),
   sentAt: timestamp("sent_at"),
   paidDate: timestamp("paid_date"),
