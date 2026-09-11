@@ -91,6 +91,15 @@ the source of truth for what each pass actually does.
   - **Open / download / send an invoice document.** `GET /api/invoices/:id/document` renders the PDF
     and has no UI affordance anywhere — no button on the invoice list or detail. Owner calls this
     mandatory, not optional.
+  - **Manual invoices must carry a location.** The Invoices screen's "New Invoice" dialog takes only
+    a customer, and `createManualInvoice` stores `locationId` null, so the invoice appears on the
+    global Invoices list but on neither of the customer's location Invoices tabs and in no location
+    balance (`getLocationBalancesByCustomer` skips location-less rows) — an invisible receivable.
+    Found 2026-09-10 on INV-000072 (Alex Jones, who has two locations; voided as test data);
+    INV-000001 has the same hole. Fix: a required location selector on the form, defaulting to the
+    customer's primary location, and the server refusing a manual invoice without one. Rides
+    naturally with the document item above — both are Invoices-screen gaps — and it is canon rule 1
+    (location is the canonical customer record) applied to the one invoice path that ignores it.
   - **Billing Plan required on every Agreement** — backfill the 11 plan-less agreements, then
     `billingPlanId NOT NULL` + zod. **Unblocked by Pass 3.5**: the creation UI, template propagation,
     and plan-attachment-on-update all exist now, so what remains is the backfill and the constraint.
