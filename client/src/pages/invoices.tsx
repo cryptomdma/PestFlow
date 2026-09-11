@@ -21,13 +21,26 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
-import { apiRequest, queryClient } from "@/lib/queryClient";
+import { useAuth } from "@/hooks/use-auth";
+import { ApiError, apiRequest, getApiErrorCode, getApiErrorMessage, queryClient } from "@/lib/queryClient";
 import { dollarsToCents, formatCents } from "@shared/money";
+import { can, PERMISSIONS } from "@shared/permissions";
 import {
   Plus,
   Search,
   FileText,
+  FileCheck,
   DollarSign,
   CheckCircle,
   Clock,
@@ -39,6 +52,16 @@ import type { Customer, Invoice, ServiceRecord, ServiceType } from "@shared/sche
 
 function isOverdue(invoice: Invoice) {
   return invoice.status === "OPEN" && !!invoice.dueDate && new Date(invoice.dueDate).getTime() < Date.now();
+}
+
+// Mirrors the server's UnfinalizedTicketRef (server/storage.ts) - what a
+// pre-finalization issue attempt reports back so the office can see exactly
+// which tickets the override would flag.
+interface UnfinalizedTicketRef {
+  serviceId: string;
+  serviceRecordId: string | null;
+  ticketStatus: string | null;
+  description: string;
 }
 
 function InvoiceForm({ onClose }: { onClose: () => void }) {
@@ -123,11 +146,16 @@ function InvoiceForm({ onClose }: { onClose: () => void }) {
   );
 }
 
-function ReadyToBillSection() {
+function ReadyToBillSection({ invoices }: { invoices?: Invoice[] }) {
   const { toast } = useToast();
   const { data: readyRecords, isLoading } = useQuery<ServiceRecord[]>({ queryKey: ["/api/invoices/ready-for-billing"] });
   const { data: customers } = useQuery<Customer[]>({ queryKey: ["/api/customers"] });
   const { data: serviceTypes } = useQuery<ServiceType[]>({ queryKey: ["/api/service-types"] });
+
+  // A finalized visit that already has a DRAFT stays listed (D3); Generate
+  // adopts and issues the draft rather than creating a second invoice, so the
+  // button says which it will do.
+  const draftByAppointmentId = new Map((invoices ?? []).filter((invoice) => invoice.status === "DRAFT" && invoice.appointmentId).map((invoice) => [invoice.appointmentId!, invoice]));
 
   const generateMutation = useMutation({
     mutationFn: (serviceRecordId: string) => apiRequest("POST", `/api/invoices/generate-from-service-record/${serviceRecordId}`),
@@ -136,7 +164,7 @@ function ReadyToBillSection() {
       queryClient.invalidateQueries({ queryKey: ["/api/invoices/ready-for-billing"] });
       toast({ title: "Invoice generated" });
     },
-    onError: (err: Error) => toast({ title: "Unable to generate invoice", description: err.message, variant: "destructive" }),
+    onError: (err: Error) => toast({ title: "Unable to generate invoice", description: getApiErrorMessage(err), variant: "destructive" }),
   });
 
   if (isLoading || !readyRecords?.length) {
@@ -147,12 +175,13 @@ function ReadyToBillSection() {
     <Card>
       <CardHeader>
         <CardTitle className="text-base font-semibold flex items-center gap-2"><ReceiptText className="h-4 w-4" /> Ready to Bill</CardTitle>
-        <p className="text-xs text-muted-foreground">Finalized service tickets awaiting an invoice. Tickets on the same appointment bill together as one visit invoice. Work on an agreement billed by its plan appears at $0; agreement work billed per visit is charged here.</p>
+        <p className="text-xs text-muted-foreground">Finalized service tickets awaiting an invoice. Tickets on the same appointment bill together as one visit invoice. Work on an agreement billed by its plan appears at $0; agreement work billed per visit is charged here. A visit that already has a draft invoice issues that draft.</p>
       </CardHeader>
       <CardContent className="space-y-2">
         {readyRecords.map((record) => {
           const customer = customers?.find((c) => c.id === record.customerId);
           const serviceType = serviceTypes?.find((st) => st.id === record.serviceTypeId);
+          const draft = record.appointmentId ? draftByAppointmentId.get(record.appointmentId) : undefined;
           return (
             <div key={record.id} className="flex items-center justify-between gap-3 rounded-md bg-muted/50 p-3" data-testid={`card-ready-to-bill-${record.id}`}>
               <div className="min-w-0">
@@ -160,7 +189,7 @@ function ReadyToBillSection() {
                   <span className="text-sm font-medium">{customer ? `${customer.firstName} ${customer.lastName}` : "Unknown customer"}</span>
                   {serviceType && <Badge variant="outline" className="text-xs">{serviceType.name}</Badge>}
                 </div>
-                <p className="text-xs text-muted-foreground mt-0.5">{new Date(record.serviceDate).toLocaleDateString()}{record.technicianName ? ` • ${record.technicianName}` : ""}</p>
+                <p className="text-xs text-muted-foreground mt-0.5">{new Date(record.serviceDate).toLocaleDateString()}{record.technicianName ? ` • ${record.technicianName}` : ""}{draft ? ` • Draft ${draft.invoiceNumber}` : ""}</p>
               </div>
               <Button
                 size="sm"
@@ -168,7 +197,7 @@ function ReadyToBillSection() {
                 disabled={generateMutation.isPending}
                 data-testid={`button-generate-invoice-${record.id}`}
               >
-                Generate Invoice
+                {draft ? "Issue Draft Invoice" : "Generate Invoice"}
               </Button>
             </div>
           );
@@ -183,6 +212,8 @@ export default function Invoices() {
   const [filterStatus, setFilterStatus] = useState("all");
   const [dialogOpen, setDialogOpen] = useState(false);
   const { toast } = useToast();
+  const { user } = useAuth();
+  const canIssue = can(user?.role ?? "", PERMISSIONS.GENERATE_INVOICE);
 
   const { data: invoices, isLoading } = useQuery<Invoice[]>({ queryKey: ["/api/invoices"] });
   const { data: customers } = useQuery<Customer[]>({ queryKey: ["/api/customers"] });
@@ -193,6 +224,7 @@ export default function Invoices() {
       queryClient.invalidateQueries({ queryKey: ["/api/invoices"] });
       toast({ title: "Invoice marked as paid" });
     },
+    onError: (err: Error) => toast({ title: "Unable to mark invoice paid", description: getApiErrorMessage(err), variant: "destructive" }),
   });
 
   const voidMutation = useMutation({
@@ -202,7 +234,36 @@ export default function Invoices() {
       queryClient.invalidateQueries({ queryKey: ["/api/invoices/ready-for-billing"] });
       toast({ title: "Invoice voided" });
     },
-    onError: (err: Error) => toast({ title: "Unable to void invoice", description: err.message, variant: "destructive" }),
+    onError: (err: Error) => toast({ title: "Unable to void invoice", description: getApiErrorMessage(err), variant: "destructive" }),
+  });
+
+  // D3: DRAFT -> issued. First attempt sends no confirmation; if any ticket
+  // on the visit is unfinalized the server answers 409 (manager+) with the
+  // tickets listed and the dialog below asks before retrying with
+  // confirmPrefinalization, or 403 (support) which just toasts - the office
+  // needs a manager for that one.
+  const [issuePrompt, setIssuePrompt] = useState<{ id: string; invoiceNumber: string; tickets: UnfinalizedTicketRef[] } | null>(null);
+  const issueMutation = useMutation({
+    mutationFn: async ({ id, confirmPrefinalization }: { id: string; confirmPrefinalization?: boolean }) => {
+      const response = await apiRequest("POST", `/api/invoices/${id}/issue`, { confirmPrefinalization });
+      return response.json() as Promise<Invoice>;
+    },
+    onSuccess: (invoice) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/invoices"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/invoices/ready-for-billing"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/service-records"] });
+      setIssuePrompt(null);
+      toast({ title: `Invoice ${invoice.invoiceNumber} issued` });
+    },
+    onError: (err: Error, variables) => {
+      if (err instanceof ApiError && getApiErrorCode(err) === "PREFINALIZATION_ISSUE_REQUIRED") {
+        const body = err.body as { unfinalizedTickets?: UnfinalizedTicketRef[] };
+        const invoice = invoices?.find((candidate) => candidate.id === variables.id);
+        setIssuePrompt({ id: variables.id, invoiceNumber: invoice?.invoiceNumber ?? "", tickets: body.unfinalizedTickets ?? [] });
+        return;
+      }
+      toast({ title: "Unable to issue invoice", description: getApiErrorMessage(err), variant: "destructive" });
+    },
   });
 
   const filtered = (invoices ?? []).filter((i) => {
@@ -233,6 +294,7 @@ export default function Invoices() {
 
   const statusClass = (invoice: Invoice) => {
     if (invoice.status === "VOID") return "bg-muted text-muted-foreground";
+    if (invoice.status === "DRAFT") return "border border-dashed bg-background text-foreground";
     if (isOverdue(invoice)) return "bg-destructive/10 text-destructive";
     switch (invoice.status) {
       case "PAID": return "bg-primary/10 text-primary";
@@ -281,7 +343,7 @@ export default function Invoices() {
         </Card>
       </div>
 
-      <ReadyToBillSection />
+      <ReadyToBillSection invoices={invoices} />
 
       <div className="flex items-center gap-3 flex-wrap">
         <div className="relative flex-1 min-w-[200px] max-w-sm">
@@ -292,6 +354,7 @@ export default function Invoices() {
           <SelectTrigger className="w-[160px]" data-testid="select-filter-status"><SelectValue placeholder="All" /></SelectTrigger>
           <SelectContent>
             <SelectItem value="all">All Status</SelectItem>
+            <SelectItem value="DRAFT">Draft</SelectItem>
             <SelectItem value="OPEN">Open</SelectItem>
             <SelectItem value="OVERDUE">Overdue</SelectItem>
             <SelectItem value="PARTIALLY_PAID">Partially Paid</SelectItem>
@@ -331,12 +394,23 @@ export default function Invoices() {
                       </div>
                       <div className="text-xs text-muted-foreground mt-0.5 flex items-center gap-3 flex-wrap">
                         <span>{cust ? `${cust.firstName} ${cust.lastName}` : "Unknown"}</span>
-                        <span>{new Date(inv.createdAt).toLocaleDateString()}</span>
+                        <span>{new Date(inv.issuedAt ?? inv.createdAt).toLocaleDateString()}</span>
+                        {inv.status === "DRAFT" ? <span>Draft - not issued; amounts are re-priced at issue</span> : null}
                         {inv.dueDate && <span>Due: {new Date(inv.dueDate).toLocaleDateString()}</span>}
                       </div>
                     </div>
                     <div className="flex items-center gap-3 shrink-0">
                       <span className="text-lg font-bold">{formatCents(inv.totalAmountCents)}</span>
+                      {inv.status === "DRAFT" && canIssue && (
+                        <Button
+                          size="sm"
+                          onClick={() => issueMutation.mutate({ id: inv.id })}
+                          disabled={issueMutation.isPending}
+                          data-testid={`button-issue-${inv.id}`}
+                        >
+                          <FileCheck className="h-3 w-3 mr-1" /> Issue
+                        </Button>
+                      )}
                       {(inv.status === "OPEN" || inv.status === "PARTIALLY_PAID") && (
                         <Button
                           variant="outline"
@@ -366,6 +440,38 @@ export default function Invoices() {
             })}
         </div>
       )}
+
+      <AlertDialog open={!!issuePrompt} onOpenChange={(open) => !open && setIssuePrompt(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Issue {issuePrompt?.invoiceNumber} before the visit is finalized?</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-2">
+                <p>
+                  {issuePrompt?.tickets.length === 1
+                    ? "One service on this visit is not finalized."
+                    : `${issuePrompt?.tickets.length ?? 0} services on this visit are not finalized.`}{" "}
+                  Issuing now bills the customer from the tickets as they stand and flags those tickets for review, so the office finalizes them knowing the invoice is already out.
+                </p>
+                <ul className="list-disc pl-5 text-sm">
+                  {(issuePrompt?.tickets ?? []).map((ticket) => (
+                    <li key={ticket.serviceId}>{ticket.description}</li>
+                  ))}
+                </ul>
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Back</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => issuePrompt && issueMutation.mutate({ id: issuePrompt.id, confirmPrefinalization: true })}
+              disabled={issueMutation.isPending}
+            >
+              Issue and flag tickets
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

@@ -22,6 +22,7 @@ import { normalizePhone } from "@shared/phone";
 import { ZodError, z } from "zod";
 import type { Request } from "express";
 import { requirePermission } from "./auth";
+import { DraftInvoiceDecisionRequiredError, PrefinalizationIssueError } from "./storage";
 import { can, PERMISSIONS, type UserRole } from "@shared/permissions";
 import { runBillingCycle } from "./jobs/billing-run";
 
@@ -204,7 +205,11 @@ export async function registerRoutes(
     // creators omit it. Present-but-invalid still fails validation.
     status: appointmentStatusSchema.optional(),
   });
-  const updateAppointmentSchema = appointmentSchema.partial();
+  // voidDraftInvoices is the Q3 answer, not an appointment column: stripped
+  // off before the row update and passed as an option (see the PATCH route).
+  const updateAppointmentSchema = appointmentSchema.partial().extend({
+    voidDraftInvoices: z.boolean().optional(),
+  });
   const serviceRecordSchema = insertServiceRecordSchema.omit({ serviceDate: true }).extend({
     serviceDate: z.coerce.date(),
   }).superRefine((value, ctx) => {
@@ -254,6 +259,7 @@ export async function registerRoutes(
     reason: z.string().trim().min(1, "Reason is required"),
     notes: z.string().nullable().optional(),
     rescheduleRequested: z.boolean().optional(),
+    voidDraftInvoices: z.boolean().optional(),
   });
   const reopenServiceRecordSchema = z.object({
     reason: z.string().trim().min(1, "Reopen reason is required"),
@@ -323,7 +329,13 @@ export async function registerRoutes(
     overrideApplied: z.boolean().optional(),
     overrideReason: z.string().nullable().optional(),
     cancellationFeeAmountCents: z.number().int().nullable().optional(),
+    voidDraftInvoices: z.boolean().optional(),
   });
+  // Q3: an appointment-cancel path found DRAFT invoices and the caller has not
+  // said what to do with them. 409 with the drafts listed; the client prompts
+  // and resubmits with voidDraftInvoices true or false.
+  const respondDraftInvoiceDecisionRequired = (res: any, err: DraftInvoiceDecisionRequiredError) =>
+    res.status(409).json({ message: err.message, code: err.code, draftInvoices: err.draftInvoices });
   const agreementTemplateSchema = insertAgreementTemplateSchema.extend({
     defaultTermUnit: recurrenceUnitSchema,
     defaultRecurrenceUnit: recurrenceUnitSchema,
@@ -1397,6 +1409,7 @@ export async function registerRoutes(
       res.json(data);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
+      if (e instanceof DraftInvoiceDecisionRequiredError) return respondDraftInvoiceDecisionRequired(res, e);
       res.status(400).json({ message: e.message });
     }
   });
@@ -1441,17 +1454,18 @@ export async function registerRoutes(
 
   app.patch("/api/appointments/:id", async (req, res) => {
     try {
-      const validated = updateAppointmentSchema.parse(req.body);
+      const { voidDraftInvoices, ...validated } = updateAppointmentSchema.parse(req.body);
       const data = await req.storage.updateAppointment(req.params.id, {
         ...validated,
         scheduledDate: validated.scheduledDate,
         scheduledEndDate: validated.scheduledEndDate,
         generatedForDate: validated.generatedForDate === undefined ? undefined : toDateOnlyStringOrNull(validated.generatedForDate),
-      });
+      }, { voidDraftInvoices, actor: getAuditActor(req) });
       if (!data) return res.status(404).json({ message: "Appointment not found" });
       res.json(data);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
+      if (e instanceof DraftInvoiceDecisionRequiredError) return respondDraftInvoiceDecisionRequired(res, e);
       res.status(400).json({ message: e.message });
     }
   });
@@ -1484,12 +1498,14 @@ export async function registerRoutes(
         reason: validated.reason,
         notes: validated.notes,
         rescheduleRequested: validated.rescheduleRequested,
+        voidDraftInvoices: validated.voidDraftInvoices,
         actor: getAuditActor(req),
       });
       if (!data) return res.status(404).json({ message: "Appointment not found" });
       res.json(data);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
+      if (e instanceof DraftInvoiceDecisionRequiredError) return respondDraftInvoiceDecisionRequired(res, e);
       res.status(400).json({ message: e.message });
     }
   });
@@ -1750,6 +1766,52 @@ export async function registerRoutes(
     }
   });
 
+  // D3: a DRAFT against an appointment whose tickets may not be finalized yet.
+  // Same permission as generation - it is office prep, not an override.
+  app.post("/api/invoices/draft-for-appointment/:appointmentId", requirePermission(PERMISSIONS.GENERATE_INVOICE), async (req, res) => {
+    try {
+      const data = await req.storage.createDraftInvoiceForAppointment(req.params.appointmentId, getAuditActor(req));
+      res.status(201).json(data);
+    } catch (e: any) {
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  // D3: DRAFT -> issued. The override needs BOTH the role
+  // (ISSUE_INVOICE_PREFINALIZATION, manager+) and an explicit confirmation in
+  // the body, so the flow is: issue -> 409 listing the unfinalized tickets ->
+  // the client asks -> issue again with confirmPrefinalization. A role that
+  // cannot override gets 403 with the same list, so the office knows who to
+  // ask. Either way the storage layer is what refuses; the route only decides
+  // which mode to request.
+  const issueInvoiceSchema = z.object({
+    confirmPrefinalization: z.boolean().optional(),
+  });
+
+  app.post("/api/invoices/:id/issue", requirePermission(PERMISSIONS.GENERATE_INVOICE), async (req, res) => {
+    try {
+      const validated = issueInvoiceSchema.parse(req.body ?? {});
+      const mayOverride = can(req.user!.role, PERMISSIONS.ISSUE_INVOICE_PREFINALIZATION);
+      const data = await req.storage.issueInvoice(req.params.id, {
+        actor: getAuditActor(req),
+        prefinalization: mayOverride && validated.confirmPrefinalization ? "OVERRIDE" : "REFUSE",
+      });
+      if (!data) return res.status(404).json({ message: "Invoice not found" });
+      res.json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      if (e instanceof PrefinalizationIssueError) {
+        const mayOverride = can(req.user!.role, PERMISSIONS.ISSUE_INVOICE_PREFINALIZATION);
+        return res.status(mayOverride ? 409 : 403).json({
+          message: mayOverride ? e.message : `${e.message}. You don't have permission to issue before finalization.`,
+          code: mayOverride ? e.code : "PREFINALIZATION_ISSUE_FORBIDDEN",
+          unfinalizedTickets: e.unfinalizedTickets,
+        });
+      }
+      res.status(400).json({ message: e.message });
+    }
+  });
+
   // Batch Invoicing - PLAN_BILLING_V1.md §1.6.1: from the Ticket Review
   // queue, filter finalized/billing-ready records over a date range ->
   // preview -> generate -> optionally bulk-send.
@@ -1826,9 +1888,13 @@ export async function registerRoutes(
   });
 
   app.post("/api/invoices/:id/void", requirePermission(PERMISSIONS.VOID_INVOICE), async (req, res) => {
-    const data = await req.storage.voidInvoice(req.params.id);
-    if (!data) return res.status(404).json({ message: "Invoice not found" });
-    res.json(data);
+    try {
+      const data = await req.storage.voidInvoice(req.params.id, getAuditActor(req));
+      if (!data) return res.status(404).json({ message: "Invoice not found" });
+      res.json(data);
+    } catch (e: any) {
+      res.status(400).json({ message: e.message });
+    }
   });
 
   // Document rendering (PLAN_BILLING_V1.md §1.7) - generates the PDF on

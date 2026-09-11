@@ -825,6 +825,14 @@ An Appointment can be marked completed only when all Services linked to that App
 
 Technician posting and office finalization are distinct lifecycle steps. Technician posting creates the compliance record and sends it to office review. Office finalization is the authoritative completion event: it marks the Service completed, locks the ticket, makes the Service Record billing-ready, advances agreement recurrence when applicable, and allows downstream reporting/billing workflows. Reopen behavior should be role-gated when roles are available and must capture a reopen reason.
 
+Ticket status vocabulary is `OFFICE_REVIEW_PENDING | FLAGGED_FOR_REVIEW | FINALIZED | REOPENED`.
+`FLAGGED_FOR_REVIEW` (PLAN_BILLING_V1.1 D3) is a pending ticket on a visit whose invoice was issued
+before this ticket was finalized — either by a manager's pre-finalization override, or because the
+ticket was posted onto a visit that was already invoiced. It is reviewed and finalized exactly like
+any other pending ticket; the flag exists so the reviewer knows the customer already holds a bill, and
+that a price difference is a correction on the invoice, not an edit to the ticket. Who flagged it and
+why are recorded on the ticket and in the audit log.
+
 Agreement-generated Services advance agreement recurrence when the generated Service is office-finalized. Non-agreement finalized Services may generate future Opportunities according to Service Type follow-up rules.
 
 ### Materials support
@@ -945,6 +953,22 @@ run skips is billed by nobody if the visit invoice also zeroes it, and that fail
 Agreement is treated as COD and billed per visit — the visible failure, deliberately chosen over the
 silent one. An Agreement with neither a plan nor a price refuses to invoice rather than guessing.
 
+### Canonical rule — DRAFT before finalization (PLAN_BILLING_V1.1 D3, Q3)
+
+* An invoice may be **created** as `DRAFT` against an Appointment whose Services are not yet
+  finalized — office prep, or a preview for the customer. A DRAFT holds the visit's anchor (nothing
+  else invoices that visit) but is not a receivable: no issue date, no due date, cannot be sent, paid,
+  or counted as balance.
+* A DRAFT is **issued** only once every active Service on the Appointment has a finalized ticket, or
+  by a role-gated override (`ISSUE_INVOICE_PREFINALIZATION`, Manager+) that flags the unfinalized
+  tickets for review. Issuing re-prices every line from the visit as it stands then and stamps
+  `issuedAt`; the issue date on the document is `issuedAt`, never the drafting date.
+* Generation on a fully finalized visit that already carries a DRAFT **adopts** it — same invoice,
+  now issued — never a second invoice (D2).
+* Cancelling an Appointment that carries a DRAFT **prompts**: void the draft, or keep it. Never
+  auto-void, never silently orphan. Cancelling a visit whose invoice is already issued is a
+  credit-memo question, not a void.
+
 ### Required fields
 
 * id
@@ -959,6 +983,7 @@ silent one. An Agreement with neither a plan nor a price refuses to invoice rath
 * taxAmount nullable
 * totalAmount
 * balanceDue
+* issuedAt nullable — when it became a receivable; null only while DRAFT
 * dueDate nullable
 * sentAt nullable
 * paidAt nullable

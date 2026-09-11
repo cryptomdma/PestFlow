@@ -22,7 +22,7 @@ audit-logged as `invoice_issued` and surfaces on the location History tab. The h
 the behavior passes 4-5 need to know are written out in `PLAN_BILLING_V1_1_EXECUTION.md` under
 "Shipped in Pass 3" — read that rather than re-deriving it.
 
-Pass 3.5 (`feature/phase-1-agreement-billing-plan-selector`) is pushed and awaiting merge — an
+Pass 3.5 (`feature/phase-1-agreement-billing-plan-selector`) merged as PR #59 — an
 unplanned pass inserted ahead of Pass 4, from Pass 3's live-testing finding that `billingPlanId` had no
 writer anywhere in the client. Both the agreement form and the agreement-template form now carry a real
 Billing Plan selector in place of the free-typed billing-frequency input, and attaching a plan to an
@@ -34,7 +34,19 @@ Pass 3.5". It also fixes `advanceAgreementDate()`, which had no `DAY`/`WEEK` cas
 daily or weekly plan monthly, at roughly 30x the correct per-period amount — unreachable until
 agreements could carry a plan.
 
-Next up once it merges: **Pass 4 — `feature/phase-1-draft-invoice-lifecycle`** (D3, Q3). Newly
+Pass 4 (`feature/phase-1-draft-invoice-lifecycle`, D3 + Q3) is pushed and awaiting merge. Invoices
+now have a real `DRAFT` lifecycle: the office can draft an invoice against an appointment before its
+tickets are finalized, and it holds the visit's anchor so nothing else invoices that visit. Issuing
+re-prices it from the finalized tickets and stamps `issuedAt`; issuing *before* finalization needs
+both the new `ISSUE_INVOICE_PREFINALIZATION` permission (manager+) and an explicit confirmation, and
+flags the unfinalized tickets `FLAGGED_FOR_REVIEW` — a ticket posted later onto an already-invoiced
+visit is flagged the same way. Generation adopts a draft it finds on a finalized visit rather than
+creating a second invoice, which is most of D2's "adopt" already. Cancelling an appointment that
+carries a draft now prompts (void it or keep it) on all three cancel paths — the plan named two; the
+schedule screen's status PATCH was a third. Signatures and behavior are under "Shipped in Pass 4" in
+`PLAN_BILLING_V1_1_EXECUTION.md`.
+
+Next up once it merges: **Pass 5 — `feature/phase-1-finalize-invoice-wiring`** (D2). Newly
 sequenced behind it: **Pass 5.5 — `feature/phase-1-initial-charge-to-agreement`**, an owner correction
 to D4 moving the down-payment type/amount off the shared Billing Plan and onto the Agreement and
 Agreement Template, where a per-sale amount derived from contract price belongs. It must land before
@@ -79,6 +91,15 @@ the source of truth for what each pass actually does.
   - **Open / download / send an invoice document.** `GET /api/invoices/:id/document` renders the PDF
     and has no UI affordance anywhere — no button on the invoice list or detail. Owner calls this
     mandatory, not optional.
+  - **Manual invoices must carry a location.** The Invoices screen's "New Invoice" dialog takes only
+    a customer, and `createManualInvoice` stores `locationId` null, so the invoice appears on the
+    global Invoices list but on neither of the customer's location Invoices tabs and in no location
+    balance (`getLocationBalancesByCustomer` skips location-less rows) — an invisible receivable.
+    Found 2026-09-10 on INV-000072 (Alex Jones, who has two locations; voided as test data);
+    INV-000001 has the same hole. Fix: a required location selector on the form, defaulting to the
+    customer's primary location, and the server refusing a manual invoice without one. Rides
+    naturally with the document item above — both are Invoices-screen gaps — and it is canon rule 1
+    (location is the canonical customer record) applied to the one invoice path that ignores it.
   - **Billing Plan required on every Agreement** — backfill the 11 plan-less agreements, then
     `billingPlanId NOT NULL` + zod. **Unblocked by Pass 3.5**: the creation UI, template propagation,
     and plan-attachment-on-update all exist now, so what remains is the backfill and the constraint.

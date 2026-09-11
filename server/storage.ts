@@ -58,7 +58,7 @@ import {
   type AuditLog,
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, and, or, inArray, sql, gte, lte, asc, desc, ne, isNull } from "drizzle-orm";
+import { eq, and, or, inArray, notInArray, sql, gte, lte, asc, desc, ne, isNull } from "drizzle-orm";
 import type { AuditAction, AuditEntityType } from "@shared/audit";
 import { PLACEHOLDER_LOCATION_NAME, PLACEHOLDER_LOCATION_NOTE } from "./account-bootstrap";
 import { createHash } from "crypto";
@@ -67,7 +67,9 @@ import { renderInvoicePdf } from "./documents/invoice-pdf";
 import { can, PERMISSIONS, type UserRole } from "@shared/permissions";
 import { computeProductionValueCents } from "@shared/production-value";
 import { isScheduleBilledPlan } from "@shared/billing-plan";
-import { deriveInvoiceStatus, isFullyAgreementCovered } from "@shared/invoice-status";
+import { deriveInvoiceStatus, isFullyAgreementCovered, isInvoiceIssued } from "@shared/invoice-status";
+
+type DbTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 export interface CustomerDetailCompatProjection {
   legacyCustomer: Customer;
@@ -174,6 +176,11 @@ export interface CancelAgreementInput {
   overrideApplied?: boolean;
   overrideReason?: string | null;
   cancellationFeeAmountCents?: number | null;
+  // Q3 (PLAN_BILLING_V1_1_EXECUTION.md §5): what to do with DRAFT invoices on
+  // the appointments this cancellation cancels. Undefined means the caller has
+  // not decided yet - the cancel refuses with DraftInvoiceDecisionRequiredError
+  // so the UI can ask, rather than auto-voiding or silently orphaning them.
+  voidDraftInvoices?: boolean;
   actor?: AuditActor;
 }
 
@@ -227,7 +234,100 @@ export interface AppointmentCancelRescheduleInput {
   reason: string;
   notes?: string | null;
   rescheduleRequested?: boolean;
+  // See CancelAgreementInput.voidDraftInvoices - same Q3 prompt, same
+  // three-way meaning (undefined = ask, true = void, false = keep).
+  voidDraftInvoices?: boolean;
   actor?: AuditActor;
+}
+
+export interface UpdateAppointmentOptions {
+  // The schedule screen cancels an appointment by PATCHing status: CANCELED
+  // through the generic update, so the Q3 prompt has to reach here too.
+  voidDraftInvoices?: boolean;
+  actor?: AuditActor | null;
+}
+
+export interface DraftInvoiceRef {
+  id: string;
+  invoiceNumber: string;
+  appointmentId: string | null;
+  totalAmountCents: number;
+}
+
+// Q3: an appointment being cancelled carries a DRAFT invoice and the caller
+// has not said whether to void it. Routes map this to 409 with the drafts
+// listed, so the client can show "Void the draft invoice on this appointment?"
+// and resubmit with voidDraftInvoices set either way.
+export class DraftInvoiceDecisionRequiredError extends Error {
+  readonly code = "DRAFT_INVOICE_DECISION_REQUIRED" as const;
+
+  constructor(readonly draftInvoices: DraftInvoiceRef[]) {
+    super(
+      draftInvoices.length === 1
+        ? `Appointment has draft invoice ${draftInvoices[0].invoiceNumber}; decide whether to void it before cancelling`
+        : `Appointments have ${draftInvoices.length} draft invoices; decide whether to void them before cancelling`,
+    );
+    this.name = "DraftInvoiceDecisionRequiredError";
+  }
+}
+
+export interface UnfinalizedTicketRef {
+  serviceId: string;
+  serviceRecordId: string | null;
+  ticketStatus: string | null;
+  description: string;
+}
+
+// D3: a DRAFT cannot be issued while any ticket on its visit is unfinalized,
+// unless the caller holds ISSUE_INVOICE_PREFINALIZATION and explicitly asks
+// for the override. Routes map this to 403 (no permission) or 409 (permission,
+// no confirmation yet) with the tickets listed.
+export class PrefinalizationIssueError extends Error {
+  readonly code = "PREFINALIZATION_ISSUE_REQUIRED" as const;
+
+  constructor(readonly unfinalizedTickets: UnfinalizedTicketRef[]) {
+    super(
+      `${unfinalizedTickets.length} of the services on this visit ${unfinalizedTickets.length === 1 ? "is" : "are"} not finalized; issuing before finalization requires a manager override and flags those tickets for review`,
+    );
+    this.name = "PrefinalizationIssueError";
+  }
+}
+
+export interface IssueInvoiceInput {
+  actor?: AuditActor | null;
+  // REFUSE: throw PrefinalizationIssueError if anything on the visit is
+  // unfinalized. OVERRIDE: issue anyway and flag those tickets. The route
+  // decides which from the caller's role AND an explicit confirmation - a
+  // manager never overrides by accident.
+  prefinalization: "REFUSE" | "OVERRIDE";
+}
+
+// One line's worth of a visit invoice: a Service paired with its Service
+// Record when one exists. Generation only ever passes finalized records with
+// their services; the DRAFT path passes every active service on the
+// appointment with whatever record it has, possibly none.
+interface VisitBillingUnit {
+  service: Service | undefined;
+  record: ServiceRecord | undefined;
+  serviceDate: Date;
+}
+
+interface VisitInvoiceLine {
+  serviceId: string | null;
+  serviceRecordId: string | null;
+  lineType: "SERVICE" | "AGREEMENT_COVERED";
+  description: string;
+  unitPriceCents: number;
+  amountCents: number;
+  taxable: boolean;
+  taxCents: number;
+}
+
+interface PricedVisitInvoice {
+  lines: VisitInvoiceLine[];
+  amountCents: number;
+  taxCents: number;
+  taxSnapshot: Record<string, unknown>;
 }
 
 export interface TechnicianWorkService {
@@ -404,7 +504,7 @@ export interface IStorage {
   getAppointmentsByLocation(locationId: string): Promise<Appointment[]>;
   getAppointment(id: string): Promise<Appointment | undefined>;
   createAppointment(data: InsertAppointment): Promise<Appointment>;
-  updateAppointment(id: string, data: Partial<InsertAppointment>): Promise<Appointment | undefined>;
+  updateAppointment(id: string, data: Partial<InsertAppointment>, options?: UpdateAppointmentOptions): Promise<Appointment | undefined>;
   requestAppointmentCancelOrReschedule(input: AppointmentCancelRescheduleInput): Promise<Appointment | undefined>;
   timeInAppointment(id: string): Promise<Appointment | undefined>;
   timeOutAppointment(id: string): Promise<Appointment | undefined>;
@@ -449,11 +549,13 @@ export interface IStorage {
   getBatchInvoicePreviewForDateRange(dateFrom: string, dateTo: string): Promise<BatchInvoicePreviewRow[]>;
   createManualInvoice(input: CreateManualInvoiceInput): Promise<Invoice>;
   generateInvoiceFromServiceRecord(serviceRecordId: string, actor?: AuditActor | null): Promise<Invoice>;
+  createDraftInvoiceForAppointment(appointmentId: string, actor?: AuditActor | null): Promise<Invoice>;
+  issueInvoice(id: string, input: IssueInvoiceInput): Promise<Invoice | undefined>;
   generateScheduleDrivenInvoice(input: GenerateScheduleDrivenInvoiceInput): Promise<Invoice>;
   batchGenerateInvoicesForDateRange(dateFrom: string, dateTo: string, actor?: AuditActor | null): Promise<BatchGenerateResult>;
   batchSendInvoices(invoiceIds: string[]): Promise<Invoice[]>;
   updateInvoice(id: string, data: Partial<InsertInvoice>): Promise<Invoice | undefined>;
-  voidInvoice(id: string): Promise<Invoice | undefined>;
+  voidInvoice(id: string, actor?: AuditActor | null): Promise<Invoice | undefined>;
 
   getInvoiceDocumentContext(invoiceId: string): Promise<InvoiceDocumentContext | undefined>;
   getOrCreateInvoiceDocument(invoiceId: string): Promise<Document | undefined>;
@@ -717,11 +819,17 @@ export class DatabaseStorage implements IStorage {
       .select({ id: invoices.id })
       .from(invoices)
       .where(and(eq(invoices.orgId, this.orgId), eq(invoices.locationId, locationId)));
+    // Service tickets, for the D3 review flag (prefinalization_issue_override).
+    const locationTickets = await db
+      .select({ id: serviceRecords.id })
+      .from(serviceRecords)
+      .where(and(eq(serviceRecords.orgId, this.orgId), eq(serviceRecords.locationId, locationId)));
 
     const allRefs: Array<{ entityType: AuditEntityType; entityIds: string[] }> = [
       { entityType: "location", entityIds: [locationId] },
       { entityType: "customer", entityIds: [location.customerId] },
       { entityType: "invoice", entityIds: locationInvoices.map((invoice) => invoice.id) },
+      { entityType: "service_record", entityIds: locationTickets.map((ticket) => ticket.id) },
     ];
     const refs = allRefs.filter((ref) => ref.entityIds.length > 0);
 
@@ -3034,6 +3142,22 @@ export class DatabaseStorage implements IStorage {
 
       if (cancelScheduledAppointments) {
         const scheduledAppointments = await tx.select().from(appointments).where(and(eq(appointments.orgId, this.orgId), eq(appointments.agreementId, agreement.id)));
+
+        // Q3: every appointment the two loops below will cancel, checked for
+        // DRAFT invoices BEFORE any of them is touched. Throwing here rolls the
+        // whole cancellation back, so the office sees the prompt and nothing
+        // has half-happened.
+        const cancellingAppointmentIds = new Set<string>();
+        for (const appointment of scheduledAppointments) {
+          if (appointment.status === "COMPLETED" || appointment.status === "CANCELED") continue;
+          cancellingAppointmentIds.add(appointment.id);
+        }
+        for (const service of agreementServices) {
+          if (!service.appointmentId || service.status === "COMPLETED" || service.status === "CANCELLED") continue;
+          cancellingAppointmentIds.add(service.appointmentId);
+        }
+        await this.resolveDraftInvoicesOnCancelTx(tx, Array.from(cancellingAppointmentIds), input.voidDraftInvoices, input.actor ?? null);
+
         for (const appointment of scheduledAppointments) {
           if (appointment.status === "COMPLETED" || appointment.status === "CANCELED") continue;
           await tx.update(appointments).set({ status: "CANCELED" }).where(and(eq(appointments.orgId, this.orgId), eq(appointments.id, appointment.id)));
@@ -3268,11 +3392,18 @@ export class DatabaseStorage implements IStorage {
     return appointment;
   }
 
-  async updateAppointment(id: string, data: Partial<InsertAppointment>): Promise<Appointment | undefined> {
+  async updateAppointment(id: string, data: Partial<InsertAppointment>, options?: UpdateAppointmentOptions): Promise<Appointment | undefined> {
     return db.transaction(async (tx) => {
       const [existingAppointment] = await tx.select().from(appointments).where(and(eq(appointments.orgId, this.orgId), eq(appointments.id, id)));
       if (!existingAppointment) {
         return undefined;
+      }
+
+      // Q3: the schedule screen's "Cancel Service" is a status PATCH, which
+      // makes this the third appointment-cancel path alongside the two named
+      // ones below. A DRAFT invoice on the visit gets the same prompt here.
+      if (data.status === "CANCELED" && existingAppointment.status !== "CANCELED") {
+        await this.resolveDraftInvoicesOnCancelTx(tx, [existingAppointment.id], options?.voidDraftInvoices, options?.actor ?? null);
       }
 
       const [updatedAppointment] = await tx
@@ -3301,6 +3432,11 @@ export class DatabaseStorage implements IStorage {
     return db.transaction(async (tx) => {
       const [existingAppointment] = await tx.select().from(appointments).where(and(eq(appointments.orgId, this.orgId), eq(appointments.id, input.appointmentId)));
       if (!existingAppointment) return undefined;
+
+      // Q3: both the cancel and the reschedule branch set the appointment
+      // CANCELED (the services are requeued for a fresh one), so a DRAFT
+      // invoice on it needs a decision either way.
+      await this.resolveDraftInvoicesOnCancelTx(tx, [existingAppointment.id], input.voidDraftInvoices, input.actor ?? null);
 
       const now = new Date();
       const today = normalizeDateOnly(now)!;
@@ -3484,7 +3620,7 @@ export class DatabaseStorage implements IStorage {
   async createServiceRecord(data: InsertServiceRecord): Promise<ServiceRecord> {
     return db.transaction(async (tx) => {
       const technicianSnapshot = await this.resolveServiceRecordTechnicianSnapshot(tx, data);
-      const [sr] = await tx.insert(serviceRecords).values({
+      const [insertedRecord] = await tx.insert(serviceRecords).values({
         ...data,
         orgId: this.orgId,
         technicianId: technicianSnapshot.technicianId,
@@ -3492,6 +3628,7 @@ export class DatabaseStorage implements IStorage {
         technicianLicenseNumber: technicianSnapshot.technicianLicenseNumber,
         notes: technicianSnapshot.notes,
       }).returning();
+      const sr = await this.flagTicketIfVisitAlreadyInvoicedTx(tx, insertedRecord);
 
       if (sr.serviceId) {
         await tx
@@ -3617,7 +3754,7 @@ export class DatabaseStorage implements IStorage {
       };
       const technicianSnapshot = await this.resolveServiceRecordTechnicianSnapshot(tx, recordPayload, existingRecord);
 
-      const [serviceRecord] = existingRecord
+      const [postedRecord] = existingRecord
         ? await tx
           .update(serviceRecords)
           .set({
@@ -3640,6 +3777,12 @@ export class DatabaseStorage implements IStorage {
             notes: technicianSnapshot.notes,
           })
           .returning();
+
+      // D3: a ticket entering office review on a visit whose invoice is
+      // already issued (a manager's pre-finalization override, or a reopened
+      // ticket re-posted after normal invoicing) enters flagged, so the
+      // reviewer finalizes it knowing the customer already has a bill.
+      const serviceRecord = await this.flagTicketIfVisitAlreadyInvoicedTx(tx, postedRecord);
 
       await tx.delete(productApplications).where(and(eq(productApplications.orgId, this.orgId), eq(productApplications.serviceRecordId, serviceRecord.id)));
       const validApplications = (input.productApplications ?? [])
@@ -3981,7 +4124,10 @@ export class DatabaseStorage implements IStorage {
   // at all; excluding them was why that work was never invoiced.
   async getServiceRecordsReadyForBilling(): Promise<ServiceRecord[]> {
     const readyRecords = await db.select().from(serviceRecords).where(and(eq(serviceRecords.orgId, this.orgId), eq(serviceRecords.readyForBilling, true)));
-    const alreadyInvoiced = await db.select().from(invoices).where(and(eq(invoices.orgId, this.orgId), ne(invoices.status, "VOID")));
+    // Issued invoices only. A DRAFT (D3) holds the visit's anchor so generation
+    // adopts it, but the visit is still "ready to bill" - listing it is what
+    // lets the office issue the draft from the same Generate action.
+    const alreadyInvoiced = await db.select().from(invoices).where(and(eq(invoices.orgId, this.orgId), notInArray(invoices.status, ["VOID", "DRAFT"])));
     const invoicedServiceRecordIds = new Set(alreadyInvoiced.map((invoice) => invoice.serviceRecordId).filter((id): id is string => !!id));
     const invoicedAppointmentIds = new Set(alreadyInvoiced.map((invoice) => invoice.appointmentId).filter((id): id is string => !!id));
 
@@ -4151,7 +4297,9 @@ export class DatabaseStorage implements IStorage {
     const sent: Invoice[] = [];
     for (const id of invoiceIds) {
       const [invoice] = await db.select().from(invoices).where(and(eq(invoices.orgId, this.orgId), eq(invoices.id, id)));
-      if (!invoice || invoice.status === "VOID") {
+      // A DRAFT is not a bill yet (D3); sending one would tell the customer
+      // they owe a number that issue may still change.
+      if (!invoice || !isInvoiceIssued(invoice.status)) {
         continue;
       }
 
@@ -4214,6 +4362,7 @@ export class DatabaseStorage implements IStorage {
           taxCents,
           totalAmountCents,
           status: deriveInvoiceStatus({ totalAmountCents }),
+          issuedAt: new Date(),
           dueDate: input.dueDate ?? null,
           notes: input.notes?.trim() || null,
         })
@@ -4446,10 +4595,15 @@ export class DatabaseStorage implements IStorage {
   // and they must stay free to diverge. A callback with no price set is warranty
   // work at no charge; one with a price set is charged that price, which is how
   // a "chargeable callback" service type is configured.
+  //
+  // `record` is optional because a DRAFT (D3) prices a service before its
+  // ticket exists. With no record there is no production entry to classify,
+  // so the callback branch is simply skipped - the draft shows the contracted
+  // amount, and issue re-prices from the finalized record.
   private async resolveServiceLineBillingTx(
     tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
     input: {
-      record: ServiceRecord;
+      record: ServiceRecord | undefined;
       service: Service | undefined;
       agreementContext: { agreement: Agreement; plan: BillingPlan | undefined } | undefined;
     },
@@ -4476,14 +4630,16 @@ export class DatabaseStorage implements IStorage {
 
     const priceCents = service?.priceCents ?? null;
 
-    const [productionEntry] = await tx
-      .select()
-      .from(productionValueEntries)
-      .where(and(
-        eq(productionValueEntries.orgId, this.orgId),
-        eq(productionValueEntries.serviceRecordId, record.id),
-        ne(productionValueEntries.basis, "SURCHARGE"),
-      ));
+    const [productionEntry] = record
+      ? await tx
+        .select()
+        .from(productionValueEntries)
+        .where(and(
+          eq(productionValueEntries.orgId, this.orgId),
+          eq(productionValueEntries.serviceRecordId, record.id),
+          ne(productionValueEntries.basis, "SURCHARGE"),
+        ))
+      : [undefined];
     if (productionEntry?.basis === "CALLBACK") {
       return priceCents != null && priceCents > 0
         ? { lineType: "SERVICE", amountCents: priceCents, coverageNote: "callback" }
@@ -4558,23 +4714,184 @@ export class DatabaseStorage implements IStorage {
       return undefined;
     }
 
-    if (record.appointmentId) {
-      const [byAppointment] = await db
+    const group = record.appointmentId ? await this.getAppointmentBillingGroupTx(db as any, record.appointmentId) : null;
+    const recordIds = Array.from(new Set([record.id, ...(group?.records ?? []).map((linkedRecord) => linkedRecord.id)]));
+    return this.findInvoiceForVisitTx(db as any, record.appointmentId ?? null, recordIds);
+  }
+
+  // Whichever anchor already carries a non-void invoice for a visit: the
+  // appointment first, then any of the visit's tickets (the pre-D1 shape, whose
+  // rows were never re-anchored - see the index comment in invoice-bootstrap.ts).
+  // A DRAFT counts: it holds the anchor so that generation adopts it rather
+  // than issuing a second invoice beside it (D2/D3). Callers that mean "is this
+  // visit billed" must additionally check isInvoiceIssued().
+  private async findInvoiceForVisitTx(tx: DbTransaction, appointmentId: string | null, serviceRecordIds: string[]): Promise<Invoice | undefined> {
+    if (appointmentId) {
+      const [byAppointment] = await tx
         .select()
         .from(invoices)
-        .where(and(eq(invoices.orgId, this.orgId), eq(invoices.appointmentId, record.appointmentId), ne(invoices.status, "VOID")));
+        .where(and(eq(invoices.orgId, this.orgId), eq(invoices.appointmentId, appointmentId), ne(invoices.status, "VOID")));
       if (byAppointment) {
         return byAppointment;
       }
     }
 
-    const group = record.appointmentId ? await this.getAppointmentBillingGroupTx(db as any, record.appointmentId) : null;
-    const recordIds = Array.from(new Set([record.id, ...(group?.records ?? []).map((linkedRecord) => linkedRecord.id)]));
-    const [byServiceRecord] = await db
+    if (!serviceRecordIds.length) {
+      return undefined;
+    }
+
+    const [byServiceRecord] = await tx
       .select()
       .from(invoices)
-      .where(and(eq(invoices.orgId, this.orgId), inArray(invoices.serviceRecordId, recordIds), ne(invoices.status, "VOID")));
+      .where(and(eq(invoices.orgId, this.orgId), inArray(invoices.serviceRecordId, serviceRecordIds), ne(invoices.status, "VOID")));
     return byServiceRecord;
+  }
+
+  // Billing terms for an invoice at the moment it is created or issued: the
+  // location's account (tax resolution keys off it), the resolved billing
+  // profile frozen as a snapshot, and the due date those terms imply. A DRAFT
+  // resolves these for its preview and again at issue, because terms run from
+  // the issue date, not the drafting date.
+  private async resolveInvoiceTermsForLocationTx(
+    tx: DbTransaction,
+    locationId: string | null | undefined,
+  ): Promise<{ accountId: string | null; billingProfileSnapshot: Record<string, unknown> | null; dueDate: Date | null }> {
+    if (!locationId) {
+      return { accountId: null, billingProfileSnapshot: null, dueDate: null };
+    }
+
+    const [location] = await tx.select().from(locations).where(and(eq(locations.orgId, this.orgId), eq(locations.id, locationId)));
+    const resolvedProfile = await this.resolveBillingProfileForLocation(locationId);
+    if (!resolvedProfile) {
+      return { accountId: location?.accountId ?? null, billingProfileSnapshot: null, dueDate: null };
+    }
+
+    return {
+      accountId: location?.accountId ?? null,
+      billingProfileSnapshot: {
+        profileId: resolvedProfile.id,
+        label: resolvedProfile.label,
+        billingType: resolvedProfile.billingType,
+        invoiceTerms: resolvedProfile.invoiceTerms,
+        billingName: resolvedProfile.billingName,
+        billingAddress: resolvedProfile.billingAddress,
+        snapshottedAt: new Date().toISOString(),
+      },
+      dueDate: computeDueDateFromInvoiceTerms(resolvedProfile.invoiceTerms),
+    };
+  }
+
+  // Prices every unit of a visit through resolveServiceLineBillingTx and the
+  // tax engine, and shapes the tax snapshot. Shared by generation, DRAFT
+  // creation and issue, so a draft previews exactly what issue will charge
+  // given the same facts, and there is one place a new line type gets added.
+  private async buildVisitInvoiceLinesTx(
+    tx: DbTransaction,
+    input: { units: VisitBillingUnit[]; accountId: string | null; locationId: string | null },
+  ): Promise<PricedVisitInvoice> {
+    const serviceTypeIds = Array.from(
+      new Set(
+        input.units
+          .flatMap((unit) => [unit.record?.serviceTypeId ?? null, unit.service?.serviceTypeId ?? null])
+          .filter((id): id is string => !!id),
+      ),
+    );
+    const serviceTypeRows = serviceTypeIds.length
+      ? await tx.select().from(serviceTypes).where(and(eq(serviceTypes.orgId, this.orgId), inArray(serviceTypes.id, serviceTypeIds)))
+      : [];
+    const serviceTypeById = new Map(serviceTypeRows.map((serviceType) => [serviceType.id, serviceType]));
+
+    const agreementContextById = await this.resolveAgreementBillingContextTx(
+      tx,
+      input.units.map((unit) => unit.service?.agreementId).filter((id): id is string => !!id),
+    );
+
+    const lines: VisitInvoiceLine[] = [];
+    const taxSnapshots: Array<Record<string, unknown>> = [];
+
+    for (const unit of input.units) {
+      const { service, record } = unit;
+      const serviceTypeId = record?.serviceTypeId ?? service?.serviceTypeId ?? null;
+      const serviceType = serviceTypeId ? serviceTypeById.get(serviceTypeId) : undefined;
+      const baseDescription = `${serviceType?.name ?? "Service"} - ${unit.serviceDate.toLocaleDateString()}`;
+      const billing = await this.resolveServiceLineBillingTx(tx, {
+        record,
+        service,
+        agreementContext: service?.agreementId ? agreementContextById.get(service.agreementId) : undefined,
+      });
+      const description = billing.coverageNote ? `${baseDescription} (${billing.coverageNote})` : baseDescription;
+
+      if (billing.lineType === "AGREEMENT_COVERED") {
+        lines.push({
+          serviceId: service?.id ?? null,
+          serviceRecordId: record?.id ?? null,
+          lineType: "AGREEMENT_COVERED",
+          description,
+          unitPriceCents: 0,
+          amountCents: 0,
+          taxable: false,
+          taxCents: 0,
+        });
+        continue;
+      }
+
+      const taxDecision = await this.resolveTaxDecision(tx, {
+        accountId: input.accountId,
+        locationId: record?.locationId ?? service?.locationId ?? input.locationId,
+        serviceTypeId,
+        amountCents: billing.amountCents,
+      });
+      taxSnapshots.push({ serviceRecordId: record?.id ?? null, ...taxDecision.snapshot });
+
+      lines.push({
+        serviceId: service?.id ?? null,
+        serviceRecordId: record?.id ?? null,
+        lineType: "SERVICE",
+        description,
+        unitPriceCents: billing.amountCents,
+        amountCents: billing.amountCents,
+        taxable: taxDecision.taxable,
+        taxCents: taxDecision.taxCents,
+      });
+    }
+
+    const amountCents = lines.reduce((sum, line) => sum + line.amountCents, 0);
+    const taxCents = lines.reduce((sum, line) => sum + line.taxCents, 0);
+
+    // A single chargeable line keeps the pre-D1 snapshot shape verbatim, so
+    // nothing reading an existing invoice's tax history has to learn a second
+    // format. Multi-line visits snapshot each line's decision; a fully
+    // agreement-covered visit has no decision to make.
+    const taxSnapshot =
+      taxSnapshots.length === 1
+        ? taxSnapshots[0]
+        : taxSnapshots.length === 0
+          ? { taxable: false, reason: "AGREEMENT_COVERED", taxCents: 0, snapshottedAt: new Date().toISOString() }
+          : { taxable: taxCents > 0, reason: "PER_LINE", taxCents, lines: taxSnapshots, snapshottedAt: new Date().toISOString() };
+
+    return { lines, amountCents, taxCents, taxSnapshot };
+  }
+
+  private async insertInvoiceLineItemsTx(tx: DbTransaction, invoiceId: string, lines: VisitInvoiceLine[]): Promise<void> {
+    if (!lines.length) {
+      return;
+    }
+    await tx.insert(invoiceLineItems).values(
+      lines.map((line, index) => ({
+        orgId: this.orgId,
+        invoiceId,
+        serviceId: line.serviceId,
+        serviceRecordId: line.serviceRecordId,
+        lineType: line.lineType,
+        description: line.description,
+        quantity: 1,
+        unitPriceCents: line.unitPriceCents,
+        amountCents: line.amountCents,
+        taxable: line.taxable,
+        taxCents: line.taxCents,
+        sortOrder: index,
+      })),
+    );
   }
 
   private async generateInvoiceFromServiceRecordTx(serviceRecordId: string, actor?: AuditActor | null): Promise<Invoice> {
@@ -4621,26 +4938,17 @@ export class DatabaseStorage implements IStorage {
 
       const billingRecordIds = billingRecords.map((billingRecord) => billingRecord.id);
 
-      if (anchorAppointmentId) {
-        const [existingByAppointment] = await tx
-          .select()
-          .from(invoices)
-          .where(and(eq(invoices.orgId, this.orgId), eq(invoices.appointmentId, anchorAppointmentId), ne(invoices.status, "VOID")));
-        if (existingByAppointment) {
-          return existingByAppointment;
-        }
-      }
-
-      // Also covers the pre-D1 shape: an invoice anchored to any one ticket on
-      // this visit already bills that visit, and is returned instead of joined
-      // by a second one. Those rows are never re-anchored - see the index
-      // comment in invoice-bootstrap.ts.
-      const [existingByServiceRecord] = await tx
-        .select()
-        .from(invoices)
-        .where(and(eq(invoices.orgId, this.orgId), inArray(invoices.serviceRecordId, billingRecordIds), ne(invoices.status, "VOID")));
-      if (existingByServiceRecord) {
-        return existingByServiceRecord;
+      // Both anchors, appointment first. An invoice anchored to any one ticket
+      // on this visit (the pre-D1 shape) already bills that visit and is
+      // returned instead of joined by a second one.
+      const existing = await this.findInvoiceForVisitTx(tx, anchorAppointmentId, billingRecordIds);
+      if (existing) {
+        // D2/D3 adopt: a DRAFT prepared before finalization is the visit's
+        // invoice - issue it (re-priced from the now-finalized records) rather
+        // than returning an unissued draft to a caller that asked for a bill.
+        // Every ticket is finalized at this point (checked above), so the
+        // pre-finalization gate cannot fire.
+        return existing.status === "DRAFT" ? this.issueInvoiceTx(tx, existing, { actor, prefinalization: "REFUSE" }) : existing;
       }
 
       const billingServiceIds = billingRecords.map((billingRecord) => billingRecord.serviceId).filter((id): id is string => !!id);
@@ -4649,116 +4957,16 @@ export class DatabaseStorage implements IStorage {
         : [];
       const serviceById = new Map(billingServices.map((service) => [service.id, service]));
 
-      const serviceTypeIds = Array.from(
-        new Set(
-          billingRecords
-            .flatMap((billingRecord) => [billingRecord.serviceTypeId, billingRecord.serviceId ? serviceById.get(billingRecord.serviceId)?.serviceTypeId ?? null : null])
-            .filter((id): id is string => !!id),
-        ),
-      );
-      const serviceTypeRows = serviceTypeIds.length
-        ? await tx.select().from(serviceTypes).where(and(eq(serviceTypes.orgId, this.orgId), inArray(serviceTypes.id, serviceTypeIds)))
-        : [];
-      const serviceTypeById = new Map(serviceTypeRows.map((serviceType) => [serviceType.id, serviceType]));
-
-      const agreementContextById = await this.resolveAgreementBillingContextTx(
-        tx,
-        billingServices.map((service) => service.agreementId).filter((id): id is string => !!id),
-      );
-
-      let billingProfileSnapshot: Record<string, unknown> | null = null;
-      let dueDate: Date | null = null;
-      let accountId: string | null = null;
-      if (record.locationId) {
-        const [location] = await tx.select().from(locations).where(and(eq(locations.orgId, this.orgId), eq(locations.id, record.locationId)));
-        accountId = location?.accountId ?? null;
-
-        const resolvedProfile = await this.resolveBillingProfileForLocation(record.locationId);
-        if (resolvedProfile) {
-          billingProfileSnapshot = {
-            profileId: resolvedProfile.id,
-            label: resolvedProfile.label,
-            billingType: resolvedProfile.billingType,
-            invoiceTerms: resolvedProfile.invoiceTerms,
-            billingName: resolvedProfile.billingName,
-            billingAddress: resolvedProfile.billingAddress,
-            snapshottedAt: new Date().toISOString(),
-          };
-          dueDate = computeDueDateFromInvoiceTerms(resolvedProfile.invoiceTerms);
-        }
-      }
-
-      const lines: Array<{
-        serviceId: string | null;
-        serviceRecordId: string;
-        lineType: "SERVICE" | "AGREEMENT_COVERED";
-        description: string;
-        unitPriceCents: number;
-        amountCents: number;
-        taxable: boolean;
-        taxCents: number;
-      }> = [];
-      const taxSnapshots: Array<Record<string, unknown>> = [];
-
-      for (const billingRecord of billingRecords) {
-        const service = billingRecord.serviceId ? serviceById.get(billingRecord.serviceId) : undefined;
-        const serviceTypeId = billingRecord.serviceTypeId ?? service?.serviceTypeId ?? null;
-        const serviceType = serviceTypeId ? serviceTypeById.get(serviceTypeId) : undefined;
-        const baseDescription = `${serviceType?.name ?? "Service"} - ${new Date(billingRecord.serviceDate).toLocaleDateString()}`;
-        const billing = await this.resolveServiceLineBillingTx(tx, {
+      const terms = await this.resolveInvoiceTermsForLocationTx(tx, record.locationId);
+      const priced = await this.buildVisitInvoiceLinesTx(tx, {
+        units: billingRecords.map((billingRecord) => ({
           record: billingRecord,
-          service,
-          agreementContext: service?.agreementId ? agreementContextById.get(service.agreementId) : undefined,
-        });
-        const description = billing.coverageNote ? `${baseDescription} (${billing.coverageNote})` : baseDescription;
-
-        if (billing.lineType === "AGREEMENT_COVERED") {
-          lines.push({
-            serviceId: service?.id ?? null,
-            serviceRecordId: billingRecord.id,
-            lineType: "AGREEMENT_COVERED",
-            description,
-            unitPriceCents: 0,
-            amountCents: 0,
-            taxable: false,
-            taxCents: 0,
-          });
-          continue;
-        }
-
-        const taxDecision = await this.resolveTaxDecision(tx, {
-          accountId,
-          locationId: billingRecord.locationId,
-          serviceTypeId,
-          amountCents: billing.amountCents,
-        });
-        taxSnapshots.push({ serviceRecordId: billingRecord.id, ...taxDecision.snapshot });
-
-        lines.push({
-          serviceId: service?.id ?? null,
-          serviceRecordId: billingRecord.id,
-          lineType: "SERVICE",
-          description,
-          unitPriceCents: billing.amountCents,
-          amountCents: billing.amountCents,
-          taxable: taxDecision.taxable,
-          taxCents: taxDecision.taxCents,
-        });
-      }
-
-      const amountCents = lines.reduce((sum, line) => sum + line.amountCents, 0);
-      const taxCents = lines.reduce((sum, line) => sum + line.taxCents, 0);
-
-      // A single chargeable line keeps the pre-D1 snapshot shape verbatim, so
-      // nothing reading an existing invoice's tax history has to learn a second
-      // format. Multi-line visits snapshot each line's decision; a fully
-      // agreement-covered visit has no decision to make.
-      const taxSnapshot =
-        taxSnapshots.length === 1
-          ? taxSnapshots[0]
-          : taxSnapshots.length === 0
-            ? { taxable: false, reason: "AGREEMENT_COVERED", taxCents: 0, snapshottedAt: new Date().toISOString() }
-            : { taxable: taxCents > 0, reason: "PER_LINE", taxCents, lines: taxSnapshots, snapshottedAt: new Date().toISOString() };
+          service: billingRecord.serviceId ? serviceById.get(billingRecord.serviceId) : undefined,
+          serviceDate: new Date(billingRecord.serviceDate),
+        })),
+        accountId: terms.accountId,
+        locationId: record.locationId ?? null,
+      });
 
       const insertInvoiceRow = async () => {
         const invoiceNumber = await this.getNextInvoiceNumber(tx);
@@ -4771,19 +4979,20 @@ export class DatabaseStorage implements IStorage {
             appointmentId: anchorAppointmentId,
             serviceRecordId: anchorAppointmentId ? null : record.id,
             invoiceNumber,
-            billingProfileSnapshot,
-            taxSnapshot,
-            amountCents,
-            taxCents,
-            totalAmountCents: amountCents + taxCents,
+            billingProfileSnapshot: terms.billingProfileSnapshot,
+            taxSnapshot: priced.taxSnapshot,
+            amountCents: priced.amountCents,
+            taxCents: priced.taxCents,
+            totalAmountCents: priced.amountCents + priced.taxCents,
             // Derived, never assigned (shared/invoice-status.ts). A fully
             // agreement-covered visit totals $0, so this yields PAID on exactly
             // the same rule that marks a settled invoice - no branch on
             // coverage anywhere. Customer-facing documents render such an
             // invoice as "No Charge - Covered by Service Agreement" rather than
             // "PAID"; that story belongs at the render layer, not this column.
-            status: deriveInvoiceStatus({ totalAmountCents: amountCents + taxCents }),
-            dueDate,
+            status: deriveInvoiceStatus({ totalAmountCents: priced.amountCents + priced.taxCents }),
+            issuedAt: new Date(),
+            dueDate: terms.dueDate,
             notes: null,
           })
           .returning();
@@ -4797,22 +5006,7 @@ export class DatabaseStorage implements IStorage {
       // after the transaction has rolled back.
       const invoice = await insertInvoiceRow();
 
-      await tx.insert(invoiceLineItems).values(
-        lines.map((line, index) => ({
-          orgId: this.orgId,
-          invoiceId: invoice.id,
-          serviceId: line.serviceId,
-          serviceRecordId: line.serviceRecordId,
-          lineType: line.lineType,
-          description: line.description,
-          quantity: 1,
-          unitPriceCents: line.unitPriceCents,
-          amountCents: line.amountCents,
-          taxable: line.taxable,
-          taxCents: line.taxCents,
-          sortOrder: index,
-        })),
-      );
+      await this.insertInvoiceLineItemsTx(tx, invoice.id, priced.lines);
 
       await this.recordAuditLogTx(tx, {
         entityType: "invoice",
@@ -4824,6 +5018,362 @@ export class DatabaseStorage implements IStorage {
 
       return invoice;
     });
+  }
+
+  // D3: an invoice may be CREATED against an unfinalized appointment - office
+  // prep or a preview for the customer - but only as a DRAFT. It prices every
+  // active service on the visit as it stands today (a service with no ticket
+  // yet is priced from its contract; a posted-but-unfinalized ticket the same
+  // way, since finalization is what fixes the amount) and holds the visit's
+  // anchor so generation adopts it. It is not a receivable: no issuedAt, no
+  // due date, not sendable, not payable, not counted in balances.
+  async createDraftInvoiceForAppointment(appointmentId: string, actor?: AuditActor | null): Promise<Invoice> {
+    try {
+      return await this.createDraftInvoiceForAppointmentTx(appointmentId, actor);
+    } catch (err: any) {
+      // Same race shape as generation: the appointment's partial unique index
+      // rejects the loser, whose transaction has rolled back by the time we
+      // look the winner up here.
+      if (err?.code === "23505") {
+        const [raceWinner] = await db
+          .select()
+          .from(invoices)
+          .where(and(eq(invoices.orgId, this.orgId), eq(invoices.appointmentId, appointmentId), ne(invoices.status, "VOID")));
+        if (raceWinner) {
+          return raceWinner;
+        }
+      }
+      throw err;
+    }
+  }
+
+  private async createDraftInvoiceForAppointmentTx(appointmentId: string, actor?: AuditActor | null): Promise<Invoice> {
+    return db.transaction(async (tx) => {
+      const group = await this.getAppointmentBillingGroupTx(tx, appointmentId);
+      if (!group) {
+        throw new Error("Appointment not found");
+      }
+      if (group.appointment.status === "CANCELED") {
+        throw new Error("Cannot draft an invoice for a cancelled appointment");
+      }
+      if (!group.services.length) {
+        throw new Error("Appointment has no active services to invoice");
+      }
+
+      const existing = await this.findInvoiceForVisitTx(tx, group.appointment.id, group.records.map((record) => record.id));
+      if (existing) {
+        if (existing.status === "DRAFT") {
+          return existing;
+        }
+        throw new Error(`Appointment already has invoice ${existing.invoiceNumber}`);
+      }
+
+      const recordByServiceId = new Map(group.records.filter((record) => record.serviceId).map((record) => [record.serviceId!, record]));
+      const terms = await this.resolveInvoiceTermsForLocationTx(tx, group.appointment.locationId);
+      const priced = await this.buildVisitInvoiceLinesTx(tx, {
+        units: group.services.map((service) => {
+          const record = recordByServiceId.get(service.id);
+          return { service, record, serviceDate: record ? new Date(record.serviceDate) : new Date(group.appointment.scheduledDate) };
+        }),
+        accountId: terms.accountId,
+        locationId: group.appointment.locationId ?? null,
+      });
+
+      const invoiceNumber = await this.getNextInvoiceNumber(tx);
+      const [draft] = await tx
+        .insert(invoices)
+        .values({
+          orgId: this.orgId,
+          customerId: group.appointment.customerId,
+          locationId: group.appointment.locationId ?? null,
+          appointmentId: group.appointment.id,
+          serviceRecordId: null,
+          invoiceNumber,
+          billingProfileSnapshot: terms.billingProfileSnapshot,
+          taxSnapshot: priced.taxSnapshot,
+          amountCents: priced.amountCents,
+          taxCents: priced.taxCents,
+          totalAmountCents: priced.amountCents + priced.taxCents,
+          // The one place DRAFT is written. It is a lifecycle state, not an
+          // amount-derived one - deriveInvoiceStatus passes it through
+          // untouched, and issueInvoiceTx is the only exit from it.
+          status: "DRAFT",
+          issuedAt: null,
+          dueDate: null,
+          notes: null,
+        })
+        .returning();
+
+      await this.insertInvoiceLineItemsTx(tx, draft.id, priced.lines);
+
+      await this.recordAuditLogTx(tx, {
+        entityType: "invoice",
+        entityId: draft.id,
+        action: "invoice_drafted",
+        actor,
+        after: draft,
+      });
+
+      return draft;
+    });
+  }
+
+  // D3: the DRAFT -> issued transition. Refuses while any active service on
+  // the visit lacks a finalized ticket unless the caller overrides, in which
+  // case those tickets are flagged for review. Re-prices from the visit as it
+  // stands NOW - lines, tax, billing terms and due date - because the draft's
+  // numbers were a preview and the finalized records are the truth.
+  async issueInvoice(id: string, input: IssueInvoiceInput): Promise<Invoice | undefined> {
+    return db.transaction(async (tx) => {
+      const [invoice] = await tx.select().from(invoices).where(and(eq(invoices.orgId, this.orgId), eq(invoices.id, id)));
+      if (!invoice) {
+        return undefined;
+      }
+      return this.issueInvoiceTx(tx, invoice, input);
+    });
+  }
+
+  private async issueInvoiceTx(tx: DbTransaction, draft: Invoice, input: IssueInvoiceInput): Promise<Invoice> {
+    if (draft.status === "VOID") {
+      throw new Error("A voided invoice cannot be issued");
+    }
+    if (draft.status !== "DRAFT") {
+      // Already issued - a double-click, or generation adopting an invoice
+      // that issue beat it to. Nothing to redo.
+      return draft;
+    }
+    if (!draft.appointmentId) {
+      throw new Error("Draft invoice is not anchored to an appointment");
+    }
+
+    const group = await this.getAppointmentBillingGroupTx(tx, draft.appointmentId);
+    if (!group) {
+      throw new Error("Appointment not found");
+    }
+    if (!group.services.length) {
+      throw new Error("Appointment has no active services to invoice");
+    }
+
+    const recordByServiceId = new Map(group.records.filter((record) => record.serviceId).map((record) => [record.serviceId!, record]));
+    const unfinalizedServices = group.services.filter((service) => !recordByServiceId.get(service.id)?.readyForBilling);
+    if (unfinalizedServices.length) {
+      if (input.prefinalization !== "OVERRIDE") {
+        throw new PrefinalizationIssueError(await this.describeUnfinalizedTicketsTx(tx, unfinalizedServices, recordByServiceId));
+      }
+      await this.flagTicketsForPrefinalizationIssueTx(tx, {
+        invoice: draft,
+        records: unfinalizedServices.map((service) => recordByServiceId.get(service.id)).filter((record): record is ServiceRecord => !!record),
+        actor: input.actor ?? null,
+      });
+    }
+
+    const terms = await this.resolveInvoiceTermsForLocationTx(tx, draft.locationId);
+    const priced = await this.buildVisitInvoiceLinesTx(tx, {
+      units: group.services.map((service) => {
+        const record = recordByServiceId.get(service.id);
+        return { service, record, serviceDate: record ? new Date(record.serviceDate) : new Date(group.appointment.scheduledDate) };
+      }),
+      accountId: terms.accountId,
+      locationId: draft.locationId ?? null,
+    });
+
+    // A draft's lines are a preview, not history: replace them wholesale.
+    // Once issued the lines are frozen like any other invoice's.
+    await tx.delete(invoiceLineItems).where(and(eq(invoiceLineItems.orgId, this.orgId), eq(invoiceLineItems.invoiceId, draft.id)));
+    await this.insertInvoiceLineItemsTx(tx, draft.id, priced.lines);
+
+    const totalAmountCents = priced.amountCents + priced.taxCents;
+    const [issued] = await tx
+      .update(invoices)
+      .set({
+        billingProfileSnapshot: terms.billingProfileSnapshot,
+        taxSnapshot: priced.taxSnapshot,
+        amountCents: priced.amountCents,
+        taxCents: priced.taxCents,
+        totalAmountCents,
+        // Leaving DRAFT: derive from the amounts with no currentStatus, so a
+        // $0 covered visit lands PAID on the same rule as generation.
+        status: deriveInvoiceStatus({ totalAmountCents }),
+        issuedAt: new Date(),
+        dueDate: terms.dueDate,
+      })
+      .where(and(eq(invoices.orgId, this.orgId), eq(invoices.id, draft.id)))
+      .returning();
+
+    await this.recordAuditLogTx(tx, {
+      entityType: "invoice",
+      entityId: issued.id,
+      action: "invoice_issued",
+      actor: input.actor,
+      before: draft,
+      after: issued,
+    });
+
+    return issued;
+  }
+
+  private async describeUnfinalizedTicketsTx(
+    tx: DbTransaction,
+    unfinalizedServices: Service[],
+    recordByServiceId: Map<string, ServiceRecord>,
+  ): Promise<UnfinalizedTicketRef[]> {
+    const serviceTypeIds = Array.from(new Set(unfinalizedServices.map((service) => service.serviceTypeId).filter((id): id is string => !!id)));
+    const serviceTypeRows = serviceTypeIds.length
+      ? await tx.select().from(serviceTypes).where(and(eq(serviceTypes.orgId, this.orgId), inArray(serviceTypes.id, serviceTypeIds)))
+      : [];
+    const serviceTypeById = new Map(serviceTypeRows.map((serviceType) => [serviceType.id, serviceType]));
+
+    return unfinalizedServices.map((service) => {
+      const record = recordByServiceId.get(service.id);
+      const name = (service.serviceTypeId ? serviceTypeById.get(service.serviceTypeId)?.name : null) ?? "Service";
+      return {
+        serviceId: service.id,
+        serviceRecordId: record?.id ?? null,
+        ticketStatus: record?.ticketStatus ?? null,
+        description: record ? `${name} - ticket posted, awaiting office finalization` : `${name} - no ticket posted yet`,
+      };
+    });
+  }
+
+  // The D3 review flag. ticketStatus becomes FLAGGED_FOR_REVIEW for a ticket
+  // awaiting review; a REOPENED ticket keeps REOPENED (the technician still
+  // owes an edit, and REOPENED is what lets them make it) and carries only the
+  // flag columns until it is re-posted, at which point
+  // flagTicketIfVisitAlreadyInvoicedTx flags it properly. Already-flagged
+  // tickets are left alone so the original who/when/why survives.
+  private async flagTicketsForPrefinalizationIssueTx(
+    tx: DbTransaction,
+    input: { invoice: Invoice; records: ServiceRecord[]; actor: AuditActor | null },
+  ): Promise<void> {
+    const now = new Date();
+    for (const record of input.records) {
+      if (record.readyForBilling || record.flaggedAt) {
+        continue;
+      }
+      const [flagged] = await tx
+        .update(serviceRecords)
+        .set({
+          ticketStatus: record.ticketStatus === "REOPENED" ? "REOPENED" : "FLAGGED_FOR_REVIEW",
+          flaggedAt: now,
+          flaggedByUserId: input.actor?.userId ?? null,
+          flaggedByLabel: input.actor?.actorLabel ?? null,
+          flagReason: `Invoice ${input.invoice.invoiceNumber} was issued before this ticket was finalized`,
+        })
+        .where(and(eq(serviceRecords.orgId, this.orgId), eq(serviceRecords.id, record.id)))
+        .returning();
+
+      await this.recordAuditLogTx(tx, {
+        entityType: "service_record",
+        entityId: record.id,
+        action: "prefinalization_issue_override",
+        actor: input.actor,
+        before: record,
+        after: flagged,
+      });
+    }
+  }
+
+  // The posting-side half of the D3 flag: a ticket entering office review on
+  // a visit whose invoice is already ISSUED (never a DRAFT - drafting a visit
+  // and then posting its tickets is the normal order) is flagged on the way
+  // in. Covers the service that had no ticket when a manager issued early, and
+  // a reopened ticket re-posted after the visit was invoiced normally. System
+  // actor: no person chose this, the rule did.
+  private async flagTicketIfVisitAlreadyInvoicedTx(tx: DbTransaction, record: ServiceRecord): Promise<ServiceRecord> {
+    if (!record.appointmentId || record.ticketStatus !== "OFFICE_REVIEW_PENDING" || record.readyForBilling) {
+      return record;
+    }
+
+    const group = await this.getAppointmentBillingGroupTx(tx, record.appointmentId);
+    const siblingRecordIds = Array.from(new Set([record.id, ...(group?.records ?? []).map((sibling) => sibling.id)]));
+    const invoice = await this.findInvoiceForVisitTx(tx, record.appointmentId, siblingRecordIds);
+    if (!invoice || !isInvoiceIssued(invoice.status)) {
+      return record;
+    }
+
+    const [flagged] = await tx
+      .update(serviceRecords)
+      .set({
+        ticketStatus: "FLAGGED_FOR_REVIEW",
+        flaggedAt: new Date(),
+        flaggedByUserId: null,
+        flaggedByLabel: null,
+        flagReason: `Invoice ${invoice.invoiceNumber} was issued before this ticket was finalized`,
+      })
+      .where(and(eq(serviceRecords.orgId, this.orgId), eq(serviceRecords.id, record.id)))
+      .returning();
+
+    await this.recordAuditLogTx(tx, {
+      entityType: "service_record",
+      entityId: record.id,
+      action: "prefinalization_issue_override",
+      before: record,
+      after: flagged,
+    });
+
+    return flagged;
+  }
+
+  // Q3, shared by all three appointment-cancel paths. Undefined decision with
+  // drafts present throws so the caller can prompt; true voids them inside
+  // this same transaction (audit-logged like any void); false leaves them as
+  // DRAFTs on a cancelled visit - an explicit choice, visible on the invoice
+  // list, voidable later, never a silent orphan.
+  private async resolveDraftInvoicesOnCancelTx(
+    tx: DbTransaction,
+    appointmentIds: string[],
+    voidDraftInvoices: boolean | undefined,
+    actor: AuditActor | null,
+  ): Promise<void> {
+    if (!appointmentIds.length) {
+      return;
+    }
+
+    const drafts = await tx
+      .select()
+      .from(invoices)
+      .where(and(eq(invoices.orgId, this.orgId), inArray(invoices.appointmentId, appointmentIds), eq(invoices.status, "DRAFT")));
+    if (!drafts.length) {
+      return;
+    }
+
+    if (voidDraftInvoices === undefined) {
+      throw new DraftInvoiceDecisionRequiredError(
+        drafts.map((draft) => ({ id: draft.id, invoiceNumber: draft.invoiceNumber, appointmentId: draft.appointmentId, totalAmountCents: draft.totalAmountCents })),
+      );
+    }
+    if (!voidDraftInvoices) {
+      return;
+    }
+
+    for (const draft of drafts) {
+      await this.voidInvoiceTx(tx, draft, actor);
+    }
+  }
+
+  // The one place VOID is written. Idempotent: voiding a void is a no-op with
+  // no second audit row.
+  private async voidInvoiceTx(tx: DbTransaction, invoice: Invoice, actor: AuditActor | null | undefined): Promise<Invoice> {
+    if (invoice.status === "VOID") {
+      return invoice;
+    }
+
+    const [voided] = await tx
+      .update(invoices)
+      .set({ status: "VOID" })
+      .where(and(eq(invoices.orgId, this.orgId), eq(invoices.id, invoice.id)))
+      .returning();
+
+    await this.recordAuditLogTx(tx, {
+      entityType: "invoice",
+      entityId: invoice.id,
+      action: "invoice_voided",
+      actor,
+      before: invoice,
+      after: voided,
+    });
+
+    return voided;
   }
 
   // Schedule-driven per PLAN_BILLING_V1.md §1.6 path 2 - the primary path
@@ -4969,17 +5519,33 @@ export class DatabaseStorage implements IStorage {
   }
 
   async updateInvoice(id: string, data: Partial<InsertInvoice>): Promise<Invoice | undefined> {
+    if (data.status !== undefined) {
+      const [existing] = await db.select().from(invoices).where(and(eq(invoices.orgId, this.orgId), eq(invoices.id, id)));
+      if (!existing) {
+        return undefined;
+      }
+      // D3: a DRAFT has no balance to settle, and the amount "Mark Paid"
+      // would settle is a preview that issue may still change. VOID is final.
+      if (existing.status === "DRAFT") {
+        throw new Error("Draft invoices cannot be marked paid; issue the invoice first");
+      }
+      if (existing.status === "VOID") {
+        throw new Error("Voided invoices cannot be changed");
+      }
+    }
+
     const [inv] = await db.update(invoices).set(data).where(and(eq(invoices.orgId, this.orgId), eq(invoices.id, id))).returning();
     return inv;
   }
 
-  async voidInvoice(id: string): Promise<Invoice | undefined> {
-    const [inv] = await db
-      .update(invoices)
-      .set({ status: "VOID" })
-      .where(and(eq(invoices.orgId, this.orgId), eq(invoices.id, id)))
-      .returning();
-    return inv;
+  async voidInvoice(id: string, actor?: AuditActor | null): Promise<Invoice | undefined> {
+    return db.transaction(async (tx) => {
+      const [invoice] = await tx.select().from(invoices).where(and(eq(invoices.orgId, this.orgId), eq(invoices.id, id)));
+      if (!invoice) {
+        return undefined;
+      }
+      return this.voidInvoiceTx(tx, invoice, actor);
+    });
   }
 
   // Everything here is drawn from the invoice's own frozen data
@@ -5018,7 +5584,9 @@ export class DatabaseStorage implements IStorage {
     return {
       invoiceNumber: invoice.invoiceNumber,
       publicId: invoice.publicId,
-      issueDate: invoice.createdAt.toISOString().slice(0, 10),
+      // issuedAt is when it became a bill (D3); createdAt is the fallback
+      // only for a DRAFT preview, which has no issue date yet.
+      issueDate: (invoice.issuedAt ?? invoice.createdAt).toISOString().slice(0, 10),
       dueDate: invoice.dueDate ? new Date(invoice.dueDate).toISOString().slice(0, 10) : null,
       status: invoice.status,
       billToName,
@@ -5069,6 +5637,24 @@ export class DatabaseStorage implements IStorage {
     const pdfBuffer = await renderInvoicePdf(context);
     const contentHash = createHash("sha256").update(pdfBuffer).digest("hex");
     const contentBase64 = pdfBuffer.toString("base64");
+
+    // A DRAFT (D3) renders for preview - the document says "Status: DRAFT" -
+    // but is never stored. The stored artifact is the byte-for-byte record of
+    // what the customer was sent, and a draft's numbers are still subject to
+    // change at issue; storing it would pin the wrong document to the invoice
+    // forever, since the row above is looked up before rendering.
+    if (context.status === "DRAFT") {
+      return {
+        id: `draft-preview-${invoiceId}`,
+        orgId: this.orgId,
+        kind: "INVOICE",
+        invoiceId,
+        contentHash,
+        contentBase64,
+        mimeType: "application/pdf",
+        createdAt: new Date(),
+      };
+    }
 
     try {
       const [document] = await db

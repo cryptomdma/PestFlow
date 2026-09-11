@@ -35,6 +35,14 @@ export async function bootstrapInvoices(): Promise<void> {
   await db.execute(sql`UPDATE invoices SET public_id = gen_random_uuid() WHERE public_id IS NULL`);
   await db.execute(sql`ALTER TABLE invoices ALTER COLUMN public_id SET NOT NULL`);
 
+  // D3 DRAFT lifecycle: issued_at is when the invoice became a receivable.
+  // Every invoice that existed before this column was issued at creation
+  // (DRAFT had no creation path until now), so created_at is the honest
+  // backfill; the WHERE keeps a re-run from touching anything, and a genuine
+  // DRAFT keeps issued_at null until it is issued.
+  await db.execute(sql`ALTER TABLE invoices ADD COLUMN IF NOT EXISTS issued_at timestamp`);
+  await db.execute(sql`UPDATE invoices SET issued_at = created_at WHERE issued_at IS NULL AND status <> 'DRAFT'`);
+
   // Old enum was lowercase pending|paid|overdue with "overdue" stored as a
   // status. New enum is DRAFT|OPEN|PARTIALLY_PAID|PAID|VOID; "overdue" is
   // derived client-side from dueDate on an OPEN invoice, never stored -

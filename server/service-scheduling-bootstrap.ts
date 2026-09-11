@@ -102,6 +102,13 @@ export async function bootstrapServiceSchedulingFoundation(): Promise<void> {
   await db.execute(sql`ALTER TABLE service_records ADD COLUMN IF NOT EXISTS reopened_by_label text`);
   await db.execute(sql`ALTER TABLE service_records ADD COLUMN IF NOT EXISTS reopen_reason text`);
   await db.execute(sql`ALTER TABLE service_records ADD COLUMN IF NOT EXISTS ready_for_billing boolean NOT NULL DEFAULT false`);
+  // D3 review flag (ticket_status FLAGGED_FOR_REVIEW) - who flagged it and why,
+  // same shape as the reopen columns above. No backfill: nothing was flagged
+  // before the flag existed.
+  await db.execute(sql`ALTER TABLE service_records ADD COLUMN IF NOT EXISTS flagged_at timestamp`);
+  await db.execute(sql`ALTER TABLE service_records ADD COLUMN IF NOT EXISTS flagged_by_user_id varchar`);
+  await db.execute(sql`ALTER TABLE service_records ADD COLUMN IF NOT EXISTS flagged_by_label text`);
+  await db.execute(sql`ALTER TABLE service_records ADD COLUMN IF NOT EXISTS flag_reason text`);
 
   await db.execute(sql`
     CREATE TABLE IF NOT EXISTS app_settings (
