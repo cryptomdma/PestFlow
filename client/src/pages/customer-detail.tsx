@@ -35,6 +35,14 @@ import { OpportunityHistoryDialog } from "@/components/opportunity-history-dialo
 import { OpportunityConvertDialog } from "@/components/opportunity-convert-dialog";
 import { ServiceCompletionDialog } from "@/components/service-completion-dialog";
 import { DraftInvoiceVoidPrompt, getDraftInvoiceDecisionRequired, type DraftInvoiceRef } from "@/components/draft-invoice-void-prompt";
+import {
+  InvoiceOnFinalizePrompt,
+  describeFinalizeResult,
+  getInvoiceOnFinalizePrompt,
+  invalidateInvoiceViews,
+  type FinalizeServiceRecordResponse,
+  type InvoiceOnFinalizePromptState,
+} from "@/components/invoice-on-finalize-prompt";
 import { useAuth } from "@/hooks/use-auth";
 import { can, PERMISSIONS } from "@shared/permissions";
 import { formatPhoneDisplay } from "@shared/phone";
@@ -2769,6 +2777,9 @@ function ServicesTab({
   const [editingService, setEditingService] = useState<Service | null>(null);
   const [detailService, setDetailService] = useState<Service | null>(null);
   const [completionService, setCompletionService] = useState<Service | null>(null);
+  // D2: Generate / Generate & Send / Later, when finalizing a ticket here
+  // completes its visit under the PROMPT setting.
+  const [invoicePrompt, setInvoicePrompt] = useState<InvoiceOnFinalizePromptState | null>(null);
   const { toast } = useToast();
   const { user } = useAuth();
   const canDraftInvoice = can(user?.role ?? "", PERMISSIONS.GENERATE_INVOICE);
@@ -2889,9 +2900,9 @@ function ServicesTab({
   const finalizeTicketMutation = useMutation({
     mutationFn: async (serviceRecord: ServiceRecord) => {
       const response = await apiRequest("POST", `/api/service-records/${serviceRecord.id}/finalize`, {});
-      return response.json();
+      return response.json() as Promise<FinalizeServiceRecordResponse>;
     },
-    onSuccess: () => {
+    onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: ["/api/service-records/by-location", locationId] });
       queryClient.invalidateQueries({ queryKey: ["/api/service-records"] });
       queryClient.invalidateQueries({ queryKey: ["/api/services/by-location", locationId] });
@@ -2900,7 +2911,15 @@ function ServicesTab({
       queryClient.invalidateQueries({ queryKey: ["/api/appointments"] });
       queryClient.invalidateQueries({ queryKey: ["/api/opportunities/by-location", locationId] });
       queryClient.invalidateQueries({ queryKey: ["/api/opportunities"] });
-      toast({ title: "Service ticket finalized" });
+      // D2: the finalization that completes the visit reports its invoicing
+      // outcome - a prompt under PROMPT, a toast otherwise.
+      if (result.invoicing) invalidateInvoiceViews();
+      const prompt = getInvoiceOnFinalizePrompt(result);
+      if (prompt) {
+        setInvoicePrompt(prompt);
+        return;
+      }
+      toast(describeFinalizeResult(result));
     },
     onError: (error: Error) => toast({ title: "Unable to finalize ticket", description: error.message, variant: "destructive" }),
   });
@@ -3071,6 +3090,7 @@ function ServicesTab({
           )}
         </DialogContent>
       </Dialog>
+      <InvoiceOnFinalizePrompt prompt={invoicePrompt} onClose={() => setInvoicePrompt(null)} />
       <ServiceCompletionDialog
         open={!!completionService}
         onOpenChange={(open) => !open && setCompletionService(null)}

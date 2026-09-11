@@ -104,4 +104,16 @@ export async function bootstrapInvoices(): Promise<void> {
       next_number integer NOT NULL DEFAULT 1
     )
   `);
+
+  // D2: the invoiceOnFinalize app setting, default PROMPT. app_settings is
+  // created by the service-scheduling bootstrap, which runs before this one;
+  // the unqualified ON CONFLICT DO NOTHING works whether its key is still
+  // (key) or already (org_id, key) - see the note there. A missing row already
+  // reads as PROMPT (normalizeInvoiceOnFinalizeMode); seeding it makes the
+  // default visible in the table rather than only in code.
+  await db.execute(sql`
+    INSERT INTO app_settings (key, value)
+    VALUES ('invoice_on_finalize', 'PROMPT')
+    ON CONFLICT DO NOTHING
+  `);
 }

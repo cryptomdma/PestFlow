@@ -24,6 +24,7 @@ import type { Request } from "express";
 import { requirePermission } from "./auth";
 import { DraftInvoiceDecisionRequiredError, PrefinalizationIssueError } from "./storage";
 import { can, PERMISSIONS, type UserRole } from "@shared/permissions";
+import { INVOICE_ON_FINALIZE_MODES, normalizeInvoiceOnFinalizeMode } from "@shared/invoice-on-finalize";
 import { runBillingCycle } from "./jobs/billing-run";
 
 function handleZodError(res: any, error: ZodError) {
@@ -254,6 +255,9 @@ export async function registerRoutes(
   });
   const appointmentCancelReasonsSchema = z.object({
     reasons: z.array(z.string().trim().min(1)).min(1),
+  });
+  const invoiceOnFinalizeModeSchema = z.object({
+    mode: z.enum(INVOICE_ON_FINALIZE_MODES),
   });
   const appointmentCancelRescheduleSchema = z.object({
     reason: z.string().trim().min(1, "Reason is required"),
@@ -1593,6 +1597,25 @@ export async function registerRoutes(
       const validated = appointmentCancelReasonsSchema.parse(req.body);
       const data = await req.storage.setAppointmentCancelReasons(validated.reasons);
       res.json({ reasons: JSON.parse(data.value) });
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  // D2: invoiceOnFinalize = PROMPT | AUTO_DRAFT | OFF. Readable by anyone
+  // (the Settings page shows it); changing it decides how the office bills
+  // every visit, so it is MANAGE_SETTINGS like tax rates and the billing run.
+  app.get("/api/settings/invoice-on-finalize", async (req, res) => {
+    const mode = await req.storage.getInvoiceOnFinalizeMode();
+    res.json({ mode });
+  });
+
+  app.patch("/api/settings/invoice-on-finalize", requirePermission(PERMISSIONS.MANAGE_SETTINGS), async (req, res) => {
+    try {
+      const validated = invoiceOnFinalizeModeSchema.parse(req.body);
+      const data = await req.storage.setInvoiceOnFinalizeMode(validated.mode);
+      res.json({ mode: normalizeInvoiceOnFinalizeMode(data.value) });
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
       res.status(400).json({ message: e.message });

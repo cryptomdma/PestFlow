@@ -20,8 +20,8 @@ grounded in what the code and data actually do, not what the decision record ass
 | 2 | `feature/phase-1-audit-log-infrastructure` | D7 (infra half) | Done |
 | 3 | `feature/phase-1-invoice-appointment-anchor` | D1 | Done |
 | 3.5 | `feature/phase-1-agreement-billing-plan-selector` | — (gap found in Pass 3 live testing) | Done (PR #59) |
-| 4 | `feature/phase-1-draft-invoice-lifecycle` | D3, Q3 | Pushed, awaiting merge |
-| 5 | `feature/phase-1-finalize-invoice-wiring` | D2 | Not started |
+| 4 | `feature/phase-1-draft-invoice-lifecycle` | D3, Q3 | Done (PR #60) |
+| 5 | `feature/phase-1-finalize-invoice-wiring` | D2 | Pushed, awaiting merge |
 | 5.5 | `feature/phase-1-initial-charge-to-agreement` | D4 (owner correction) | Not started |
 | 6 | `feature/phase-1-payments-lite` | D5, D4 | Not started |
 | 7 | `feature/phase-1-coa-and-field-display` | D6 | Not started |
@@ -591,6 +591,99 @@ Behavior worth knowing before Pass 5 touches it:
   an appointment-less one-off); `createManualInvoice` stamps `issuedAt` but still writes no audit row
   (Pass 8); there is still no UI affordance to open any invoice's PDF, draft or issued (see
   `CURRENT_FOCUS.md`).
+
+**Shipped in Pass 5 (D2), for Pass 6 to build on** — finalization is wired to invoicing. The
+finalization that completes a visit (every active Service on the appointment now finalized) reports
+what it did about the visit's invoice, governed by one org setting. Adoption was not rebuilt: Generate
+is still `generateInvoiceFromServiceRecord()`, which issues a DRAFT it finds on the anchor.
+
+```ts
+// shared/invoice-on-finalize.ts. The whole D2 vocabulary, shared by server,
+// Settings page and the two finalize call sites.
+export const INVOICE_ON_FINALIZE_MODES = ["PROMPT", "AUTO_DRAFT", "OFF"] as const;   // default PROMPT
+export const INVOICE_ON_FINALIZE_SETTING_KEY = "invoice_on_finalize";             // app_settings key
+export function normalizeInvoiceOnFinalizeMode(value): InvoiceOnFinalizeMode         // unknown -> PROMPT
+export function describeInvoiceOnFinalizeMode(mode): { label; description }
+export interface FinalizationInvoicingOutcome<TInvoice> {
+  mode; action: "PROMPT" | "DRAFTED" | "DRAFT_FAILED" | "ALREADY_INVOICED" | "OFF";
+  appointmentId; invoice: TInvoice | null; created?: boolean; message?: string;
+}
+
+// server/storage.ts. finalizeServiceRecord() now returns BOTH - the route
+// sends this object, not the bare record. `invoicing` is null unless this
+// finalization completed its visit; appointment-less tickets never carry one.
+export interface FinalizeServiceRecordResult { record: ServiceRecord; invoicing: FinalizationInvoicingOutcome<Invoice> | null }
+async finalizeServiceRecord(id, actor?): Promise<FinalizeServiceRecordResult | undefined>
+
+// Private. The hook, called from finalizeServiceRecord's allFinalized branch
+// inside its transaction. Reads the setting, checks both anchors, and for
+// AUTO_DRAFT creates the draft under a SAVEPOINT (tx.transaction) so a refused
+// draft reports DRAFT_FAILED instead of rolling the finalization back.
+private async resolveInvoiceOnFinalizeTx(tx, { appointment, serviceRecordIds, actor }): Promise<FinalizationInvoicingOutcome<Invoice>>
+
+// Now takes the caller's tx (the public route wraps it in db.transaction; the
+// hook calls it under a savepoint). Body unchanged.
+private async createDraftInvoiceForAppointmentTx(tx, appointmentId, actor?): Promise<Invoice>
+
+// Public, IStorage. Mirrors the service-time-tracking pair.
+async getInvoiceOnFinalizeMode(): Promise<InvoiceOnFinalizeMode>
+async setInvoiceOnFinalizeMode(mode): Promise<AppSetting>
+
+// Routes. GET is open; PATCH is MANAGE_SETTINGS (admin) like tax rates and the
+// billing run - it decides how every visit gets billed.
+GET  /api/settings/invoice-on-finalize  -> { mode }
+PATCH /api/settings/invoice-on-finalize { mode } -> { mode }
+
+// client/src/components/invoice-on-finalize-prompt.tsx. One prompt for both
+// finalize call sites (Service Ticket Review, location Services tab).
+export function InvoiceOnFinalizePrompt({ prompt, onClose })
+export function getInvoiceOnFinalizePrompt(result): InvoiceOnFinalizePromptState | null   // PROMPT -> open it
+export function describeFinalizeResult(result): toast copy for every other outcome
+export function invalidateInvoiceViews()   // every /api/invoices* and /api/audit-logs* query, whatever its key shape
+```
+
+Behavior worth knowing before Pass 6 touches it:
+- **The outcome, per mode, once the visit is complete.** An issued invoice already on either anchor
+  (a manager's pre-finalization override, a pre-D1 row) is `ALREADY_INVOICED` in every mode - nothing
+  to generate, and the tickets were flagged at posting time. Otherwise: `PROMPT` reports the DRAFT to
+  adopt (or null) and the client asks Generate / Generate & Send / Later; `AUTO_DRAFT` creates the
+  DRAFT (`created: true`) or reports the one already there (`created: false`); `OFF` reports nothing
+  and the visit waits on the ready-for-billing list. A ticket whose siblings are still pending gets
+  `invoicing: null` - the visit is not complete, so there is no decision yet.
+- **Generate is the existing route.** The prompt's Generate calls
+  `POST /api/invoices/generate-from-service-record/:id` - which adopts a DRAFT, re-prices it and issues
+  it, or creates the visit's one invoice - and Generate & Send follows with
+  `POST /api/invoices/batch-send { invoiceIds: [id] }`. "Send" is what Batch Invoice's "Send All"
+  already means: `sentAt` is stamped, nothing is delivered (there is no email and still no PDF
+  affordance - see `CURRENT_FOCUS.md`). The prompt says so. A send that fails after generation
+  succeeded is reported as "issued, but not marked sent", never as a failed generate.
+- **Later is genuinely nothing.** No row, no flag; the visit is listed by
+  `getServiceRecordsReadyForBilling()` exactly as before this pass, so Generate on the review screen
+  and Batch Invoice both still pick it up. Finalizing an already-finalized ticket re-runs the hook
+  (idempotently - `existingRecord.confirmed` skips every other side effect) and re-reports.
+- **AUTO_DRAFT never blocks finalization.** The draft is created under a savepoint (a nested drizzle
+  `tx.transaction()`), because a failed statement aborts a Postgres transaction outright and the
+  finalization above it must survive. A refusal - the line resolver's "Service has no price set", an
+  agreement with no plan and no price - rolls back to the savepoint and returns `DRAFT_FAILED` with the
+  message; the record, the service and the appointment still commit as finalized/COMPLETED, and the
+  visit stays on the ready-for-billing list. Verified live. A lost race against a concurrent "Draft
+  invoice" click (23505 on the appointment index) re-reads the winner and reports it as `DRAFTED,
+  created: false`.
+- **An existing DRAFT is not re-priced by AUTO_DRAFT.** D2's "refresh lines" is done by issue, which
+  rebuilds every line from the finalized tickets; doing it again at finalization would be a second
+  pricing pass whose only reader is the Invoices list's preview total. Deliberate.
+- **Scope is the `allFinalized` branch, as the plan row says.** Appointment-less tickets (legacy data;
+  nothing creates them today) finalize with `invoicing: null` and bill through the ready-for-billing
+  list as before - there is no draft path for the service-record anchor (Pass 4's deliberate gap).
+- **Setting mechanics.** Seeded `PROMPT` by `invoice-bootstrap.ts` with the same unqualified
+  `ON CONFLICT DO NOTHING` the other two settings use; a missing row reads as `PROMPT` anyway. The
+  Settings card ("Invoicing on Finalization", in the billing block) is disabled - not hidden - for
+  non-admins with a line saying so, because the sidebar shows Settings to every role and the other two
+  settings PATCHes are unguarded. Technician, support and manager get 403 on PATCH; an unknown mode is
+  400.
+- **Pass 6 hook.** D4's "Apply $X location balance to this invoice?" prompt belongs at the same
+  moment as this one - the outcome carries `appointmentId` and the invoice, and the prompt component
+  is where a second question about the just-issued invoice would go.
 
 **Pass 5.5 — move the initial charge off the Billing Plan** (owner correction to D4, 2026-09-09; the
 full reasoning is in `PLAN_BILLING_V1_1.md` D4 and is not repeated here).

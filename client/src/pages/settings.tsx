@@ -22,10 +22,13 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/hooks/use-auth";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { dollarsToCents, centsToDollars, centsToDollarString, formatCents } from "@shared/money";
 import { describeBillingPlanBehavior } from "@shared/billing-plan";
-import { Plus, Settings as SettingsIcon, Wrench, FileText, Users, ShieldCheck, FlaskConical, Bug, CreditCard, CalendarClock, Percent, Scale, Building2 } from "lucide-react";
+import { can, PERMISSIONS } from "@shared/permissions";
+import { INVOICE_ON_FINALIZE_MODES, describeInvoiceOnFinalizeMode, normalizeInvoiceOnFinalizeMode, type InvoiceOnFinalizeMode } from "@shared/invoice-on-finalize";
+import { Plus, Settings as SettingsIcon, Wrench, FileText, Users, ShieldCheck, FlaskConical, Bug, CreditCard, CalendarClock, Percent, Scale, Building2, Receipt } from "lucide-react";
 import type { AgreementCancellationPolicy, AgreementTemplate, BillingPlan, BillingProfileTemplate, MaterialProduct, OpportunityDisposition, Organization, ServiceType, TargetPest, TaxRate, TaxRule, Technician } from "@shared/schema";
 
 function formatTemplateRecurrence(template: AgreementTemplate) {
@@ -1268,6 +1271,12 @@ export default function Settings() {
   const { data: taxRules, isLoading: taxRulesLoading } = useQuery<TaxRule[]>({ queryKey: ["/api/tax-rules?includeInactive=true"] });
   const { data: serviceTimeTracking } = useQuery<{ mode: string }>({ queryKey: ["/api/settings/service-time-tracking"] });
   const { data: appointmentCancelReasons } = useQuery<{ reasons: string[] }>({ queryKey: ["/api/settings/appointment-cancel-reasons"] });
+  // D2: PROMPT | AUTO_DRAFT | OFF. The PATCH is MANAGE_SETTINGS (admin), so the
+  // select is disabled - not hidden - for everyone else (dev behavior rule 6).
+  const { user } = useAuth();
+  const canManageSettings = can(user?.role ?? "", PERMISSIONS.MANAGE_SETTINGS);
+  const { data: invoiceOnFinalize } = useQuery<{ mode: string }>({ queryKey: ["/api/settings/invoice-on-finalize"] });
+  const invoiceOnFinalizeMode = normalizeInvoiceOnFinalizeMode(invoiceOnFinalize?.mode);
   useEffect(() => {
     if (appointmentCancelReasons?.reasons) {
       setAppointmentCancelReasonsText(appointmentCancelReasons.reasons.join("\n"));
@@ -1283,6 +1292,17 @@ export default function Settings() {
       toast({ title: "Service time tracking updated" });
     },
     onError: (error: Error) => toast({ title: "Unable to update time tracking", description: error.message, variant: "destructive" }),
+  });
+  const updateInvoiceOnFinalizeMutation = useMutation({
+    mutationFn: async (mode: InvoiceOnFinalizeMode) => {
+      const response = await apiRequest("PATCH", "/api/settings/invoice-on-finalize", { mode });
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/settings/invoice-on-finalize"] });
+      toast({ title: "Invoicing on finalization updated" });
+    },
+    onError: (error: Error) => toast({ title: "Unable to update invoicing on finalization", description: error.message, variant: "destructive" }),
   });
   const updateAppointmentCancelReasonsMutation = useMutation({
     mutationFn: async () => {
@@ -1588,6 +1608,34 @@ export default function Settings() {
               ))}
             </div>
           )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base font-semibold flex items-center gap-2"><Receipt className="h-4 w-4" /> Invoicing on Finalization</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="max-w-md space-y-2">
+            <Label>When the last ticket on a visit is finalized</Label>
+            <Select
+              value={invoiceOnFinalizeMode}
+              onValueChange={(mode) => updateInvoiceOnFinalizeMutation.mutate(mode as InvoiceOnFinalizeMode)}
+              disabled={!canManageSettings || updateInvoiceOnFinalizeMutation.isPending}
+            >
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {INVOICE_ON_FINALIZE_MODES.map((mode) => (
+                  <SelectItem key={mode} value={mode}>{describeInvoiceOnFinalizeMode(mode).label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <p className="text-xs text-muted-foreground">{describeInvoiceOnFinalizeMode(invoiceOnFinalizeMode).description}</p>
+          <p className="text-xs text-muted-foreground">
+            Visit invoices only. Agreements billed on a schedule are invoiced by the nightly billing run regardless, and their services appear on the visit invoice at $0. "Send" marks the invoice sent - there is no email delivery yet.
+          </p>
+          {!canManageSettings ? <p className="text-xs text-muted-foreground">Only an admin can change this setting.</p> : null}
         </CardContent>
       </Card>
 
