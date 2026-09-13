@@ -33,6 +33,10 @@ export interface InvoiceDocumentContext {
   subtotalCents: number;
   taxCents: number;
   totalCents: number;
+  /** D5 rollups as of rendering. A document is stored on first render, so
+   *  these are the figures at that moment - the ledger is the live truth. */
+  amountPaidCents: number;
+  balanceDueCents: number;
   /**
    * The visit was fully covered by the customer's service agreement and no
    * money moved (`isFullyAgreementCovered` in shared/invoice-status.ts).

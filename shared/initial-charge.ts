@@ -39,6 +39,15 @@ export interface InitialChargeFields {
   initialChargeCents: number | null;
   initialChargePercentBasisPoints: number | null;
   initialChargeCollectedBy: string | null;
+  /**
+   * The exception to the owner's rule (D4 review, 2026-09-13) that a down
+   * payment COUNTS TOWARD the contract price: $400 agreement, $100 down,
+   * $300 remains to bill through the plan. True means the charge is owed on
+   * top of the price instead. Only meaningful for a DOWN_PAYMENT - a cleanout
+   * surcharge is inherently additional and a prepayment in full is the price -
+   * so normalization forces it false for every other type.
+   */
+  initialChargeInAdditionToPrice: boolean;
 }
 
 /** The template carries the same block under `default*` names. */
@@ -48,6 +57,7 @@ export interface TemplateInitialChargeFields {
   defaultInitialChargeCents: number | null;
   defaultInitialChargePercentBasisPoints: number | null;
   defaultInitialChargeCollectedBy: string | null;
+  defaultInitialChargeInAdditionToPrice: boolean;
 }
 
 export const NO_INITIAL_CHARGE: InitialChargeFields = {
@@ -56,6 +66,7 @@ export const NO_INITIAL_CHARGE: InitialChargeFields = {
   initialChargeCents: null,
   initialChargePercentBasisPoints: null,
   initialChargeCollectedBy: null,
+  initialChargeInAdditionToPrice: false,
 };
 
 export function isInitialChargeType(value: unknown): value is InitialChargeType {
@@ -98,7 +109,66 @@ export function normalizeInitialCharge(input: InitialChargeInput): InitialCharge
     initialChargeCents: mode === "FLAT" ? toInteger(input.initialChargeCents) : null,
     initialChargePercentBasisPoints: mode === "PERCENT_OF_PRICE" ? toInteger(input.initialChargePercentBasisPoints) : null,
     initialChargeCollectedBy: isInitialChargeCollector(input.initialChargeCollectedBy) ? input.initialChargeCollectedBy : null,
+    initialChargeInAdditionToPrice: input.initialChargeType === "DOWN_PAYMENT" && input.initialChargeInAdditionToPrice === true,
   };
+}
+
+/**
+ * Whether the initial charge is part of the contract price (the default) or
+ * owed on top of it. A cleanout surcharge is always additional - it prices
+ * work the sale could not see. A down payment counts toward the price unless
+ * the sale says otherwise. A prepayment in full IS the price.
+ */
+export function initialChargeCountsTowardPrice(charge: Pick<InitialChargeFields, "initialChargeType" | "initialChargeInAdditionToPrice">): boolean {
+  if (!charge.initialChargeType) {
+    return false;
+  }
+  if (charge.initialChargeType === "CLEANOUT_SURCHARGE") {
+    return false;
+  }
+  return !charge.initialChargeInAdditionToPrice;
+}
+
+/**
+ * The contract price still to be billed through the agreement's plan once
+ * the initial charge is accounted for - the "$300 remains" in the owner's
+ * example. Every path that bills the contract price reads this instead of
+ * priceCents: the per-visit line (remaining / expected visits), a PREPAID_TERM
+ * plan's one charge, and a recurring plan's per-period share. Null when there
+ * is no price to bill against. Never negative: a charge larger than the price
+ * leaves nothing remaining rather than a credit the ledger does not know about.
+ */
+export function resolveRemainingContractPriceCents(
+  charge: InitialChargeFields,
+  contractPriceCents: number | null | undefined,
+): number | null {
+  if (contractPriceCents == null) {
+    return null;
+  }
+  if (!initialChargeCountsTowardPrice(charge)) {
+    return contractPriceCents;
+  }
+  const initialChargeCents = resolveInitialChargeCents(charge, contractPriceCents);
+  if (initialChargeCents == null) {
+    return contractPriceCents;
+  }
+  return Math.max(contractPriceCents - initialChargeCents, 0);
+}
+
+/**
+ * Whether a recurring plan's `initialChargeCoversFirstPeriod` skip applies to
+ * this agreement: the plan must say so, and the agreement must carry a charge
+ * that counts toward the price. Money owed on top of the price cannot also
+ * buy period 1 - it would be paid for twice. Read by the creation path (which
+ * shifts nextBillingDate one interval out) and by the nightly run (which
+ * spreads the remaining price over one fewer period), so they always agree on
+ * how many periods a term bills.
+ */
+export function initialChargeSkipsFirstPeriod(
+  plan: { initialChargeCoversFirstPeriod: boolean } | null | undefined,
+  charge: Pick<InitialChargeFields, "initialChargeType" | "initialChargeInAdditionToPrice">,
+): boolean {
+  return !!plan?.initialChargeCoversFirstPeriod && initialChargeCountsTowardPrice(charge);
 }
 
 /**
@@ -185,6 +255,7 @@ export function initialChargeFromTemplate(template: TemplateInitialChargeInput |
     initialChargeCents: template.defaultInitialChargeCents,
     initialChargePercentBasisPoints: template.defaultInitialChargePercentBasisPoints,
     initialChargeCollectedBy: template.defaultInitialChargeCollectedBy,
+    initialChargeInAdditionToPrice: template.defaultInitialChargeInAdditionToPrice,
   });
 }
 
@@ -195,6 +266,7 @@ export function initialChargeToTemplate(charge: InitialChargeFields): TemplateIn
     defaultInitialChargeCents: charge.initialChargeCents,
     defaultInitialChargePercentBasisPoints: charge.initialChargePercentBasisPoints,
     defaultInitialChargeCollectedBy: charge.initialChargeCollectedBy,
+    defaultInitialChargeInAdditionToPrice: charge.initialChargeInAdditionToPrice,
   };
 }
 
@@ -257,10 +329,26 @@ export function describeInitialCharge(charge: InitialChargeFields, contractPrice
   }
   const resolved = resolveInitialChargeCents(charge, contractPriceCents);
   const collector = `Collected by ${formatInitialChargeCollector(charge.initialChargeCollectedBy)}.`;
+  const remaining = describeRemainingContractPrice(charge, contractPriceCents);
   if (charge.initialChargeAmountMode === "PERCENT_OF_PRICE") {
     const percent = basisPointsToPercentString(charge.initialChargePercentBasisPoints) || "0";
     const amount = resolved != null ? formatCentsPlain(resolved) : "set a contract price to resolve the amount";
-    return `${formatInitialChargeType(charge.initialChargeType)}: ${percent}% of contract price (${amount}). ${collector}`;
+    return `${formatInitialChargeType(charge.initialChargeType)}: ${percent}% of contract price (${amount}). ${remaining}${collector}`;
   }
-  return `${formatInitialChargeType(charge.initialChargeType)}: ${formatCentsPlain(resolved ?? 0)}. ${collector}`;
+  return `${formatInitialChargeType(charge.initialChargeType)}: ${formatCentsPlain(resolved ?? 0)}. ${remaining}${collector}`;
+}
+
+/** "Counts toward the $400 price; $300 remains. " / "In addition to the contract price. " - or nothing when there is no price. */
+function describeRemainingContractPrice(charge: InitialChargeFields, contractPriceCents: number | null | undefined): string {
+  if (!charge.initialChargeType) {
+    return "";
+  }
+  if (!initialChargeCountsTowardPrice(charge)) {
+    return charge.initialChargeType === "CLEANOUT_SURCHARGE" ? "Charged in addition to the contract price. " : "In addition to the contract price. ";
+  }
+  const remaining = resolveRemainingContractPriceCents(charge, contractPriceCents);
+  if (remaining == null || contractPriceCents == null) {
+    return "Counts toward the contract price. ";
+  }
+  return `Counts toward the ${formatCentsPlain(contractPriceCents)} price; ${formatCentsPlain(remaining)} remains to bill. `;
 }

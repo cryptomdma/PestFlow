@@ -15,7 +15,18 @@ export const PERMISSIONS = {
   SEND_INVOICE: "send_invoice",
   VOID_INVOICE: "void_invoice",
   ISSUE_CREDIT_MEMO: "issue_credit_memo",
+  // PLAN_BILLING_V1_1.md D5, the payments ledger. TAKE_PAYMENT_FIELD records
+  // a payment (it posts PENDING); the rest are office actions on the ledger.
   TAKE_PAYMENT_FIELD: "take_payment_field",
+  // Apply an unapplied payment / credit memo to an invoice, and release
+  // (un-apply) one. Both directions are the same explicit, audit-logged act.
+  APPLY_PAYMENT: "apply_payment",
+  // A check or "other" payment confirms on clearance - office work.
+  CONFIRM_PAYMENT: "confirm_payment",
+  // Cash confirms only by a user with cash-handling authority (D5).
+  CONFIRM_CASH_PAYMENT: "confirm_cash_payment",
+  // Voiding a recorded payment is a correction on a money record.
+  VOID_PAYMENT: "void_payment",
   REFUND_PAYMENT: "refund_payment",
   WAIVE_CANCELLATION_FEE: "waive_cancellation_fee",
   VIEW_COST_MARGIN_LTV: "view_cost_margin_ltv",
@@ -46,6 +57,8 @@ const ROLE_PERMISSIONS: Record<UserRole, ReadonlySet<Permission>> = {
     PERMISSIONS.GENERATE_INVOICE,
     PERMISSIONS.SEND_INVOICE,
     PERMISSIONS.TAKE_PAYMENT_FIELD,
+    PERMISSIONS.APPLY_PAYMENT,
+    PERMISSIONS.CONFIRM_PAYMENT,
   ]),
   manager: new Set<Permission>([
     PERMISSIONS.POST_SERVICE_TICKET,
@@ -60,6 +73,10 @@ const ROLE_PERMISSIONS: Record<UserRole, ReadonlySet<Permission>> = {
     PERMISSIONS.VOID_INVOICE,
     PERMISSIONS.ISSUE_CREDIT_MEMO,
     PERMISSIONS.TAKE_PAYMENT_FIELD,
+    PERMISSIONS.APPLY_PAYMENT,
+    PERMISSIONS.CONFIRM_PAYMENT,
+    PERMISSIONS.CONFIRM_CASH_PAYMENT,
+    PERMISSIONS.VOID_PAYMENT,
     PERMISSIONS.REFUND_PAYMENT,
     PERMISSIONS.WAIVE_CANCELLATION_FEE,
     PERMISSIONS.VIEW_COST_MARGIN_LTV,

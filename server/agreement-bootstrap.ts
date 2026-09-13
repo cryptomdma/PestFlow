@@ -82,6 +82,7 @@ export async function bootstrapAgreements(): Promise<void> {
       default_initial_charge_cents integer,
       default_initial_charge_percent_basis_points integer,
       default_initial_charge_collected_by text,
+      default_initial_charge_in_addition_to_price boolean NOT NULL DEFAULT false,
       default_instructions text,
       sort_order integer,
       internal_code text,
@@ -119,6 +120,7 @@ export async function bootstrapAgreements(): Promise<void> {
       initial_charge_cents integer,
       initial_charge_percent_basis_points integer,
       initial_charge_collected_by text,
+      initial_charge_in_addition_to_price boolean NOT NULL DEFAULT false,
       expected_service_count integer,
       recurrence_unit text NOT NULL DEFAULT 'MONTH',
       recurrence_interval integer NOT NULL DEFAULT 1,
@@ -195,6 +197,11 @@ export async function bootstrapAgreements(): Promise<void> {
   await db.execute(sql`ALTER TABLE agreement_templates ADD COLUMN IF NOT EXISTS default_initial_charge_cents integer`);
   await db.execute(sql`ALTER TABLE agreement_templates ADD COLUMN IF NOT EXISTS default_initial_charge_percent_basis_points integer`);
   await db.execute(sql`ALTER TABLE agreement_templates ADD COLUMN IF NOT EXISTS default_initial_charge_collected_by text`);
+  // D4 owner review (Pass 6): a down payment counts toward the contract price
+  // by default; this flag is the explicit "in addition to" exception. Every
+  // existing agreement takes the default - the owner's rule, not a guess.
+  await db.execute(sql`ALTER TABLE agreements ADD COLUMN IF NOT EXISTS initial_charge_in_addition_to_price boolean NOT NULL DEFAULT false`);
+  await db.execute(sql`ALTER TABLE agreement_templates ADD COLUMN IF NOT EXISTS default_initial_charge_in_addition_to_price boolean NOT NULL DEFAULT false`);
 
   // One-shot data migration, keyed on the legacy plan column still existing -
   // the same marker money-bootstrap.ts uses. Nothing here may run twice: an

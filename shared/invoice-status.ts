@@ -81,3 +81,32 @@ export const NO_CHARGE_LABEL = "No Charge - Covered by Service Agreement";
 export function isInvoiceIssued(status: string | null | undefined): boolean {
   return status !== "DRAFT" && status !== "VOID";
 }
+
+export interface InvoiceRollup {
+  amountPaidCents: number;
+  balanceDueCents: number;
+  status: InvoiceStatus;
+}
+
+/**
+ * The three computed-and-stored fields D5 puts on an invoice, from the one
+ * number the ledger supplies: the sum of unreleased applications from
+ * CONFIRMED payments and issued credit memos. Recomputed fresh at every
+ * change (application, release, confirmation, void, issue) and never
+ * incremented, so a missed update heals on the next one. A DRAFT or VOID
+ * invoice owes nothing - it is not a receivable - so its balance due is 0
+ * whatever its total says, and its lifecycle status passes through untouched.
+ */
+export function computeInvoiceRollup(state: {
+  totalAmountCents: number;
+  amountPaidCents: number;
+  currentStatus?: string | null;
+}): InvoiceRollup {
+  const status = deriveInvoiceStatus(state);
+  const issued = isInvoiceIssued(status);
+  return {
+    amountPaidCents: state.amountPaidCents,
+    balanceDueCents: issued ? Math.max(state.totalAmountCents - state.amountPaidCents, 0) : 0,
+    status,
+  };
+}

@@ -1015,6 +1015,31 @@ neither plan nor price) is reported, not fatal: the ticket, Service and Appointm
 A visit whose invoice is already issued is reported as such in every mode. This applies to visit
 invoices only — agreement revenue on schedule-billed plans still comes solely from the nightly run.
 
+### Canonical rule — the payments ledger (PLAN_BILLING_V1.1 D5, D4)
+
+* A **Payment** is money received: an event, recorded once and never edited. Its lifecycle
+  (`PENDING` → `CONFIRMED`, or `VOIDED`, or `REFUNDED`) is a stamped transition with who / when / why,
+  never a change to the amount. A mistake is a voided payment and a new one.
+* Cash, check and "other" post `PENDING`; a check confirms on clearance, cash only by a user with
+  cash-handling authority. A pending payment may be applied and shows on the invoice; it **counts**
+  only once confirmed.
+* The unapplied balance lives at the **Location** (rule 1: location is the canonical customer record),
+  never the customer. A payment may be **designated** toward an Agreement — intent, recorded at
+  collection. **Application** to an Invoice is the fact, an explicit, role-gated, audit-logged act.
+  **Release** (un-apply) is the same act reversed and requires a reason; the application row stays,
+  flagged. Nothing in the ledger is deleted.
+* A **Credit Memo** is the ledger's only correction mechanism. It is issued against a Location
+  (optionally naming the Invoice it corrects), sits in the same unapplied pool as a payment, and is
+  applied the same way. It never changes an Invoice's price (D6).
+* An Invoice's `amountPaidCents` and `balanceDueCents` are **computed and stored from the ledger** —
+  recomputed in full, under a row lock, inside the same transaction as every application, release,
+  confirmation and void — and its status is derived from them. No status is ever hand-set; there is
+  no "mark paid". A DRAFT or VOID invoice owes nothing and can hold nothing; voiding an invoice
+  releases what was applied to it back to the location.
+* The Agreement's initial charge is a **real issued receivable** at agreement creation — its own
+  Invoice with an `INITIAL_CHARGE` line, fired once per Agreement — refused, never issued at $0, when a
+  percent charge has no price to resolve against.
+
 ### Required fields
 
 * id
@@ -1047,23 +1072,32 @@ Money collection or recorded payment event.
 ### Required fields
 
 * id
-* accountId
-* locationId nullable
-* serviceVisitId nullable
-* invoiceId nullable
-* billingProfileId nullable
-* paymentMethod (`card` | `cash` | `check` | `ach` | `other`)
-* amount
-* status (`pending` | `authorized` | `captured` | `failed` | `voided`)
+* customerId
+* locationId — the balance lives here (D4), so it is required
+* method (`CASH` | `CHECK` | `OTHER` now; `CARD` | `ACH` named for Phase 2)
+* amountCents
+* status (`PENDING` | `CONFIRMED` | `VOIDED` | `REFUNDED`; `AUTHORIZED` | `CAPTURED` | `FAILED` are
+  the Phase 2 card states)
+* receivedAt — when the money changed hands, entered; createdAt is when it was recorded
 * createdAt
-* updatedAt
 
 ### Optional fields
 
+* designatedAgreementId nullable — intent, not application
 * checkNumber nullable
 * referenceNumber nullable
-* proofAttachmentId nullable
-* collectedByUserId nullable
+* memo nullable
+* collectedByUserId / collectedByLabel nullable — the session actor at recording, the recorded
+  collection event
+* confirmedBy* / confirmedAt, voidedBy* / voidedAt / voidReason, refundedBy* / refundedAt /
+  refundReason — lifecycle stamps
+* proofAttachmentId — not built (check photo / cash signature from the historical plan)
+
+An Invoice's money comes to it only through **payment_applications** and **credit_applications**
+(paymentId or creditMemoId, invoiceId, amountCents, appliedBy / appliedAt, released + releasedBy /
+releasedAt / releaseReason). A **Credit Memo** carries customerId, locationId, invoiceId nullable,
+reasonCode (`BILLING_ERROR` | `SERVICE_ISSUE` | `GOODWILL` | `CANCELLATION` | `OTHER`), reason,
+amountCents, status (`ISSUED` | `VOIDED`) and the same issue / void stamps.
 
 ---
 

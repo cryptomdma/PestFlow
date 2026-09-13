@@ -17,6 +17,7 @@ import { bootstrapOutbox } from "./outbox-bootstrap";
 import { bootstrapBillingProfiles } from "./billing-profile-bootstrap";
 import { backfillExpectedServiceCounts } from "./production-value-backfill";
 import { bootstrapInvoices } from "./invoice-bootstrap";
+import { bootstrapPayments } from "./payments-bootstrap";
 import { bootstrapTax } from "./tax-bootstrap";
 import { bootstrapBillingRun } from "./billing-run-bootstrap";
 import { scheduleBillingRun } from "./jobs/billing-run";
@@ -95,6 +96,8 @@ app.use((req, res, next) => {
   await bootstrapCanonicalNoteTables().catch((e) => console.error("Note table bootstrap error:", e));
   await bootstrapOutbox().catch((e) => console.error("Outbox bootstrap error:", e));
   await bootstrapInvoices().catch((e) => console.error("Invoice bootstrap error:", e));
+  // References invoices and agreements, so after both of their bootstraps.
+  await bootstrapPayments().catch((e) => console.error("Payments bootstrap error:", e));
   await bootstrapDocuments().catch((e) => console.error("Document bootstrap error:", e));
   await bootstrapProductionValueLedger().catch((e) => console.error("Production value ledger bootstrap error:", e));
   await bootstrapTax().catch((e) => console.error("Tax bootstrap error:", e));

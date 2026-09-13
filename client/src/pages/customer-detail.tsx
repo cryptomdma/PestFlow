@@ -27,7 +27,7 @@ import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useToast } from "@/hooks/use-toast";
-import { apiRequest, queryClient } from "@/lib/queryClient";
+import { apiRequest, getApiErrorMessage, queryClient } from "@/lib/queryClient";
 import { cn } from "@/lib/utils";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { OpportunityDispositionDialog } from "@/components/opportunity-disposition-dialog";
@@ -47,10 +47,12 @@ import { useAuth } from "@/hooks/use-auth";
 import { can, PERMISSIONS } from "@shared/permissions";
 import { formatPhoneDisplay } from "@shared/phone";
 import { describeAuditAction, describeAuditEntityType, diffAuditSnapshots } from "@shared/audit";
-import { dollarsToCents, centsToDollars, centsToDollarString } from "@shared/money";
+import { dollarsToCents, centsToDollars, centsToDollarString, formatCents } from "@shared/money";
 import { describeBillingPlanBehavior } from "@shared/billing-plan";
 import { describeInitialCharge, initialChargeFromTemplate } from "@shared/initial-charge";
 import { InitialChargeFormFields, initialChargeFieldsFrom, initialChargeFormStateFrom, validateInitialChargeFormState } from "@/components/initial-charge-fields";
+import { InvoiceRowLedger, LocationLedgerPanel } from "@/components/location-ledger-panel";
+import type { LocationLedgerSummary } from "@shared/payments";
 import {
   ArrowLeft, Mail, Phone, MapPin, Plus, Calendar, FileText, MessageSquare,
   ClipboardList, Building2, User, ChevronDown, ArrowUpRight, StickyNote,
@@ -77,6 +79,52 @@ interface LocationBalanceSummary {
   openBalanceCents: number;
   totalInvoicedCents: number;
   invoiceCount: number;
+  /** D5: confirmed payments and credit memos not yet applied to any invoice. */
+  unappliedBalanceCents: number;
+}
+
+// D4: the agreement's initial charge is a real receivable. What the card
+// shows: issued as which invoice and where it stands, or not yet issued (a
+// percent of a price that was not set, or an agreement created before Pass
+// 6) with the explicit path to issue it.
+function AgreementInitialChargeStatus({ agreement }: { agreement: Agreement }) {
+  const { toast } = useToast();
+  const { user } = useAuth();
+  const canIssue = can(user?.role ?? "", PERMISSIONS.GENERATE_INVOICE);
+  const { data: invoice, isLoading } = useQuery<Invoice | null>({
+    queryKey: ["/api/agreements", agreement.id, "initial-charge-invoice"],
+    enabled: !!agreement.initialChargeType,
+  });
+  const issueMutation = useMutation({
+    mutationFn: async () => {
+      const response = await apiRequest("POST", `/api/agreements/${agreement.id}/issue-initial-charge`, {});
+      return (await response.json()) as Invoice;
+    },
+    onSuccess: (issued) => {
+      invalidateInvoiceViews();
+      toast({ title: `Initial charge issued as ${issued.invoiceNumber}`, description: `${formatCents(issued.totalAmountCents)} due.` });
+    },
+    onError: (error: Error) => toast({ title: "Unable to issue the initial charge", description: getApiErrorMessage(error), variant: "destructive" }),
+  });
+
+  if (!agreement.initialChargeType || isLoading) return null;
+  if (invoice) {
+    return (
+      <p className="mt-1 text-xs text-muted-foreground" data-testid={`text-agreement-initial-charge-invoice-${agreement.id}`}>
+        Invoiced as {invoice.invoiceNumber}: {formatCents(invoice.totalAmountCents)}, {invoice.status === "VOID" ? "voided" : invoice.balanceDueCents > 0 ? `${formatCents(invoice.balanceDueCents)} due` : "paid"}.
+      </p>
+    );
+  }
+  return (
+    <div className="mt-1 flex items-center gap-2 flex-wrap text-xs text-muted-foreground" data-testid={`text-agreement-initial-charge-uninvoiced-${agreement.id}`}>
+      <span>Not yet invoiced.</span>
+      {canIssue && agreement.status !== "CANCELLED" ? (
+        <Button variant="outline" size="sm" className="h-6 px-2 text-xs" onClick={() => issueMutation.mutate()} disabled={issueMutation.isPending} data-testid={`button-issue-initial-charge-${agreement.id}`}>
+          {issueMutation.isPending ? "Issuing..." : "Issue initial charge invoice"}
+        </Button>
+      ) : null}
+    </div>
+  );
 }
 
 const BASE_LOCATION_TYPE_OPTIONS = ["residential", "commercial"] as const;
@@ -2340,6 +2388,7 @@ function AgreementsTab({
                           {describeInitialCharge(agreement, agreement.priceCents)}
                         </p>
                       )}
+                      <AgreementInitialChargeStatus agreement={agreement} />
                     </div>
                     <div>
                       <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Lead Time</p>
@@ -3303,6 +3352,10 @@ export default function CustomerDetail() {
   const { data: locationServices } = useQuery<ServiceRecord[]>({ queryKey: ["/api/service-records/by-location", activeLocationId], enabled: !!activeLocationId });
   const { data: locationInvoices } = useQuery<Invoice[]>({ queryKey: ["/api/invoices/by-location", activeLocationId], enabled: !!activeLocationId });
   const { data: locationComms } = useQuery<Communication[]>({ queryKey: ["/api/communications/by-location", activeLocationId], enabled: !!activeLocationId });
+  // D5: the location's ledger summary and its agreements, for the Invoices
+  // tab's balance panel, the Apply-balance affordance and payment designation.
+  const { data: locationLedgerSummary } = useQuery<LocationLedgerSummary>({ queryKey: ["/api/locations", activeLocationId, "ledger-summary"], enabled: !!activeLocationId });
+  const { data: locationAgreements } = useQuery<Agreement[]>({ queryKey: ["/api/agreements/location", activeLocationId], enabled: !!activeLocationId });
 
   const sortedContacts = useMemo(() => {
     if (!contacts) return [];
@@ -3547,11 +3600,14 @@ export default function CustomerDetail() {
                   ? `${nickname} · ${contactName}`
                   : nickname || contactName || loc.name;
                 const secondaryText = `${loc.address}, ${loc.city}, ${loc.state} ${loc.zip}`;
-                const balanceText = locationBalance && locationBalance.openBalanceCents > 0
+                const onAccountText = locationBalance && locationBalance.unappliedBalanceCents > 0
+                  ? ` - ${formatCurrency(centsToDollars(locationBalance.unappliedBalanceCents))} on account`
+                  : "";
+                const balanceText = (locationBalance && locationBalance.openBalanceCents > 0
                   ? `Open ${formatCurrency(centsToDollars(locationBalance.openBalanceCents))}`
                   : locationBalance?.invoiceCount
                     ? "Paid up"
-                    : "No balance";
+                    : "No balance") + onAccountText;
 
                 return (
                 <DropdownMenuItem key={loc.id} onClick={() => selectLocation(loc.id)} className={`flex flex-col items-start gap-1 py-2 ${loc.id === activeLocationId ? "bg-accent" : ""}`} data-testid={`location-option-${loc.id}`}>
@@ -3777,13 +3833,22 @@ export default function CustomerDetail() {
           </TabsContent>
 
           <TabsContent value="invoices" className="mt-4 space-y-3">
+            <LocationLedgerPanel locationId={activeLocationId} invoices={locationInvoices ?? []} agreements={locationAgreements} />
             {!locationInvoices || locationInvoices.length === 0 ? (
               <Card><CardContent className="text-center py-8"><FileText className="h-8 w-8 mx-auto text-muted-foreground/30 mb-2" /><p className="text-sm text-muted-foreground">No invoices for this location</p></CardContent></Card>
-            ) : locationInvoices.map((inv) => (
+            ) : [...locationInvoices].sort((a, b) => new Date(b.issuedAt ?? b.createdAt).getTime() - new Date(a.issuedAt ?? a.createdAt).getTime()).map((inv) => (
               <Card key={inv.id} data-testid={`card-invoice-${inv.id}`}>
-                <CardContent className="p-4 flex items-center justify-between gap-3">
-                  <div><p className="text-sm font-medium">{inv.invoiceNumber}</p><p className="text-xs text-muted-foreground">{new Date(inv.createdAt).toLocaleDateString()}</p></div>
-                  <div className="flex items-center gap-2 shrink-0"><span className="text-sm font-semibold">{formatCurrency(centsToDollars(inv.totalAmountCents))}</span><Badge variant="secondary" className={`text-xs capitalize ${inv.status === "PAID" ? "bg-primary/10 text-primary" : inv.status === "OPEN" && inv.dueDate && new Date(inv.dueDate).getTime() < Date.now() ? "bg-destructive/10 text-destructive" : "bg-chart-3/10 text-chart-3"}`}>{inv.status === "OPEN" && inv.dueDate && new Date(inv.dueDate).getTime() < Date.now() ? "overdue" : inv.status.toLowerCase().replace(/_/g, " ")}</Badge></div>
+                <CardContent className="p-4 space-y-2">
+                  <div className="flex items-center justify-between gap-3">
+                    <div><p className="text-sm font-medium">{inv.invoiceNumber}</p><p className="text-xs text-muted-foreground">{new Date(inv.issuedAt ?? inv.createdAt).toLocaleDateString()}{inv.dueDate ? ` - due ${new Date(inv.dueDate).toLocaleDateString()}` : ""}</p></div>
+                    <div className="flex items-center gap-2 shrink-0"><span className="text-sm font-semibold">{formatCurrency(centsToDollars(inv.totalAmountCents))}</span><Badge variant="secondary" className={`text-xs capitalize ${inv.status === "PAID" ? "bg-primary/10 text-primary" : inv.status === "VOID" ? "bg-muted text-muted-foreground" : inv.status === "DRAFT" ? "border border-dashed bg-background text-foreground" : inv.status === "OPEN" && inv.dueDate && new Date(inv.dueDate).getTime() < Date.now() ? "bg-destructive/10 text-destructive" : "bg-chart-3/10 text-chart-3"}`}>{inv.status === "OPEN" && inv.dueDate && new Date(inv.dueDate).getTime() < Date.now() ? "overdue" : inv.status.toLowerCase().replace(/_/g, " ")}</Badge></div>
+                  </div>
+                  <InvoiceRowLedger
+                    invoice={inv}
+                    locationId={activeLocationId}
+                    agreements={locationAgreements}
+                    unappliedCents={(locationLedgerSummary?.unappliedConfirmedCents ?? 0) + (locationLedgerSummary?.unappliedPendingCents ?? 0)}
+                  />
                 </CardContent>
               </Card>
             ))}

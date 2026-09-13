@@ -332,6 +332,10 @@ export const agreements = pgTable("agreements", {
   initialChargeCents: integer("initial_charge_cents"),
   initialChargePercentBasisPoints: integer("initial_charge_percent_basis_points"),
   initialChargeCollectedBy: text("initial_charge_collected_by"),
+  // D4 owner review (2026-09-13): a down payment counts toward the contract
+  // price by default ($400 agreement, $100 down, $300 remains); this is the
+  // explicit exception. See resolveRemainingContractPriceCents().
+  initialChargeInAdditionToPrice: boolean("initial_charge_in_addition_to_price").notNull().default(false),
   // Snapshotted once at creation from term x recurrence (see
   // computeExpectedServiceCount in storage.ts) and never recomputed on
   // update, so a later term/frequency edit can't retroactively change the
@@ -407,6 +411,7 @@ export const agreementTemplates = pgTable("agreement_templates", {
   defaultInitialChargeCents: integer("default_initial_charge_cents"),
   defaultInitialChargePercentBasisPoints: integer("default_initial_charge_percent_basis_points"),
   defaultInitialChargeCollectedBy: text("default_initial_charge_collected_by"),
+  defaultInitialChargeInAdditionToPrice: boolean("default_initial_charge_in_addition_to_price").notNull().default(false),
   defaultInstructions: text("default_instructions"),
   sortOrder: integer("sort_order"),
   internalCode: text("internal_code"),
@@ -678,9 +683,139 @@ export const invoices = pgTable("invoices", {
   issuedAt: timestamp("issued_at"),
   dueDate: timestamp("due_date"),
   sentAt: timestamp("sent_at"),
+  // Stamped when the ledger rollup first derives PAID, cleared if a release
+  // reopens the balance. Display only - status is derived, never read from
+  // this.
   paidDate: timestamp("paid_date"),
+  // D5's computed-and-stored rollups. amountPaidCents is the sum of unreleased
+  // applications from CONFIRMED payments and issued credit memos (a PENDING
+  // payment shows on the invoice but is not counted); balanceDueCents is
+  // total - paid for an issued invoice and 0 for a DRAFT or VOID one. Both are
+  // recomputed from the ledger inside the same transaction as every
+  // application, release, confirmation and void (computeInvoiceRollup in
+  // shared/invoice-status.ts) - never incremented, never hand-set. Status is
+  // derived from them by the same call.
+  amountPaidCents: integer("amount_paid_cents").notNull().default(0),
+  balanceDueCents: integer("balance_due_cents").notNull().default(0),
   notes: text("notes"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+// PLAN_BILLING_V1_1.md D5 - the payments ledger, append-only. A payment is
+// money received: an event, never edited. What was recorded (method, amount,
+// who collected it, the check number) is immutable; the status columns are
+// lifecycle stamps with who/when/why. A mistake is a VOIDED payment and a new
+// one, never a changed amount. The unapplied balance lives at the LOCATION
+// (D4): a payment lands here whether or not an invoice exists yet, and is
+// applied to invoices explicitly through payment_applications.
+export const payments = pgTable("payments", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: varchar("org_id").notNull(),
+  customerId: varchar("customer_id").notNull().references(() => customers.id),
+  locationId: varchar("location_id").notNull().references(() => locations.id),
+  // CASH | CHECK | OTHER now; CARD | ACH named for Phase 2 (shared/payments.ts).
+  method: text("method").notNull(),
+  amountCents: integer("amount_cents").notNull(),
+  // PENDING | CONFIRMED | VOIDED | REFUNDED (+ the Phase 2 card states).
+  // Cash and check post PENDING and count toward an invoice only once
+  // confirmed - a check on clearance, cash by a user with cash-handling
+  // authority.
+  status: text("status").notNull().default("PENDING"),
+  // Designation is intent recorded at collection ("this is for the quarterly
+  // agreement"); application is the fact. The D4 prompt suggests designated
+  // balances first and the office decides.
+  designatedAgreementId: varchar("designated_agreement_id").references(() => agreements.id),
+  checkNumber: text("check_number"),
+  referenceNumber: text("reference_number"),
+  memo: text("memo"),
+  // When the money changed hands - a date the office enters, which may be
+  // earlier than createdAt (a check in the mail, a tech's cash from
+  // yesterday). createdAt is when it was recorded.
+  receivedAt: timestamp("received_at").notNull(),
+  // Who recorded the collection - the session actor, never client-supplied.
+  // This is the recorded collection event D4 says credit must key off once
+  // the field-surcharge unit replaces the collector-permission inference.
+  collectedByUserId: varchar("collected_by_user_id"),
+  collectedByLabel: text("collected_by_label"),
+  confirmedByUserId: varchar("confirmed_by_user_id"),
+  confirmedByLabel: text("confirmed_by_label"),
+  confirmedAt: timestamp("confirmed_at"),
+  voidedByUserId: varchar("voided_by_user_id"),
+  voidedByLabel: text("voided_by_label"),
+  voidedAt: timestamp("voided_at"),
+  voidReason: text("void_reason"),
+  refundedByUserId: varchar("refunded_by_user_id"),
+  refundedByLabel: text("refunded_by_label"),
+  refundedAt: timestamp("refunded_at"),
+  refundReason: text("refund_reason"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+// payment -> invoice, many-to-many. Application and release are explicit,
+// role-gated, audit-logged acts (D5). Release is not a delete: the row stays
+// with `released` set and a required reason, and the rollup sum skips it
+// (PLAN_BILLING_V1_1_EXECUTION.md §2.5).
+export const paymentApplications = pgTable("payment_applications", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: varchar("org_id").notNull(),
+  paymentId: varchar("payment_id").notNull().references(() => payments.id),
+  invoiceId: varchar("invoice_id").notNull().references(() => invoices.id),
+  amountCents: integer("amount_cents").notNull(),
+  appliedByUserId: varchar("applied_by_user_id"),
+  appliedByLabel: text("applied_by_label"),
+  appliedAt: timestamp("applied_at").defaultNow().notNull(),
+  released: boolean("released").notNull().default(false),
+  releasedByUserId: varchar("released_by_user_id"),
+  releasedByLabel: text("released_by_label"),
+  releasedAt: timestamp("released_at"),
+  releaseReason: text("release_reason"),
+});
+
+// The ledger's ONLY correction mechanism (PLAN_BILLING_V1.md §1.4): a credit
+// memo is issued against a location (optionally naming the invoice it
+// corrects), sits in the same unapplied pool as a cash deposit (§5 Q2), and is
+// applied to invoices through credit_applications. Price is never mutated by
+// one (D6).
+export const creditMemos = pgTable("credit_memos", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: varchar("org_id").notNull(),
+  customerId: varchar("customer_id").notNull().references(() => customers.id),
+  locationId: varchar("location_id").notNull().references(() => locations.id),
+  // The invoice this memo corrects, when there is one. Informational - the
+  // memo's value is applied through credit_applications like any other.
+  invoiceId: varchar("invoice_id").references(() => invoices.id),
+  // BILLING_ERROR | SERVICE_ISSUE | GOODWILL | CANCELLATION | OTHER
+  reasonCode: text("reason_code").notNull(),
+  reason: text("reason").notNull(),
+  amountCents: integer("amount_cents").notNull(),
+  // ISSUED | VOIDED
+  status: text("status").notNull().default("ISSUED"),
+  issuedByUserId: varchar("issued_by_user_id"),
+  issuedByLabel: text("issued_by_label"),
+  issuedAt: timestamp("issued_at").defaultNow().notNull(),
+  voidedByUserId: varchar("voided_by_user_id"),
+  voidedByLabel: text("voided_by_label"),
+  voidedAt: timestamp("voided_at"),
+  voidReason: text("void_reason"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+// credit memo -> invoice. Same shape and same rules as payment_applications;
+// the two are summed together in the invoice rollup (§5 Q2, one pool).
+export const creditApplications = pgTable("credit_applications", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: varchar("org_id").notNull(),
+  creditMemoId: varchar("credit_memo_id").notNull().references(() => creditMemos.id),
+  invoiceId: varchar("invoice_id").notNull().references(() => invoices.id),
+  amountCents: integer("amount_cents").notNull(),
+  appliedByUserId: varchar("applied_by_user_id"),
+  appliedByLabel: text("applied_by_label"),
+  appliedAt: timestamp("applied_at").defaultNow().notNull(),
+  released: boolean("released").notNull().default(false),
+  releasedByUserId: varchar("released_by_user_id"),
+  releasedByLabel: text("released_by_label"),
+  releasedAt: timestamp("released_at"),
+  releaseReason: text("release_reason"),
 });
 
 // One line per finalized Service Record on the invoice's appointment (D1),
@@ -693,11 +828,15 @@ export const invoiceLineItems = pgTable("invoice_line_items", {
   invoiceId: varchar("invoice_id").notNull().references(() => invoices.id),
   serviceId: varchar("service_id").references(() => services.id),
   serviceRecordId: varchar("service_record_id").references(() => serviceRecords.id),
-  // SERVICE | AGREEMENT_COVERED | ADDON | SURCHARGE | FEE | DISCOUNT | ADJUSTMENT.
+  // SERVICE | AGREEMENT_COVERED | INITIAL_CHARGE | ADDON | SURCHARGE | FEE |
+  // DISCOUNT | ADJUSTMENT.
   // AGREEMENT_COVERED (PLAN_BILLING_V1_1_EXECUTION.md §2.1) is the visible-but-
   // not-chargeable line for work the agreement's billing plan already bills
   // through the nightly run: always $0 and non-taxable, structurally distinct
   // from a chargeable line so it can never drift into one and double-bill.
+  // INITIAL_CHARGE (D4) is the agreement's down payment / cleanout surcharge /
+  // prepayment issued as a receivable at agreement start; its description is
+  // the initialChargeType's label.
   lineType: text("line_type").notNull().default("ADJUSTMENT"),
   description: text("description").notNull(),
   quantity: integer("quantity").notNull().default(1),
@@ -709,13 +848,15 @@ export const invoiceLineItems = pgTable("invoice_line_items", {
 });
 
 // A charge that is due: source records why (SCHEDULE_DRIVEN from the
-// nightly billing run; SERVICE_DRIVEN and INITIAL_CHARGE are the other two
-// sources from PLAN_BILLING_V1.md §1.6, not built yet - unit 10's
-// generateInvoiceFromServiceRecord covers path 1 already without going
-// through this table). periodKey identifies the billing cycle within the
-// agreement (its scheduled charge date) - the unique index on
-// (agreementId, periodKey) is what makes the nightly run idempotent: a
-// double-run or a manual re-trigger can never bill the same period twice.
+// nightly billing run; INITIAL_CHARGE from the agreement's initial charge
+// issued as a receivable at start, D4, with the fixed periodKey
+// INITIAL_CHARGE_PERIOD_KEY so it can fire once per agreement; SERVICE_DRIVEN
+// is the remaining source from PLAN_BILLING_V1.md §1.6, not built -
+// generateInvoiceFromServiceRecord covers path 1 without going through this
+// table). periodKey identifies the billing cycle within the agreement (its
+// scheduled charge date) - the unique index on (agreementId, periodKey) is
+// what makes the nightly run idempotent: a double-run or a manual re-trigger
+// can never bill the same period twice.
 export const billingEvents = pgTable("billing_events", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   orgId: varchar("org_id").notNull(),
@@ -881,6 +1022,10 @@ export const insertMaterialProductSchema = createInsertSchema(materialProducts).
 export const insertTargetPestSchema = createInsertSchema(targetPests).omit({ orgId: true, id: true, createdAt: true, updatedAt: true });
 export const insertInvoiceSchema = createInsertSchema(invoices).omit({ orgId: true, id: true, createdAt: true, publicId: true, invoiceNumber: true });
 export const insertInvoiceLineItemSchema = createInsertSchema(invoiceLineItems).omit({ orgId: true, id: true, invoiceId: true });
+export const insertPaymentSchema = createInsertSchema(payments).omit({ orgId: true, id: true, createdAt: true });
+export const insertPaymentApplicationSchema = createInsertSchema(paymentApplications).omit({ orgId: true, id: true });
+export const insertCreditMemoSchema = createInsertSchema(creditMemos).omit({ orgId: true, id: true, createdAt: true });
+export const insertCreditApplicationSchema = createInsertSchema(creditApplications).omit({ orgId: true, id: true });
 export const insertBillingEventSchema = createInsertSchema(billingEvents).omit({ orgId: true, id: true, createdAt: true });
 export const insertDocumentSchema = createInsertSchema(documents).omit({ orgId: true, id: true, createdAt: true });
 export const insertProductionValueEntrySchema = createInsertSchema(productionValueEntries).omit({ orgId: true, id: true, createdAt: true });
@@ -945,6 +1090,14 @@ export type Invoice = typeof invoices.$inferSelect;
 export type InsertInvoice = z.infer<typeof insertInvoiceSchema>;
 export type InvoiceLineItem = typeof invoiceLineItems.$inferSelect;
 export type InsertInvoiceLineItem = z.infer<typeof insertInvoiceLineItemSchema>;
+export type Payment = typeof payments.$inferSelect;
+export type InsertPayment = z.infer<typeof insertPaymentSchema>;
+export type PaymentApplication = typeof paymentApplications.$inferSelect;
+export type InsertPaymentApplication = z.infer<typeof insertPaymentApplicationSchema>;
+export type CreditMemo = typeof creditMemos.$inferSelect;
+export type InsertCreditMemo = z.infer<typeof insertCreditMemoSchema>;
+export type CreditApplication = typeof creditApplications.$inferSelect;
+export type InsertCreditApplication = z.infer<typeof insertCreditApplicationSchema>;
 export type BillingEvent = typeof billingEvents.$inferSelect;
 export type InsertBillingEvent = z.infer<typeof insertBillingEventSchema>;
 export type Document = typeof documents.$inferSelect;

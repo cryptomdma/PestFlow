@@ -33,6 +33,7 @@ import {
   normalizeInitialCharge,
   validateInitialCharge,
 } from "@shared/initial-charge";
+import { CREDIT_MEMO_REASON_CODES, MANUAL_PAYMENT_METHODS } from "@shared/payments";
 import { runBillingCycle } from "./jobs/billing-run";
 
 function handleZodError(res: any, error: ZodError) {
@@ -359,8 +360,9 @@ export async function registerRoutes(
   const initialChargeAmountModeSchema = z.enum(INITIAL_CHARGE_AMOUNT_MODES).nullable().optional();
   const initialChargeCollectorSchema = z.enum(INITIAL_CHARGE_COLLECTORS).nullable().optional();
   const initialChargeIntSchema = z.number().int().nullable().optional();
-  const AGREEMENT_INITIAL_CHARGE_KEYS = ["initialChargeType", "initialChargeAmountMode", "initialChargeCents", "initialChargePercentBasisPoints", "initialChargeCollectedBy"] as const;
-  const TEMPLATE_INITIAL_CHARGE_KEYS = ["defaultInitialChargeType", "defaultInitialChargeAmountMode", "defaultInitialChargeCents", "defaultInitialChargePercentBasisPoints", "defaultInitialChargeCollectedBy"] as const;
+  const initialChargeFlagSchema = z.boolean().optional();
+  const AGREEMENT_INITIAL_CHARGE_KEYS = ["initialChargeType", "initialChargeAmountMode", "initialChargeCents", "initialChargePercentBasisPoints", "initialChargeCollectedBy", "initialChargeInAdditionToPrice"] as const;
+  const TEMPLATE_INITIAL_CHARGE_KEYS = ["defaultInitialChargeType", "defaultInitialChargeAmountMode", "defaultInitialChargeCents", "defaultInitialChargePercentBasisPoints", "defaultInitialChargeCollectedBy", "defaultInitialChargeInAdditionToPrice"] as const;
   const refineAgreementInitialCharge = (value: Record<string, unknown>, ctx: z.RefinementCtx) => {
     const touched = AGREEMENT_INITIAL_CHARGE_KEYS.some((key) => value[key] !== undefined);
     if (!touched) return;
@@ -391,6 +393,7 @@ export async function registerRoutes(
     defaultInitialChargeCents: initialChargeIntSchema,
     defaultInitialChargePercentBasisPoints: initialChargeIntSchema,
     defaultInitialChargeCollectedBy: initialChargeCollectorSchema,
+    defaultInitialChargeInAdditionToPrice: initialChargeFlagSchema,
   });
   const agreementTemplateSchema = agreementTemplateBaseSchema.extend({
     defaultTermUnit: recurrenceUnitSchema,
@@ -429,6 +432,7 @@ export async function registerRoutes(
     initialChargeCents: initialChargeIntSchema,
     initialChargePercentBasisPoints: initialChargeIntSchema,
     initialChargeCollectedBy: initialChargeCollectorSchema,
+    initialChargeInAdditionToPrice: initialChargeFlagSchema,
   });
   const agreementSchema = agreementBaseSchema.superRefine((value, ctx) => {
     refineAgreementInitialCharge(value, ctx);
@@ -1495,6 +1499,28 @@ export async function registerRoutes(
     }
   });
 
+  // D4: the agreement's initial charge as a receivable. The GET answers
+  // "was it issued, and as what?" (null = not yet); the POST is the explicit
+  // path for an agreement created before Pass 6, or one whose percent charge
+  // could not resolve until a price was set. Idempotent: a second POST
+  // returns the invoice already issued. Same permission as generating any
+  // invoice - it IS one.
+  app.get("/api/agreements/:id/initial-charge-invoice", async (req, res) => {
+    const data = await req.storage.getAgreementInitialChargeInvoice(req.params.id);
+    if (data === undefined) return res.status(404).json({ message: "Agreement not found" });
+    res.json(data);
+  });
+
+  app.post("/api/agreements/:id/issue-initial-charge", requirePermission(PERMISSIONS.GENERATE_INVOICE), async (req, res) => {
+    try {
+      const data = await req.storage.issueInitialChargeInvoice(req.params.id, getAuditActor(req));
+      if (!data) return res.status(404).json({ message: "Agreement not found" });
+      res.status(201).json(data);
+    } catch (e: any) {
+      res.status(400).json({ message: e.message });
+    }
+  });
+
   // Appointments
   app.get("/api/appointments", async (req, res) => {
     const data = await req.storage.getAppointments();
@@ -1943,24 +1969,20 @@ export async function registerRoutes(
   // taxSnapshot on an already-issued invoice with no permission check at
   // all, and set status: "VOID" directly - completely bypassing
   // VOID_INVOICE and the immutable-snapshot guarantee unit 11's tax engine
-  // and unit 10's invoice model are built on. The only real caller is the
-  // "Mark Paid" action (client/src/pages/invoices.tsx), which only ever
-  // sends status + paidDate - this schema matches that exactly. Voiding
-  // still requires the dedicated, VOID_INVOICE-gated /void route below.
-  const updateInvoiceStatusSchema = z.object({
-    status: z.enum(["OPEN", "PARTIALLY_PAID", "PAID"]).optional(),
-    paidDate: z.string().nullable().optional(),
+  // and unit 10's invoice model are built on. Since Pass 6 (D5) status and
+  // paidDate are derived from the ledger and are not accepted here either -
+  // "Mark Paid" is gone; recording a payment is what marks an invoice paid.
+  // Voiding still requires the dedicated, VOID_INVOICE-gated /void route.
+  const updateInvoiceSchema = z.object({
     dueDate: z.string().nullable().optional(),
     notes: z.string().nullable().optional(),
-  });
+  }).strict();
 
   app.patch("/api/invoices/:id", requirePermission(PERMISSIONS.SEND_INVOICE), async (req, res) => {
     try {
-      const validated = updateInvoiceStatusSchema.parse(req.body);
+      const validated = updateInvoiceSchema.parse(req.body);
       const data = await req.storage.updateInvoice(req.params.id, {
-        status: validated.status,
         notes: validated.notes,
-        paidDate: validated.paidDate === undefined ? undefined : validated.paidDate ? new Date(validated.paidDate) : null,
         dueDate: validated.dueDate === undefined ? undefined : validated.dueDate ? new Date(validated.dueDate) : null,
       });
       if (!data) return res.status(404).json({ message: "Invoice not found" });
@@ -1977,6 +1999,215 @@ export async function registerRoutes(
       if (!data) return res.status(404).json({ message: "Invoice not found" });
       res.json(data);
     } catch (e: any) {
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // Payments ledger (PLAN_BILLING_V1_1.md D5) and D4's location balance.
+  // Reads are open like every other read here; every mutation is gated by the
+  // permission named in shared/permissions.ts. The actor is always the
+  // session's, never the body's.
+  // ---------------------------------------------------------------------------
+
+  const centsSchema = z.number().int().positive();
+  const ledgerReasonSchema = z.object({ reason: z.string().trim().min(1, "reason is required") });
+  const applySchema = z.object({
+    invoiceId: z.string().min(1),
+    amountCents: centsSchema.nullable().optional(),
+  });
+  const releaseSchema = z.object({
+    applicationId: z.string().min(1),
+    reason: z.string().trim().min(1, "reason is required"),
+  });
+  const recordPaymentSchema = z.object({
+    locationId: z.string().min(1),
+    method: z.enum(MANUAL_PAYMENT_METHODS),
+    amountCents: centsSchema,
+    receivedAt: z.string().nullable().optional(),
+    checkNumber: z.string().nullable().optional(),
+    referenceNumber: z.string().nullable().optional(),
+    memo: z.string().nullable().optional(),
+    designatedAgreementId: z.string().nullable().optional(),
+    applyToInvoiceId: z.string().nullable().optional(),
+  });
+  const issueCreditMemoSchema = z.object({
+    locationId: z.string().min(1),
+    invoiceId: z.string().nullable().optional(),
+    reasonCode: z.enum(CREDIT_MEMO_REASON_CODES),
+    reason: z.string().trim().min(1, "reason is required"),
+    amountCents: centsSchema,
+    applyToInvoiceId: z.string().nullable().optional(),
+  });
+
+  app.get("/api/invoices/:id/ledger", async (req, res) => {
+    const data = await req.storage.getInvoiceLedger(req.params.id);
+    if (!data) return res.status(404).json({ message: "Invoice not found" });
+    res.json(data);
+  });
+
+  // D4's "Apply $X location balance to this invoice?" - the numbers, then the act.
+  app.get("/api/invoices/:id/location-balance", async (req, res) => {
+    const data = await req.storage.getInvoiceLocationBalance(req.params.id);
+    if (!data) return res.status(404).json({ message: "Invoice not found" });
+    res.json(data);
+  });
+
+  app.post("/api/invoices/:id/apply-location-balance", requirePermission(PERMISSIONS.APPLY_PAYMENT), async (req, res) => {
+    try {
+      const data = await req.storage.applyLocationBalanceToInvoice(req.params.id, getAuditActor(req));
+      if (!data) return res.status(404).json({ message: "Invoice not found" });
+      res.json(data);
+    } catch (e: any) {
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.get("/api/payments/by-location/:locationId", async (req, res) => {
+    const data = await req.storage.getPaymentsByLocation(req.params.locationId);
+    res.json(data);
+  });
+
+  app.get("/api/credit-memos/by-location/:locationId", async (req, res) => {
+    const data = await req.storage.getCreditMemosByLocation(req.params.locationId);
+    res.json(data);
+  });
+
+  app.get("/api/locations/:locationId/ledger-summary", async (req, res) => {
+    const data = await req.storage.getLocationLedgerSummary(req.params.locationId);
+    res.json(data);
+  });
+
+  // Record: TAKE_PAYMENT_FIELD (technician, support, manager, admin). Posts
+  // PENDING; optionally applies to one invoice in the same transaction, which
+  // additionally needs APPLY_PAYMENT - a technician records the collection
+  // and the office applies it.
+  app.post("/api/payments", requirePermission(PERMISSIONS.TAKE_PAYMENT_FIELD), async (req, res) => {
+    try {
+      const validated = recordPaymentSchema.parse(req.body);
+      if (validated.applyToInvoiceId && !can(req.user!.role, PERMISSIONS.APPLY_PAYMENT)) {
+        return res.status(403).json({ message: "You don't have permission to apply payments to invoices; record it unapplied and the office will apply it" });
+      }
+      const data = await req.storage.recordPayment({
+        ...validated,
+        receivedAt: validated.receivedAt ? new Date(validated.receivedAt) : null,
+        actor: getAuditActor(req),
+      });
+      res.status(201).json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  // Confirm: a check or "other" needs CONFIRM_PAYMENT (support+); cash needs
+  // CONFIRM_CASH_PAYMENT (manager+) - D5's cash-handling authority.
+  app.post("/api/payments/:id/confirm", requirePermission(PERMISSIONS.CONFIRM_PAYMENT), async (req, res) => {
+    try {
+      const payment = await req.storage.getPayment(req.params.id);
+      if (!payment) return res.status(404).json({ message: "Payment not found" });
+      if (payment.method === "CASH" && !can(req.user!.role, PERMISSIONS.CONFIRM_CASH_PAYMENT)) {
+        return res.status(403).json({ message: "Confirming a cash payment requires cash-handling authority (manager or admin)" });
+      }
+      const data = await req.storage.confirmPayment(req.params.id, getAuditActor(req));
+      if (!data) return res.status(404).json({ message: "Payment not found" });
+      res.json(data);
+    } catch (e: any) {
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/payments/:id/void", requirePermission(PERMISSIONS.VOID_PAYMENT), async (req, res) => {
+    try {
+      const { reason } = ledgerReasonSchema.parse(req.body ?? {});
+      const data = await req.storage.voidPayment(req.params.id, reason, getAuditActor(req));
+      if (!data) return res.status(404).json({ message: "Payment not found" });
+      res.json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/payments/:id/refund", requirePermission(PERMISSIONS.REFUND_PAYMENT), async (req, res) => {
+    try {
+      const { reason } = ledgerReasonSchema.parse(req.body ?? {});
+      const data = await req.storage.refundPayment(req.params.id, reason, getAuditActor(req));
+      if (!data) return res.status(404).json({ message: "Payment not found" });
+      res.json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/payments/:id/apply", requirePermission(PERMISSIONS.APPLY_PAYMENT), async (req, res) => {
+    try {
+      const validated = applySchema.parse(req.body);
+      const data = await req.storage.applyPayment(req.params.id, { ...validated, actor: getAuditActor(req) });
+      if (!data) return res.status(404).json({ message: "Payment not found" });
+      res.json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/payment-applications/release", requirePermission(PERMISSIONS.APPLY_PAYMENT), async (req, res) => {
+    try {
+      const validated = releaseSchema.parse(req.body);
+      const data = await req.storage.releasePaymentApplication({ ...validated, actor: getAuditActor(req) });
+      if (!data) return res.status(404).json({ message: "Payment application not found" });
+      res.json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/credit-memos", requirePermission(PERMISSIONS.ISSUE_CREDIT_MEMO), async (req, res) => {
+    try {
+      const validated = issueCreditMemoSchema.parse(req.body);
+      const data = await req.storage.issueCreditMemo({ ...validated, actor: getAuditActor(req) });
+      res.status(201).json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/credit-memos/:id/void", requirePermission(PERMISSIONS.ISSUE_CREDIT_MEMO), async (req, res) => {
+    try {
+      const { reason } = ledgerReasonSchema.parse(req.body ?? {});
+      const data = await req.storage.voidCreditMemo(req.params.id, reason, getAuditActor(req));
+      if (!data) return res.status(404).json({ message: "Credit memo not found" });
+      res.json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/credit-memos/:id/apply", requirePermission(PERMISSIONS.APPLY_PAYMENT), async (req, res) => {
+    try {
+      const validated = applySchema.parse(req.body);
+      const data = await req.storage.applyCreditMemo(req.params.id, { ...validated, actor: getAuditActor(req) });
+      if (!data) return res.status(404).json({ message: "Credit memo not found" });
+      res.json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/credit-applications/release", requirePermission(PERMISSIONS.APPLY_PAYMENT), async (req, res) => {
+    try {
+      const validated = releaseSchema.parse(req.body);
+      const data = await req.storage.releaseCreditApplication({ ...validated, actor: getAuditActor(req) });
+      if (!data) return res.status(404).json({ message: "Credit application not found" });
+      res.json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
       res.status(400).json({ message: e.message });
     }
   });

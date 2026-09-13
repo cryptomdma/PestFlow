@@ -13,6 +13,7 @@ import {
   billingPlans,
   appSettings,
   serviceRecords, productApplications, materialProducts, targetPests, invoices, invoiceLineItems, invoiceCounters, communications,
+  payments, paymentApplications, creditMemos, creditApplications,
   billingProfiles, billingProfileTemplates, customerNotes,
   taxRates, taxRules, taxExemptionCertificates,
   billingEvents,
@@ -43,6 +44,7 @@ import {
   type TargetPest, type InsertTargetPest,
   type Invoice, type InsertInvoice,
   type InvoiceLineItem,
+  type Payment, type PaymentApplication, type CreditMemo, type CreditApplication,
   type Communication, type InsertCommunication,
   type BillingProfile, type InsertBillingProfile,
   type BillingProfileTemplate, type InsertBillingProfileTemplate,
@@ -66,16 +68,29 @@ import type { InvoiceDocumentContext } from "./documents/types";
 import { renderInvoicePdf } from "./documents/invoice-pdf";
 import { can, PERMISSIONS, type UserRole } from "@shared/permissions";
 import { computeProductionValueCents } from "@shared/production-value";
+import { formatCents } from "@shared/money";
 import { isScheduleBilledPlan } from "@shared/billing-plan";
 import {
+  formatInitialChargeType,
   initialChargeFromTemplate,
+  initialChargeSkipsFirstPeriod,
   initialChargeToTemplate,
   isTechnicianCollectedCleanoutSurcharge,
   normalizeInitialCharge,
   resolveInitialChargeCents,
+  resolveRemainingContractPriceCents,
   type InitialChargeFields,
 } from "@shared/initial-charge";
-import { deriveInvoiceStatus, isFullyAgreementCovered, isInvoiceIssued } from "@shared/invoice-status";
+import { computeInvoiceRollup, deriveInvoiceStatus, isFullyAgreementCovered, isInvoiceIssued } from "@shared/invoice-status";
+import {
+  isCreditMemoReasonCode,
+  isManualPaymentMethod,
+  paymentCountsAsPaid,
+  paymentHoldsValue,
+  type InvoiceLocationBalance,
+  type LocationLedgerSummary,
+  type UnappliedSource,
+} from "@shared/payments";
 import {
   INVOICE_ON_FINALIZE_SETTING_KEY,
   normalizeInvoiceOnFinalizeMode,
@@ -103,9 +118,12 @@ export interface AccountInvariantSummary {
 
 export interface LocationBalanceSummary {
   locationId: string;
+  /** Sum of balanceDueCents across the location's issued invoices (D5: from the ledger, DRAFT excluded). */
   openBalanceCents: number;
   totalInvoicedCents: number;
   invoiceCount: number;
+  /** Confirmed payments and issued credit memos with value not yet applied to any invoice (D4: at the location). */
+  unappliedBalanceCents: number;
 }
 
 export interface AuditActor {
@@ -400,6 +418,91 @@ export interface GenerateScheduleDrivenInvoiceInput {
   nextBillingDate: string | null;
 }
 
+// PLAN_BILLING_V1_1.md D5 - the payments ledger's write surface. Every
+// mutation is a new row or a lifecycle stamp; nothing edits a recorded amount.
+// `actor` always comes from the session (routes.ts getAuditActor).
+
+export interface RecordPaymentInput {
+  locationId: string;
+  method: string;
+  amountCents: number;
+  /** When the money changed hands. Defaults to now. */
+  receivedAt?: Date | null;
+  checkNumber?: string | null;
+  referenceNumber?: string | null;
+  memo?: string | null;
+  /** Intent: the agreement this money is meant for. Application is the fact. */
+  designatedAgreementId?: string | null;
+  /**
+   * Apply to this invoice in the same transaction - the "collect against this
+   * bill" path. Capped by what the invoice can still take; any remainder
+   * stays unapplied at the location.
+   */
+  applyToInvoiceId?: string | null;
+  actor?: AuditActor | null;
+}
+
+export interface RecordPaymentResult {
+  payment: Payment;
+  application: PaymentApplication | null;
+  invoice: Invoice | null;
+}
+
+export interface ApplyLedgerSourceInput {
+  invoiceId: string;
+  /** Null / omitted = as much as the source has and the invoice can take. */
+  amountCents?: number | null;
+  actor?: AuditActor | null;
+}
+
+export interface ReleaseApplicationInput {
+  applicationId: string;
+  /** Required (D5): a release is a correction and the reason is part of the record. */
+  reason: string;
+  actor?: AuditActor | null;
+}
+
+export interface IssueCreditMemoInput {
+  locationId: string;
+  /** The invoice the memo corrects, when there is one. Informational. */
+  invoiceId?: string | null;
+  reasonCode: string;
+  reason: string;
+  amountCents: number;
+  /** Apply to this invoice in the same transaction (usually the one it corrects). */
+  applyToInvoiceId?: string | null;
+  actor?: AuditActor | null;
+}
+
+export interface IssueCreditMemoResult {
+  creditMemo: CreditMemo;
+  application: CreditApplication | null;
+  invoice: Invoice | null;
+}
+
+/** Everything applied to one invoice, with the source each application came from. */
+export interface InvoiceLedger {
+  invoice: Invoice;
+  paymentApplications: Array<{ application: PaymentApplication; payment: Payment }>;
+  creditApplications: Array<{ application: CreditApplication; creditMemo: CreditMemo }>;
+}
+
+export interface ApplyLocationBalanceResult {
+  invoice: Invoice;
+  applied: Array<{ kind: "payment" | "credit_memo"; sourceId: string; amountCents: number }>;
+  appliedCents: number;
+}
+
+/** billing_events.periodKey for the one INITIAL_CHARGE event an agreement can carry (D4). */
+export const INITIAL_CHARGE_PERIOD_KEY = "INITIAL_CHARGE";
+
+/** What happened to an agreement's initial-charge receivable at creation (D4). */
+export interface InitialChargeReceivableOutcome {
+  action: "ISSUED" | "ALREADY_ISSUED" | "NO_CHARGE" | "REFUSED";
+  invoice: Invoice | null;
+  message?: string;
+}
+
 // Reported per visit, not per ticket (PLAN_BILLING_V1_1_EXECUTION.md §2.3):
 // once invoices anchor on the appointment, two finalized tickets on one
 // appointment are one invoice, and a report that counted them separately would
@@ -581,6 +684,36 @@ export interface IStorage {
   batchSendInvoices(invoiceIds: string[]): Promise<Invoice[]>;
   updateInvoice(id: string, data: Partial<InsertInvoice>): Promise<Invoice | undefined>;
   voidInvoice(id: string, actor?: AuditActor | null): Promise<Invoice | undefined>;
+
+  // D5 payments ledger. Append-only: payments, applications and credit memos
+  // have creates and lifecycle transitions (confirm / void / refund / release,
+  // each stamped and audit-logged), never an update or delete of what was
+  // recorded. Invoice rollups (amountPaidCents / balanceDueCents / status) are
+  // recomputed from the ledger inside every one of these transactions.
+  getPaymentsByLocation(locationId: string): Promise<Payment[]>;
+  getPayment(id: string): Promise<Payment | undefined>;
+  recordPayment(input: RecordPaymentInput): Promise<RecordPaymentResult>;
+  confirmPayment(id: string, actor?: AuditActor | null): Promise<Payment | undefined>;
+  voidPayment(id: string, reason: string, actor?: AuditActor | null): Promise<Payment | undefined>;
+  refundPayment(id: string, reason: string, actor?: AuditActor | null): Promise<Payment | undefined>;
+  applyPayment(paymentId: string, input: ApplyLedgerSourceInput): Promise<{ application: PaymentApplication; invoice: Invoice } | undefined>;
+  releasePaymentApplication(input: ReleaseApplicationInput): Promise<{ application: PaymentApplication; invoice: Invoice } | undefined>;
+  getCreditMemosByLocation(locationId: string): Promise<CreditMemo[]>;
+  getCreditMemo(id: string): Promise<CreditMemo | undefined>;
+  issueCreditMemo(input: IssueCreditMemoInput): Promise<IssueCreditMemoResult>;
+  voidCreditMemo(id: string, reason: string, actor?: AuditActor | null): Promise<CreditMemo | undefined>;
+  applyCreditMemo(creditMemoId: string, input: ApplyLedgerSourceInput): Promise<{ application: CreditApplication; invoice: Invoice } | undefined>;
+  releaseCreditApplication(input: ReleaseApplicationInput): Promise<{ application: CreditApplication; invoice: Invoice } | undefined>;
+  getInvoiceLedger(invoiceId: string): Promise<InvoiceLedger | undefined>;
+  getLocationLedgerSummary(locationId: string): Promise<LocationLedgerSummary>;
+  // D4's "Apply $X location balance to this invoice?" - the numbers, then the act.
+  getInvoiceLocationBalance(invoiceId: string): Promise<InvoiceLocationBalance | undefined>;
+  applyLocationBalanceToInvoice(invoiceId: string, actor?: AuditActor | null): Promise<ApplyLocationBalanceResult | undefined>;
+  // D4: the agreement's initial charge as a real issued receivable. Fires at
+  // creation when the amount resolves; this is the explicit path for an
+  // agreement created before Pass 6 or one whose price was set later.
+  issueInitialChargeInvoice(agreementId: string, actor?: AuditActor | null): Promise<Invoice | undefined>;
+  getAgreementInitialChargeInvoice(agreementId: string): Promise<Invoice | null | undefined>;
 
   getInvoiceDocumentContext(invoiceId: string): Promise<InvoiceDocumentContext | undefined>;
   getOrCreateInvoiceDocument(invoiceId: string): Promise<Document | undefined>;
@@ -849,12 +982,23 @@ export class DatabaseStorage implements IStorage {
       .select({ id: serviceRecords.id })
       .from(serviceRecords)
       .where(and(eq(serviceRecords.orgId, this.orgId), eq(serviceRecords.locationId, locationId)));
+    // The ledger (D5): payments and credit memos live at the location.
+    const locationPayments = await db
+      .select({ id: payments.id })
+      .from(payments)
+      .where(and(eq(payments.orgId, this.orgId), eq(payments.locationId, locationId)));
+    const locationCredits = await db
+      .select({ id: creditMemos.id })
+      .from(creditMemos)
+      .where(and(eq(creditMemos.orgId, this.orgId), eq(creditMemos.locationId, locationId)));
 
     const allRefs: Array<{ entityType: AuditEntityType; entityIds: string[] }> = [
       { entityType: "location", entityIds: [locationId] },
       { entityType: "customer", entityIds: [location.customerId] },
       { entityType: "invoice", entityIds: locationInvoices.map((invoice) => invoice.id) },
       { entityType: "service_record", entityIds: locationTickets.map((ticket) => ticket.id) },
+      { entityType: "payment", entityIds: locationPayments.map((payment) => payment.id) },
+      { entityType: "credit_memo", entityIds: locationCredits.map((memo) => memo.id) },
     ];
     const refs = allRefs.filter((ref) => ref.entityIds.length > 0);
 
@@ -1187,19 +1331,21 @@ export class DatabaseStorage implements IStorage {
   // everything else, and no plan, bills at the visit instead, via the same
   // isScheduleBilledPlan() predicate invoice generation reads.
   //
-  // `applyInitialChargeSkip` is true only when billing starts on the
-  // agreement's own start date AND the agreement actually carries an initial
-  // charge. A plan with initialChargeCoversFirstPeriod skips period 1 because
-  // the initial charge paid for it - but since D4 moved the charge onto the
-  // agreement, the plan flag alone cannot know whether there is one: applying
-  // the skip to a charge-less agreement would skip a period nobody paid for,
-  // silently. And that charge only ever fires at the agreement's FIRST
-  // service (createSurchargeEntryIfConfigured, which returns early once a
-  // slot is filled), so a plan attached mid-term never gets the skip either.
+  // `initialCharge` is the agreement's charge block, passed only when billing
+  // starts on the agreement's own start date (null otherwise). A plan with
+  // initialChargeCoversFirstPeriod skips period 1 because the up-front money
+  // paid for it - but since D4 moved the charge onto the agreement, the plan
+  // flag alone cannot know whether there is one, or whether it even counts
+  // toward the price: applying the skip to a charge-less agreement, or to a
+  // charge owed on top of the price, would skip a period nobody paid for,
+  // silently. initialChargeSkipsFirstPeriod() answers both, and the nightly
+  // run reads the same predicate to spread the remaining price over one fewer
+  // period, so creation and billing agree on how many periods a term has. A
+  // plan attached mid-term never gets the skip (the caller passes null).
   private computeNextBillingDateForPlan(
     plan: BillingPlan | null | undefined,
     anchorDate: string,
-    applyInitialChargeSkip: boolean,
+    initialCharge: Pick<InitialChargeFields, "initialChargeType" | "initialChargeInAdditionToPrice"> | null,
   ): string | null {
     if (!isScheduleBilledPlan(plan)) {
       return null;
@@ -1209,7 +1355,7 @@ export class DatabaseStorage implements IStorage {
       return anchorDate;
     }
 
-    return applyInitialChargeSkip && plan!.initialChargeCoversFirstPeriod
+    return initialCharge && initialChargeSkipsFirstPeriod(plan, initialCharge)
       ? advanceAgreementDate(anchorDate, plan!.intervalUnit ?? "MONTH", plan!.intervalCount ?? 1)
       : anchorDate;
   }
@@ -1308,17 +1454,19 @@ export class DatabaseStorage implements IStorage {
       return null;
     }
 
+    // Schedule events only: the INITIAL_CHARGE event (D4's receivable) is not
+    // a schedule that ran, so it must not refuse the schedule from starting.
     const [priorBillingEvent] = await tx
       .select()
       .from(billingEvents)
-      .where(and(eq(billingEvents.orgId, this.orgId), eq(billingEvents.agreementId, existing.id)))
+      .where(and(eq(billingEvents.orgId, this.orgId), eq(billingEvents.agreementId, existing.id), ne(billingEvents.source, "INITIAL_CHARGE")))
       .limit(1);
     if (priorBillingEvent) {
       return null;
     }
 
-    const initialChargeType = payload.initialChargeType !== undefined ? payload.initialChargeType : existing.initialChargeType;
-    return this.computeNextBillingDateForPlan(plan, anchorDate, anchorDate === startDate && !!initialChargeType);
+    const initialCharge = payload.initialChargeType !== undefined ? normalizeInitialCharge(payload) : existing;
+    return this.computeNextBillingDateForPlan(plan, anchorDate, anchorDate === startDate ? initialCharge : null);
   }
 
   private normalizeTechnicianInsert(data: InsertTechnician): InsertTechnician {
@@ -1543,7 +1691,7 @@ export class DatabaseStorage implements IStorage {
     // contract price once, at signup. Creation anchors on the agreement's own
     // start date, so the skip applies here when there is a charge to cover it
     // - see computeNextBillingDateForPlan for the update path.
-    const nextBillingDate = this.computeNextBillingDateForPlan(billingPlan, startDate, !!initialCharge.initialChargeType);
+    const nextBillingDate = this.computeNextBillingDateForPlan(billingPlan, startDate, initialCharge);
 
     return {
       customerId: agreementData.customerId,
@@ -3096,6 +3244,7 @@ export class DatabaseStorage implements IStorage {
       const payload = this.normalizeAgreementInsert(data, actor);
       const [createdAgreement] = await tx.insert(agreements).values({ ...payload, orgId: this.orgId }).returning();
 
+      let finalAgreement = createdAgreement;
       if (createdAgreement.initialAppointmentId && createdAgreement.startDateSource === "INITIAL_APPOINTMENT") {
         await tx
           .update(appointments)
@@ -3105,10 +3254,19 @@ export class DatabaseStorage implements IStorage {
           })
           .where(and(eq(appointments.orgId, this.orgId), eq(appointments.id, createdAgreement.initialAppointmentId)));
 
-        return (await this.syncAgreementInitialAppointmentDates(tx, createdAgreement.id, actor)) || createdAgreement;
+        finalAgreement = (await this.syncAgreementInitialAppointmentDates(tx, createdAgreement.id, actor)) || createdAgreement;
       }
 
-      return createdAgreement;
+      // D4: the initial charge is a real issued receivable at agreement
+      // start, in the same transaction as the sale. A charge that cannot be
+      // resolved (a percent of a price not yet set) is not issued and not
+      // fatal: the agreement card says so and offers the explicit path once
+      // the price exists. Never $0.
+      if (finalAgreement.status !== "CANCELLED") {
+        await this.issueInitialChargeInvoiceTx(tx, finalAgreement, actor);
+      }
+
+      return finalAgreement;
     });
 
     await this.generateAgreementServicesForLocation(agreement.locationId);
@@ -4245,31 +4403,45 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(invoices).where(and(eq(invoices.orgId, this.orgId), eq(invoices.locationId, locationId)));
   }
 
+  // D5: balances come from the ledger's stored rollups, not from a status
+  // label. Issued invoices only - a DRAFT is not a receivable and a VOID owes
+  // nothing - and the location's unapplied balance (confirmed payments and
+  // issued credit memos with value left to apply) rides along so the location
+  // switcher can say "Open $120 / $50 on account" rather than only one side.
   async getLocationBalancesByCustomer(customerId: string): Promise<LocationBalanceSummary[]> {
     const customerInvoices = await db.select().from(invoices).where(and(eq(invoices.orgId, this.orgId), eq(invoices.customerId, customerId)));
     const balances = new Map<string, LocationBalanceSummary>();
-
-    for (const invoice of customerInvoices) {
-      if (!invoice.locationId || invoice.status === "VOID") {
-        continue;
-      }
-
-      const current = balances.get(invoice.locationId) ?? {
-        locationId: invoice.locationId,
+    const summaryFor = (locationId: string) => {
+      const current = balances.get(locationId) ?? {
+        locationId,
         openBalanceCents: 0,
         totalInvoicedCents: 0,
         invoiceCount: 0,
+        unappliedBalanceCents: 0,
       };
+      balances.set(locationId, current);
+      return current;
+    };
 
-      const invoiceTotalCents = invoice.totalAmountCents;
-      current.totalInvoicedCents += invoiceTotalCents;
-      current.invoiceCount += 1;
-
-      if (invoice.status !== "PAID") {
-        current.openBalanceCents += invoiceTotalCents;
+    for (const invoice of customerInvoices) {
+      if (!invoice.locationId || !isInvoiceIssued(invoice.status)) {
+        continue;
       }
 
-      balances.set(invoice.locationId, current);
+      const current = summaryFor(invoice.locationId);
+      current.totalInvoicedCents += invoice.totalAmountCents;
+      current.invoiceCount += 1;
+      current.openBalanceCents += invoice.balanceDueCents;
+    }
+
+    const customerPayments = await db.select().from(payments).where(and(eq(payments.orgId, this.orgId), eq(payments.customerId, customerId)));
+    const customerCredits = await db.select().from(creditMemos).where(and(eq(creditMemos.orgId, this.orgId), eq(creditMemos.customerId, customerId)));
+    const sources = await this.collectUnappliedSourcesTx(db, customerPayments, customerCredits);
+    for (const source of sources) {
+      if (source.status !== "CONFIRMED" && source.status !== "ISSUED") {
+        continue;
+      }
+      summaryFor(source.locationId).unappliedBalanceCents += source.unappliedCents;
     }
 
     return Array.from(balances.values());
@@ -4536,6 +4708,7 @@ export class DatabaseStorage implements IStorage {
           taxCents,
           totalAmountCents,
           status: deriveInvoiceStatus({ totalAmountCents }),
+          balanceDueCents: totalAmountCents,
           issuedAt: new Date(),
           dueDate: input.dueDate ?? null,
           notes: input.notes?.trim() || null,
@@ -4824,8 +4997,15 @@ export class DatabaseStorage implements IStorage {
     // price is the contract price spread across the agreement's snapshotted
     // expected service count - the same arithmetic production value uses, but
     // resolved here as a BILLABLE amount in its own right so the two can be
-    // changed independently later.
-    const billableCents = priceCents ?? computeProductionValueCents(agreementContext.agreement.priceCents, agreementContext.agreement.expectedServiceCount);
+    // changed independently later. "Contract price" here is what REMAINS
+    // after the initial charge (D4 owner review: a down payment counts toward
+    // the price, so $400 with $100 down bills $300 across the visits).
+    // Production value is untouched by this - it still derives from the full
+    // price, because the technician's work is the same whatever was collected.
+    const billableCents = priceCents ?? computeProductionValueCents(
+      resolveRemainingContractPriceCents(agreementContext.agreement, agreementContext.agreement.priceCents),
+      agreementContext.agreement.expectedServiceCount,
+    );
     if (billableCents == null) {
       // Name the actual missing piece. A plan-less agreement and an agreement on
       // a plan the nightly run skips (INSTALLMENT, ON_AGREEMENT_START) both land
@@ -5165,6 +5345,7 @@ export class DatabaseStorage implements IStorage {
             // invoice as "No Charge - Covered by Service Agreement" rather than
             // "PAID"; that story belongs at the render layer, not this column.
             status: deriveInvoiceStatus({ totalAmountCents: priced.amountCents + priced.taxCents }),
+            balanceDueCents: priced.amountCents + priced.taxCents,
             issuedAt: new Date(),
             dueDate: terms.dueDate,
             notes: null,
@@ -5358,6 +5539,11 @@ export class DatabaseStorage implements IStorage {
     await this.insertInvoiceLineItemsTx(tx, draft.id, priced.lines);
 
     const totalAmountCents = priced.amountCents + priced.taxCents;
+    // Leaving DRAFT: derive from the amounts with no currentStatus, so a $0
+    // covered visit lands PAID on the same rule as generation. A draft holds
+    // no applications (they are refused on a DRAFT), so nothing is paid yet
+    // and the whole total is due from here.
+    const rollup = computeInvoiceRollup({ totalAmountCents, amountPaidCents: 0 });
     const [issued] = await tx
       .update(invoices)
       .set({
@@ -5366,9 +5552,9 @@ export class DatabaseStorage implements IStorage {
         amountCents: priced.amountCents,
         taxCents: priced.taxCents,
         totalAmountCents,
-        // Leaving DRAFT: derive from the amounts with no currentStatus, so a
-        // $0 covered visit lands PAID on the same rule as generation.
-        status: deriveInvoiceStatus({ totalAmountCents }),
+        status: rollup.status,
+        amountPaidCents: rollup.amountPaidCents,
+        balanceDueCents: rollup.balanceDueCents,
         issuedAt: new Date(),
         dueDate: terms.dueDate,
       })
@@ -5527,15 +5713,20 @@ export class DatabaseStorage implements IStorage {
   }
 
   // The one place VOID is written. Idempotent: voiding a void is a no-op with
-  // no second audit row.
+  // no second audit row. Money applied to the invoice is released back to the
+  // location's unapplied balance first (each release audit-logged with the
+  // void as its reason) - a VOID invoice owes nothing and can hold nothing,
+  // and stranding a payment on one would make it vanish from every balance.
   private async voidInvoiceTx(tx: DbTransaction, invoice: Invoice, actor: AuditActor | null | undefined): Promise<Invoice> {
     if (invoice.status === "VOID") {
       return invoice;
     }
 
+    await this.releaseAllApplicationsForInvoiceTx(tx, invoice, `Invoice ${invoice.invoiceNumber} voided`, actor ?? null);
+
     const [voided] = await tx
       .update(invoices)
-      .set({ status: "VOID" })
+      .set({ status: "VOID", amountPaidCents: 0, balanceDueCents: 0, paidDate: null })
       .where(and(eq(invoices.orgId, this.orgId), eq(invoices.id, invoice.id)))
       .returning();
 
@@ -5632,6 +5823,8 @@ export class DatabaseStorage implements IStorage {
             taxCents: taxDecision.taxCents,
             totalAmountCents: input.amountCents + taxDecision.taxCents,
             status: deriveInvoiceStatus({ totalAmountCents: input.amountCents + taxDecision.taxCents }),
+            balanceDueCents: input.amountCents + taxDecision.taxCents,
+            issuedAt: new Date(),
             dueDate,
             notes: null,
           })
@@ -5693,20 +5886,19 @@ export class DatabaseStorage implements IStorage {
     });
   }
 
+  // Notes and due date only. Status, amount paid and balance due are derived
+  // from the ledger (D5) and cannot be set here - "Mark Paid" ended with
+  // Pass 6; recording a payment is what marks an invoice paid now.
   async updateInvoice(id: string, data: Partial<InsertInvoice>): Promise<Invoice | undefined> {
-    if (data.status !== undefined) {
-      const [existing] = await db.select().from(invoices).where(and(eq(invoices.orgId, this.orgId), eq(invoices.id, id)));
-      if (!existing) {
-        return undefined;
-      }
-      // D3: a DRAFT has no balance to settle, and the amount "Mark Paid"
-      // would settle is a preview that issue may still change. VOID is final.
-      if (existing.status === "DRAFT") {
-        throw new Error("Draft invoices cannot be marked paid; issue the invoice first");
-      }
-      if (existing.status === "VOID") {
-        throw new Error("Voided invoices cannot be changed");
-      }
+    const [existing] = await db.select().from(invoices).where(and(eq(invoices.orgId, this.orgId), eq(invoices.id, id)));
+    if (!existing) {
+      return undefined;
+    }
+    if (existing.status === "VOID") {
+      throw new Error("Voided invoices cannot be changed");
+    }
+    if (data.status !== undefined || data.amountPaidCents !== undefined || data.balanceDueCents !== undefined || data.paidDate !== undefined) {
+      throw new Error("Invoice status and paid amounts are derived from recorded payments; record a payment instead");
     }
 
     const [inv] = await db.update(invoices).set(data).where(and(eq(invoices.orgId, this.orgId), eq(invoices.id, id))).returning();
@@ -5721,6 +5913,1151 @@ export class DatabaseStorage implements IStorage {
       }
       return this.voidInvoiceTx(tx, invoice, actor);
     });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Payments ledger - PLAN_BILLING_V1_1.md D5, with D4's location-level
+  // unapplied balance and the initial-charge receivable.
+  //
+  // Discipline, in one place:
+  // - Append-only. A payment / credit memo is recorded once; its lifecycle
+  //   (confirm, void, refund) is a stamped transition, never an edit of the
+  //   amount. An application is released, never deleted (§2.5).
+  // - The invoice rollup is recomputed from the ledger inside the same
+  //   transaction as every change that affects it, under a row lock on the
+  //   invoice, so two concurrent applications cannot jointly overpay.
+  // - PENDING payments can be applied (they show on the invoice) but do not
+  //   count toward amountPaidCents until confirmed; confirmation is what flips
+  //   the invoice, atomically, for every invoice the payment sits on.
+  // - Every act is audit-logged: lifecycle on the payment / credit memo
+  //   entity, application and release on the invoice entity (the invoice is
+  //   what changed), carrying the application row so the reason is in the
+  //   trail.
+  // ---------------------------------------------------------------------------
+
+  async getPaymentsByLocation(locationId: string): Promise<Payment[]> {
+    return db
+      .select()
+      .from(payments)
+      .where(and(eq(payments.orgId, this.orgId), eq(payments.locationId, locationId)))
+      .orderBy(desc(payments.receivedAt), desc(payments.createdAt));
+  }
+
+  async getPayment(id: string): Promise<Payment | undefined> {
+    const [payment] = await db.select().from(payments).where(and(eq(payments.orgId, this.orgId), eq(payments.id, id)));
+    return payment;
+  }
+
+  async getCreditMemosByLocation(locationId: string): Promise<CreditMemo[]> {
+    return db
+      .select()
+      .from(creditMemos)
+      .where(and(eq(creditMemos.orgId, this.orgId), eq(creditMemos.locationId, locationId)))
+      .orderBy(desc(creditMemos.issuedAt));
+  }
+
+  async getCreditMemo(id: string): Promise<CreditMemo | undefined> {
+    const [memo] = await db.select().from(creditMemos).where(and(eq(creditMemos.orgId, this.orgId), eq(creditMemos.id, id)));
+    return memo;
+  }
+
+  // §2.5's row lock. Applications decrement a running balance by variable
+  // amounts, which the unique-index-plus-23505 pattern used elsewhere cannot
+  // protect; SELECT ... FOR UPDATE serializes them on the invoice row.
+  private async lockInvoiceTx(tx: DbTransaction, invoiceId: string): Promise<Invoice | undefined> {
+    const [invoice] = await tx
+      .select()
+      .from(invoices)
+      .where(and(eq(invoices.orgId, this.orgId), eq(invoices.id, invoiceId)))
+      .for("update");
+    return invoice;
+  }
+
+  private async lockPaymentTx(tx: DbTransaction, paymentId: string): Promise<Payment | undefined> {
+    const [payment] = await tx
+      .select()
+      .from(payments)
+      .where(and(eq(payments.orgId, this.orgId), eq(payments.id, paymentId)))
+      .for("update");
+    return payment;
+  }
+
+  private async lockCreditMemoTx(tx: DbTransaction, creditMemoId: string): Promise<CreditMemo | undefined> {
+    const [memo] = await tx
+      .select()
+      .from(creditMemos)
+      .where(and(eq(creditMemos.orgId, this.orgId), eq(creditMemos.id, creditMemoId)))
+      .for("update");
+    return memo;
+  }
+
+  // Unreleased applications on one invoice, split by whether they count yet.
+  // CONFIRMED payments and ISSUED credit memos count toward amount paid;
+  // PENDING payments are shown but not counted (D5). `allCents` caps further
+  // applications - pending included, so two pending payments cannot jointly
+  // overpay an invoice that will later confirm both.
+  private async sumInvoiceApplicationsTx(
+    tx: DbTransaction,
+    invoiceId: string,
+  ): Promise<{ paidCents: number; pendingCents: number; allCents: number }> {
+    const paymentRows = await tx
+      .select({ amountCents: paymentApplications.amountCents, status: payments.status })
+      .from(paymentApplications)
+      .innerJoin(payments, eq(paymentApplications.paymentId, payments.id))
+      .where(and(eq(paymentApplications.orgId, this.orgId), eq(paymentApplications.invoiceId, invoiceId), eq(paymentApplications.released, false)));
+    const creditRows = await tx
+      .select({ amountCents: creditApplications.amountCents, status: creditMemos.status })
+      .from(creditApplications)
+      .innerJoin(creditMemos, eq(creditApplications.creditMemoId, creditMemos.id))
+      .where(and(eq(creditApplications.orgId, this.orgId), eq(creditApplications.invoiceId, invoiceId), eq(creditApplications.released, false)));
+
+    let paidCents = 0;
+    let pendingCents = 0;
+    for (const row of paymentRows) {
+      if (paymentCountsAsPaid(row.status)) {
+        paidCents += row.amountCents;
+      } else if (paymentHoldsValue(row.status)) {
+        pendingCents += row.amountCents;
+      }
+    }
+    for (const row of creditRows) {
+      if (row.status === "ISSUED") {
+        paidCents += row.amountCents;
+      }
+    }
+    return { paidCents, pendingCents, allCents: paidCents + pendingCents };
+  }
+
+  // §2.5: recompute the invoice's rollup from the ledger - fresh, never
+  // incremented, so a missed update heals on the next one. The caller holds
+  // the row lock. paidDate is stamped the first time the rollup lands on PAID
+  // and cleared if a release reopens the balance; display only.
+  private async recomputeInvoiceRollupTx(tx: DbTransaction, invoice: Invoice): Promise<Invoice> {
+    const sums = await this.sumInvoiceApplicationsTx(tx, invoice.id);
+    const rollup = computeInvoiceRollup({
+      totalAmountCents: invoice.totalAmountCents,
+      amountPaidCents: sums.paidCents,
+      currentStatus: invoice.status,
+    });
+    const [updated] = await tx
+      .update(invoices)
+      .set({
+        amountPaidCents: rollup.amountPaidCents,
+        balanceDueCents: rollup.balanceDueCents,
+        status: rollup.status,
+        paidDate: rollup.status === "PAID" ? invoice.paidDate ?? new Date() : null,
+      })
+      .where(and(eq(invoices.orgId, this.orgId), eq(invoices.id, invoice.id)))
+      .returning();
+    return updated;
+  }
+
+  // sum of unreleased applications per source, for "how much is left".
+  private async appliedCentsByPaymentTx(reader: Pick<typeof db, "select">, paymentIds: string[]): Promise<Map<string, number>> {
+    if (!paymentIds.length) {
+      return new Map();
+    }
+    const rows = await reader
+      .select({ paymentId: paymentApplications.paymentId, appliedCents: sql<number>`coalesce(sum(${paymentApplications.amountCents}), 0)::int` })
+      .from(paymentApplications)
+      .where(and(eq(paymentApplications.orgId, this.orgId), inArray(paymentApplications.paymentId, paymentIds), eq(paymentApplications.released, false)))
+      .groupBy(paymentApplications.paymentId);
+    return new Map(rows.map((row) => [row.paymentId, row.appliedCents]));
+  }
+
+  private async appliedCentsByCreditMemoTx(reader: Pick<typeof db, "select">, creditMemoIds: string[]): Promise<Map<string, number>> {
+    if (!creditMemoIds.length) {
+      return new Map();
+    }
+    const rows = await reader
+      .select({ creditMemoId: creditApplications.creditMemoId, appliedCents: sql<number>`coalesce(sum(${creditApplications.amountCents}), 0)::int` })
+      .from(creditApplications)
+      .where(and(eq(creditApplications.orgId, this.orgId), inArray(creditApplications.creditMemoId, creditMemoIds), eq(creditApplications.released, false)))
+      .groupBy(creditApplications.creditMemoId);
+    return new Map(rows.map((row) => [row.creditMemoId, row.appliedCents]));
+  }
+
+  // The unapplied pool (§5 Q2: payments and credit memos are one pool).
+  // Every payment that still holds value (PENDING or CONFIRMED) and every
+  // ISSUED credit memo with money left on it, oldest first. Callers filter
+  // by status: the location switcher counts only confirmed money, the D4
+  // prompt offers pending too and says so.
+  private async collectUnappliedSourcesTx(
+    reader: Pick<typeof db, "select">,
+    paymentRows: Payment[],
+    creditRows: CreditMemo[],
+  ): Promise<Array<UnappliedSource & { locationId: string }>> {
+    const livePayments = paymentRows.filter((payment) => paymentHoldsValue(payment.status));
+    const liveCredits = creditRows.filter((memo) => memo.status === "ISSUED");
+    const appliedByPayment = await this.appliedCentsByPaymentTx(reader, livePayments.map((payment) => payment.id));
+    const appliedByCredit = await this.appliedCentsByCreditMemoTx(reader, liveCredits.map((memo) => memo.id));
+
+    const sources: Array<UnappliedSource & { locationId: string }> = [];
+    for (const payment of livePayments) {
+      const unappliedCents = payment.amountCents - (appliedByPayment.get(payment.id) ?? 0);
+      if (unappliedCents <= 0) continue;
+      sources.push({
+        kind: "payment",
+        id: payment.id,
+        status: payment.status,
+        label: payment.method,
+        amountCents: payment.amountCents,
+        unappliedCents,
+        designatedAgreementId: payment.designatedAgreementId ?? null,
+        recordedAt: payment.receivedAt.toISOString(),
+        locationId: payment.locationId,
+      });
+    }
+    for (const memo of liveCredits) {
+      const unappliedCents = memo.amountCents - (appliedByCredit.get(memo.id) ?? 0);
+      if (unappliedCents <= 0) continue;
+      sources.push({
+        kind: "credit_memo",
+        id: memo.id,
+        status: memo.status,
+        label: memo.reasonCode,
+        amountCents: memo.amountCents,
+        unappliedCents,
+        designatedAgreementId: null,
+        recordedAt: memo.issuedAt.toISOString(),
+        locationId: memo.locationId,
+      });
+    }
+    return sources.sort((a, b) => a.recordedAt.localeCompare(b.recordedAt));
+  }
+
+  private async unappliedSourcesForLocationTx(reader: Pick<typeof db, "select">, locationId: string): Promise<Array<UnappliedSource & { locationId: string }>> {
+    const locationPayments = await reader.select().from(payments).where(and(eq(payments.orgId, this.orgId), eq(payments.locationId, locationId)));
+    const locationCredits = await reader.select().from(creditMemos).where(and(eq(creditMemos.orgId, this.orgId), eq(creditMemos.locationId, locationId)));
+    return this.collectUnappliedSourcesTx(reader, locationPayments, locationCredits);
+  }
+
+  async recordPayment(input: RecordPaymentInput): Promise<RecordPaymentResult> {
+    if (!isManualPaymentMethod(input.method)) {
+      throw new Error("Only cash, check and other payments can be recorded until card processing lands");
+    }
+    if (!Number.isInteger(input.amountCents) || input.amountCents <= 0) {
+      throw new Error("Payment amount must be greater than zero");
+    }
+
+    return db.transaction(async (tx) => {
+      const [location] = await tx.select().from(locations).where(and(eq(locations.orgId, this.orgId), eq(locations.id, input.locationId)));
+      if (!location) {
+        throw new Error("Location not found");
+      }
+      if (input.designatedAgreementId) {
+        const [agreement] = await tx.select().from(agreements).where(and(eq(agreements.orgId, this.orgId), eq(agreements.id, input.designatedAgreementId)));
+        if (!agreement) {
+          throw new Error("Designated agreement not found");
+        }
+        if (agreement.locationId !== location.id) {
+          throw new Error("The designated agreement belongs to a different location");
+        }
+      }
+
+      const [payment] = await tx
+        .insert(payments)
+        .values({
+          orgId: this.orgId,
+          customerId: location.customerId,
+          locationId: location.id,
+          method: input.method,
+          amountCents: input.amountCents,
+          // Cash and check post PENDING (D5); confirmation is a separate,
+          // permission-gated act.
+          status: "PENDING",
+          designatedAgreementId: input.designatedAgreementId ?? null,
+          checkNumber: input.checkNumber?.trim() || null,
+          referenceNumber: input.referenceNumber?.trim() || null,
+          memo: input.memo?.trim() || null,
+          receivedAt: input.receivedAt ?? new Date(),
+          collectedByUserId: input.actor?.userId ?? null,
+          collectedByLabel: input.actor?.actorLabel ?? null,
+        })
+        .returning();
+
+      await this.recordAuditLogTx(tx, {
+        entityType: "payment",
+        entityId: payment.id,
+        action: "payment_recorded",
+        actor: input.actor,
+        after: payment,
+      });
+
+      if (!input.applyToInvoiceId) {
+        return { payment, application: null, invoice: null };
+      }
+
+      const invoice = await this.lockInvoiceTx(tx, input.applyToInvoiceId);
+      if (!invoice) {
+        throw new Error("Invoice not found");
+      }
+      const applied = await this.applyPaymentTx(tx, payment, invoice, null, input.actor ?? null);
+      return { payment, application: applied.application, invoice: applied.invoice };
+    });
+  }
+
+  // Refuses anything that would make the ledger lie: a source with no value,
+  // an invoice that is not a receivable, a mismatch of customer / location,
+  // more than the source has, more than the invoice can take. `amountCents`
+  // null means "as much as possible", which is what the D4 prompt and the
+  // record-and-apply path want.
+  private async assertApplicableTx(
+    tx: DbTransaction,
+    source: { customerId: string; locationId: string; unappliedCents: number; describe: string },
+    invoice: Invoice,
+    amountCents: number | null,
+  ): Promise<number> {
+    if (!isInvoiceIssued(invoice.status)) {
+      throw new Error(
+        invoice.status === "DRAFT"
+          ? "A draft invoice is not a receivable; issue it before applying money to it"
+          : "A voided invoice cannot receive payments",
+      );
+    }
+    if (invoice.customerId !== source.customerId) {
+      throw new Error(`${source.describe} and invoice ${invoice.invoiceNumber} belong to different customers`);
+    }
+    if (invoice.locationId && invoice.locationId !== source.locationId) {
+      throw new Error(`${source.describe} and invoice ${invoice.invoiceNumber} belong to different locations`);
+    }
+
+    const sums = await this.sumInvoiceApplicationsTx(tx, invoice.id);
+    const capacityCents = Math.max(invoice.totalAmountCents - sums.allCents, 0);
+    const requested = amountCents ?? Math.min(source.unappliedCents, capacityCents);
+    if (!Number.isInteger(requested) || requested <= 0) {
+      if (source.unappliedCents <= 0) {
+        throw new Error(`${source.describe} has no unapplied balance left`);
+      }
+      if (capacityCents <= 0) {
+        throw new Error(`Invoice ${invoice.invoiceNumber} has no balance left to apply against`);
+      }
+      throw new Error("Application amount must be greater than zero");
+    }
+    if (requested > source.unappliedCents) {
+      throw new Error(`Only ${formatCents(source.unappliedCents)} of ${source.describe.toLowerCase()} is unapplied`);
+    }
+    if (requested > capacityCents) {
+      throw new Error(`Invoice ${invoice.invoiceNumber} can take at most ${formatCents(capacityCents)} more (pending applications included)`);
+    }
+    return requested;
+  }
+
+  private async applyPaymentTx(
+    tx: DbTransaction,
+    payment: Payment,
+    invoice: Invoice,
+    amountCents: number | null,
+    actor: AuditActor | null,
+  ): Promise<{ application: PaymentApplication; invoice: Invoice }> {
+    if (!paymentHoldsValue(payment.status)) {
+      throw new Error(`A ${payment.status.toLowerCase()} payment cannot be applied`);
+    }
+    const appliedCents = (await this.appliedCentsByPaymentTx(tx, [payment.id])).get(payment.id) ?? 0;
+    const requested = await this.assertApplicableTx(
+      tx,
+      { customerId: payment.customerId, locationId: payment.locationId, unappliedCents: payment.amountCents - appliedCents, describe: "This payment" },
+      invoice,
+      amountCents,
+    );
+
+    const [application] = await tx
+      .insert(paymentApplications)
+      .values({
+        orgId: this.orgId,
+        paymentId: payment.id,
+        invoiceId: invoice.id,
+        amountCents: requested,
+        appliedByUserId: actor?.userId ?? null,
+        appliedByLabel: actor?.actorLabel ?? null,
+      })
+      .returning();
+    const updated = await this.recomputeInvoiceRollupTx(tx, invoice);
+
+    await this.recordAuditLogTx(tx, {
+      entityType: "invoice",
+      entityId: invoice.id,
+      action: "payment_applied",
+      actor,
+      before: invoice,
+      after: { ...updated, application },
+    });
+
+    return { application, invoice: updated };
+  }
+
+  private async applyCreditMemoTx(
+    tx: DbTransaction,
+    memo: CreditMemo,
+    invoice: Invoice,
+    amountCents: number | null,
+    actor: AuditActor | null,
+  ): Promise<{ application: CreditApplication; invoice: Invoice }> {
+    if (memo.status !== "ISSUED") {
+      throw new Error(`A ${memo.status.toLowerCase()} credit memo cannot be applied`);
+    }
+    const appliedCents = (await this.appliedCentsByCreditMemoTx(tx, [memo.id])).get(memo.id) ?? 0;
+    const requested = await this.assertApplicableTx(
+      tx,
+      { customerId: memo.customerId, locationId: memo.locationId, unappliedCents: memo.amountCents - appliedCents, describe: "This credit memo" },
+      invoice,
+      amountCents,
+    );
+
+    const [application] = await tx
+      .insert(creditApplications)
+      .values({
+        orgId: this.orgId,
+        creditMemoId: memo.id,
+        invoiceId: invoice.id,
+        amountCents: requested,
+        appliedByUserId: actor?.userId ?? null,
+        appliedByLabel: actor?.actorLabel ?? null,
+      })
+      .returning();
+    const updated = await this.recomputeInvoiceRollupTx(tx, invoice);
+
+    await this.recordAuditLogTx(tx, {
+      entityType: "invoice",
+      entityId: invoice.id,
+      action: "credit_memo_applied",
+      actor,
+      before: invoice,
+      after: { ...updated, application },
+    });
+
+    return { application, invoice: updated };
+  }
+
+  async applyPayment(paymentId: string, input: ApplyLedgerSourceInput): Promise<{ application: PaymentApplication; invoice: Invoice } | undefined> {
+    return db.transaction(async (tx) => {
+      const payment = await this.lockPaymentTx(tx, paymentId);
+      if (!payment) {
+        return undefined;
+      }
+      const invoice = await this.lockInvoiceTx(tx, input.invoiceId);
+      if (!invoice) {
+        throw new Error("Invoice not found");
+      }
+      return this.applyPaymentTx(tx, payment, invoice, input.amountCents ?? null, input.actor ?? null);
+    });
+  }
+
+  async applyCreditMemo(creditMemoId: string, input: ApplyLedgerSourceInput): Promise<{ application: CreditApplication; invoice: Invoice } | undefined> {
+    return db.transaction(async (tx) => {
+      const memo = await this.lockCreditMemoTx(tx, creditMemoId);
+      if (!memo) {
+        return undefined;
+      }
+      const invoice = await this.lockInvoiceTx(tx, input.invoiceId);
+      if (!invoice) {
+        throw new Error("Invoice not found");
+      }
+      return this.applyCreditMemoTx(tx, memo, invoice, input.amountCents ?? null, input.actor ?? null);
+    });
+  }
+
+  // Release: the application row stays, flagged with who/when/why, and the
+  // rollup stops counting it. Idempotent - releasing a released application
+  // returns it as-is with no second audit row.
+  async releasePaymentApplication(input: ReleaseApplicationInput): Promise<{ application: PaymentApplication; invoice: Invoice } | undefined> {
+    const reason = input.reason?.trim();
+    if (!reason) {
+      throw new Error("A reason is required to release a payment application");
+    }
+    return db.transaction(async (tx) => {
+      const [application] = await tx
+        .select()
+        .from(paymentApplications)
+        .where(and(eq(paymentApplications.orgId, this.orgId), eq(paymentApplications.id, input.applicationId)));
+      if (!application) {
+        return undefined;
+      }
+      const invoice = await this.lockInvoiceTx(tx, application.invoiceId);
+      if (!invoice) {
+        throw new Error("Invoice not found");
+      }
+      if (application.released) {
+        return { application, invoice };
+      }
+
+      const [released] = await tx
+        .update(paymentApplications)
+        .set({
+          released: true,
+          releasedByUserId: input.actor?.userId ?? null,
+          releasedByLabel: input.actor?.actorLabel ?? null,
+          releasedAt: new Date(),
+          releaseReason: reason,
+        })
+        .where(and(eq(paymentApplications.orgId, this.orgId), eq(paymentApplications.id, application.id)))
+        .returning();
+      const updated = await this.recomputeInvoiceRollupTx(tx, invoice);
+
+      await this.recordAuditLogTx(tx, {
+        entityType: "invoice",
+        entityId: invoice.id,
+        action: "payment_released",
+        actor: input.actor,
+        before: invoice,
+        after: { ...updated, application: released },
+      });
+
+      return { application: released, invoice: updated };
+    });
+  }
+
+  async releaseCreditApplication(input: ReleaseApplicationInput): Promise<{ application: CreditApplication; invoice: Invoice } | undefined> {
+    const reason = input.reason?.trim();
+    if (!reason) {
+      throw new Error("A reason is required to release a credit application");
+    }
+    return db.transaction(async (tx) => {
+      const [application] = await tx
+        .select()
+        .from(creditApplications)
+        .where(and(eq(creditApplications.orgId, this.orgId), eq(creditApplications.id, input.applicationId)));
+      if (!application) {
+        return undefined;
+      }
+      const invoice = await this.lockInvoiceTx(tx, application.invoiceId);
+      if (!invoice) {
+        throw new Error("Invoice not found");
+      }
+      if (application.released) {
+        return { application, invoice };
+      }
+
+      const [released] = await tx
+        .update(creditApplications)
+        .set({
+          released: true,
+          releasedByUserId: input.actor?.userId ?? null,
+          releasedByLabel: input.actor?.actorLabel ?? null,
+          releasedAt: new Date(),
+          releaseReason: reason,
+        })
+        .where(and(eq(creditApplications.orgId, this.orgId), eq(creditApplications.id, application.id)))
+        .returning();
+      const updated = await this.recomputeInvoiceRollupTx(tx, invoice);
+
+      await this.recordAuditLogTx(tx, {
+        entityType: "invoice",
+        entityId: invoice.id,
+        action: "credit_memo_released",
+        actor: input.actor,
+        before: invoice,
+        after: { ...updated, application: released },
+      });
+
+      return { application: released, invoice: updated };
+    });
+  }
+
+  // Used by voidInvoiceTx: everything applied to the invoice goes back to the
+  // location's unapplied pool. No rollup recompute here - the void that
+  // follows zeroes the invoice's amounts itself.
+  private async releaseAllApplicationsForInvoiceTx(tx: DbTransaction, invoice: Invoice, reason: string, actor: AuditActor | null): Promise<void> {
+    const stamps = {
+      released: true,
+      releasedByUserId: actor?.userId ?? null,
+      releasedByLabel: actor?.actorLabel ?? null,
+      releasedAt: new Date(),
+      releaseReason: reason,
+    };
+    const paymentRows = await tx
+      .select()
+      .from(paymentApplications)
+      .where(and(eq(paymentApplications.orgId, this.orgId), eq(paymentApplications.invoiceId, invoice.id), eq(paymentApplications.released, false)));
+    for (const application of paymentRows) {
+      const [released] = await tx
+        .update(paymentApplications)
+        .set(stamps)
+        .where(and(eq(paymentApplications.orgId, this.orgId), eq(paymentApplications.id, application.id)))
+        .returning();
+      await this.recordAuditLogTx(tx, {
+        entityType: "invoice",
+        entityId: invoice.id,
+        action: "payment_released",
+        actor,
+        before: invoice,
+        after: { ...invoice, application: released },
+      });
+    }
+    const creditRows = await tx
+      .select()
+      .from(creditApplications)
+      .where(and(eq(creditApplications.orgId, this.orgId), eq(creditApplications.invoiceId, invoice.id), eq(creditApplications.released, false)));
+    for (const application of creditRows) {
+      const [released] = await tx
+        .update(creditApplications)
+        .set(stamps)
+        .where(and(eq(creditApplications.orgId, this.orgId), eq(creditApplications.id, application.id)))
+        .returning();
+      await this.recordAuditLogTx(tx, {
+        entityType: "invoice",
+        entityId: invoice.id,
+        action: "credit_memo_released",
+        actor,
+        before: invoice,
+        after: { ...invoice, application: released },
+      });
+    }
+  }
+
+  // PENDING -> CONFIRMED. This is the moment the money counts: every invoice
+  // the payment is applied to is re-rolled in the same transaction and gets
+  // its own audit row, so an invoice's trail shows why it flipped to PAID.
+  // Who may confirm (cash vs. check) is the route's decision.
+  async confirmPayment(id: string, actor?: AuditActor | null): Promise<Payment | undefined> {
+    return db.transaction(async (tx) => {
+      const payment = await this.lockPaymentTx(tx, id);
+      if (!payment) {
+        return undefined;
+      }
+      if (payment.status === "CONFIRMED") {
+        return payment;
+      }
+      if (payment.status !== "PENDING") {
+        throw new Error(`A ${payment.status.toLowerCase()} payment cannot be confirmed`);
+      }
+
+      const [confirmed] = await tx
+        .update(payments)
+        .set({
+          status: "CONFIRMED",
+          confirmedByUserId: actor?.userId ?? null,
+          confirmedByLabel: actor?.actorLabel ?? null,
+          confirmedAt: new Date(),
+        })
+        .where(and(eq(payments.orgId, this.orgId), eq(payments.id, payment.id)))
+        .returning();
+      await this.recordAuditLogTx(tx, {
+        entityType: "payment",
+        entityId: payment.id,
+        action: "payment_confirmed",
+        actor,
+        before: payment,
+        after: confirmed,
+      });
+
+      const applications = await tx
+        .select({ invoiceId: paymentApplications.invoiceId })
+        .from(paymentApplications)
+        .where(and(eq(paymentApplications.orgId, this.orgId), eq(paymentApplications.paymentId, payment.id), eq(paymentApplications.released, false)));
+      for (const invoiceId of Array.from(new Set(applications.map((row) => row.invoiceId)))) {
+        const invoice = await this.lockInvoiceTx(tx, invoiceId);
+        if (!invoice) continue;
+        const updated = await this.recomputeInvoiceRollupTx(tx, invoice);
+        await this.recordAuditLogTx(tx, {
+          entityType: "invoice",
+          entityId: invoice.id,
+          action: "payment_confirmed",
+          actor,
+          before: invoice,
+          after: { ...updated, paymentId: payment.id },
+        });
+      }
+
+      return confirmed;
+    });
+  }
+
+  // A payment recorded in error. It must hold no applications - release them
+  // first, explicitly, so where the money was sitting is on the record too.
+  async voidPayment(id: string, reason: string, actor?: AuditActor | null): Promise<Payment | undefined> {
+    const trimmed = reason?.trim();
+    if (!trimmed) {
+      throw new Error("A reason is required to void a payment");
+    }
+    return db.transaction(async (tx) => {
+      const payment = await this.lockPaymentTx(tx, id);
+      if (!payment) {
+        return undefined;
+      }
+      if (payment.status === "VOIDED") {
+        return payment;
+      }
+      if (!paymentHoldsValue(payment.status)) {
+        throw new Error(`A ${payment.status.toLowerCase()} payment cannot be voided`);
+      }
+      const appliedCents = (await this.appliedCentsByPaymentTx(tx, [payment.id])).get(payment.id) ?? 0;
+      if (appliedCents > 0) {
+        throw new Error(`Release the ${formatCents(appliedCents)} applied from this payment before voiding it`);
+      }
+
+      const [voided] = await tx
+        .update(payments)
+        .set({
+          status: "VOIDED",
+          voidedByUserId: actor?.userId ?? null,
+          voidedByLabel: actor?.actorLabel ?? null,
+          voidedAt: new Date(),
+          voidReason: trimmed,
+        })
+        .where(and(eq(payments.orgId, this.orgId), eq(payments.id, payment.id)))
+        .returning();
+      await this.recordAuditLogTx(tx, {
+        entityType: "payment",
+        entityId: payment.id,
+        action: "payment_voided",
+        actor,
+        before: payment,
+        after: voided,
+      });
+      return voided;
+    });
+  }
+
+  // Money returned to the customer. Only a CONFIRMED payment can be refunded
+  // (a pending one was never ours to return - void it), and only once nothing
+  // is applied from it. Manual instruments only in Phase 1; the refund itself
+  // happens outside the app and this records that it did.
+  async refundPayment(id: string, reason: string, actor?: AuditActor | null): Promise<Payment | undefined> {
+    const trimmed = reason?.trim();
+    if (!trimmed) {
+      throw new Error("A reason is required to refund a payment");
+    }
+    return db.transaction(async (tx) => {
+      const payment = await this.lockPaymentTx(tx, id);
+      if (!payment) {
+        return undefined;
+      }
+      if (payment.status === "REFUNDED") {
+        return payment;
+      }
+      if (payment.status !== "CONFIRMED") {
+        throw new Error(
+          payment.status === "PENDING"
+            ? "A pending payment has not been confirmed as received; void it instead of refunding it"
+            : `A ${payment.status.toLowerCase()} payment cannot be refunded`,
+        );
+      }
+      const appliedCents = (await this.appliedCentsByPaymentTx(tx, [payment.id])).get(payment.id) ?? 0;
+      if (appliedCents > 0) {
+        throw new Error(`Release the ${formatCents(appliedCents)} applied from this payment before refunding it`);
+      }
+
+      const [refunded] = await tx
+        .update(payments)
+        .set({
+          status: "REFUNDED",
+          refundedByUserId: actor?.userId ?? null,
+          refundedByLabel: actor?.actorLabel ?? null,
+          refundedAt: new Date(),
+          refundReason: trimmed,
+        })
+        .where(and(eq(payments.orgId, this.orgId), eq(payments.id, payment.id)))
+        .returning();
+      await this.recordAuditLogTx(tx, {
+        entityType: "payment",
+        entityId: payment.id,
+        action: "payment_refunded",
+        actor,
+        before: payment,
+        after: refunded,
+      });
+      return refunded;
+    });
+  }
+
+  async issueCreditMemo(input: IssueCreditMemoInput): Promise<IssueCreditMemoResult> {
+    if (!isCreditMemoReasonCode(input.reasonCode)) {
+      throw new Error("Unknown credit memo reason");
+    }
+    const reason = input.reason?.trim();
+    if (!reason) {
+      throw new Error("A reason is required to issue a credit memo");
+    }
+    if (!Number.isInteger(input.amountCents) || input.amountCents <= 0) {
+      throw new Error("Credit memo amount must be greater than zero");
+    }
+
+    return db.transaction(async (tx) => {
+      const [location] = await tx.select().from(locations).where(and(eq(locations.orgId, this.orgId), eq(locations.id, input.locationId)));
+      if (!location) {
+        throw new Error("Location not found");
+      }
+      if (input.invoiceId) {
+        const [corrected] = await tx.select().from(invoices).where(and(eq(invoices.orgId, this.orgId), eq(invoices.id, input.invoiceId)));
+        if (!corrected) {
+          throw new Error("Invoice not found");
+        }
+        if (corrected.customerId !== location.customerId) {
+          throw new Error("The invoice being corrected belongs to a different customer");
+        }
+      }
+
+      const [memo] = await tx
+        .insert(creditMemos)
+        .values({
+          orgId: this.orgId,
+          customerId: location.customerId,
+          locationId: location.id,
+          invoiceId: input.invoiceId ?? null,
+          reasonCode: input.reasonCode,
+          reason,
+          amountCents: input.amountCents,
+          status: "ISSUED",
+          issuedByUserId: input.actor?.userId ?? null,
+          issuedByLabel: input.actor?.actorLabel ?? null,
+        })
+        .returning();
+      await this.recordAuditLogTx(tx, {
+        entityType: "credit_memo",
+        entityId: memo.id,
+        action: "credit_memo_issued",
+        actor: input.actor,
+        after: memo,
+      });
+
+      if (!input.applyToInvoiceId) {
+        return { creditMemo: memo, application: null, invoice: null };
+      }
+      const invoice = await this.lockInvoiceTx(tx, input.applyToInvoiceId);
+      if (!invoice) {
+        throw new Error("Invoice not found");
+      }
+      const applied = await this.applyCreditMemoTx(tx, memo, invoice, null, input.actor ?? null);
+      return { creditMemo: memo, application: applied.application, invoice: applied.invoice };
+    });
+  }
+
+  async voidCreditMemo(id: string, reason: string, actor?: AuditActor | null): Promise<CreditMemo | undefined> {
+    const trimmed = reason?.trim();
+    if (!trimmed) {
+      throw new Error("A reason is required to void a credit memo");
+    }
+    return db.transaction(async (tx) => {
+      const memo = await this.lockCreditMemoTx(tx, id);
+      if (!memo) {
+        return undefined;
+      }
+      if (memo.status === "VOIDED") {
+        return memo;
+      }
+      const appliedCents = (await this.appliedCentsByCreditMemoTx(tx, [memo.id])).get(memo.id) ?? 0;
+      if (appliedCents > 0) {
+        throw new Error(`Release the ${formatCents(appliedCents)} applied from this credit memo before voiding it`);
+      }
+
+      const [voided] = await tx
+        .update(creditMemos)
+        .set({
+          status: "VOIDED",
+          voidedByUserId: actor?.userId ?? null,
+          voidedByLabel: actor?.actorLabel ?? null,
+          voidedAt: new Date(),
+          voidReason: trimmed,
+        })
+        .where(and(eq(creditMemos.orgId, this.orgId), eq(creditMemos.id, memo.id)))
+        .returning();
+      await this.recordAuditLogTx(tx, {
+        entityType: "credit_memo",
+        entityId: memo.id,
+        action: "credit_memo_voided",
+        actor,
+        before: memo,
+        after: voided,
+      });
+      return voided;
+    });
+  }
+
+  // Everything ever applied to the invoice, released rows included (they are
+  // history, rendered muted), each with the source it came from.
+  async getInvoiceLedger(invoiceId: string): Promise<InvoiceLedger | undefined> {
+    const [invoice] = await db.select().from(invoices).where(and(eq(invoices.orgId, this.orgId), eq(invoices.id, invoiceId)));
+    if (!invoice) {
+      return undefined;
+    }
+    const paymentRows = await db
+      .select({ application: paymentApplications, payment: payments })
+      .from(paymentApplications)
+      .innerJoin(payments, eq(paymentApplications.paymentId, payments.id))
+      .where(and(eq(paymentApplications.orgId, this.orgId), eq(paymentApplications.invoiceId, invoiceId)))
+      .orderBy(asc(paymentApplications.appliedAt));
+    const creditRows = await db
+      .select({ application: creditApplications, creditMemo: creditMemos })
+      .from(creditApplications)
+      .innerJoin(creditMemos, eq(creditApplications.creditMemoId, creditMemos.id))
+      .where(and(eq(creditApplications.orgId, this.orgId), eq(creditApplications.invoiceId, invoiceId)))
+      .orderBy(asc(creditApplications.appliedAt));
+    return { invoice, paymentApplications: paymentRows, creditApplications: creditRows };
+  }
+
+  async getLocationLedgerSummary(locationId: string): Promise<LocationLedgerSummary> {
+    const locationInvoices = await db.select().from(invoices).where(and(eq(invoices.orgId, this.orgId), eq(invoices.locationId, locationId)));
+    const sources = await this.unappliedSourcesForLocationTx(db, locationId);
+    let unappliedConfirmedCents = 0;
+    let unappliedPendingCents = 0;
+    for (const source of sources) {
+      if (source.status === "PENDING") {
+        unappliedPendingCents += source.unappliedCents;
+      } else {
+        unappliedConfirmedCents += source.unappliedCents;
+      }
+    }
+    return {
+      locationId,
+      openBalanceCents: locationInvoices.filter((invoice) => isInvoiceIssued(invoice.status)).reduce((sum, invoice) => sum + invoice.balanceDueCents, 0),
+      unappliedConfirmedCents,
+      unappliedPendingCents,
+      sources: sources.map(({ locationId: _locationId, ...source }) => source),
+    };
+  }
+
+  // The agreements an invoice is FOR, so money designated to one of them is
+  // offered first and money designated to a different agreement is not
+  // offered at all: through billing_events for schedule-driven and
+  // initial-charge invoices, and through the line items' services for visit
+  // invoices.
+  private async invoiceAgreementIdsTx(reader: Pick<typeof db, "select">, invoiceId: string): Promise<Set<string>> {
+    const ids = new Set<string>();
+    const events = await reader
+      .select({ agreementId: billingEvents.agreementId })
+      .from(billingEvents)
+      .where(and(eq(billingEvents.orgId, this.orgId), eq(billingEvents.invoiceId, invoiceId)));
+    for (const event of events) ids.add(event.agreementId);
+    const lines = await reader
+      .select({ agreementId: services.agreementId })
+      .from(invoiceLineItems)
+      .innerJoin(services, eq(invoiceLineItems.serviceId, services.id))
+      .where(and(eq(invoiceLineItems.orgId, this.orgId), eq(invoiceLineItems.invoiceId, invoiceId)));
+    for (const line of lines) {
+      if (line.agreementId) ids.add(line.agreementId);
+    }
+    return ids;
+  }
+
+  // Order the pool the way one "Apply" should draw on it: money designated
+  // to this invoice's agreement first, then undesignated; confirmed before
+  // pending; oldest first. Money designated to a different agreement is set
+  // aside, not drawn on.
+  private async orderSourcesForInvoiceTx(
+    reader: Pick<typeof db, "select">,
+    invoice: Invoice,
+  ): Promise<{ eligible: Array<UnappliedSource & { locationId: string }>; designatedElsewhereCents: number }> {
+    if (!invoice.locationId) {
+      return { eligible: [], designatedElsewhereCents: 0 };
+    }
+    const agreementIds = await this.invoiceAgreementIdsTx(reader, invoice.id);
+    const sources = await this.unappliedSourcesForLocationTx(reader, invoice.locationId);
+    let designatedElsewhereCents = 0;
+    const eligible = sources.filter((source) => {
+      if (!source.designatedAgreementId || agreementIds.has(source.designatedAgreementId)) {
+        return true;
+      }
+      designatedElsewhereCents += source.unappliedCents;
+      return false;
+    });
+    const rank = (source: UnappliedSource) =>
+      (source.designatedAgreementId ? 0 : 2) + (source.status === "PENDING" ? 1 : 0);
+    eligible.sort((a, b) => rank(a) - rank(b) || a.recordedAt.localeCompare(b.recordedAt));
+    return { eligible, designatedElsewhereCents };
+  }
+
+  async getInvoiceLocationBalance(invoiceId: string): Promise<InvoiceLocationBalance | undefined> {
+    const [invoice] = await db.select().from(invoices).where(and(eq(invoices.orgId, this.orgId), eq(invoices.id, invoiceId)));
+    if (!invoice) {
+      return undefined;
+    }
+    const sums = await this.sumInvoiceApplicationsTx(db as unknown as DbTransaction, invoice.id);
+    const applicableCents = isInvoiceIssued(invoice.status) ? Math.max(invoice.totalAmountCents - sums.allCents, 0) : 0;
+    const { eligible, designatedElsewhereCents } = await this.orderSourcesForInvoiceTx(db, invoice);
+    let unappliedConfirmedCents = 0;
+    let unappliedPendingCents = 0;
+    for (const source of eligible) {
+      if (source.status === "PENDING") {
+        unappliedPendingCents += source.unappliedCents;
+      } else {
+        unappliedConfirmedCents += source.unappliedCents;
+      }
+    }
+    return {
+      invoiceId: invoice.id,
+      locationId: invoice.locationId ?? null,
+      balanceDueCents: invoice.balanceDueCents,
+      pendingAppliedCents: sums.pendingCents,
+      applicableCents,
+      unappliedConfirmedCents,
+      unappliedPendingCents,
+      suggestedCents: Math.min(applicableCents, unappliedConfirmedCents + unappliedPendingCents),
+      designatedElsewhereCents,
+      sources: eligible.map(({ locationId: _locationId, ...source }) => source),
+    };
+  }
+
+  // D4's prompt, acted on: draw on the location's unapplied pool in the order
+  // above until the invoice can take no more. One application row per source
+  // touched, each audit-logged like a manual one.
+  async applyLocationBalanceToInvoice(invoiceId: string, actor?: AuditActor | null): Promise<ApplyLocationBalanceResult | undefined> {
+    return db.transaction(async (tx) => {
+      let invoice = await this.lockInvoiceTx(tx, invoiceId);
+      if (!invoice) {
+        return undefined;
+      }
+      if (!isInvoiceIssued(invoice.status)) {
+        throw new Error(invoice.status === "DRAFT" ? "A draft invoice is not a receivable; issue it first" : "A voided invoice cannot receive payments");
+      }
+      if (!invoice.locationId) {
+        throw new Error(`Invoice ${invoice.invoiceNumber} has no location, so there is no location balance to apply`);
+      }
+
+      const { eligible } = await this.orderSourcesForInvoiceTx(tx, invoice);
+      const applied: ApplyLocationBalanceResult["applied"] = [];
+      let appliedCents = 0;
+      for (const source of eligible) {
+        const sums = await this.sumInvoiceApplicationsTx(tx, invoice.id);
+        const capacityCents = Math.max(invoice.totalAmountCents - sums.allCents, 0);
+        if (capacityCents <= 0) break;
+        const amountCents = Math.min(source.unappliedCents, capacityCents);
+        if (source.kind === "payment") {
+          const payment = await this.lockPaymentTx(tx, source.id);
+          if (!payment) continue;
+          const result = await this.applyPaymentTx(tx, payment, invoice, amountCents, actor ?? null);
+          invoice = result.invoice;
+        } else {
+          const memo = await this.lockCreditMemoTx(tx, source.id);
+          if (!memo) continue;
+          const result = await this.applyCreditMemoTx(tx, memo, invoice, amountCents, actor ?? null);
+          invoice = result.invoice;
+        }
+        applied.push({ kind: source.kind, sourceId: source.id, amountCents });
+        appliedCents += amountCents;
+      }
+
+      return { invoice, applied, appliedCents };
+    });
+  }
+
+  // D4: the agreement's initial charge becomes a real issued receivable at
+  // agreement start. Amount = resolveInitialChargeCents(agreement, price);
+  // a percent of a price that is not set resolves to nothing and is REFUSED,
+  // never issued at $0. The INITIAL_CHARGE billing event (fixed periodKey)
+  // is what makes this fire once per agreement - the same idempotency the
+  // nightly run relies on. Voiding the invoice does not re-open the event,
+  // exactly as for a schedule-driven invoice: the correction is a credit memo
+  // or a manual invoice, not a second receivable for the same term of sale.
+  private async issueInitialChargeInvoiceTx(tx: DbTransaction, agreement: Agreement, actor: AuditActor | null | undefined): Promise<InitialChargeReceivableOutcome> {
+    if (!agreement.initialChargeType) {
+      return { action: "NO_CHARGE", invoice: null, message: "This agreement has no initial charge" };
+    }
+
+    const [existingEvent] = await tx
+      .select()
+      .from(billingEvents)
+      .where(and(eq(billingEvents.orgId, this.orgId), eq(billingEvents.agreementId, agreement.id), eq(billingEvents.periodKey, INITIAL_CHARGE_PERIOD_KEY)));
+    if (existingEvent) {
+      const [existingInvoice] = existingEvent.invoiceId
+        ? await tx.select().from(invoices).where(and(eq(invoices.orgId, this.orgId), eq(invoices.id, existingEvent.invoiceId)))
+        : [undefined];
+      return { action: "ALREADY_ISSUED", invoice: existingInvoice ?? null, message: existingInvoice ? `The initial charge was already issued as ${existingInvoice.invoiceNumber}` : "The initial charge was already issued" };
+    }
+
+    const amountCents = resolveInitialChargeCents(agreement, agreement.priceCents);
+    if (amountCents == null || amountCents <= 0) {
+      return {
+        action: "REFUSED",
+        invoice: null,
+        message: agreement.initialChargeAmountMode === "PERCENT_OF_PRICE" && agreement.priceCents == null
+          ? "The initial charge is a percent of the contract price and no contract price is set; set the price to issue it"
+          : "The initial charge has no amount to invoice",
+      };
+    }
+
+    const terms = await this.resolveInvoiceTermsForLocationTx(tx, agreement.locationId);
+    const taxDecision = await this.resolveTaxDecision(tx, {
+      accountId: terms.accountId,
+      locationId: agreement.locationId,
+      serviceTypeId: agreement.serviceTypeId,
+      amountCents,
+    });
+    const totalAmountCents = amountCents + taxDecision.taxCents;
+    const invoiceNumber = await this.getNextInvoiceNumber(tx);
+    const [invoice] = await tx
+      .insert(invoices)
+      .values({
+        orgId: this.orgId,
+        customerId: agreement.customerId,
+        locationId: agreement.locationId,
+        appointmentId: null,
+        serviceRecordId: null,
+        invoiceNumber,
+        billingProfileSnapshot: terms.billingProfileSnapshot,
+        taxSnapshot: taxDecision.snapshot,
+        amountCents,
+        taxCents: taxDecision.taxCents,
+        totalAmountCents,
+        status: deriveInvoiceStatus({ totalAmountCents }),
+        balanceDueCents: totalAmountCents,
+        issuedAt: new Date(),
+        dueDate: terms.dueDate,
+        notes: null,
+      })
+      .returning();
+
+    await tx.insert(billingEvents).values({
+      orgId: this.orgId,
+      agreementId: agreement.id,
+      source: "INITIAL_CHARGE",
+      periodKey: INITIAL_CHARGE_PERIOD_KEY,
+      amountCents,
+      invoiceId: invoice.id,
+    });
+
+    await tx.insert(invoiceLineItems).values({
+      orgId: this.orgId,
+      invoiceId: invoice.id,
+      lineType: "INITIAL_CHARGE",
+      description: `${formatInitialChargeType(agreement.initialChargeType)} - ${agreement.agreementName}`,
+      quantity: 1,
+      unitPriceCents: amountCents,
+      amountCents,
+      taxable: taxDecision.taxable,
+      taxCents: taxDecision.taxCents,
+      sortOrder: 0,
+    });
+
+    await this.recordAuditLogTx(tx, {
+      entityType: "invoice",
+      entityId: invoice.id,
+      action: "invoice_issued",
+      actor,
+      after: invoice,
+    });
+
+    return { action: "ISSUED", invoice };
+  }
+
+  async issueInitialChargeInvoice(agreementId: string, actor?: AuditActor | null): Promise<Invoice | undefined> {
+    return db.transaction(async (tx) => {
+      const [agreement] = await tx.select().from(agreements).where(and(eq(agreements.orgId, this.orgId), eq(agreements.id, agreementId)));
+      if (!agreement) {
+        return undefined;
+      }
+      const outcome = await this.issueInitialChargeInvoiceTx(tx, agreement, actor);
+      if (!outcome.invoice) {
+        throw new Error(outcome.message ?? "The initial charge could not be issued");
+      }
+      return outcome.invoice;
+    });
+  }
+
+  async getAgreementInitialChargeInvoice(agreementId: string): Promise<Invoice | null | undefined> {
+    const [agreement] = await db.select().from(agreements).where(and(eq(agreements.orgId, this.orgId), eq(agreements.id, agreementId)));
+    if (!agreement) {
+      return undefined;
+    }
+    const [event] = await db
+      .select()
+      .from(billingEvents)
+      .where(and(eq(billingEvents.orgId, this.orgId), eq(billingEvents.agreementId, agreementId), eq(billingEvents.periodKey, INITIAL_CHARGE_PERIOD_KEY)));
+    if (!event?.invoiceId) {
+      return null;
+    }
+    const [invoice] = await db.select().from(invoices).where(and(eq(invoices.orgId, this.orgId), eq(invoices.id, event.invoiceId)));
+    return invoice ?? null;
   }
 
   // Everything here is drawn from the invoice's own frozen data
@@ -5776,6 +7113,8 @@ export class DatabaseStorage implements IStorage {
       subtotalCents: invoice.amountCents,
       taxCents: invoice.taxCents ?? 0,
       totalCents: invoice.totalAmountCents,
+      amountPaidCents: invoice.amountPaidCents,
+      balanceDueCents: invoice.balanceDueCents,
       noChargeCoveredByAgreement: isFullyAgreementCovered({ totalAmountCents: invoice.totalAmountCents, lines: lineItems }),
       notes: invoice.notes,
       branding: {

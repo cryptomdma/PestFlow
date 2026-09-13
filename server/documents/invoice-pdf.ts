@@ -86,6 +86,12 @@ export function renderInvoicePdf(context: InvoiceDocumentContext): Promise<Buffe
     totalLine("Subtotal", formatCents(context.subtotalCents));
     totalLine("Tax", formatCents(context.taxCents));
     totalLine(context.noChargeCoveredByAgreement ? "Amount Due" : "Total", formatCents(context.totalCents), true);
+    // Payments applied so far (D5). Only printed when money has moved, so a
+    // fresh invoice reads exactly as it did before the ledger existed.
+    if (!context.noChargeCoveredByAgreement && context.amountPaidCents > 0) {
+      totalLine("Paid", `-${formatCents(context.amountPaidCents)}`);
+      totalLine("Balance Due", formatCents(context.balanceDueCents), true);
+    }
     doc.font("Helvetica");
 
     // The agreement absorbed this visit, so say that rather than letting the

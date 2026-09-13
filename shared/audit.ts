@@ -30,11 +30,14 @@ export type AuditAction =
   | "invoice_line_edited"
   | "credit_memo_issued"
   | "credit_memo_applied"
+  | "credit_memo_released"
+  | "credit_memo_voided"
   | "payment_recorded"
   | "payment_confirmed"
   | "payment_applied"
   | "payment_released"
   | "payment_refunded"
+  | "payment_voided"
   | "price_overridden"
   | "ticket_reopened"
   | "prefinalization_issue_override";
@@ -57,11 +60,14 @@ const ACTION_LABELS: Record<AuditAction, string> = {
   invoice_line_edited: "Line edited",
   credit_memo_issued: "Credit memo issued",
   credit_memo_applied: "Credit memo applied",
+  credit_memo_released: "Credit memo released",
+  credit_memo_voided: "Credit memo voided",
   payment_recorded: "Payment recorded",
   payment_confirmed: "Payment confirmed",
   payment_applied: "Payment applied",
   payment_released: "Payment released",
   payment_refunded: "Payment refunded",
+  payment_voided: "Payment voided",
   price_overridden: "Price overridden",
   ticket_reopened: "Ticket reopened",
   prefinalization_issue_override: "Issued before finalization",

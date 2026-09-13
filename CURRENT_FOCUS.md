@@ -58,8 +58,8 @@ service, a plan-less price-less agreement) reports `DRAFT_FAILED` rather than un
 finalization. "Send" still only stamps `sentAt` - there is no delivery mechanism, and the prompt says
 so. Signatures and behavior are under "Shipped in Pass 5" in `PLAN_BILLING_V1_1_EXECUTION.md`.
 
-Pass 5.5 (`feature/phase-1-initial-charge-to-agreement`, D4 owner correction) is pushed and awaiting
-merge. The initial charge - down payment / cleanout surcharge / prepay-in-full, its amount, and who may
+Pass 5.5 (`feature/phase-1-initial-charge-to-agreement`, D4 owner correction) merged as PR #62. The
+initial charge - down payment / cleanout surcharge / prepay-in-full, its amount, and who may
 collect it - now lives on the Agreement (`initialCharge*`) with the Agreement Template carrying the
 default, and is set next to Price on both forms; the Billing Plan keeps only `initialChargeCoversFirstPeriod`
 and `fieldAddableSurcharge`, and `buildBillingPlanSnapshot()` no longer carries the moved keys. The
@@ -77,9 +77,29 @@ whose `billingPlanSnapshot` carried a charge (their snapshots are left as frozen
 template whose plan set one, then dropped the three plan columns. Signatures and behavior are under
 "Shipped in Pass 5.5" in `PLAN_BILLING_V1_1_EXECUTION.md`.
 
-Next up once it merges: **Pass 6 — `feature/phase-1-payments-lite`** (D5, D4): the payments ledger
-(cash/check, unapplied balances, application/release) and the initial charge as a real issued
-receivable at agreement start, built on `resolveInitialChargeCents()`.
+Pass 6 (`feature/phase-1-payments-lite`, D5 + D4) is pushed and awaiting merge. The payments ledger
+exists: `payments` (CASH | CHECK | OTHER; posts `PENDING`, confirmed by the office - cash only by a
+manager+), `payment_applications`, `credit_memos`, `credit_applications`, all append-only with
+stamped lifecycle transitions (confirm / void / refund / release, each with a required reason where it
+is a correction) and every act audit-logged. Invoices carry `amountPaidCents` / `balanceDueCents`,
+recomputed from the ledger under a row lock inside every transaction that touches them, and
+**status is derived from them - "Mark Paid" is gone**; a PENDING payment shows on the invoice but
+counts only once confirmed. The unapplied balance lives at the **location**; D4's "Apply $X location
+balance to this invoice?" fires from the finalize prompt right after Generate, and from every open
+invoice row on the location's Invoices tab, which now carries the ledger panel (balances, payments,
+credit memos, applications with Release). The initial charge is a **real issued receivable at
+agreement creation** (an `INITIAL_CHARGE` line, an `INITIAL_CHARGE` billing event that makes it fire
+once), refused - never $0 - when a percent charge has no price, with an explicit "Issue initial charge
+invoice" on the agreement card for that case and for the 4 pre-Pass-6 agreements. Per the owner
+review, **a down payment counts toward the contract price by default**: `initialChargeInAdditionToPrice`
+is the explicit exception, and `resolveRemainingContractPriceCents()` is what the per-visit line, a
+PREPAID_TERM charge and a recurring plan's per-period share now bill from. Signatures and behavior
+are under "Shipped in Pass 6" in `PLAN_BILLING_V1_1_EXECUTION.md`.
+
+Next up once it merges: **Pass 7 — `feature/phase-1-coa-and-field-display`** (D6): COA as payment
+application on the tech ticket / appointment detail (Price / COA applied / Due today), the
+`BILLABLE` vs `PRODUCTION` service designation, and the billing-plan pill on the agreement card. The
+tech payment-collection UI relabel (below) is its own pass right after.
 
 Full ordered plan, impact analysis, conflict resolutions, and per-pass verification steps live in
 `PLAN_BILLING_V1_1_EXECUTION.md` — read it before starting a pass, and update its "Pass status" table
