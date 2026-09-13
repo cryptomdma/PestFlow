@@ -26,6 +26,8 @@ import { useAuth } from "@/hooks/use-auth";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { dollarsToCents, centsToDollars, centsToDollarString, formatCents } from "@shared/money";
 import { describeBillingPlanBehavior } from "@shared/billing-plan";
+import { describeInitialCharge, initialChargeFromTemplate, initialChargeToTemplate } from "@shared/initial-charge";
+import { InitialChargeFormFields, initialChargeFieldsFrom, initialChargeFormStateFrom, validateInitialChargeFormState } from "@/components/initial-charge-fields";
 import { can, PERMISSIONS } from "@shared/permissions";
 import { INVOICE_ON_FINALIZE_MODES, describeInvoiceOnFinalizeMode, normalizeInvoiceOnFinalizeMode, type InvoiceOnFinalizeMode } from "@shared/invoice-on-finalize";
 import { Plus, Settings as SettingsIcon, Wrench, FileText, Users, ShieldCheck, FlaskConical, Bug, CreditCard, CalendarClock, Percent, Scale, Building2, Receipt } from "lucide-react";
@@ -450,10 +452,7 @@ function BillingPlanForm({ plan, onClose }: { plan?: BillingPlan | null; onClose
     anchorMode: plan?.anchorMode ?? "SIGNUP_DATE",
     anchorDay: plan?.anchorDay != null ? String(plan.anchorDay) : "",
     prorationRule: plan?.prorationRule ?? "NONE",
-    initialChargeType: plan?.initialChargeType ?? "NONE",
-    initialCharge: plan?.initialChargeCents != null ? centsToDollarString(plan.initialChargeCents) : "",
     initialChargeCoversFirstPeriod: plan?.initialChargeCoversFirstPeriod ?? false,
-    initialChargeCollectedBy: plan?.initialChargeCollectedBy ?? "OFFICE_AT_SIGNING",
     fieldAddableSurcharge: plan?.fieldAddableSurcharge ?? false,
     isActive: plan?.isActive ?? true,
     sortOrder: plan?.sortOrder !== null && plan?.sortOrder !== undefined ? String(plan.sortOrder) : "0",
@@ -472,10 +471,7 @@ function BillingPlanForm({ plan, onClose }: { plan?: BillingPlan | null; onClose
         anchorMode: data.anchorMode,
         anchorDay: data.anchorMode === "CALENDAR_DAY" ? (data.anchorDay.trim() ? parseInt(data.anchorDay, 10) : null) : null,
         prorationRule: data.prorationRule,
-        initialChargeType: data.initialChargeType === "NONE" ? null : data.initialChargeType,
-        initialChargeCents: data.initialChargeType !== "NONE" ? dollarsToCents(data.initialCharge) : null,
-        initialChargeCoversFirstPeriod: data.initialChargeType !== "NONE" ? data.initialChargeCoversFirstPeriod : false,
-        initialChargeCollectedBy: data.initialChargeType !== "NONE" ? data.initialChargeCollectedBy : null,
+        initialChargeCoversFirstPeriod: data.initialChargeCoversFirstPeriod,
         fieldAddableSurcharge: data.fieldAddableSurcharge,
         isActive: data.isActive,
         sortOrder: data.sortOrder.trim() ? parseInt(data.sortOrder, 10) : 0,
@@ -572,35 +568,9 @@ function BillingPlanForm({ plan, onClose }: { plan?: BillingPlan | null; onClose
         )}
       </div>
       <div className="space-y-1.5">
-        <Label>Initial Charge</Label>
-        <Select value={form.initialChargeType} onValueChange={(value) => setForm((p) => ({ ...p, initialChargeType: value }))}>
-          <SelectTrigger><SelectValue /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="NONE">None</SelectItem>
-            <SelectItem value="DOWN_PAYMENT">Down Payment</SelectItem>
-            <SelectItem value="CLEANOUT_SURCHARGE">Cleanout Surcharge</SelectItem>
-            <SelectItem value="PREPAY_FULL">Prepay Full</SelectItem>
-          </SelectContent>
-        </Select>
+        <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.initialChargeCoversFirstPeriod} onChange={(e) => setForm((p) => ({ ...p, initialChargeCoversFirstPeriod: e.target.checked }))} /> An agreement's initial charge covers its first period (no double-bill)</label>
+        <p className="text-xs text-muted-foreground">The initial charge itself (down payment, cleanout surcharge, amount, who may collect) is set per sale on the agreement and agreement template next to Price, not here. This only decides whether that money buys period 1 of this plan's schedule.</p>
       </div>
-      {form.initialChargeType !== "NONE" && (
-        <>
-          <div className="grid gap-3 sm:grid-cols-2">
-            <div className="space-y-1.5"><Label>Initial Charge Amount ($)</Label><Input type="number" step="0.01" value={form.initialCharge} onChange={(e) => setForm((p) => ({ ...p, initialCharge: e.target.value }))} /></div>
-            <div className="space-y-1.5">
-              <Label>Collected By</Label>
-              <Select value={form.initialChargeCollectedBy} onValueChange={(value) => setForm((p) => ({ ...p, initialChargeCollectedBy: value }))}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="OFFICE_AT_SIGNING">Office at Signing</SelectItem>
-                  <SelectItem value="TECH_AT_FIRST_SERVICE">Tech at First Service</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-          <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.initialChargeCoversFirstPeriod} onChange={(e) => setForm((p) => ({ ...p, initialChargeCoversFirstPeriod: e.target.checked }))} /> Covers first period (no double-bill)</label>
-        </>
-      )}
       <div className="grid gap-3 sm:grid-cols-2">
         <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.fieldAddableSurcharge} onChange={(e) => setForm((p) => ({ ...p, fieldAddableSurcharge: e.target.checked }))} /> Tech may add surcharge in field</label>
         <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.isActive} onChange={(e) => setForm((p) => ({ ...p, isActive: e.target.checked }))} /> Active</label>
@@ -1041,6 +1011,7 @@ function AgreementTemplateForm({
     defaultServiceTemplateName: template?.defaultServiceTemplateName ?? "",
     defaultDurationMinutes: template?.defaultDurationMinutes ? String(template.defaultDurationMinutes) : "",
     defaultPrice: template?.defaultPriceCents != null ? centsToDollarString(template.defaultPriceCents) : "",
+    initialCharge: initialChargeFormStateFrom(initialChargeFromTemplate(template)),
     defaultInstructions: template?.defaultInstructions ?? "",
     sortOrder: template?.sortOrder ? String(template.sortOrder) : "",
     internalCode: template?.internalCode ?? "",
@@ -1077,6 +1048,7 @@ function AgreementTemplateForm({
         defaultServiceTemplateName: data.defaultServiceTemplateName.trim() || null,
         defaultDurationMinutes: data.defaultDurationMinutes.trim() ? parseInt(data.defaultDurationMinutes, 10) : null,
         defaultPriceCents: dollarsToCents(data.defaultPrice),
+        ...initialChargeToTemplate(initialChargeFieldsFrom(data.initialCharge)),
         defaultInstructions: data.defaultInstructions.trim() || null,
         sortOrder: data.sortOrder.trim() ? parseInt(data.sortOrder, 10) : null,
         internalCode: data.internalCode.trim() || null,
@@ -1098,8 +1070,18 @@ function AgreementTemplateForm({
     },
   });
 
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const initialChargeError = validateInitialChargeFormState(form.initialCharge);
+    if (initialChargeError) {
+      toast({ title: initialChargeError, variant: "destructive" });
+      return;
+    }
+    mutation.mutate(form);
+  };
+
   return (
-    <form onSubmit={(e) => { e.preventDefault(); mutation.mutate(form); }} className="space-y-5 max-h-[75vh] overflow-y-auto pr-1">
+    <form onSubmit={handleSubmit} className="space-y-5 max-h-[75vh] overflow-y-auto pr-1">
       <div className="space-y-1">
         <h3 className="text-sm font-semibold">Template Details</h3>
         <p className="text-sm text-muted-foreground">Define the company-standard recurring agreement configuration your office can reuse.</p>
@@ -1215,6 +1197,13 @@ function AgreementTemplateForm({
         <div className="space-y-1.5"><Label>Default Duration Minutes</Label><Input type="number" min="0" value={form.defaultDurationMinutes} onChange={(e) => setForm((prev) => ({ ...prev, defaultDurationMinutes: e.target.value }))} /></div>
         <div className="space-y-1.5"><Label>Default Price</Label><Input type="number" min="0" step="0.01" value={form.defaultPrice} onChange={(e) => setForm((prev) => ({ ...prev, defaultPrice: e.target.value }))} /></div>
       </div>
+      <InitialChargeFormFields
+        value={form.initialCharge}
+        onChange={(next) => setForm((prev) => ({ ...prev, initialCharge: next }))}
+        contractPriceCents={dollarsToCents(form.defaultPrice)}
+        labelPrefix="Default "
+        testIdPrefix="template"
+      />
       <div className="space-y-1.5"><Label>Default Instructions</Label><Textarea value={form.defaultInstructions} onChange={(e) => setForm((prev) => ({ ...prev, defaultInstructions: e.target.value }))} className="resize-none" /></div>
       <div className="space-y-1">
         <h3 className="text-sm font-semibold">Template Metadata</h3>
@@ -1514,10 +1503,8 @@ export default function Settings() {
                       <Badge variant={plan.isActive ? "secondary" : "outline"}>{plan.isActive ? "Active" : "Inactive"}</Badge>
                     </div>
                     {plan.description && <p className="mt-0.5 text-xs text-muted-foreground">{plan.description}</p>}
-                    {plan.initialChargeType && (
-                      <p className="mt-0.5 text-xs text-muted-foreground">
-                        Initial: {plan.initialChargeType.replace(/_/g, " ")}{plan.initialChargeCents != null ? ` (${formatCents(plan.initialChargeCents)})` : ""}
-                      </p>
+                    {plan.initialChargeCoversFirstPeriod && (
+                      <p className="mt-0.5 text-xs text-muted-foreground">An agreement's initial charge covers its first period</p>
                     )}
                   </div>
                   <Button variant="outline" size="sm" onClick={() => { setEditingBillingPlan(plan); setBillingPlanDialogOpen(true); }}>Edit</Button>
@@ -1840,6 +1827,7 @@ export default function Settings() {
                   const serviceType = serviceTypes?.find((serviceType) => serviceType.id === template.defaultServiceTypeId);
                   const cancellationPolicy = cancellationPolicies?.find((policy) => policy.id === template.cancellationPolicyId);
                   const billingPlan = billingPlans?.find((plan) => plan.id === template.billingPlanId);
+                  const initialChargeSummary = describeInitialCharge(initialChargeFromTemplate(template), template.defaultPriceCents);
                   return (
                     <div key={template.id} className="flex items-center justify-between gap-3 p-3 rounded-md bg-muted/50" data-testid={`card-agreement-template-${template.id}`}>
                       <div className="min-w-0">
@@ -1854,6 +1842,7 @@ export default function Settings() {
                         <p className="text-xs text-muted-foreground mt-0.5">
                           Cancellation: {cancellationPolicy ? `${cancellationPolicy.name} (${formatCancellationFee(cancellationPolicy)})` : "No policy assigned"}
                         </p>
+                        {initialChargeSummary && <p className="text-xs text-muted-foreground mt-0.5">Initial charge default - {initialChargeSummary}</p>}
                         {template.description && <p className="text-xs text-muted-foreground mt-1">{template.description}</p>}
                       </div>
                       <div className="flex items-center gap-3 shrink-0">

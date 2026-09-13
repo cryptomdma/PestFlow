@@ -67,6 +67,14 @@ import { renderInvoicePdf } from "./documents/invoice-pdf";
 import { can, PERMISSIONS, type UserRole } from "@shared/permissions";
 import { computeProductionValueCents } from "@shared/production-value";
 import { isScheduleBilledPlan } from "@shared/billing-plan";
+import {
+  initialChargeFromTemplate,
+  initialChargeToTemplate,
+  isTechnicianCollectedCleanoutSurcharge,
+  normalizeInitialCharge,
+  resolveInitialChargeCents,
+  type InitialChargeFields,
+} from "@shared/initial-charge";
 import { deriveInvoiceStatus, isFullyAgreementCovered, isInvoiceIssued } from "@shared/invoice-status";
 import {
   INVOICE_ON_FINALIZE_SETTING_KEY,
@@ -955,6 +963,7 @@ export class DatabaseStorage implements IStorage {
       nextServiceDate: normalizeDateOnly(data.nextServiceDate)!,
       billingFrequency: data.billingFrequency?.trim() || null,
       priceCents: data.priceCents ?? null,
+      ...normalizeInitialCharge(data),
       recurrenceUnit: data.recurrenceUnit,
       recurrenceInterval: Math.max(data.recurrenceInterval || 1, 1),
       generationLeadDays: Math.max(data.generationLeadDays || 0, 0),
@@ -1013,6 +1022,10 @@ export class DatabaseStorage implements IStorage {
     if (data.serviceTypeId !== undefined) payload.serviceTypeId = data.serviceTypeId || null;
     if (data.defaultDurationMinutes !== undefined) payload.defaultDurationMinutes = data.defaultDurationMinutes ?? null;
     if (data.priceCents !== undefined) payload.priceCents = data.priceCents ?? null;
+    // The initial charge is one block: its type decides which other fields
+    // mean anything, so an update that names the type rewrites all five
+    // (the route refuses an amount-only change). Absent type, absent block.
+    if (data.initialChargeType !== undefined) Object.assign(payload, normalizeInitialCharge(data));
     if (data.serviceTemplateName !== undefined) payload.serviceTemplateName = data.serviceTemplateName?.trim() || null;
     if (data.serviceInstructions !== undefined) payload.serviceInstructions = data.serviceInstructions?.trim() || null;
     if (data.notes !== undefined) payload.notes = data.notes?.trim() || null;
@@ -1055,6 +1068,7 @@ export class DatabaseStorage implements IStorage {
       defaultServiceTemplateName: data.defaultServiceTemplateName?.trim() || null,
       defaultDurationMinutes: data.defaultDurationMinutes ?? null,
       defaultPriceCents: data.defaultPriceCents ?? null,
+      ...initialChargeToTemplate(initialChargeFromTemplate(data)),
       defaultInstructions: data.defaultInstructions?.trim() || null,
       sortOrder: data.sortOrder ?? null,
       internalCode: data.internalCode?.trim() || null,
@@ -1080,6 +1094,8 @@ export class DatabaseStorage implements IStorage {
     if (data.defaultServiceTemplateName !== undefined) payload.defaultServiceTemplateName = data.defaultServiceTemplateName?.trim() || null;
     if (data.defaultDurationMinutes !== undefined) payload.defaultDurationMinutes = data.defaultDurationMinutes ?? null;
     if (data.defaultPriceCents !== undefined) payload.defaultPriceCents = data.defaultPriceCents ?? null;
+    // Same one-block rule as normalizeAgreementUpdate.
+    if (data.defaultInitialChargeType !== undefined) Object.assign(payload, initialChargeToTemplate(initialChargeFromTemplate(data)));
     if (data.defaultInstructions !== undefined) payload.defaultInstructions = data.defaultInstructions?.trim() || null;
     if (data.internalCode !== undefined) payload.internalCode = data.internalCode?.trim() || null;
     return payload;
@@ -1154,10 +1170,11 @@ export class DatabaseStorage implements IStorage {
       anchorMode: plan.anchorMode,
       anchorDay: plan.anchorDay,
       prorationRule: plan.prorationRule,
-      initialChargeType: plan.initialChargeType,
-      initialChargeCents: plan.initialChargeCents,
+      // The initial charge (type / amount / collector) is no longer a plan
+      // fact and is not carried here - it lives on the agreement's own
+      // columns (PLAN_BILLING_V1_1.md D4). Snapshots written before Pass 5.5
+      // still hold the old keys as frozen history; nothing reads them.
       initialChargeCoversFirstPeriod: plan.initialChargeCoversFirstPeriod,
-      initialChargeCollectedBy: plan.initialChargeCollectedBy,
       fieldAddableSurcharge: plan.fieldAddableSurcharge,
       snapshottedAt: new Date().toISOString(),
     };
@@ -1171,12 +1188,14 @@ export class DatabaseStorage implements IStorage {
   // isScheduleBilledPlan() predicate invoice generation reads.
   //
   // `applyInitialChargeSkip` is true only when billing starts on the
-  // agreement's own start date. A plan with initialChargeCoversFirstPeriod
-  // skips period 1 because its initial charge paid for it - and that charge
-  // only ever fires at the agreement's FIRST service
-  // (createSurchargeEntryIfConfigured, which returns early once a slot is
-  // filled). Applying the skip to a plan attached mid-term would therefore
-  // skip a period nobody ever collected, so the update path passes false.
+  // agreement's own start date AND the agreement actually carries an initial
+  // charge. A plan with initialChargeCoversFirstPeriod skips period 1 because
+  // the initial charge paid for it - but since D4 moved the charge onto the
+  // agreement, the plan flag alone cannot know whether there is one: applying
+  // the skip to a charge-less agreement would skip a period nobody paid for,
+  // silently. And that charge only ever fires at the agreement's FIRST
+  // service (createSurchargeEntryIfConfigured, which returns early once a
+  // slot is filled), so a plan attached mid-term never gets the skip either.
   private computeNextBillingDateForPlan(
     plan: BillingPlan | null | undefined,
     anchorDate: string,
@@ -1298,7 +1317,8 @@ export class DatabaseStorage implements IStorage {
       return null;
     }
 
-    return this.computeNextBillingDateForPlan(plan, anchorDate, anchorDate === startDate);
+    const initialChargeType = payload.initialChargeType !== undefined ? payload.initialChargeType : existing.initialChargeType;
+    return this.computeNextBillingDateForPlan(plan, anchorDate, anchorDate === startDate && !!initialChargeType);
   }
 
   private normalizeTechnicianInsert(data: InsertTechnician): InsertTechnician {
@@ -1504,16 +1524,26 @@ export class DatabaseStorage implements IStorage {
     const recurrenceUnit = agreementData.recurrenceUnit ?? template?.defaultRecurrenceUnit ?? "MONTH";
     const recurrenceInterval = agreementData.recurrenceInterval ?? template?.defaultRecurrenceInterval ?? 1;
 
+    // The initial charge is one block and propagates as one: the caller
+    // naming a type (including an explicit null - "no initial charge") wins
+    // outright, otherwise the template's default block applies. Mixing an
+    // agreement's type with a template's amount would describe a sale nobody
+    // made, which is why this is not five independent `??` lines like the
+    // fields around it.
+    const initialCharge: InitialChargeFields = agreementData.initialChargeType !== undefined
+      ? normalizeInitialCharge(agreementData)
+      : initialChargeFromTemplate(template);
+
     // Only schedule-driven plans get a nextBillingDate at all - PER_SERVICE /
     // INSTALLMENT / charge-at-start agreements bill some other way and are
     // never picked up by the nightly run. RECURRING_INTERVAL bills immediately
-    // at signup for period 1 unless the plan's initial charge already covers
-    // that period, in which case billing starts one interval out
-    // (PLAN_BILLING_V1.md §1.2); PREPAID_TERM bills the full contract price
-    // once, at signup. Creation anchors on the agreement's own start date, so
-    // the initial-charge skip applies here - see computeNextBillingDateForPlan
-    // for why the update path passes false.
-    const nextBillingDate = this.computeNextBillingDateForPlan(billingPlan, startDate, true);
+    // at signup for period 1 unless the agreement's initial charge already
+    // covers that period under this plan, in which case billing starts one
+    // interval out (PLAN_BILLING_V1.md §1.2); PREPAID_TERM bills the full
+    // contract price once, at signup. Creation anchors on the agreement's own
+    // start date, so the skip applies here when there is a charge to cover it
+    // - see computeNextBillingDateForPlan for the update path.
+    const nextBillingDate = this.computeNextBillingDateForPlan(billingPlan, startDate, !!initialCharge.initialChargeType);
 
     return {
       customerId: agreementData.customerId,
@@ -1535,6 +1565,7 @@ export class DatabaseStorage implements IStorage {
       nextServiceDate: agreementData.nextServiceDate,
       billingFrequency: agreementData.billingFrequency ?? template?.defaultBillingFrequency ?? null,
       priceCents: agreementData.priceCents ?? template?.defaultPriceCents ?? null,
+      ...initialCharge,
       expectedServiceCount: agreementData.expectedServiceCount ?? computeExpectedServiceCount(startDate, termUnit, termInterval, recurrenceUnit, recurrenceInterval),
       nextBillingDate: agreementData.nextBillingDate ?? nextBillingDate,
       recurrenceUnit,
@@ -1873,22 +1904,48 @@ export class DatabaseStorage implements IStorage {
 
   // "an initialChargeCollectedBy = TECH_AT_FIRST_SERVICE field surcharge
   // produces a basis = SURCHARGE entry credited to the collecting
-  // technician." Reads the agreement's own frozen billingPlanSnapshot
-  // (unit 8), not the live billing plan - if the plan changes later, an
-  // agreement that already had its first service finalized keeps the
-  // terms it was sold under. Fires once per agreement, at the finalization
-  // that fills the agreement's first SCHEDULED_AGREEMENT_SERVICE slot -
-  // there is no separate "collect a surcharge in the field" action in this
-  // codebase yet, so this is the one point where TECH_AT_FIRST_SERVICE
-  // actually resolves to an event.
+  // technician." Reads the agreement's own initialCharge* columns - the terms
+  // of THIS sale (PLAN_BILLING_V1_1.md D4), which is where the charge lives
+  // since Pass 5.5; the billingPlanSnapshot no longer carries it. Fires once
+  // per agreement, at the finalization that fills the agreement's first
+  // SCHEDULED_AGREEMENT_SERVICE slot - there is no separate "collect a
+  // surcharge in the field" action in this codebase yet, so this is the one
+  // point where TECH_AT_FIRST_SERVICE actually resolves to an event.
+  //
+  // This is a SEPARATE credit from the visit's own production value (contract
+  // price / expected visits, createProductionValueEntriesForFinalizedRecord),
+  // which never depends on who collected anything. It exists only for a
+  // cleanout surcharge - extra work priced on top of the contract. A down
+  // payment or prepayment is part of the contract price the technician is
+  // already credited for, so it earns nothing here (owner review 2026-09-13;
+  // unit 15 credited any initial charge type, which double-paid a
+  // tech-collected down payment).
+  //
+  // The credit is INFERRED from a permission, and that inference is only
+  // sound when the technician is the sole permitted collector
+  // (isTechnicianCollectedCleanoutSurcharge). "Either role may collect"
+  // (null) gets no credit: the office may have banked the money at signing,
+  // and a wrong credit is silent while a missing one surfaces at payout.
+  // Transitional, twice over: the field-surcharge unit makes the surcharge a
+  // line the technician adds on the ticket and this keys off that recorded
+  // line, gated by the technician's comp-plan selector for whether surcharge
+  // lines earn production at all (CURRENT_FOCUS.md, compensation entry);
+  // D5's payments ledger records who collected what.
+  //
+  // The amount is resolved through the same shared resolver the forms and
+  // Pass 6's receivable use, so a percent-of-price charge on an agreement
+  // with no price resolves to nothing here too - withheld, not guessed.
   private async createSurchargeEntryIfConfigured(
     tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
     agreement: Agreement,
     record: ServiceRecord,
     finalizedAt: Date,
   ): Promise<void> {
-    const snapshot = agreement.billingPlanSnapshot as { initialChargeType?: string | null; initialChargeCollectedBy?: string | null; initialChargeCents?: number | null } | null;
-    if (!snapshot?.initialChargeType || snapshot.initialChargeCollectedBy !== "TECH_AT_FIRST_SERVICE" || !snapshot.initialChargeCents) {
+    if (!isTechnicianCollectedCleanoutSurcharge(agreement)) {
+      return;
+    }
+    const initialChargeCents = resolveInitialChargeCents(agreement, agreement.priceCents);
+    if (initialChargeCents == null || initialChargeCents <= 0) {
       return;
     }
 
@@ -1912,8 +1969,8 @@ export class DatabaseStorage implements IStorage {
       agreementId: agreement.id,
       serviceTypeId: record.serviceTypeId,
       basis: "SURCHARGE",
-      productionValueCents: snapshot.initialChargeCents,
-      contractPriceCentsSnapshot: null,
+      productionValueCents: initialChargeCents,
+      contractPriceCentsSnapshot: agreement.priceCents ?? null,
       expectedServiceCountSnapshot: null,
       finalizedAt,
     });

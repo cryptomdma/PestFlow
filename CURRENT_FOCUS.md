@@ -46,7 +46,7 @@ carries a draft now prompts (void it or keep it) on all three cancel paths — t
 schedule screen's status PATCH was a third. Signatures and behavior are under "Shipped in Pass 4" in
 `PLAN_BILLING_V1_1_EXECUTION.md`.
 
-Pass 5 (`feature/phase-1-finalize-invoice-wiring`, D2) is pushed and awaiting merge. Finalization is
+Pass 5 (`feature/phase-1-finalize-invoice-wiring`, D2) merged as PR #61. Finalization is
 now wired to invoicing: the finalization that completes a visit reports an invoicing outcome on the
 finalize response, governed by a new org setting `invoiceOnFinalize` (`PROMPT` default | `AUTO_DRAFT` |
 `OFF`, Settings → "Invoicing on Finalization", admin-only to change). Under `PROMPT` both finalize
@@ -58,11 +58,28 @@ service, a plan-less price-less agreement) reports `DRAFT_FAILED` rather than un
 finalization. "Send" still only stamps `sentAt` - there is no delivery mechanism, and the prompt says
 so. Signatures and behavior are under "Shipped in Pass 5" in `PLAN_BILLING_V1_1_EXECUTION.md`.
 
-Next up once it merges: **Pass 5.5 — `feature/phase-1-initial-charge-to-agreement`**, an owner
-correction to D4 moving the down-payment type/amount off the shared Billing Plan and onto the Agreement
-and Agreement Template, where a per-sale amount derived from contract price belongs. It must land before
-Pass 6 turns that block into a real receivable. See D4's correction note in `PLAN_BILLING_V1_1.md` and
-the Pass 5.5 section of `PLAN_BILLING_V1_1_EXECUTION.md`.
+Pass 5.5 (`feature/phase-1-initial-charge-to-agreement`, D4 owner correction) is pushed and awaiting
+merge. The initial charge - down payment / cleanout surcharge / prepay-in-full, its amount, and who may
+collect it - now lives on the Agreement (`initialCharge*`) with the Agreement Template carrying the
+default, and is set next to Price on both forms; the Billing Plan keeps only `initialChargeCoversFirstPeriod`
+and `fieldAddableSurcharge`, and `buildBillingPlanSnapshot()` no longer carries the moved keys. The
+amount has a mode - flat cents or **percent of contract price** (basis points), so "half down" is now
+expressible - and one shared resolver (`shared/initial-charge.ts`) turns it into cents everywhere.
+`initialChargeCollectedBy` is nullable (null = either role may collect) and is a permission, not a record:
+the technician's *separate* SURCHARGE production-value credit now fires only for a cleanout surcharge
+(never a down payment - that money is in the contract price the technician is already credited for) and
+only when the technician is the *sole* permitted collector; per-service production value (contract price
+÷ expected visits) is untouched and never depends on collection. The owner's review of this pass
+(2026-09-13) is recorded under D4 in `PLAN_BILLING_V1_1.md` and adds a Pass 6 requirement (a down
+payment counts toward the contract price by default) and the field-surcharge unit below. The bootstrap
+migration backfilled the 4 agreements
+whose `billingPlanSnapshot` carried a charge (their snapshots are left as frozen history) and the one
+template whose plan set one, then dropped the three plan columns. Signatures and behavior are under
+"Shipped in Pass 5.5" in `PLAN_BILLING_V1_1_EXECUTION.md`.
+
+Next up once it merges: **Pass 6 — `feature/phase-1-payments-lite`** (D5, D4): the payments ledger
+(cash/check, unapplied balances, application/release) and the initial charge as a real issued
+receivable at agreement start, built on `resolveInitialChargeCents()`.
 
 Full ordered plan, impact analysis, conflict resolutions, and per-pass verification steps live in
 `PLAN_BILLING_V1_1_EXECUTION.md` — read it before starting a pass, and update its "Pass status" table
@@ -131,6 +148,20 @@ the source of truth for what each pass actually does.
     posted, remaining services on that appointment can be cancelled without disturbing the invoice.
   - **Move Batch Invoice from Service Ticket Review to the Invoices screen** — it is an invoicing
     action sitting on a review queue.
+  - **Field surcharge line.** Owner-specified 2026-09-13 in the Pass 5.5 review. A cleanout surcharge
+    is not a term of the sale: the technician charges it at the initial service for what could not be
+    seen at scheduling (larger home, conducive conditions), and it is *in addition to* the contract
+    price, unlike a down payment. Build: (1) a SURCHARGE line the technician adds on the ticket, with
+    an amount, flowing onto the visit invoice as a `SURCHARGE` line item; (2) an allow/reject toggle
+    on the **agreement template** — today `fieldAddableSurcharge` sits on the billing plan and has no
+    reader anywhere; (3) the SURCHARGE production credit keyed off that recorded line and gated by
+    the technician's comp-plan surcharge selector (compensation entry below), deleting
+    `createSurchargeEntryIfConfigured()`'s collector inference; (4) `CLEANOUT_SURCHARGE` and
+    `PREPAY_FULL` leave `INITIAL_CHARGE_TYPES` (paid-in-full is a `PREPAID_TERM` plan), leaving
+    `DOWN_PAYMENT`, with the `Quarterly Control` template and `Unit 15 Ledger Test` cleanout defaults
+    migrated or dropped. Sequence after Pass 6, since the line is an invoice line and the credit wants
+    the payments ledger's collection record. Whether the *comp* for that line is production or
+    commission is a comp-plan question (§1.6.2), not this unit's.
   - **Compensation & attribution — crew splits, sales commission, non-technician payees.**
     Owner-specified 2026-09-10. **Read `PLAN_BILLING_V1.md` §1.6.2 first.** An earlier version of this
     entry said the comp model was nowhere in the plan. That was wrong: §1.6.2 ("Compensation — build
@@ -188,6 +219,17 @@ the source of truth for what each pass actually does.
     Same principle as Pass 5.5's `initialChargeCollectedBy` finding, which is this problem in
     miniature: credit must key off what was **recorded to have happened**, never inferred from a
     configuration field.
+
+    **Surcharge production is a comp-plan setting (owner, 2026-09-13).** Whether a technician earns
+    production on a cleanout/surcharge line is decided per comp plan — a selector on the plan (or a
+    filter on its production component) reading roughly "earns production on surcharge lines:
+    yes / no" — not a global rule, and never inferred from who collected the money. A down payment
+    earns no extra production on any plan: 25% down changes the initial visit's charge, not the
+    contract price that production is derived from. This answers the question the historical plan
+    left open (its "cleanout / down-payment surcharge" decision). Until the comp engine exists, the
+    transitional credit in `createSurchargeEntryIfConfigured()` (cleanout only, technician the sole
+    permitted collector) stands in for a plan that answers "yes"; the field-surcharge unit above
+    deletes it.
   - ~~**`PLAN_BILLING_V1.md` is cited but missing.**~~ **Resolved 2026-09-10** — restored from git
     history with a header marking it historical and superseded, so the ~24 `§x.x` citations in
     `shared/schema.ts`, `server/storage.ts` and elsewhere resolve to something readable. Per the owner

@@ -49,6 +49,8 @@ import { formatPhoneDisplay } from "@shared/phone";
 import { describeAuditAction, describeAuditEntityType, diffAuditSnapshots } from "@shared/audit";
 import { dollarsToCents, centsToDollars, centsToDollarString } from "@shared/money";
 import { describeBillingPlanBehavior } from "@shared/billing-plan";
+import { describeInitialCharge, initialChargeFromTemplate } from "@shared/initial-charge";
+import { InitialChargeFormFields, initialChargeFieldsFrom, initialChargeFormStateFrom, validateInitialChargeFormState } from "@/components/initial-charge-fields";
 import {
   ArrowLeft, Mail, Phone, MapPin, Plus, Calendar, FileText, MessageSquare,
   ClipboardList, Building2, User, ChevronDown, ArrowUpRight, StickyNote,
@@ -262,6 +264,9 @@ function buildAgreementFormState(agreement?: Agreement | null, template?: Agreem
       : template?.defaultPriceCents != null
         ? centsToDollarString(template.defaultPriceCents)
         : "",
+    // One block, propagated as one: the agreement's own charge when editing,
+    // else the template's default - never a mix (see buildAgreementInsertFromTemplate).
+    initialCharge: initialChargeFormStateFrom(agreement ?? initialChargeFromTemplate(template)),
     recurrenceUnit,
     recurrenceInterval,
     generationLeadDays: agreement?.generationLeadDays ? String(agreement.generationLeadDays) : template?.defaultGenerationLeadDays ? String(template.defaultGenerationLeadDays) : "14",
@@ -1559,6 +1564,7 @@ function AgreementForm({
     nextServiceDate: data.nextServiceDate,
     billingPlanId: data.billingPlanId || null,
     priceCents: dollarsToCents(data.price),
+    ...initialChargeFieldsFrom(data.initialCharge),
     recurrenceUnit: data.recurrenceUnit,
     recurrenceInterval: parseInt(data.recurrenceInterval, 10),
     generationLeadDays: parseInt(data.generationLeadDays, 10),
@@ -1609,6 +1615,12 @@ function AgreementForm({
 
     if (parseInt(form.termInterval, 10) < 1 || parseInt(form.recurrenceInterval, 10) < 1 || parseInt(form.generationLeadDays, 10) < 0) {
       toast({ title: "Term and recurrence intervals must be at least 1 and lead days cannot be negative", variant: "destructive" });
+      return false;
+    }
+
+    const initialChargeError = validateInitialChargeFormState(form.initialCharge);
+    if (initialChargeError) {
+      toast({ title: initialChargeError, variant: "destructive" });
       return false;
     }
 
@@ -1956,6 +1968,11 @@ function AgreementForm({
               <div className="space-y-1.5"><Label>Default Duration Minutes</Label><Input type="number" min="0" value={form.defaultDurationMinutes} onChange={(e) => setForm((prev) => ({ ...prev, defaultDurationMinutes: e.target.value }))} /></div>
               <div className="space-y-1.5"><Label>Price</Label><Input type="number" min="0" step="0.01" value={form.price} onChange={(e) => setForm((prev) => ({ ...prev, price: e.target.value }))} placeholder="Optional" /></div>
             </div>
+            <InitialChargeFormFields
+              value={form.initialCharge}
+              onChange={(next) => setForm((prev) => ({ ...prev, initialCharge: next }))}
+              contractPriceCents={dollarsToCents(form.price)}
+            />
             <div className="space-y-1.5"><Label>Service Instructions</Label><Textarea value={form.serviceInstructions} onChange={(e) => setForm((prev) => ({ ...prev, serviceInstructions: e.target.value }))} className="resize-none" /></div>
           </AccordionContent>
         </AccordionItem>
@@ -2318,6 +2335,11 @@ function AgreementsTab({
                     <div>
                       <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Price</p>
                       <p className="mt-1">{agreement.priceCents != null ? formatCurrency(centsToDollars(agreement.priceCents)) : "Not set"}</p>
+                      {agreement.initialChargeType && (
+                        <p className="mt-1 text-xs text-muted-foreground" data-testid={`text-agreement-initial-charge-${agreement.id}`}>
+                          {describeInitialCharge(agreement, agreement.priceCents)}
+                        </p>
+                      )}
                     </div>
                     <div>
                       <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Lead Time</p>

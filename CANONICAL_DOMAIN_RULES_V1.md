@@ -953,6 +953,34 @@ run skips is billed by nobody if the visit invoice also zeroes it, and that fail
 Agreement is treated as COD and billed per visit — the visible failure, deliberately chosen over the
 silent one. An Agreement with neither a plan nor a price refuses to invoice rather than guessing.
 
+### Canonical rule — the initial charge is a term of the Agreement, not of the Billing Plan (PLAN_BILLING_V1.1 D4)
+
+* A down payment, cleanout surcharge, or prepay-in-full owed at agreement start is a term of **one
+  sale**, derived from **that** Agreement's contract price. It lives on the Agreement
+  (`initialChargeType`, an amount mode of flat cents or percent of price, `initialChargeCollectedBy`),
+  with the Agreement Template carrying the default — exactly the `defaultPriceCents` → `priceCents`
+  relationship. The block moves as one: a sale's type with a template's amount describes nothing.
+* A down payment **counts toward the contract price** by default ($400 agreement, $100 down, $300
+  remains); "in addition to" is an explicit exception (D4 owner review, built with the receivable in
+  Pass 6). Only a *surcharge* is inherently additional, and a surcharge is not a term of the sale at
+  all: the technician charges it at the initial service for what scheduling could not see. The
+  template holds only whether the technician may (the field-surcharge unit).
+* The Billing Plan says how and when a customer is charged and is shared by every agreement on it. It
+  keeps only what concerns its cadence — `initialChargeCoversFirstPeriod` (does the up-front money buy
+  period 1) and, until it moves to the template, `fieldAddableSurcharge`. A plan never carries an
+  amount. Paid-in-full is a plan arrangement: `PREPAID_TERM` bills the whole contract price once at
+  start, for any term length, and every visit is a $0 covered line.
+* `initialChargeCollectedBy` is **who may collect**, never who did. Null means either role may. It
+  never affects per-service production value (contract price ÷ expected visits, no production on
+  callbacks), which is independent of collection and of any balance due; comp plans decide payout.
+  The only thing inferred from it is the *separate* SURCHARGE credit for a technician-collected
+  cleanout surcharge, given only when the technician is the *sole* permitted collector, until the
+  surcharge is a recorded ticket line. A withheld credit is the visible failure; a wrong one is silent
+  and gets paid.
+* The amount is resolved through one shared resolver (`resolveInitialChargeCents()` in
+  `shared/initial-charge.ts`) wherever it is shown, credited, or invoiced. A percent of a price that is
+  not set resolves to nothing — never to $0.
+
 ### Canonical rule — DRAFT before finalization (PLAN_BILLING_V1.1 D3, Q3)
 
 * An invoice may be **created** as `DRAFT` against an Appointment whose Services are not yet
