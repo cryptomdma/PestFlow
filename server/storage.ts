@@ -68,6 +68,12 @@ import { can, PERMISSIONS, type UserRole } from "@shared/permissions";
 import { computeProductionValueCents } from "@shared/production-value";
 import { isScheduleBilledPlan } from "@shared/billing-plan";
 import { deriveInvoiceStatus, isFullyAgreementCovered, isInvoiceIssued } from "@shared/invoice-status";
+import {
+  INVOICE_ON_FINALIZE_SETTING_KEY,
+  normalizeInvoiceOnFinalizeMode,
+  type FinalizationInvoicingOutcome,
+  type InvoiceOnFinalizeMode,
+} from "@shared/invoice-on-finalize";
 
 type DbTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -217,6 +223,15 @@ export interface CompleteServiceResult {
 }
 
 export type ServiceTimeTrackingMode = "AUTO_TIMEOUT_ON_TICKET_POST" | "PROMPT_FOR_TIMEOUT" | "MANUAL_TIMEOUT";
+
+// D2: finalization's answer. `invoicing` is null unless THIS finalization
+// completed the visit (every active service on the appointment now finalized)
+// - only then is there an invoicing decision to report. Appointment-less
+// tickets never carry one: they bill through the ready-for-billing list.
+export interface FinalizeServiceRecordResult {
+  record: ServiceRecord;
+  invoicing: FinalizationInvoicingOutcome<Invoice> | null;
+}
 
 export const DEFAULT_APPOINTMENT_CANCEL_REASONS = [
   "Weather",
@@ -516,12 +531,14 @@ export interface IStorage {
   createServiceRecord(data: InsertServiceRecord): Promise<ServiceRecord>;
   updateServiceRecord(id: string, data: Partial<InsertServiceRecord>): Promise<ServiceRecord | undefined>;
   completeService(input: CompleteServiceInput): Promise<CompleteServiceResult | undefined>;
-  finalizeServiceRecord(id: string, actor?: AuditActor): Promise<ServiceRecord | undefined>;
+  finalizeServiceRecord(id: string, actor?: AuditActor): Promise<FinalizeServiceRecordResult | undefined>;
   reopenServiceRecord(id: string, reason: string, actor?: AuditActor): Promise<ServiceRecord | undefined>;
   getServiceTimeTrackingMode(): Promise<ServiceTimeTrackingMode>;
   setServiceTimeTrackingMode(mode: ServiceTimeTrackingMode): Promise<AppSetting>;
   getAppointmentCancelReasons(): Promise<string[]>;
   setAppointmentCancelReasons(reasons: string[]): Promise<AppSetting>;
+  getInvoiceOnFinalizeMode(): Promise<InvoiceOnFinalizeMode>;
+  setInvoiceOnFinalizeMode(mode: InvoiceOnFinalizeMode): Promise<AppSetting>;
 
   getMaterialProducts(includeInactive?: boolean): Promise<MaterialProduct[]>;
   createMaterialProduct(data: InsertMaterialProduct): Promise<MaterialProduct>;
@@ -3853,10 +3870,12 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(productApplications).where(eq(productApplications.orgId, this.orgId));
   }
 
-  async finalizeServiceRecord(id: string, actor?: AuditActor): Promise<ServiceRecord | undefined> {
+  async finalizeServiceRecord(id: string, actor?: AuditActor): Promise<FinalizeServiceRecordResult | undefined> {
     return db.transaction(async (tx) => {
       const [existingRecord] = await tx.select().from(serviceRecords).where(and(eq(serviceRecords.orgId, this.orgId), eq(serviceRecords.id, id)));
       if (!existingRecord) return undefined;
+
+      let invoicing: FinalizationInvoicingOutcome<Invoice> | null = null;
 
       const now = new Date();
       const [record] = await tx
@@ -3911,12 +3930,87 @@ export class DatabaseStorage implements IStorage {
               timeOutAt,
               durationMinutes: calculateDurationMinutes(appointment.timeInAt, timeOutAt) ?? appointment.durationMinutes ?? null,
             }).where(and(eq(appointments.orgId, this.orgId), eq(appointments.id, appointment.id)));
+
+            // D2: the finalization that completes the visit is the invoicing
+            // moment. Same transaction, so an AUTO_DRAFT lands with the
+            // finalization or not at all - but a refused draft never rolls
+            // the finalization back (see resolveInvoiceOnFinalizeTx).
+            invoicing = await this.resolveInvoiceOnFinalizeTx(tx, {
+              appointment,
+              serviceRecordIds: Array.from(new Set([record.id, ...linkedRecords.map((linkedRecord) => linkedRecord.id)])),
+              actor,
+            });
           }
         }
       }
 
-      return record;
+      return { record, invoicing };
     });
+  }
+
+  // D2 (PLAN_BILLING_V1_1.md): generate-or-adopt, gated by the org's
+  // invoiceOnFinalize setting. Called only once every active service on the
+  // visit is finalized, from inside finalizeServiceRecord's transaction.
+  //
+  //   PROMPT      report the visit's DRAFT (if any) and let the reviewer choose
+  //               Generate / Generate & Send / Later. Generate is the existing
+  //               generateInvoiceFromServiceRecord(), which adopts a DRAFT.
+  //   AUTO_DRAFT  create the DRAFT here if the visit has none. An existing
+  //               DRAFT is kept as-is: issue re-prices it from the finalized
+  //               tickets, so refreshing its preview here would be a second
+  //               pricing pass with no reader.
+  //   OFF         nothing. The visit stays on the ready-for-billing list.
+  //
+  // An already-ISSUED invoice on the visit (manager override, pre-D1 row) is
+  // reported as ALREADY_INVOICED in every mode - there is nothing to generate,
+  // and the tickets were flagged at posting time so the reviewer already knows.
+  private async resolveInvoiceOnFinalizeTx(
+    tx: DbTransaction,
+    input: { appointment: Appointment; serviceRecordIds: string[]; actor?: AuditActor | null },
+  ): Promise<FinalizationInvoicingOutcome<Invoice>> {
+    const mode = await this.readInvoiceOnFinalizeModeTx(tx);
+    const appointmentId = input.appointment.id;
+    const existing = await this.findInvoiceForVisitTx(tx, appointmentId, input.serviceRecordIds);
+
+    if (existing && isInvoiceIssued(existing.status)) {
+      return { mode, action: "ALREADY_INVOICED", appointmentId, invoice: existing };
+    }
+    if (mode === "OFF") {
+      return { mode, action: "OFF", appointmentId, invoice: existing ?? null };
+    }
+    if (mode === "PROMPT") {
+      return { mode, action: "PROMPT", appointmentId, invoice: existing ?? null };
+    }
+
+    // AUTO_DRAFT
+    if (existing) {
+      return { mode, action: "DRAFTED", appointmentId, invoice: existing, created: false };
+    }
+
+    // Savepoint (a nested drizzle transaction), not a bare try/catch: a failed
+    // statement aborts a Postgres transaction outright, and the finalization
+    // above must survive whatever drafting does. Rolling back to the savepoint
+    // leaves the outer transaction usable, so a refusal - an agreement with no
+    // plan and no price, or a race lost on the appointment's unique index - is
+    // reported on the response rather than undoing the finalization.
+    try {
+      const draft = await tx.transaction((savepoint) => this.createDraftInvoiceForAppointmentTx(savepoint, appointmentId, input.actor));
+      return { mode, action: "DRAFTED", appointmentId, invoice: draft, created: true };
+    } catch (err: any) {
+      // Lost a race to a concurrent "Draft invoice" click: the unique index
+      // made us wait for the winner to commit, so it is visible now.
+      const raceWinner = err?.code === "23505" ? await this.findInvoiceForVisitTx(tx, appointmentId, input.serviceRecordIds) : undefined;
+      if (raceWinner) {
+        return { mode, action: "DRAFTED", appointmentId, invoice: raceWinner, created: false };
+      }
+      return {
+        mode,
+        action: "DRAFT_FAILED",
+        appointmentId,
+        invoice: null,
+        message: err instanceof Error ? err.message : String(err),
+      };
+    }
   }
 
   async reopenServiceRecord(id: string, reason: string, actor?: AuditActor): Promise<ServiceRecord | undefined> {
@@ -4035,6 +4129,29 @@ export class DatabaseStorage implements IStorage {
       .onConflictDoUpdate({
         target: [appSettings.orgId, appSettings.key],
         set: { value, updatedAt: new Date() },
+      })
+      .returning();
+    return setting;
+  }
+
+  // D2: PROMPT | AUTO_DRAFT | OFF, default PROMPT. A missing or unrecognised
+  // row reads as the default rather than failing finalization.
+  async getInvoiceOnFinalizeMode(): Promise<InvoiceOnFinalizeMode> {
+    return this.readInvoiceOnFinalizeModeTx(db as any);
+  }
+
+  private async readInvoiceOnFinalizeModeTx(tx: DbTransaction): Promise<InvoiceOnFinalizeMode> {
+    const [setting] = await tx.select().from(appSettings).where(and(eq(appSettings.orgId, this.orgId), eq(appSettings.key, INVOICE_ON_FINALIZE_SETTING_KEY)));
+    return normalizeInvoiceOnFinalizeMode(setting?.value);
+  }
+
+  async setInvoiceOnFinalizeMode(mode: InvoiceOnFinalizeMode): Promise<AppSetting> {
+    const [setting] = await db
+      .insert(appSettings)
+      .values({ orgId: this.orgId, key: INVOICE_ON_FINALIZE_SETTING_KEY, value: mode })
+      .onConflictDoUpdate({
+        target: [appSettings.orgId, appSettings.key],
+        set: { value: mode, updatedAt: new Date() },
       })
       .returning();
     return setting;
@@ -5029,7 +5146,7 @@ export class DatabaseStorage implements IStorage {
   // due date, not sendable, not payable, not counted in balances.
   async createDraftInvoiceForAppointment(appointmentId: string, actor?: AuditActor | null): Promise<Invoice> {
     try {
-      return await this.createDraftInvoiceForAppointmentTx(appointmentId, actor);
+      return await db.transaction((tx) => this.createDraftInvoiceForAppointmentTx(tx, appointmentId, actor));
     } catch (err: any) {
       // Same race shape as generation: the appointment's partial unique index
       // rejects the loser, whose transaction has rolled back by the time we
@@ -5047,75 +5164,76 @@ export class DatabaseStorage implements IStorage {
     }
   }
 
-  private async createDraftInvoiceForAppointmentTx(appointmentId: string, actor?: AuditActor | null): Promise<Invoice> {
-    return db.transaction(async (tx) => {
-      const group = await this.getAppointmentBillingGroupTx(tx, appointmentId);
-      if (!group) {
-        throw new Error("Appointment not found");
+  // Runs inside the caller's transaction: the public route wraps it in its own,
+  // and D2's finalization hook (resolveInvoiceOnFinalizeTx) calls it under a
+  // savepoint of the finalize transaction.
+  private async createDraftInvoiceForAppointmentTx(tx: DbTransaction, appointmentId: string, actor?: AuditActor | null): Promise<Invoice> {
+    const group = await this.getAppointmentBillingGroupTx(tx, appointmentId);
+    if (!group) {
+      throw new Error("Appointment not found");
+    }
+    if (group.appointment.status === "CANCELED") {
+      throw new Error("Cannot draft an invoice for a cancelled appointment");
+    }
+    if (!group.services.length) {
+      throw new Error("Appointment has no active services to invoice");
+    }
+
+    const existing = await this.findInvoiceForVisitTx(tx, group.appointment.id, group.records.map((record) => record.id));
+    if (existing) {
+      if (existing.status === "DRAFT") {
+        return existing;
       }
-      if (group.appointment.status === "CANCELED") {
-        throw new Error("Cannot draft an invoice for a cancelled appointment");
-      }
-      if (!group.services.length) {
-        throw new Error("Appointment has no active services to invoice");
-      }
+      throw new Error(`Appointment already has invoice ${existing.invoiceNumber}`);
+    }
 
-      const existing = await this.findInvoiceForVisitTx(tx, group.appointment.id, group.records.map((record) => record.id));
-      if (existing) {
-        if (existing.status === "DRAFT") {
-          return existing;
-        }
-        throw new Error(`Appointment already has invoice ${existing.invoiceNumber}`);
-      }
-
-      const recordByServiceId = new Map(group.records.filter((record) => record.serviceId).map((record) => [record.serviceId!, record]));
-      const terms = await this.resolveInvoiceTermsForLocationTx(tx, group.appointment.locationId);
-      const priced = await this.buildVisitInvoiceLinesTx(tx, {
-        units: group.services.map((service) => {
-          const record = recordByServiceId.get(service.id);
-          return { service, record, serviceDate: record ? new Date(record.serviceDate) : new Date(group.appointment.scheduledDate) };
-        }),
-        accountId: terms.accountId,
-        locationId: group.appointment.locationId ?? null,
-      });
-
-      const invoiceNumber = await this.getNextInvoiceNumber(tx);
-      const [draft] = await tx
-        .insert(invoices)
-        .values({
-          orgId: this.orgId,
-          customerId: group.appointment.customerId,
-          locationId: group.appointment.locationId ?? null,
-          appointmentId: group.appointment.id,
-          serviceRecordId: null,
-          invoiceNumber,
-          billingProfileSnapshot: terms.billingProfileSnapshot,
-          taxSnapshot: priced.taxSnapshot,
-          amountCents: priced.amountCents,
-          taxCents: priced.taxCents,
-          totalAmountCents: priced.amountCents + priced.taxCents,
-          // The one place DRAFT is written. It is a lifecycle state, not an
-          // amount-derived one - deriveInvoiceStatus passes it through
-          // untouched, and issueInvoiceTx is the only exit from it.
-          status: "DRAFT",
-          issuedAt: null,
-          dueDate: null,
-          notes: null,
-        })
-        .returning();
-
-      await this.insertInvoiceLineItemsTx(tx, draft.id, priced.lines);
-
-      await this.recordAuditLogTx(tx, {
-        entityType: "invoice",
-        entityId: draft.id,
-        action: "invoice_drafted",
-        actor,
-        after: draft,
-      });
-
-      return draft;
+    const recordByServiceId = new Map(group.records.filter((record) => record.serviceId).map((record) => [record.serviceId!, record]));
+    const terms = await this.resolveInvoiceTermsForLocationTx(tx, group.appointment.locationId);
+    const priced = await this.buildVisitInvoiceLinesTx(tx, {
+      units: group.services.map((service) => {
+        const record = recordByServiceId.get(service.id);
+        return { service, record, serviceDate: record ? new Date(record.serviceDate) : new Date(group.appointment.scheduledDate) };
+      }),
+      accountId: terms.accountId,
+      locationId: group.appointment.locationId ?? null,
     });
+
+    const invoiceNumber = await this.getNextInvoiceNumber(tx);
+    const [draft] = await tx
+      .insert(invoices)
+      .values({
+        orgId: this.orgId,
+        customerId: group.appointment.customerId,
+        locationId: group.appointment.locationId ?? null,
+        appointmentId: group.appointment.id,
+        serviceRecordId: null,
+        invoiceNumber,
+        billingProfileSnapshot: terms.billingProfileSnapshot,
+        taxSnapshot: priced.taxSnapshot,
+        amountCents: priced.amountCents,
+        taxCents: priced.taxCents,
+        totalAmountCents: priced.amountCents + priced.taxCents,
+        // The one place DRAFT is written. It is a lifecycle state, not an
+        // amount-derived one - deriveInvoiceStatus passes it through
+        // untouched, and issueInvoiceTx is the only exit from it.
+        status: "DRAFT",
+        issuedAt: null,
+        dueDate: null,
+        notes: null,
+      })
+      .returning();
+
+    await this.insertInvoiceLineItemsTx(tx, draft.id, priced.lines);
+
+    await this.recordAuditLogTx(tx, {
+      entityType: "invoice",
+      entityId: draft.id,
+      action: "invoice_drafted",
+      actor,
+      after: draft,
+    });
+
+    return draft;
   }
 
   // D3: the DRAFT -> issued transition. Refuses while any active service on

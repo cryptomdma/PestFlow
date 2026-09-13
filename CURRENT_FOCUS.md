@@ -34,7 +34,7 @@ Pass 3.5". It also fixes `advanceAgreementDate()`, which had no `DAY`/`WEEK` cas
 daily or weekly plan monthly, at roughly 30x the correct per-period amount — unreachable until
 agreements could carry a plan.
 
-Pass 4 (`feature/phase-1-draft-invoice-lifecycle`, D3 + Q3) is pushed and awaiting merge. Invoices
+Pass 4 (`feature/phase-1-draft-invoice-lifecycle`, D3 + Q3) merged as PR #60. Invoices
 now have a real `DRAFT` lifecycle: the office can draft an invoice against an appointment before its
 tickets are finalized, and it holds the visit's anchor so nothing else invoices that visit. Issuing
 re-prices it from the finalized tickets and stamps `issuedAt`; issuing *before* finalization needs
@@ -46,10 +46,21 @@ carries a draft now prompts (void it or keep it) on all three cancel paths — t
 schedule screen's status PATCH was a third. Signatures and behavior are under "Shipped in Pass 4" in
 `PLAN_BILLING_V1_1_EXECUTION.md`.
 
-Next up once it merges: **Pass 5 — `feature/phase-1-finalize-invoice-wiring`** (D2). Newly
-sequenced behind it: **Pass 5.5 — `feature/phase-1-initial-charge-to-agreement`**, an owner correction
-to D4 moving the down-payment type/amount off the shared Billing Plan and onto the Agreement and
-Agreement Template, where a per-sale amount derived from contract price belongs. It must land before
+Pass 5 (`feature/phase-1-finalize-invoice-wiring`, D2) is pushed and awaiting merge. Finalization is
+now wired to invoicing: the finalization that completes a visit reports an invoicing outcome on the
+finalize response, governed by a new org setting `invoiceOnFinalize` (`PROMPT` default | `AUTO_DRAFT` |
+`OFF`, Settings → "Invoicing on Finalization", admin-only to change). Under `PROMPT` both finalize
+screens (Service Ticket Review, location Services tab) open one shared Generate / Generate & Send /
+Later prompt; Generate is the existing generate route, so a DRAFT is adopted, never duplicated, and
+Later leaves the visit on the ready-for-billing list exactly as before. `AUTO_DRAFT` creates the
+visit's DRAFT inside the finalize transaction under a savepoint, so a refused draft (a priceless
+service, a plan-less price-less agreement) reports `DRAFT_FAILED` rather than undoing the
+finalization. "Send" still only stamps `sentAt` - there is no delivery mechanism, and the prompt says
+so. Signatures and behavior are under "Shipped in Pass 5" in `PLAN_BILLING_V1_1_EXECUTION.md`.
+
+Next up once it merges: **Pass 5.5 — `feature/phase-1-initial-charge-to-agreement`**, an owner
+correction to D4 moving the down-payment type/amount off the shared Billing Plan and onto the Agreement
+and Agreement Template, where a per-sale amount derived from contract price belongs. It must land before
 Pass 6 turns that block into a real receivable. See D4's correction note in `PLAN_BILLING_V1_1.md` and
 the Pass 5.5 section of `PLAN_BILLING_V1_1_EXECUTION.md`.
 

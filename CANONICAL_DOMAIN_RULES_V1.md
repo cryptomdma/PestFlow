@@ -969,6 +969,24 @@ silent one. An Agreement with neither a plan nor a price refuses to invoice rath
   auto-void, never silently orphan. Cancelling a visit whose invoice is already issued is a
   credit-memo question, not a void.
 
+### Canonical rule — finalization is the invoicing moment (PLAN_BILLING_V1.1 D2)
+
+The office finalization that **completes** a visit (every active Service on the Appointment now has a
+finalized ticket) is when the visit's invoice is offered, drafted, or deliberately left alone — governed
+by one org setting, `invoiceOnFinalize`:
+
+* `PROMPT` (default) — the reviewer is asked: **Generate** (issue the visit's one invoice, adopting a
+  DRAFT if one exists), **Generate & Send** (the same, then mark it sent), or **Later** (nothing; the
+  visit stays on the ready-for-billing list for Generate or Batch Invoice).
+* `AUTO_DRAFT` — the visit's DRAFT is created with the finalization, or the existing one kept. The
+  office issues it from the Invoices screen.
+* `OFF` — finalization changes nothing about invoicing.
+
+Finalization is never blocked by invoicing. A refused draft (a priceless service, an Agreement with
+neither plan nor price) is reported, not fatal: the ticket, Service and Appointment still complete.
+A visit whose invoice is already issued is reported as such in every mode. This applies to visit
+invoices only — agreement revenue on schedule-billed plans still comes solely from the nightly run.
+
 ### Required fields
 
 * id

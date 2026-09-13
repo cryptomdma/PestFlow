@@ -11,6 +11,14 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth";
+import {
+  InvoiceOnFinalizePrompt,
+  describeFinalizeResult,
+  getInvoiceOnFinalizePrompt,
+  invalidateInvoiceViews,
+  type FinalizeServiceRecordResponse,
+  type InvoiceOnFinalizePromptState,
+} from "@/components/invoice-on-finalize-prompt";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { formatCents } from "@shared/money";
 import { can, PERMISSIONS } from "@shared/permissions";
@@ -77,6 +85,9 @@ export default function ServiceTicketReview() {
   const [reopenReason, setReopenReason] = useState("");
   const [batchDialogOpen, setBatchDialogOpen] = useState(false);
   const [batchResult, setBatchResult] = useState<BatchGenerateResult | null>(null);
+  // D2: the Generate / Generate & Send / Later prompt, opened when a
+  // finalization completes its visit under the PROMPT setting.
+  const [invoicePrompt, setInvoicePrompt] = useState<InvoiceOnFinalizePromptState | null>(null);
   const canBatchInvoice = can(user?.role ?? "", PERMISSIONS.GENERATE_INVOICE);
   const canSendInvoice = can(user?.role ?? "", PERMISSIONS.SEND_INVOICE);
 
@@ -139,11 +150,20 @@ export default function ServiceTicketReview() {
   const finalizeMutation = useMutation({
     mutationFn: async (id: string) => {
       const response = await apiRequest("POST", `/api/service-records/${id}/finalize`, {});
-      return response.json();
+      return response.json() as Promise<FinalizeServiceRecordResponse>;
     },
-    onSuccess: () => {
-      toast({ title: "Service ticket finalized", description: "The service is now completed and billing-ready." });
+    onSuccess: (result) => {
       invalidateReviewData();
+      // The finalization that completes a visit reports what it did about the
+      // invoice (D2): under PROMPT we ask; under AUTO_DRAFT / OFF / an
+      // already-issued invoice we tell.
+      if (result.invoicing) invalidateInvoiceViews();
+      const prompt = getInvoiceOnFinalizePrompt(result);
+      if (prompt) {
+        setInvoicePrompt(prompt);
+        return;
+      }
+      toast(describeFinalizeResult(result));
     },
     onError: (error: Error) => toast({ title: "Unable to finalize ticket", description: error.message, variant: "destructive" }),
   });
@@ -429,6 +449,8 @@ export default function ServiceTicketReview() {
           ) : null}
         </DialogContent>
       </Dialog>
+
+      <InvoiceOnFinalizePrompt prompt={invoicePrompt} onClose={() => setInvoicePrompt(null)} />
 
       <Dialog open={batchDialogOpen} onOpenChange={closeBatchDialog}>
         <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-2xl">
