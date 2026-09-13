@@ -46,7 +46,7 @@ carries a draft now prompts (void it or keep it) on all three cancel paths — t
 schedule screen's status PATCH was a third. Signatures and behavior are under "Shipped in Pass 4" in
 `PLAN_BILLING_V1_1_EXECUTION.md`.
 
-Pass 5 (`feature/phase-1-finalize-invoice-wiring`, D2) is pushed and awaiting merge. Finalization is
+Pass 5 (`feature/phase-1-finalize-invoice-wiring`, D2) merged as PR #61. Finalization is
 now wired to invoicing: the finalization that completes a visit reports an invoicing outcome on the
 finalize response, governed by a new org setting `invoiceOnFinalize` (`PROMPT` default | `AUTO_DRAFT` |
 `OFF`, Settings → "Invoicing on Finalization", admin-only to change). Under `PROMPT` both finalize
@@ -58,11 +58,23 @@ service, a plan-less price-less agreement) reports `DRAFT_FAILED` rather than un
 finalization. "Send" still only stamps `sentAt` - there is no delivery mechanism, and the prompt says
 so. Signatures and behavior are under "Shipped in Pass 5" in `PLAN_BILLING_V1_1_EXECUTION.md`.
 
-Next up once it merges: **Pass 5.5 — `feature/phase-1-initial-charge-to-agreement`**, an owner
-correction to D4 moving the down-payment type/amount off the shared Billing Plan and onto the Agreement
-and Agreement Template, where a per-sale amount derived from contract price belongs. It must land before
-Pass 6 turns that block into a real receivable. See D4's correction note in `PLAN_BILLING_V1_1.md` and
-the Pass 5.5 section of `PLAN_BILLING_V1_1_EXECUTION.md`.
+Pass 5.5 (`feature/phase-1-initial-charge-to-agreement`, D4 owner correction) is pushed and awaiting
+merge. The initial charge - down payment / cleanout surcharge / prepay-in-full, its amount, and who may
+collect it - now lives on the Agreement (`initialCharge*`) with the Agreement Template carrying the
+default, and is set next to Price on both forms; the Billing Plan keeps only `initialChargeCoversFirstPeriod`
+and `fieldAddableSurcharge`, and `buildBillingPlanSnapshot()` no longer carries the moved keys. The
+amount has a mode - flat cents or **percent of contract price** (basis points), so "half down" is now
+expressible - and one shared resolver (`shared/initial-charge.ts`) turns it into cents everywhere.
+`initialChargeCollectedBy` is nullable (null = either role may collect) and is a permission, not a record:
+the technician's SURCHARGE production-value credit now fires only when the technician is the *sole*
+permitted collector, and is withheld for "either". The bootstrap migration backfilled the 4 agreements
+whose `billingPlanSnapshot` carried a charge (their snapshots are left as frozen history) and the one
+template whose plan set one, then dropped the three plan columns. Signatures and behavior are under
+"Shipped in Pass 5.5" in `PLAN_BILLING_V1_1_EXECUTION.md`.
+
+Next up once it merges: **Pass 6 — `feature/phase-1-payments-lite`** (D5, D4): the payments ledger
+(cash/check, unapplied balances, application/release) and the initial charge as a real issued
+receivable at agreement start, built on `resolveInitialChargeCents()`.
 
 Full ordered plan, impact analysis, conflict resolutions, and per-pass verification steps live in
 `PLAN_BILLING_V1_1_EXECUTION.md` — read it before starting a pass, and update its "Pass status" table

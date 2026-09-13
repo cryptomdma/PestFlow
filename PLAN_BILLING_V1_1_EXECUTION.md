@@ -21,8 +21,8 @@ grounded in what the code and data actually do, not what the decision record ass
 | 3 | `feature/phase-1-invoice-appointment-anchor` | D1 | Done |
 | 3.5 | `feature/phase-1-agreement-billing-plan-selector` | — (gap found in Pass 3 live testing) | Done (PR #59) |
 | 4 | `feature/phase-1-draft-invoice-lifecycle` | D3, Q3 | Done (PR #60) |
-| 5 | `feature/phase-1-finalize-invoice-wiring` | D2 | Pushed, awaiting merge |
-| 5.5 | `feature/phase-1-initial-charge-to-agreement` | D4 (owner correction) | Not started |
+| 5 | `feature/phase-1-finalize-invoice-wiring` | D2 | Done (PR #61) |
+| 5.5 | `feature/phase-1-initial-charge-to-agreement` | D4 (owner correction) | Pushed, awaiting merge |
 | 6 | `feature/phase-1-payments-lite` | D5, D4 | Not started |
 | 7 | `feature/phase-1-coa-and-field-display` | D6 | Not started |
 | 8 | `feature/phase-1-audit-log-backfill` | D7 (remainder) | Not started |
@@ -734,6 +734,82 @@ the migration's shape is the same either way, only the row count differs.
 - Only one plan currently sets an initial charge (`Unit 15 Surcharge Test Plan`,
   `CLEANOUT_SURCHARGE`/$50/`TECH_AT_FIRST_SERVICE`), so the data migration is small — but it is real
   money attached to real production credit, not disposable test data.
+
+**Shipped in Pass 5.5 (D4 owner correction), for Pass 6 to build on** - the initial charge is a term
+of the sale. It lives on `agreements.initialCharge*` (the actual) and
+`agreement_templates.defaultInitialCharge*` (the default); `billing_plans` keeps only
+`initialChargeCoversFirstPeriod` and `fieldAddableSurcharge`, and `buildBillingPlanSnapshot()` no
+longer carries the moved keys. Everything the plan row above asked for landed; the deviations from its
+notes are in the bullets.
+
+```ts
+// shared/initial-charge.ts - the whole vocabulary, one resolver, one validator, read by
+// server normalization, route validation, both forms and the agreement card.
+export const INITIAL_CHARGE_TYPES = ["DOWN_PAYMENT", "CLEANOUT_SURCHARGE", "PREPAY_FULL"] as const;  // null = no charge
+export const INITIAL_CHARGE_AMOUNT_MODES = ["FLAT", "PERCENT_OF_PRICE"] as const;   // cents | basis points of priceCents
+export const INITIAL_CHARGE_COLLECTORS = ["OFFICE_AT_SIGNING", "TECH_AT_FIRST_SERVICE"] as const;   // null = either may collect
+export interface InitialChargeFields { initialChargeType; initialChargeAmountMode; initialChargeCents; initialChargePercentBasisPoints; initialChargeCollectedBy }
+export function normalizeInitialCharge(input): InitialChargeFields   // no type -> all null; one amount per mode; unknown collector -> null
+export function validateInitialCharge(charge): string | null         // typed charge needs cents > 0, or 0 < basis points <= 10000
+export function resolveInitialChargeCents(charge, contractPriceCents): number | null   // percent of a null price -> null, never 0
+export function isTechnicianSoleInitialChargeCollector(charge): boolean   // the D4 narrowing
+export function initialChargeFromTemplate(template) / initialChargeToTemplate(charge)   // default* <-> actual
+export function describeInitialCharge(charge, contractPriceCents): string | null   // the one sentence the UI shows
+
+// server/agreement-bootstrap.ts - one-shot migration keyed on the legacy plan column still
+// existing (money-bootstrap.ts's marker, so it can never re-run): templates take their plan's
+// LIVE charge; agreements take the charge frozen in their own billingPlanSnapshot (the JSON is
+// left untouched); only positive flat amounts carry; then the three plan columns are dropped.
+
+// server/storage.ts
+private createSurchargeEntryIfConfigured(tx, agreement, record, finalizedAt)
+  // reads agreement.initialCharge*, not the snapshot; credits only when
+  // isTechnicianSoleInitialChargeCollector(); amount = resolveInitialChargeCents(agreement, agreement.priceCents)
+private computeNextBillingDateForPlan(plan, anchorDate, applyInitialChargeSkip)
+  // the skip now also requires the AGREEMENT to carry a charge - the plan flag alone cannot know
+private buildAgreementInsertFromTemplate(input)
+  // the block propagates as ONE: a caller that names initialChargeType (even null) wins outright,
+  // otherwise the template's default block; never a mix
+
+// Routes: agreement create / update / from-template and template create / update accept the
+// block with enum-checked fields; a request that touches any of the five must name the type
+// (an amount-only PATCH is 400); validateInitialCharge() runs on the normalized block.
+
+// client/src/components/initial-charge-fields.tsx - one block for both forms, placed next to Price
+// (Advanced Overrides > Service Details on the agreement form; Service Defaults on the template form).
+export function InitialChargeFormFields({ value, onChange, contractPriceCents, labelPrefix?, testIdPrefix? })
+export function initialChargeFormStateFrom(fields) / initialChargeFieldsFrom(state) / validateInitialChargeFormState(state)
+```
+
+Behavior worth knowing before Pass 6 touches it:
+- **What the migration actually found.** Four agreements carried a charge in their snapshot, not one:
+  `Unit 15 Ledger Test` (`CLEANOUT_SURCHARGE` $50 TECH) and the three `Daily Rodent Trapping`
+  agreements (`DOWN_PAYMENT` $99.95 TECH) - sold under a `Daily Recurring` plan that no longer sets
+  a charge, which is exactly why the snapshot and not the live plan is the source for agreements. The
+  `Quarterly Control` template, whose plan is `Unit 15 Surcharge Test Plan`, took that plan's charge
+  as its default. There were 4 `SURCHARGE` ledger entries, not 3 (Pass 5's live test added one); all
+  untouched, all still `TECH_AT_FIRST_SERVICE` on their agreements, so none would be credited
+  differently today.
+- **The credit narrowing is live and verified.** A 25%-of-$400 charge with the technician as sole
+  collector produced one `SURCHARGE` entry of $100 at first-visit finalization; the same charge with
+  "either may collect" produced none, while the visit's `SCHEDULED_AGREEMENT_SERVICE` entry was
+  credited as before. `contractPriceCentsSnapshot` on a `SURCHARGE` entry now records the price the
+  amount was resolved from (it was null) - basis, per §1.6.2's snapshot rule.
+- **A percent of a missing price resolves to nothing, never $0.** Allowed at the data level (the
+  template default is exactly this shape until the agreement gets a price); the form says "set a
+  contract price to resolve the amount", the surcharge credit is withheld, and Pass 6 must refuse the
+  receivable the same way generation refuses a price-less service.
+- **`initialChargeCoversFirstPeriod` now needs a charge to cover.** Before this pass the plan form
+  forced the flag false whenever the plan's own charge was NONE, so the flag implied a charge. With the
+  charge on the agreement that implication is gone, so `computeNextBillingDateForPlan()` skips
+  period 1 only when the plan says so AND the agreement carries a charge (creation and the future-dated
+  update path both). No live plan sets the flag, so nothing changed in the data.
+- **Pass 6 hook.** The receivable at agreement start is `resolveInitialChargeCents(agreement,
+  agreement.priceCents)` with `initialChargeType` as the line's label; `initialChargeCollectedBy` is a
+  permission and D5's recorded collection event decides credit, replacing the inference in
+  `createSurchargeEntryIfConfigured()`.
+- **Frozen history.** `GET /api/agreements/:id/billing-plan-snapshot` still returns the old
+  `initialCharge*` keys on pre-5.5 snapshots; nothing reads them and nothing should.
 
 **Design note carried into Pass 4** - resolved there: D3's "flags the linked ticket(s) for review" had
 no existing "flagged" concept in the schema. Pass 4 extended `serviceRecords.ticketStatus` with

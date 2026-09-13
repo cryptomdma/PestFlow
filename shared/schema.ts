@@ -259,10 +259,13 @@ export const billingPlans = pgTable("billing_plans", {
   anchorDay: integer("anchor_day"),
   prorationRule: text("proration_rule").notNull().default("NONE"), // NONE | DAILY | FIRST_PERIOD_FULL
 
-  initialChargeType: text("initial_charge_type"), // NONE | DOWN_PAYMENT | CLEANOUT_SURCHARGE | PREPAY_FULL
-  initialChargeCents: integer("initial_charge_cents"),
+  // The initial charge itself (type, amount, who may collect) is NOT here -
+  // it is a term of one sale and lives on agreements / agreement_templates
+  // (PLAN_BILLING_V1_1.md D4, owner correction; shared/initial-charge.ts).
+  // What stays is how that charge interacts with this plan's cadence: does
+  // the up-front money buy period 1, and may the technician add a surcharge
+  // in the field. The moved columns were dropped by agreement-bootstrap.ts.
   initialChargeCoversFirstPeriod: boolean("initial_charge_covers_first_period").notNull().default(false),
-  initialChargeCollectedBy: text("initial_charge_collected_by"), // OFFICE_AT_SIGNING | TECH_AT_FIRST_SERVICE
   fieldAddableSurcharge: boolean("field_addable_surcharge").notNull().default(false),
 
   sortOrder: integer("sort_order"),
@@ -314,6 +317,21 @@ export const agreements = pgTable("agreements", {
   nextServiceDate: date("next_service_date").notNull(),
   billingFrequency: text("billing_frequency"),
   priceCents: integer("price_cents"),
+  // The initial charge owed at agreement start - a term of THIS sale, derived
+  // from THIS contract price, so it belongs here and not on the shared Billing
+  // Plan (PLAN_BILLING_V1_1.md D4, owner correction). Vocabulary, invariants
+  // and the amount resolver are in shared/initial-charge.ts:
+  //   type            null = no initial charge | DOWN_PAYMENT | CLEANOUT_SURCHARGE | PREPAY_FULL
+  //   amountMode      FLAT (initialChargeCents) | PERCENT_OF_PRICE (initialChargePercentBasisPoints of priceCents)
+  //   collectedBy     who MAY collect - null = either role | OFFICE_AT_SIGNING | TECH_AT_FIRST_SERVICE.
+  //                   A permission, not a record of who did: production-value
+  //                   credit for the charge is only inferred from it when the
+  //                   technician is the sole permitted collector.
+  initialChargeType: text("initial_charge_type"),
+  initialChargeAmountMode: text("initial_charge_amount_mode"),
+  initialChargeCents: integer("initial_charge_cents"),
+  initialChargePercentBasisPoints: integer("initial_charge_percent_basis_points"),
+  initialChargeCollectedBy: text("initial_charge_collected_by"),
   // Snapshotted once at creation from term x recurrence (see
   // computeExpectedServiceCount in storage.ts) and never recomputed on
   // update, so a later term/frequency edit can't retroactively change the
@@ -381,6 +399,14 @@ export const agreementTemplates = pgTable("agreement_templates", {
   defaultServiceTemplateName: text("default_service_template_name"),
   defaultDurationMinutes: integer("default_duration_minutes"),
   defaultPriceCents: integer("default_price_cents"),
+  // Template default for the agreement's initial charge block - same
+  // vocabulary as agreements.initialCharge* (shared/initial-charge.ts), same
+  // defaultPriceCents -> priceCents propagation shape.
+  defaultInitialChargeType: text("default_initial_charge_type"),
+  defaultInitialChargeAmountMode: text("default_initial_charge_amount_mode"),
+  defaultInitialChargeCents: integer("default_initial_charge_cents"),
+  defaultInitialChargePercentBasisPoints: integer("default_initial_charge_percent_basis_points"),
+  defaultInitialChargeCollectedBy: text("default_initial_charge_collected_by"),
   defaultInstructions: text("default_instructions"),
   sortOrder: integer("sort_order"),
   internalCode: text("internal_code"),

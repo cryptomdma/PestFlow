@@ -25,6 +25,14 @@ import { requirePermission } from "./auth";
 import { DraftInvoiceDecisionRequiredError, PrefinalizationIssueError } from "./storage";
 import { can, PERMISSIONS, type UserRole } from "@shared/permissions";
 import { INVOICE_ON_FINALIZE_MODES, normalizeInvoiceOnFinalizeMode } from "@shared/invoice-on-finalize";
+import {
+  INITIAL_CHARGE_AMOUNT_MODES,
+  INITIAL_CHARGE_COLLECTORS,
+  INITIAL_CHARGE_TYPES,
+  initialChargeFromTemplate,
+  normalizeInitialCharge,
+  validateInitialCharge,
+} from "@shared/initial-charge";
 import { runBillingCycle } from "./jobs/billing-run";
 
 function handleZodError(res: any, error: ZodError) {
@@ -340,11 +348,56 @@ export async function registerRoutes(
   // and resubmits with voidDraftInvoices true or false.
   const respondDraftInvoiceDecisionRequired = (res: any, err: DraftInvoiceDecisionRequiredError) =>
     res.status(409).json({ message: err.message, code: err.code, draftInvoices: err.draftInvoices });
-  const agreementTemplateSchema = insertAgreementTemplateSchema.extend({
+  // D4: the initial charge block on agreements (actual) and templates
+  // (default). The enums are the shared vocabulary; the cross-field rule - a
+  // typed charge must carry a usable amount - is validateInitialCharge(), run
+  // on the normalized block so the check sees exactly what will be stored.
+  // Because the type decides what the other four fields mean, a request that
+  // touches any of them must name the type; an amount-only patch is refused
+  // rather than guessed at.
+  const initialChargeTypeSchema = z.enum(INITIAL_CHARGE_TYPES).nullable().optional();
+  const initialChargeAmountModeSchema = z.enum(INITIAL_CHARGE_AMOUNT_MODES).nullable().optional();
+  const initialChargeCollectorSchema = z.enum(INITIAL_CHARGE_COLLECTORS).nullable().optional();
+  const initialChargeIntSchema = z.number().int().nullable().optional();
+  const AGREEMENT_INITIAL_CHARGE_KEYS = ["initialChargeType", "initialChargeAmountMode", "initialChargeCents", "initialChargePercentBasisPoints", "initialChargeCollectedBy"] as const;
+  const TEMPLATE_INITIAL_CHARGE_KEYS = ["defaultInitialChargeType", "defaultInitialChargeAmountMode", "defaultInitialChargeCents", "defaultInitialChargePercentBasisPoints", "defaultInitialChargeCollectedBy"] as const;
+  const refineAgreementInitialCharge = (value: Record<string, unknown>, ctx: z.RefinementCtx) => {
+    const touched = AGREEMENT_INITIAL_CHARGE_KEYS.some((key) => value[key] !== undefined);
+    if (!touched) return;
+    if (value.initialChargeType === undefined) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["initialChargeType"], message: "initialChargeType is required when changing the initial charge" });
+      return;
+    }
+    const message = validateInitialCharge(normalizeInitialCharge(value));
+    if (message) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["initialChargeCents"], message });
+    }
+  };
+  const refineTemplateInitialCharge = (value: Record<string, unknown>, ctx: z.RefinementCtx) => {
+    const touched = TEMPLATE_INITIAL_CHARGE_KEYS.some((key) => value[key] !== undefined);
+    if (!touched) return;
+    if (value.defaultInitialChargeType === undefined) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["defaultInitialChargeType"], message: "defaultInitialChargeType is required when changing the initial charge" });
+      return;
+    }
+    const message = validateInitialCharge(initialChargeFromTemplate(value));
+    if (message) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["defaultInitialChargeCents"], message });
+    }
+  };
+  const agreementTemplateBaseSchema = insertAgreementTemplateSchema.extend({
+    defaultInitialChargeType: initialChargeTypeSchema,
+    defaultInitialChargeAmountMode: initialChargeAmountModeSchema,
+    defaultInitialChargeCents: initialChargeIntSchema,
+    defaultInitialChargePercentBasisPoints: initialChargeIntSchema,
+    defaultInitialChargeCollectedBy: initialChargeCollectorSchema,
+  });
+  const agreementTemplateSchema = agreementTemplateBaseSchema.extend({
     defaultTermUnit: recurrenceUnitSchema,
     defaultRecurrenceUnit: recurrenceUnitSchema,
     defaultSchedulingMode: agreementSchedulingModeSchema,
   }).superRefine((value, ctx) => {
+    refineTemplateInitialCharge(value, ctx);
     if (!value.name?.trim()) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["name"], message: "name is required" });
     }
@@ -361,18 +414,24 @@ export async function registerRoutes(
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["defaultServiceTypeId"], message: "defaultServiceTypeId is required" });
     }
   });
-  const updateAgreementTemplateSchema = insertAgreementTemplateSchema.extend({
+  const updateAgreementTemplateSchema = agreementTemplateBaseSchema.extend({
     defaultTermUnit: recurrenceUnitSchema.optional(),
     defaultRecurrenceUnit: recurrenceUnitSchema.optional(),
     defaultSchedulingMode: agreementSchedulingModeSchema.optional(),
-  }).partial();
+  }).partial().superRefine(refineTemplateInitialCharge);
   const agreementBaseSchema = insertAgreementSchema.extend({
     status: agreementStatusSchema,
     termUnit: recurrenceUnitSchema,
     recurrenceUnit: recurrenceUnitSchema,
     schedulingMode: agreementSchedulingModeSchema,
+    initialChargeType: initialChargeTypeSchema,
+    initialChargeAmountMode: initialChargeAmountModeSchema,
+    initialChargeCents: initialChargeIntSchema,
+    initialChargePercentBasisPoints: initialChargeIntSchema,
+    initialChargeCollectedBy: initialChargeCollectorSchema,
   });
   const agreementSchema = agreementBaseSchema.superRefine((value, ctx) => {
+    refineAgreementInitialCharge(value, ctx);
     if (!value.locationId) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["locationId"], message: "locationId is required" });
     }
@@ -405,6 +464,7 @@ export async function registerRoutes(
     }
   });
   const updateAgreementSchema = agreementBaseSchema.partial().superRefine((value, ctx) => {
+    refineAgreementInitialCharge(value, ctx);
     if (value.termInterval !== undefined && value.termInterval < 1) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["termInterval"], message: "termInterval must be at least 1" });
     }
@@ -427,6 +487,7 @@ export async function registerRoutes(
       startDate: z.string(),
       nextServiceDate: z.string(),
     }).superRefine((value, ctx) => {
+      refineAgreementInitialCharge(value, ctx);
       if (!value.agreementName?.trim()) {
         ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["agreementName"], message: "agreementName is required" });
       }

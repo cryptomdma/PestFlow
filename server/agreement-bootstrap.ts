@@ -1,6 +1,13 @@
 import { sql } from "drizzle-orm";
 import { db } from "./db";
 
+async function columnExists(table: string, column: string): Promise<boolean> {
+  const result = await db.execute(
+    sql`SELECT 1 FROM information_schema.columns WHERE table_name = ${table} AND column_name = ${column}`,
+  );
+  return result.rows.length > 0;
+}
+
 export async function bootstrapAgreements(): Promise<void> {
   await db.execute(sql`
     CREATE TABLE IF NOT EXISTS billing_plans (
@@ -16,10 +23,7 @@ export async function bootstrapAgreements(): Promise<void> {
       anchor_mode text NOT NULL DEFAULT 'SIGNUP_DATE',
       anchor_day integer,
       proration_rule text NOT NULL DEFAULT 'NONE',
-      initial_charge_type text,
-      initial_charge_cents integer,
       initial_charge_covers_first_period boolean NOT NULL DEFAULT false,
-      initial_charge_collected_by text,
       field_addable_surcharge boolean NOT NULL DEFAULT false,
       sort_order integer,
       created_at timestamp NOT NULL DEFAULT now(),
@@ -73,6 +77,11 @@ export async function bootstrapAgreements(): Promise<void> {
       default_service_template_name text,
       default_duration_minutes integer,
       default_price_cents integer,
+      default_initial_charge_type text,
+      default_initial_charge_amount_mode text,
+      default_initial_charge_cents integer,
+      default_initial_charge_percent_basis_points integer,
+      default_initial_charge_collected_by text,
       default_instructions text,
       sort_order integer,
       internal_code text,
@@ -105,6 +114,11 @@ export async function bootstrapAgreements(): Promise<void> {
       next_service_date date NOT NULL,
       billing_frequency text,
       price_cents integer,
+      initial_charge_type text,
+      initial_charge_amount_mode text,
+      initial_charge_cents integer,
+      initial_charge_percent_basis_points integer,
+      initial_charge_collected_by text,
       expected_service_count integer,
       recurrence_unit text NOT NULL DEFAULT 'MONTH',
       recurrence_interval integer NOT NULL DEFAULT 1,
@@ -167,6 +181,76 @@ export async function bootstrapAgreements(): Promise<void> {
   await db.execute(sql`ALTER TABLE agreement_templates ADD COLUMN IF NOT EXISTS default_scheduling_mode text NOT NULL DEFAULT 'MANUAL'`);
   await db.execute(sql`UPDATE agreement_templates SET default_scheduling_mode = 'AUTO_ELIGIBLE' WHERE internal_code IN ('CONTROL_PLUS', 'MOSQUITO_SEASONAL') AND default_scheduling_mode = 'MANUAL'`);
   await db.execute(sql`UPDATE agreement_templates SET default_scheduling_mode = 'CONTACT_REQUIRED' WHERE internal_code = 'SENTRICON_RENEWAL' AND default_scheduling_mode = 'MANUAL'`);
+
+  // PLAN_BILLING_V1_1.md D4 (owner correction): the initial charge moves off
+  // the shared Billing Plan onto the Agreement (the actual) and the Agreement
+  // Template (the default). New columns first, always idempotent.
+  await db.execute(sql`ALTER TABLE agreements ADD COLUMN IF NOT EXISTS initial_charge_type text`);
+  await db.execute(sql`ALTER TABLE agreements ADD COLUMN IF NOT EXISTS initial_charge_amount_mode text`);
+  await db.execute(sql`ALTER TABLE agreements ADD COLUMN IF NOT EXISTS initial_charge_cents integer`);
+  await db.execute(sql`ALTER TABLE agreements ADD COLUMN IF NOT EXISTS initial_charge_percent_basis_points integer`);
+  await db.execute(sql`ALTER TABLE agreements ADD COLUMN IF NOT EXISTS initial_charge_collected_by text`);
+  await db.execute(sql`ALTER TABLE agreement_templates ADD COLUMN IF NOT EXISTS default_initial_charge_type text`);
+  await db.execute(sql`ALTER TABLE agreement_templates ADD COLUMN IF NOT EXISTS default_initial_charge_amount_mode text`);
+  await db.execute(sql`ALTER TABLE agreement_templates ADD COLUMN IF NOT EXISTS default_initial_charge_cents integer`);
+  await db.execute(sql`ALTER TABLE agreement_templates ADD COLUMN IF NOT EXISTS default_initial_charge_percent_basis_points integer`);
+  await db.execute(sql`ALTER TABLE agreement_templates ADD COLUMN IF NOT EXISTS default_initial_charge_collected_by text`);
+
+  // One-shot data migration, keyed on the legacy plan column still existing -
+  // the same marker money-bootstrap.ts uses. Nothing here may run twice: an
+  // agreement whose initial charge the office later clears must not have it
+  // restored from the snapshot on the next boot, and once the legacy columns
+  // are gone the guard can never match again.
+  //
+  // - Templates take their plan's LIVE initial charge (a template has no
+  //   snapshot; what its plan says today is what its next agreement would
+  //   have been sold under).
+  // - Agreements take the initial charge frozen in their own
+  //   billingPlanSnapshot - the terms they were actually sold under, which
+  //   may differ from the live plan (the Daily Rodent Trapping agreements
+  //   carry a DOWN_PAYMENT their plan no longer has). The snapshot JSON is
+  //   deliberately left untouched: it is frozen history, and
+  //   createSurchargeEntryIfConfigured() no longer reads it.
+  // - Only charges with a positive flat amount are carried; a type with no
+  //   amount never fired anything and would fail validateInitialCharge().
+  // - The legacy plan columns are then dropped, exactly as money-bootstrap.ts
+  //   drops its decimal columns once every read/write path has cut over.
+  if (await columnExists("billing_plans", "initial_charge_type")) {
+    await db.execute(sql`
+      UPDATE agreement_templates t
+      SET default_initial_charge_type = p.initial_charge_type,
+          default_initial_charge_amount_mode = 'FLAT',
+          default_initial_charge_cents = p.initial_charge_cents,
+          default_initial_charge_percent_basis_points = NULL,
+          default_initial_charge_collected_by = p.initial_charge_collected_by
+      FROM billing_plans p
+      WHERE t.billing_plan_id = p.id
+        AND t.default_initial_charge_type IS NULL
+        AND p.initial_charge_type IN ('DOWN_PAYMENT', 'CLEANOUT_SURCHARGE', 'PREPAY_FULL')
+        AND p.initial_charge_cents IS NOT NULL
+        AND p.initial_charge_cents > 0
+    `);
+    await db.execute(sql`
+      UPDATE agreements
+      SET initial_charge_type = billing_plan_snapshot->>'initialChargeType',
+          initial_charge_amount_mode = 'FLAT',
+          initial_charge_cents = (billing_plan_snapshot->>'initialChargeCents')::integer,
+          initial_charge_percent_basis_points = NULL,
+          initial_charge_collected_by = CASE
+            WHEN billing_plan_snapshot->>'initialChargeCollectedBy' IN ('OFFICE_AT_SIGNING', 'TECH_AT_FIRST_SERVICE')
+              THEN billing_plan_snapshot->>'initialChargeCollectedBy'
+            ELSE NULL
+          END
+      WHERE initial_charge_type IS NULL
+        AND jsonb_typeof(billing_plan_snapshot) = 'object'
+        AND billing_plan_snapshot->>'initialChargeType' IN ('DOWN_PAYMENT', 'CLEANOUT_SURCHARGE', 'PREPAY_FULL')
+        AND jsonb_typeof(billing_plan_snapshot->'initialChargeCents') = 'number'
+        AND (billing_plan_snapshot->>'initialChargeCents')::integer > 0
+    `);
+    await db.execute(sql`ALTER TABLE billing_plans DROP COLUMN IF EXISTS initial_charge_type`);
+    await db.execute(sql`ALTER TABLE billing_plans DROP COLUMN IF EXISTS initial_charge_cents`);
+    await db.execute(sql`ALTER TABLE billing_plans DROP COLUMN IF EXISTS initial_charge_collected_by`);
+  }
 
   await db.execute(sql`
     INSERT INTO agreement_cancellation_policies (
