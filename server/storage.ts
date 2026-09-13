@@ -1928,7 +1928,9 @@ export class DatabaseStorage implements IStorage {
   // and a wrong credit is silent while a missing one surfaces at payout.
   // Transitional, twice over: the field-surcharge unit makes the surcharge a
   // line the technician adds on the ticket and this keys off that recorded
-  // line; D5's payments ledger records who collected what.
+  // line, gated by the technician's comp-plan selector for whether surcharge
+  // lines earn production at all (CURRENT_FOCUS.md, compensation entry);
+  // D5's payments ledger records who collected what.
   //
   // The amount is resolved through the same shared resolver the forms and
   // Pass 6's receivable use, so a percent-of-price charge on an agreement

@@ -135,7 +135,10 @@ a real issued invoice at agreement start. Three tools, three jobs:
 >    only the *separate* SURCHARGE credit for a technician-collected cleanout; until the line above
 >    exists it is inferred from the permission, and as of this review **only for
 >    `CLEANOUT_SURCHARGE`** — a tech-collected down payment earned it too under unit 15, which paid the
->    same money twice.
+>    same money twice. Whether a surcharge earns production *at all* is a **comp-plan selector** (per
+>    plan: earns production on surcharge lines, yes / no), never a global rule; a down payment earns
+>    none on any plan, since 25% down changes the initial visit's charge and not the contract price
+>    production derives from. Recorded in `CURRENT_FOCUS.md`'s compensation entry for the comp engine.
 >
 > Related: paid-in-full is a **billing-plan** arrangement (`PREPAID_TERM` bills the whole contract
 > price once at start, any term length, visits at $0), so the `PREPAY_FULL` initial-charge type

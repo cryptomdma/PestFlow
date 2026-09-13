@@ -165,7 +165,9 @@ export function isTechnicianSoleInitialChargeCollector(charge: Pick<InitialCharg
  * for that price is already contract price / expected visits - crediting the
  * collection again would pay the same money twice (owner review 2026-09-13).
  * Transitional: goes away once the surcharge is a line the technician adds
- * on the ticket and the credit keys off that recorded line.
+ * on the ticket, the credit keys off that recorded line, and the technician's
+ * comp plan says whether surcharge lines earn production at all (a per-plan
+ * selector, owner 2026-09-13 - see CURRENT_FOCUS.md, compensation entry).
  */
 export function isTechnicianCollectedCleanoutSurcharge(charge: Pick<InitialChargeFields, "initialChargeType" | "initialChargeCollectedBy">): boolean {
   return charge.initialChargeType === "CLEANOUT_SURCHARGE" && isTechnicianSoleInitialChargeCollector(charge);

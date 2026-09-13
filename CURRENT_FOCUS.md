@@ -154,7 +154,8 @@ the source of truth for what each pass actually does.
     price, unlike a down payment. Build: (1) a SURCHARGE line the technician adds on the ticket, with
     an amount, flowing onto the visit invoice as a `SURCHARGE` line item; (2) an allow/reject toggle
     on the **agreement template** — today `fieldAddableSurcharge` sits on the billing plan and has no
-    reader anywhere; (3) the SURCHARGE production credit keyed off that recorded line, deleting
+    reader anywhere; (3) the SURCHARGE production credit keyed off that recorded line and gated by
+    the technician's comp-plan surcharge selector (compensation entry below), deleting
     `createSurchargeEntryIfConfigured()`'s collector inference; (4) `CLEANOUT_SURCHARGE` and
     `PREPAY_FULL` leave `INITIAL_CHARGE_TYPES` (paid-in-full is a `PREPAID_TERM` plan), leaving
     `DOWN_PAYMENT`, with the `Quarterly Control` template and `Unit 15 Ledger Test` cleanout defaults
@@ -218,6 +219,17 @@ the source of truth for what each pass actually does.
     Same principle as Pass 5.5's `initialChargeCollectedBy` finding, which is this problem in
     miniature: credit must key off what was **recorded to have happened**, never inferred from a
     configuration field.
+
+    **Surcharge production is a comp-plan setting (owner, 2026-09-13).** Whether a technician earns
+    production on a cleanout/surcharge line is decided per comp plan — a selector on the plan (or a
+    filter on its production component) reading roughly "earns production on surcharge lines:
+    yes / no" — not a global rule, and never inferred from who collected the money. A down payment
+    earns no extra production on any plan: 25% down changes the initial visit's charge, not the
+    contract price that production is derived from. This answers the question the historical plan
+    left open (its "cleanout / down-payment surcharge" decision). Until the comp engine exists, the
+    transitional credit in `createSurchargeEntryIfConfigured()` (cleanout only, technician the sole
+    permitted collector) stands in for a plan that answers "yes"; the field-surcharge unit above
+    deletes it.
   - ~~**`PLAN_BILLING_V1.md` is cited but missing.**~~ **Resolved 2026-09-10** — restored from git
     history with a header marking it historical and superseded, so the ~24 `§x.x` citations in
     `shared/schema.ts`, `server/storage.ts` and elsewhere resolve to something readable. Per the owner

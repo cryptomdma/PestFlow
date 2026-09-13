@@ -828,7 +828,9 @@ Behavior worth knowing before Pass 6 touches it:
   the owner wants on the template (today `fieldAddableSurcharge` sits on the plan and nothing reads
   it). When it lands: `CLEANOUT_SURCHARGE` (and the overlapping `PREPAY_FULL`, which `PREPAID_TERM`
   plans already express) leave `INITIAL_CHARGE_TYPES`, leaving `DOWN_PAYMENT`; the SURCHARGE production
-  credit keys off the recorded line and `createSurchargeEntryIfConfigured()`'s inference is deleted;
+  credit keys off the recorded line, gated by the technician's comp-plan surcharge selector
+  (`CURRENT_FOCUS.md`, compensation entry), and `createSurchargeEntryIfConfigured()`'s inference is
+  deleted;
   the `Quarterly Control` template's and `Unit 15 Ledger Test` agreement's cleanout defaults are
   migrated or dropped (test data).
 - **Done in this pass, on review:** the SURCHARGE credit is limited to `CLEANOUT_SURCHARGE` (see the
