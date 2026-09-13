@@ -116,6 +116,30 @@ a real issued invoice at agreement start. Three tools, three jobs:
 > Expressing "half down" properly also wants an amount **mode** (flat cents vs. percent of contract
 > price) alongside the amount, rather than only flat cents. Sequenced as Pass 5.5 in
 > `PLAN_BILLING_V1_1_EXECUTION.md` — it must land before Pass 6 builds D4's receivable.
+>
+> **Owner review of Pass 5.5 (2026-09-13)** — three refinements, each landing in a named unit:
+> 1. **A down payment counts toward the contract price by default.** $400 agreement, $100 down means
+>    $300 remains — not $500 total. "In addition to" is the exception and needs an explicit flag. Only
+>    a *surcharge* is inherently additional. Lands in **Pass 6** with the receivable: the initial-charge
+>    invoice and the remaining-balance arithmetic are one design, so the flag is added there rather
+>    than as a dead control now. `initialChargeCoversFirstPeriod` is this same rule for recurring plans.
+> 2. **A cleanout surcharge is not a template default.** It is charged by the technician at the initial
+>    service for what could not be seen at scheduling (larger home, conducive conditions). The template
+>    (owner's call: template, where today `fieldAddableSurcharge` sits on the plan with no reader) holds
+>    only an allow/reject toggle. Lands in the **field-surcharge unit** (`CURRENT_FOCUS.md`): the
+>    surcharge becomes a line the technician adds on the ticket, `CLEANOUT_SURCHARGE` leaves the
+>    initial-charge vocabulary, and the SURCHARGE production credit keys off that recorded line.
+> 3. **Production value is separate from collection and from commission.** Per-service production is
+>    contract price ÷ expected visits regardless of who collects or whether a balance is due, and comp
+>    plans (§1.6.2) decide payout — Pass 5.5 never touched that. What the collector field governs is
+>    only the *separate* SURCHARGE credit for a technician-collected cleanout; until the line above
+>    exists it is inferred from the permission, and as of this review **only for
+>    `CLEANOUT_SURCHARGE`** — a tech-collected down payment earned it too under unit 15, which paid the
+>    same money twice.
+>
+> Related: paid-in-full is a **billing-plan** arrangement (`PREPAID_TERM` bills the whole contract
+> price once at start, any term length, visits at $0), so the `PREPAY_FULL` initial-charge type
+> overlaps it and should be folded when item 2 trims the vocabulary.
 
 ## D5. Payments-lite ships in Phase 1
 

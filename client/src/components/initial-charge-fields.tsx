@@ -98,7 +98,7 @@ export function InitialChargeFormFields({
             ))}
           </SelectContent>
         </Select>
-        <p className="text-xs text-muted-foreground">Money owed at agreement start, on top of the billing plan's schedule. A term of this sale, not of the plan.</p>
+        <p className="text-xs text-muted-foreground">A down payment or prepayment agreed at the sale. Recorded here now; invoicing it, and whether it counts toward the contract price or is added on top, arrive with the payments ledger.</p>
       </div>
       {hasCharge && (
         <>
@@ -145,7 +145,7 @@ export function InitialChargeFormFields({
               </SelectContent>
             </Select>
             <p className="text-xs text-muted-foreground">
-              Who is allowed to take the money, not who did. The technician is credited production value for it only when they are the only permitted collector.
+              Who may take the money, not who did. It never changes regular production value (contract price divided by expected visits). Until a collected surcharge is recorded on the ticket, the separate cleanout-surcharge credit is inferred from this and given only when the technician is the sole permitted collector.
             </p>
           </div>
           <p className={`text-xs ${validationMessage ? "text-destructive" : "text-muted-foreground"}`} data-testid={`text-${testIdPrefix}-initial-charge-summary`}>

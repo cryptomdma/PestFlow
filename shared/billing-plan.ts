@@ -54,12 +54,12 @@ export interface BillingPlanBehaviorFields extends ScheduleBilledPlanFields {
  */
 export function describeBillingPlanBehavior(plan: BillingPlanBehaviorFields | null | undefined): string {
   if (!plan) {
-    return "No billing plan - every visit is billed at contract price / expected visits (COD).";
+    return "No billing plan - each visit is billed on its own invoice at contract price divided by expected visits (COD). To bill the whole agreement up front, choose a Prepaid Term plan.";
   }
 
   if (isScheduleBilledPlan(plan)) {
     if (plan.billingMode === "PREPAID_TERM") {
-      return "Billed once for the full contract term by the nightly billing run. Visits appear on the visit invoice at $0.";
+      return "Paid in full: the whole contract price is billed once, when the agreement starts, by the nightly billing run - whatever the term length. Every visit then appears on its invoice at $0.";
     }
 
     const count = plan.intervalCount ?? 1;
@@ -68,12 +68,12 @@ export function describeBillingPlanBehavior(plan: BillingPlanBehaviorFields | nu
   }
 
   if (plan.billingMode === "INSTALLMENT") {
-    return "Installment billing is not built yet - until it is, every visit is billed (COD).";
+    return "Installment billing is not built yet - until it is, each visit is billed on its own invoice (COD).";
   }
 
   if (plan.chargeTrigger === "ON_AGREEMENT_START") {
-    return "Charge-at-agreement-start is not built yet - until it is, every visit is billed (COD).";
+    return "Charge-at-agreement-start is not built yet - until it is, each visit is billed on its own invoice (COD).";
   }
 
-  return "Every visit is billed (COD) - the visit invoice carries the full amount.";
+  return "Each visit is billed on its own invoice (COD) - the service's own price, or the contract price divided by expected visits. To bill the whole agreement up front instead, choose a Prepaid Term plan.";
 }

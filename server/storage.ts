@@ -70,7 +70,7 @@ import { isScheduleBilledPlan } from "@shared/billing-plan";
 import {
   initialChargeFromTemplate,
   initialChargeToTemplate,
-  isTechnicianSoleInitialChargeCollector,
+  isTechnicianCollectedCleanoutSurcharge,
   normalizeInitialCharge,
   resolveInitialChargeCents,
   type InitialChargeFields,
@@ -1912,13 +1912,23 @@ export class DatabaseStorage implements IStorage {
   // surcharge in the field" action in this codebase yet, so this is the one
   // point where TECH_AT_FIRST_SERVICE actually resolves to an event.
   //
+  // This is a SEPARATE credit from the visit's own production value (contract
+  // price / expected visits, createProductionValueEntriesForFinalizedRecord),
+  // which never depends on who collected anything. It exists only for a
+  // cleanout surcharge - extra work priced on top of the contract. A down
+  // payment or prepayment is part of the contract price the technician is
+  // already credited for, so it earns nothing here (owner review 2026-09-13;
+  // unit 15 credited any initial charge type, which double-paid a
+  // tech-collected down payment).
+  //
   // The credit is INFERRED from a permission, and that inference is only
   // sound when the technician is the sole permitted collector
-  // (isTechnicianSoleInitialChargeCollector). "Either role may collect"
+  // (isTechnicianCollectedCleanoutSurcharge). "Either role may collect"
   // (null) gets no credit: the office may have banked the money at signing,
   // and a wrong credit is silent while a missing one surfaces at payout.
-  // D5 marker: once payments-lite records a collection with an actor, this
-  // keys off that recorded event instead of off the permission.
+  // Transitional, twice over: the field-surcharge unit makes the surcharge a
+  // line the technician adds on the ticket and this keys off that recorded
+  // line; D5's payments ledger records who collected what.
   //
   // The amount is resolved through the same shared resolver the forms and
   // Pass 6's receivable use, so a percent-of-price charge on an agreement
@@ -1929,7 +1939,7 @@ export class DatabaseStorage implements IStorage {
     record: ServiceRecord,
     finalizedAt: Date,
   ): Promise<void> {
-    if (!isTechnicianSoleInitialChargeCollector(agreement)) {
+    if (!isTechnicianCollectedCleanoutSurcharge(agreement)) {
       return;
     }
     const initialChargeCents = resolveInitialChargeCents(agreement, agreement.priceCents);

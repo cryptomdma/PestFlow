@@ -157,6 +157,20 @@ export function isTechnicianSoleInitialChargeCollector(charge: Pick<InitialCharg
   return !!charge.initialChargeType && charge.initialChargeCollectedBy === "TECH_AT_FIRST_SERVICE";
 }
 
+/**
+ * The one case that earns the technician a SEPARATE production-value credit
+ * (basis SURCHARGE): a cleanout surcharge, which is extra work priced on top
+ * of the contract, that only the technician may collect. A down payment or a
+ * prepayment is part of the contract price, and the technician's production
+ * for that price is already contract price / expected visits - crediting the
+ * collection again would pay the same money twice (owner review 2026-09-13).
+ * Transitional: goes away once the surcharge is a line the technician adds
+ * on the ticket and the credit keys off that recorded line.
+ */
+export function isTechnicianCollectedCleanoutSurcharge(charge: Pick<InitialChargeFields, "initialChargeType" | "initialChargeCollectedBy">): boolean {
+  return charge.initialChargeType === "CLEANOUT_SURCHARGE" && isTechnicianSoleInitialChargeCollector(charge);
+}
+
 type TemplateInitialChargeInput = Partial<Record<keyof TemplateInitialChargeFields, unknown>>;
 
 export function initialChargeFromTemplate(template: TemplateInitialChargeInput | null | undefined): InitialChargeFields {

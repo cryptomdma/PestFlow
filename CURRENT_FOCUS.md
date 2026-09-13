@@ -66,8 +66,13 @@ and `fieldAddableSurcharge`, and `buildBillingPlanSnapshot()` no longer carries 
 amount has a mode - flat cents or **percent of contract price** (basis points), so "half down" is now
 expressible - and one shared resolver (`shared/initial-charge.ts`) turns it into cents everywhere.
 `initialChargeCollectedBy` is nullable (null = either role may collect) and is a permission, not a record:
-the technician's SURCHARGE production-value credit now fires only when the technician is the *sole*
-permitted collector, and is withheld for "either". The bootstrap migration backfilled the 4 agreements
+the technician's *separate* SURCHARGE production-value credit now fires only for a cleanout surcharge
+(never a down payment - that money is in the contract price the technician is already credited for) and
+only when the technician is the *sole* permitted collector; per-service production value (contract price
+÷ expected visits) is untouched and never depends on collection. The owner's review of this pass
+(2026-09-13) is recorded under D4 in `PLAN_BILLING_V1_1.md` and adds a Pass 6 requirement (a down
+payment counts toward the contract price by default) and the field-surcharge unit below. The bootstrap
+migration backfilled the 4 agreements
 whose `billingPlanSnapshot` carried a charge (their snapshots are left as frozen history) and the one
 template whose plan set one, then dropped the three plan columns. Signatures and behavior are under
 "Shipped in Pass 5.5" in `PLAN_BILLING_V1_1_EXECUTION.md`.
@@ -143,6 +148,19 @@ the source of truth for what each pass actually does.
     posted, remaining services on that appointment can be cancelled without disturbing the invoice.
   - **Move Batch Invoice from Service Ticket Review to the Invoices screen** — it is an invoicing
     action sitting on a review queue.
+  - **Field surcharge line.** Owner-specified 2026-09-13 in the Pass 5.5 review. A cleanout surcharge
+    is not a term of the sale: the technician charges it at the initial service for what could not be
+    seen at scheduling (larger home, conducive conditions), and it is *in addition to* the contract
+    price, unlike a down payment. Build: (1) a SURCHARGE line the technician adds on the ticket, with
+    an amount, flowing onto the visit invoice as a `SURCHARGE` line item; (2) an allow/reject toggle
+    on the **agreement template** — today `fieldAddableSurcharge` sits on the billing plan and has no
+    reader anywhere; (3) the SURCHARGE production credit keyed off that recorded line, deleting
+    `createSurchargeEntryIfConfigured()`'s collector inference; (4) `CLEANOUT_SURCHARGE` and
+    `PREPAY_FULL` leave `INITIAL_CHARGE_TYPES` (paid-in-full is a `PREPAID_TERM` plan), leaving
+    `DOWN_PAYMENT`, with the `Quarterly Control` template and `Unit 15 Ledger Test` cleanout defaults
+    migrated or dropped. Sequence after Pass 6, since the line is an invoice line and the credit wants
+    the payments ledger's collection record. Whether the *comp* for that line is production or
+    commission is a comp-plan question (§1.6.2), not this unit's.
   - **Compensation & attribution — crew splits, sales commission, non-technician payees.**
     Owner-specified 2026-09-10. **Read `PLAN_BILLING_V1.md` §1.6.2 first.** An earlier version of this
     entry said the comp model was nowhere in the plan. That was wrong: §1.6.2 ("Compensation — build

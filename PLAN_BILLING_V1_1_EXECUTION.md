@@ -764,7 +764,8 @@ export function describeInitialCharge(charge, contractPriceCents): string | null
 // server/storage.ts
 private createSurchargeEntryIfConfigured(tx, agreement, record, finalizedAt)
   // reads agreement.initialCharge*, not the snapshot; credits only when
-  // isTechnicianSoleInitialChargeCollector(); amount = resolveInitialChargeCents(agreement, agreement.priceCents)
+  // isTechnicianCollectedCleanoutSurcharge() - CLEANOUT_SURCHARGE and the technician is the sole
+  // collector; amount = resolveInitialChargeCents(agreement, agreement.priceCents)
 private computeNextBillingDateForPlan(plan, anchorDate, applyInitialChargeSkip)
   // the skip now also requires the AGREEMENT to carry a charge - the plan flag alone cannot know
 private buildAgreementInsertFromTemplate(input)
@@ -790,11 +791,16 @@ Behavior worth knowing before Pass 6 touches it:
   as its default. There were 4 `SURCHARGE` ledger entries, not 3 (Pass 5's live test added one); all
   untouched, all still `TECH_AT_FIRST_SERVICE` on their agreements, so none would be credited
   differently today.
-- **The credit narrowing is live and verified.** A 25%-of-$400 charge with the technician as sole
-  collector produced one `SURCHARGE` entry of $100 at first-visit finalization; the same charge with
-  "either may collect" produced none, while the visit's `SCHEDULED_AGREEMENT_SERVICE` entry was
-  credited as before. `contractPriceCentsSnapshot` on a `SURCHARGE` entry now records the price the
-  amount was resolved from (it was null) - basis, per §1.6.2's snapshot rule.
+- **The credit narrowing is live and verified, twice.** As pushed: a 25%-of-$400 charge with the
+  technician as sole collector produced one `SURCHARGE` entry of $100 at first-visit finalization; the
+  same charge with "either may collect" produced none, while the visit's `SCHEDULED_AGREEMENT_SERVICE`
+  entry was credited as before. After the owner review (below) the credit is further limited to
+  `CLEANOUT_SURCHARGE`: a tech-collected `DOWN_PAYMENT` now earns nothing extra (its money is in the
+  contract price the technician is already credited for), a tech-only cleanout surcharge earns its
+  amount, "either" still earns nothing. `contractPriceCentsSnapshot` on a `SURCHARGE` entry now
+  records the price the amount was resolved from (it was null) - basis, per §1.6.2's snapshot rule.
+  The three pre-existing `Daily Rodent Trapping` SURCHARGE entries ($99.95 each) were earned under
+  unit 15's any-type rule and are left as they are: append-only ledger, test data.
 - **A percent of a missing price resolves to nothing, never $0.** Allowed at the data level (the
   template default is exactly this shape until the agreement gets a price); the form says "set a
   contract price to resolve the amount", the surcharge credit is withheld, and Pass 6 must refuse the
@@ -810,6 +816,32 @@ Behavior worth knowing before Pass 6 touches it:
   `createSurchargeEntryIfConfigured()`.
 - **Frozen history.** `GET /api/agreements/:id/billing-plan-snapshot` still returns the old
   `initialCharge*` keys on pre-5.5 snapshots; nothing reads them and nothing should.
+
+**Owner review of Pass 5.5 (2026-09-13)** - the decisions are recorded under D4 in
+`PLAN_BILLING_V1_1.md`; what each one means for the plan:
+- **Pass 6 (D4 receivable) gains a requirement:** the initial charge counts toward the contract price
+  by default, with an explicit "in addition to" flag as the exception. Build the flag together with the
+  remaining-balance arithmetic, not before it. The helper text on the block now says invoicing it and
+  that choice "arrive with the payments ledger" rather than asserting "on top of the schedule".
+- **A new unit, the field-surcharge line**, is defined in `CURRENT_FOCUS.md`'s deferred list: the
+  technician adds a surcharge on the ticket at the initial service, gated by an allow/reject toggle
+  the owner wants on the template (today `fieldAddableSurcharge` sits on the plan and nothing reads
+  it). When it lands: `CLEANOUT_SURCHARGE` (and the overlapping `PREPAY_FULL`, which `PREPAID_TERM`
+  plans already express) leave `INITIAL_CHARGE_TYPES`, leaving `DOWN_PAYMENT`; the SURCHARGE production
+  credit keys off the recorded line and `createSurchargeEntryIfConfigured()`'s inference is deleted;
+  the `Quarterly Control` template's and `Unit 15 Ledger Test` agreement's cleanout defaults are
+  migrated or dropped (test data).
+- **Done in this pass, on review:** the SURCHARGE credit is limited to `CLEANOUT_SURCHARGE` (see the
+  bullet above); the COD plan sentence under the plan selector no longer says the visit invoice
+  "carries the full amount" - it says each visit is billed on its own invoice at the service's price or
+  contract price ÷ expected visits, and points at a Prepaid Term plan for paid-in-full.
+- **Paid-in-full needs no new mechanism.** A `PREPAID_TERM` plan bills the whole contract price once
+  at agreement start, for any term length (`billing-run.ts` ignores the plan interval in that mode),
+  and every visit is a $0 `AGREEMENT_COVERED` line. The `Wildlife Trapping Program` template carries
+  `Annual Prepaid`, so new agreements from it behave that way; the two live Wildlife agreements are
+  plan-less (pre-Pass-3.5) and bill per visit until a plan is attached - the "Billing Plan required on
+  every Agreement" item. "Annual" in that plan's name is only a label; a plan named "Prepaid Term"
+  would read better for a 7-day program.
 
 **Design note carried into Pass 4** - resolved there: D3's "flags the linked ticket(s) for review" had
 no existing "flagged" concept in the schema. Pass 4 extended `serviceRecords.ticketStatus` with
