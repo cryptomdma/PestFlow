@@ -3,6 +3,7 @@ import { and, eq, isNotNull, lte } from "drizzle-orm";
 import { db } from "../db";
 import { agreements, billingPlans } from "@shared/schema";
 import { isScheduleBilledPlan } from "@shared/billing-plan";
+import { initialChargeSkipsFirstPeriod, resolveRemainingContractPriceCents } from "@shared/initial-charge";
 import { advanceAgreementDate, computeExpectedServiceCount, createOrgScopedStorage } from "../storage";
 
 function todayDateOnly(): string {
@@ -56,8 +57,15 @@ export async function runBillingCycle(): Promise<BillingRunResult> {
       let amountCents: number;
       let nextBillingDate: string | null;
 
+      // What the schedule bills is the contract price REMAINING after the
+      // agreement's initial charge (PLAN_BILLING_V1_1.md D4, owner review: a
+      // down payment counts toward the price by default - $400 with $100 down
+      // leaves $300 for the schedule). The initial charge itself was issued
+      // as its own receivable at agreement start.
+      const remainingPriceCents = resolveRemainingContractPriceCents(agreement, agreement.priceCents) ?? agreement.priceCents;
+
       if (plan.billingMode === "PREPAID_TERM") {
-        amountCents = agreement.priceCents;
+        amountCents = remainingPriceCents;
         nextBillingDate = null;
       } else {
         const intervalUnit = plan.intervalUnit ?? "MONTH";
@@ -69,7 +77,14 @@ export async function runBillingCycle(): Promise<BillingRunResult> {
           intervalUnit,
           intervalCount,
         );
-        amountCents = Math.round(agreement.priceCents / expectedBillingCount);
+        // When the plan says the up-front money buys period 1 (and the
+        // charge counts toward the price - initialChargeSkipsFirstPeriod is
+        // the same predicate creation used to push nextBillingDate out), the
+        // remainder is spread over one fewer period, so the term still totals
+        // the contract price. With a down payment equal to one period's share
+        // this is exactly the old per-period amount.
+        const billedPeriods = Math.max(expectedBillingCount - (initialChargeSkipsFirstPeriod(plan, agreement) ? 1 : 0), 1);
+        amountCents = Math.round(remainingPriceCents / billedPeriods);
 
         const termEndDate = advanceAgreementDate(agreement.startDate, agreement.termUnit, agreement.termInterval);
         const candidateNext = advanceAgreementDate(periodKey, intervalUnit, intervalCount);

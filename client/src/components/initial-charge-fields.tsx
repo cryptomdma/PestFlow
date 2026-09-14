@@ -1,3 +1,4 @@
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -27,6 +28,8 @@ export interface InitialChargeFormState {
   initialChargeAmountMode: string;
   initialChargeAmount: string;
   initialChargeCollectedBy: string;
+  /** D4 owner review: a down payment counts toward the price by default; this is the explicit exception. */
+  initialChargeInAdditionToPrice: boolean;
 }
 
 export function initialChargeFormStateFrom(fields: InitialChargeFields | null | undefined): InitialChargeFormState {
@@ -38,6 +41,7 @@ export function initialChargeFormStateFrom(fields: InitialChargeFields | null | 
       ? basisPointsToPercentString(charge.initialChargePercentBasisPoints)
       : charge.initialChargeCents != null ? centsToDollarString(charge.initialChargeCents) : "",
     initialChargeCollectedBy: charge.initialChargeCollectedBy ?? "EITHER",
+    initialChargeInAdditionToPrice: charge.initialChargeInAdditionToPrice,
   };
 }
 
@@ -48,6 +52,7 @@ export function initialChargeFieldsFrom(state: InitialChargeFormState): InitialC
     initialChargeCents: state.initialChargeAmountMode === "FLAT" ? dollarsToCents(state.initialChargeAmount) : null,
     initialChargePercentBasisPoints: state.initialChargeAmountMode === "PERCENT_OF_PRICE" ? percentToBasisPoints(state.initialChargeAmount) : null,
     initialChargeCollectedBy: state.initialChargeCollectedBy === "EITHER" ? null : state.initialChargeCollectedBy,
+    initialChargeInAdditionToPrice: state.initialChargeInAdditionToPrice,
   });
 }
 
@@ -98,10 +103,24 @@ export function InitialChargeFormFields({
             ))}
           </SelectContent>
         </Select>
-        <p className="text-xs text-muted-foreground">A down payment or prepayment agreed at the sale. Recorded here now; invoicing it, and whether it counts toward the contract price or is added on top, arrive with the payments ledger.</p>
+        <p className="text-xs text-muted-foreground">A down payment or prepayment agreed at the sale. It is issued as its own invoice when the agreement is created (or from the agreement card once a price is set), and a down payment counts toward the contract price unless marked otherwise below.</p>
       </div>
       {hasCharge && (
         <>
+          {value.initialChargeType === "DOWN_PAYMENT" && (
+            <div className="flex items-start gap-2 rounded-md border px-3 py-2">
+              <Checkbox
+                id={`${testIdPrefix}-initial-charge-in-addition`}
+                checked={value.initialChargeInAdditionToPrice}
+                onCheckedChange={(checked) => onChange({ ...value, initialChargeInAdditionToPrice: checked === true })}
+                data-testid={`checkbox-${testIdPrefix}-initial-charge-in-addition`}
+              />
+              <div className="space-y-0.5">
+                <Label htmlFor={`${testIdPrefix}-initial-charge-in-addition`} className="text-sm font-normal">Charged in addition to the contract price</Label>
+                <p className="text-xs text-muted-foreground">Unchecked (the default), the down payment is part of the price: a $400 agreement with $100 down leaves $300 to bill through the billing plan. Check this only when the sale owes it on top.</p>
+              </div>
+            </div>
+          )}
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="space-y-1.5">
               <Label>Amount Mode</Label>

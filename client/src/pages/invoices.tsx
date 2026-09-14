@@ -36,6 +36,8 @@ import { useAuth } from "@/hooks/use-auth";
 import { ApiError, apiRequest, getApiErrorCode, getApiErrorMessage, queryClient } from "@/lib/queryClient";
 import { dollarsToCents, formatCents } from "@shared/money";
 import { can, PERMISSIONS } from "@shared/permissions";
+import { isInvoiceIssued } from "@shared/invoice-status";
+import { RecordPaymentDialog } from "@/components/record-payment-dialog";
 import {
   Plus,
   Search,
@@ -215,17 +217,15 @@ export default function Invoices() {
   const { user } = useAuth();
   const canIssue = can(user?.role ?? "", PERMISSIONS.GENERATE_INVOICE);
 
+  const canRecordPayment = can(user?.role ?? "", PERMISSIONS.TAKE_PAYMENT_FIELD);
+
   const { data: invoices, isLoading } = useQuery<Invoice[]>({ queryKey: ["/api/invoices"] });
   const { data: customers } = useQuery<Customer[]>({ queryKey: ["/api/customers"] });
 
-  const markPaidMutation = useMutation({
-    mutationFn: (id: string) => apiRequest("PATCH", `/api/invoices/${id}`, { status: "PAID", paidDate: new Date().toISOString() }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/invoices"] });
-      toast({ title: "Invoice marked as paid" });
-    },
-    onError: (err: Error) => toast({ title: "Unable to mark invoice paid", description: getApiErrorMessage(err), variant: "destructive" }),
-  });
+  // D5: "Mark Paid" is gone. Paid and balance due are derived from recorded
+  // payments, so the action here is to record one against the invoice; the
+  // dialog applies it and the rollup does the rest.
+  const [paymentInvoice, setPaymentInvoice] = useState<Invoice | null>(null);
 
   const voidMutation = useMutation({
     mutationFn: (id: string) => apiRequest("POST", `/api/invoices/${id}/void`),
@@ -275,9 +275,11 @@ export default function Invoices() {
     return matchesSearch && matchesStatus;
   });
 
-  const totalOpenCents = filtered.filter((i) => i.status === "OPEN" || i.status === "PARTIALLY_PAID").reduce((s, i) => s + i.totalAmountCents, 0);
-  const totalPaidCents = filtered.filter((i) => i.status === "PAID").reduce((s, i) => s + i.totalAmountCents, 0);
-  const totalOverdueCents = filtered.filter(isOverdue).reduce((s, i) => s + i.totalAmountCents, 0);
+  // From the ledger rollups (D5): what is still owed, what has been collected
+  // and counted, and how much of what is owed is past due.
+  const totalOpenCents = filtered.filter((i) => isInvoiceIssued(i.status)).reduce((s, i) => s + i.balanceDueCents, 0);
+  const totalPaidCents = filtered.filter((i) => isInvoiceIssued(i.status)).reduce((s, i) => s + i.amountPaidCents, 0);
+  const totalOverdueCents = filtered.filter(isOverdue).reduce((s, i) => s + i.balanceDueCents, 0);
 
   const statusIcon = (invoice: Invoice) => {
     if (invoice.status === "VOID") return <Ban className="h-4 w-4 text-muted-foreground" />;
@@ -397,6 +399,9 @@ export default function Invoices() {
                         <span>{new Date(inv.issuedAt ?? inv.createdAt).toLocaleDateString()}</span>
                         {inv.status === "DRAFT" ? <span>Draft - not issued; amounts are re-priced at issue</span> : null}
                         {inv.dueDate && <span>Due: {new Date(inv.dueDate).toLocaleDateString()}</span>}
+                        {isInvoiceIssued(inv.status) && inv.amountPaidCents > 0 ? (
+                          <span data-testid={`text-invoice-paid-${inv.id}`}>Paid {formatCents(inv.amountPaidCents)} - Balance {formatCents(inv.balanceDueCents)}</span>
+                        ) : null}
                       </div>
                     </div>
                     <div className="flex items-center gap-3 shrink-0">
@@ -411,15 +416,16 @@ export default function Invoices() {
                           <FileCheck className="h-3 w-3 mr-1" /> Issue
                         </Button>
                       )}
-                      {(inv.status === "OPEN" || inv.status === "PARTIALLY_PAID") && (
+                      {(inv.status === "OPEN" || inv.status === "PARTIALLY_PAID") && canRecordPayment && (
                         <Button
                           variant="outline"
                           size="sm"
-                          onClick={() => markPaidMutation.mutate(inv.id)}
-                          disabled={markPaidMutation.isPending}
-                          data-testid={`button-mark-paid-${inv.id}`}
+                          onClick={() => setPaymentInvoice(inv)}
+                          disabled={!inv.locationId}
+                          title={inv.locationId ? undefined : "This invoice has no location, so a payment cannot be recorded against it"}
+                          data-testid={`button-record-payment-${inv.id}`}
                         >
-                          <DollarSign className="h-3 w-3 mr-1" /> Mark Paid
+                          <DollarSign className="h-3 w-3 mr-1" /> Record Payment
                         </Button>
                       )}
                       {inv.status !== "VOID" && inv.status !== "PAID" && (
@@ -440,6 +446,15 @@ export default function Invoices() {
             })}
         </div>
       )}
+
+      {paymentInvoice?.locationId ? (
+        <RecordPaymentDialog
+          open={!!paymentInvoice}
+          onOpenChange={(open) => !open && setPaymentInvoice(null)}
+          locationId={paymentInvoice.locationId}
+          invoice={paymentInvoice}
+        />
+      ) : null}
 
       <AlertDialog open={!!issuePrompt} onOpenChange={(open) => !open && setIssuePrompt(null)}>
         <AlertDialogContent>

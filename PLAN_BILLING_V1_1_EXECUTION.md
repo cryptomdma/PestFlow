@@ -22,8 +22,8 @@ grounded in what the code and data actually do, not what the decision record ass
 | 3.5 | `feature/phase-1-agreement-billing-plan-selector` | — (gap found in Pass 3 live testing) | Done (PR #59) |
 | 4 | `feature/phase-1-draft-invoice-lifecycle` | D3, Q3 | Done (PR #60) |
 | 5 | `feature/phase-1-finalize-invoice-wiring` | D2 | Done (PR #61) |
-| 5.5 | `feature/phase-1-initial-charge-to-agreement` | D4 (owner correction) | Pushed, awaiting merge |
-| 6 | `feature/phase-1-payments-lite` | D5, D4 | Not started |
+| 5.5 | `feature/phase-1-initial-charge-to-agreement` | D4 (owner correction) | Done (PR #62) |
+| 6 | `feature/phase-1-payments-lite` | D5, D4 | Pushed, awaiting merge |
 | 7 | `feature/phase-1-coa-and-field-display` | D6 | Not started |
 | 8 | `feature/phase-1-audit-log-backfill` | D7 (remainder) | Not started |
 | 9 | `feature/phase-1-legacy-billing-frequency-removal` | D9 | Not started |
@@ -844,6 +844,159 @@ Behavior worth knowing before Pass 6 touches it:
   plan-less (pre-Pass-3.5) and bill per visit until a plan is attached - the "Billing Plan required on
   every Agreement" item. "Annual" in that plan's name is only a label; a plan named "Prepaid Term"
   would read better for a 7-day program.
+
+**Shipped in Pass 6 (D5 payments-lite, D4 receivable and location balance), for Pass 7 to build on** -
+the ledger exists and every invoice figure derives from it. §2.5's transaction is what was built:
+row lock on the invoice, rollup recomputed from the ledger (never incremented), release as a flagged
+row with a required reason, everything in one transaction with its audit rows.
+
+```ts
+// shared/payments.ts - the vocabulary. Manual instruments only until Phase 2.
+export const MANUAL_PAYMENT_METHODS = ["CASH", "CHECK", "OTHER"] as const;   // CARD | ACH named, refused
+export const PAYMENT_STATUSES = ["PENDING", "CONFIRMED", "VOIDED", "REFUNDED", ...card states] as const;
+export function paymentHoldsValue(status): boolean      // PENDING | CONFIRMED - can be applied
+export function paymentCountsAsPaid(status): boolean    // CONFIRMED only - counts toward amountPaidCents
+export const CREDIT_MEMO_REASON_CODES = ["BILLING_ERROR", "SERVICE_ISSUE", "GOODWILL", "CANCELLATION", "OTHER"] as const;
+export interface LocationLedgerSummary { openBalanceCents; unappliedConfirmedCents; unappliedPendingCents; sources: UnappliedSource[] }
+export interface InvoiceLocationBalance { balanceDueCents; pendingAppliedCents; applicableCents; suggestedCents; designatedElsewhereCents; sources }
+
+// shared/invoice-status.ts. The three stored fields from the one number the ledger supplies.
+export function computeInvoiceRollup({ totalAmountCents, amountPaidCents, currentStatus? }): { amountPaidCents; balanceDueCents; status }
+  // DRAFT / VOID pass through with balanceDue 0; otherwise total - paid, and deriveInvoiceStatus()
+
+// shared/initial-charge.ts - the owner's rule, in arithmetic.
+export function initialChargeCountsTowardPrice(charge): boolean   // typed, not CLEANOUT_SURCHARGE, not inAdditionToPrice
+export function resolveRemainingContractPriceCents(charge, contractPriceCents): number | null  // price - charge, never negative
+export function initialChargeSkipsFirstPeriod(plan, charge): boolean   // plan flag AND the charge counts toward the price
+// InitialChargeFields gained initialChargeInAdditionToPrice (template: defaultInitialChargeInAdditionToPrice);
+// normalizeInitialCharge() forces it false for anything but a DOWN_PAYMENT.
+
+// server/storage.ts - IStorage. Append-only: creates and stamped lifecycle transitions only.
+recordPayment({ locationId, method, amountCents, receivedAt?, checkNumber?, referenceNumber?, memo?, designatedAgreementId?, applyToInvoiceId?, actor }): Promise<{ payment; application | null; invoice | null }>
+confirmPayment(id, actor) / voidPayment(id, reason, actor) / refundPayment(id, reason, actor): Promise<Payment | undefined>
+applyPayment(paymentId, { invoiceId, amountCents?, actor }) / releasePaymentApplication({ applicationId, reason, actor })
+issueCreditMemo({ locationId, invoiceId?, reasonCode, reason, amountCents, applyToInvoiceId?, actor }) / voidCreditMemo / applyCreditMemo / releaseCreditApplication
+getInvoiceLedger(invoiceId) / getLocationLedgerSummary(locationId) / getPaymentsByLocation / getCreditMemosByLocation
+getInvoiceLocationBalance(invoiceId): Promise<InvoiceLocationBalance>          // the D4 prompt's numbers
+applyLocationBalanceToInvoice(invoiceId, actor): Promise<{ invoice; applied[]; appliedCents }>   // the D4 prompt's act
+issueInitialChargeInvoice(agreementId, actor): Promise<Invoice>   // explicit path; throws the refusal
+getAgreementInitialChargeInvoice(agreementId): Promise<Invoice | null>
+// private: lockInvoiceTx (SELECT ... FOR UPDATE), sumInvoiceApplicationsTx (paid / pending / all),
+// recomputeInvoiceRollupTx, applyPaymentTx / applyCreditMemoTx (assertApplicableTx holds every refusal),
+// releaseAllApplicationsForInvoiceTx (void), orderSourcesForInvoiceTx (designated first, confirmed before
+// pending, oldest first; money designated to a different agreement is set aside), issueInitialChargeInvoiceTx.
+
+// Routes (all mutations actor-from-session). Permissions in shared/permissions.ts:
+POST /api/payments                         TAKE_PAYMENT_FIELD (+ APPLY_PAYMENT when applyToInvoiceId is set)
+POST /api/payments/:id/confirm             CONFIRM_PAYMENT (support+); CASH additionally CONFIRM_CASH_PAYMENT (manager+)
+POST /api/payments/:id/void                VOID_PAYMENT (manager+)     POST /api/payments/:id/refund   REFUND_PAYMENT
+POST /api/payments/:id/apply, /api/payment-applications/release, /api/credit-memos/:id/apply, /api/credit-applications/release   APPLY_PAYMENT (support+)
+POST /api/credit-memos, /api/credit-memos/:id/void   ISSUE_CREDIT_MEMO
+GET  /api/invoices/:id/ledger, /api/invoices/:id/location-balance, /api/locations/:id/ledger-summary, /api/payments/by-location/:id, /api/credit-memos/by-location/:id
+POST /api/invoices/:id/apply-location-balance   APPLY_PAYMENT
+GET  /api/agreements/:id/initial-charge-invoice   POST /api/agreements/:id/issue-initial-charge   GENERATE_INVOICE
+PATCH /api/invoices/:id now takes notes / dueDate only (strict) - status and paidDate are derived.
+
+// client: components/record-payment-dialog.tsx (Invoices screen + location tab; applies when an invoice is
+// given and the role may), components/apply-location-balance-prompt.tsx (D4 prompt; opens only when there
+// is something to suggest), components/location-ledger-panel.tsx (balances, payments, credit memos,
+// InvoiceRowLedger with applications + Release), lib/invalidate-invoice-views.ts (one invalidation for
+// every money-reading query), agreement card's AgreementInitialChargeStatus, the in-addition checkbox on
+// initial-charge-fields.tsx (DOWN_PAYMENT only).
+```
+
+Behavior worth knowing before Pass 7 touches it:
+- **PENDING shows, CONFIRMED counts.** A payment can be applied while PENDING (it appears on the
+  invoice's ledger) but `amountPaidCents` sums only CONFIRMED payments and ISSUED credit memos.
+  Confirmation re-rolls every invoice the payment sits on in the same transaction, each with its own
+  `payment_confirmed` audit row on the *invoice*, which is how an invoice's trail explains why it
+  flipped to PAID. The cap on further applications counts pending ones too (`applicableCents`), so two
+  pending payments cannot jointly overpay an invoice that later confirms both. Verified live: a $100
+  pending cash left the $100 initial-charge invoice OPEN with $0 applicable; confirming it flipped the
+  invoice to PAID; releasing it (reason required, 400 without) reopened it at $100 due.
+- **Where the audit rows land.** Lifecycle acts on the `payment` / `credit_memo` entity (recorded,
+  confirmed, voided, refunded, issued). Application and release on the **invoice** entity, with the
+  application row carried in `after` so the amount, source and release reason are in the trail. The
+  location History panel rolls both entity types in (`getAuditLogsForLocation` refs).
+- **Void / refund guards.** A payment with unreleased applications cannot be voided or refunded -
+  release first, explicitly, so where the money sat is on the record. A PENDING payment cannot be
+  refunded (it was never confirmed as received; void it). Only a CONFIRMED, fully unapplied payment
+  refunds, as a stamped `REFUNDED` transition; the money movement itself is outside the app in Phase 1.
+  A credit memo with applications likewise cannot be voided.
+- **Voiding an invoice releases its applications** back to the location's unapplied pool (reason
+  "Invoice INV-x voided", one `payment_released` / `credit_memo_released` row each) and zeroes its
+  rollup - a VOID invoice owes and holds nothing. The old `voidInvoiceTx` would have stranded money on
+  it, invisible to every balance.
+- **Balances come from the ledger.** `getLocationBalancesByCustomer` now sums `balanceDueCents` over
+  *issued* invoices (DRAFT finally excluded, as the Pass 4 note asked) and reports
+  `unappliedBalanceCents` (confirmed money on account); the location switcher shows both. The Invoices
+  screen's Open / Paid / Overdue tiles read `balanceDueCents` / `amountPaidCents`.
+- **The D4 prompt.** `getInvoiceLocationBalance()` orders the pool: sources designated to an agreement
+  the invoice is *for* (through `billing_events` and the lines' services) first, undesignated next,
+  confirmed before pending, oldest first; money designated to a *different* agreement is reported as
+  `designatedElsewhereCents` and never drawn on. `applyLocationBalanceToInvoice()` draws in that order
+  until the invoice can take no more, one application row per source. The prompt opens from the
+  finalize prompt after Generate (only when there is something to suggest and the role may apply) and
+  from "Apply location balance" on an open invoice row of the location's Invoices tab.
+- **Mark Paid is gone.** `updateInvoice` refuses `status`, `paidDate`, `amountPaidCents`,
+  `balanceDueCents`; the route schema is strict, so a stray `status` is a 400 naming the key. The
+  Invoices screen's button is now Record Payment (disabled, with the reason, on the location-less manual
+  invoices from the known gap in `CURRENT_FOCUS.md`). `paidDate` is stamped by the rollup the first
+  time it lands on PAID and cleared if a release reopens the balance - display only.
+- **Migration.** `payments-bootstrap.ts` creates the four tables (org_id NOT NULL from the start, like
+  `invoice_line_items`) and adds the two invoice columns nullable, backfills once (`WHERE ... IS NULL`
+  makes it a one-shot), then constrains them: an invoice hand-marked PAID before the ledger keeps its
+  word (paid = total, due 0) because status derives from these amounts from now on; no `payments` row is
+  invented for it. Every other issued invoice starts fully due; DRAFT / VOID owe 0. On the dev DB: 21
+  PAID, 29 OPEN, 2 VOID, zero rows where `balance_due <> total - paid` afterwards. Every invoice insert
+  now sets `balanceDueCents` explicitly (the column default is 0, which would read as paid up).
+- **The receivable.** `createAgreement` issues the initial charge inside its own transaction:
+  `INITIAL_CHARGE` line (description `<type label> - <agreement name>`), tax through the same
+  `resolveTaxDecision` the schedule-driven path uses, terms and due date from the location's billing
+  profile, an `INITIAL_CHARGE` billing event with the fixed periodKey `INITIAL_CHARGE` so it can only
+  ever fire once, `invoice_issued` audit row. A percent charge with no price is REFUSED silently at
+  creation (the card says "Not yet invoiced" with the button) and loudly (400) on the explicit route;
+  verified both ways, and that setting the price then issuing resolves 25% of $200 to $50. Voiding the
+  receivable does not re-open the event - same rule as a schedule-driven invoice; correct with a credit
+  memo or a manual invoice. The plan-attachment refusal in `resolveNextBillingDateForPlanChangeTx`
+  ("already carries billing_events") now ignores `INITIAL_CHARGE` events, or every agreement with a
+  down payment would be unable to start a schedule.
+- **The 4 live agreements with charges** (Unit 15 Ledger Test $50 cleanout; three Daily Rodent Trapping
+  $99.95 down) were **not** backfilled with receivables - a boot must not invoice test customers. Each
+  card offers "Issue initial charge invoice". Until it is pressed, a Daily Rodent Trapping agreement's
+  schedule bills price - $99.95 spread over its periods (the down payment is assumed collected outside
+  the ledger), which is the owner's default reading; issuing the receivable makes the $99.95 a real
+  open invoice. Test data; the office decides.
+- **"Counts toward the price", concretely.** `resolveRemainingContractPriceCents()` = price - resolved
+  charge for a DOWN_PAYMENT / PREPAY_FULL without the flag; the full price for a CLEANOUT_SURCHARGE
+  (inherently additional) or with `initialChargeInAdditionToPrice`. Readers: the per-visit line
+  (`remaining ÷ expectedServiceCount` - verified: $400 with $100 down and 4 visits bills $75 a visit,
+  while the SCHEDULED_AGREEMENT_SERVICE production entry stays $100, per the owner's third point), a
+  PREPAID_TERM plan's one charge, and a RECURRING_INTERVAL plan's per-period share
+  (`remaining ÷ (periods - 1 if the plan skips period 1)`, so a term still totals the contract price
+  whichever way the plan flag is set; with a down payment equal to one period's share this is exactly
+  the old per-period amount). `initialChargeCoversFirstPeriod` now skips period 1 only for a charge
+  that counts toward the price - money owed on top cannot also buy a period - and creation
+  (`computeNextBillingDateForPlan`) and the nightly run read the same predicate. No live plan sets the
+  flag. The recurring-plan reading is the one place this pass went past the owner's literal words
+  ("`initialChargeCoversFirstPeriod` is this same rule for recurring schedules"): with per-period =
+  price ÷ N, a $100 down on a $400 monthly plan would total $500 without the remainder arithmetic, so
+  it was applied there too. If the owner meant the plan flag alone, revert the `billedPeriods` /
+  `remainingPriceCents` lines in `billing-run.ts`.
+- **What the ledger records for the field-surcharge unit.** `payments.collectedByUserId` /
+  `collectedByLabel` are the session actor at recording - the recorded collection event D4 says credit
+  must key off. `createSurchargeEntryIfConfigured()` is untouched (cleanout-only, permission-inferred,
+  scheduled for deletion by that unit); nothing in this pass reads the ledger for production credit.
+- **Permissions added** (`shared/permissions.ts`): `APPLY_PAYMENT` (support+, both directions),
+  `CONFIRM_PAYMENT` (support+), `CONFIRM_CASH_PAYMENT` (manager+), `VOID_PAYMENT` (manager+).
+  `TAKE_PAYMENT_FIELD` records (technician included: an unapplied, optionally designated payment with
+  the technician as collector - verified); `REFUND_PAYMENT` and `ISSUE_CREDIT_MEMO` now have routes.
+  Reads are open like every other read route. Technician payment-collection *UI* is still the
+  separate pass named in `CURRENT_FOCUS.md`; the route exists for it.
+- **Not built, deliberately.** Card / ACH (Phase 2 - the enum names exist, the route refuses them).
+  Partial refunds. Check photo / cash signature capture from the historical plan. A credit memo
+  number series (memos are identified by reason and amount). Applying a payment across customers or
+  locations (refused). Aging buckets (derived, not stored - a Reports item).
 
 **Design note carried into Pass 4** - resolved there: D3's "flags the linked ticket(s) for review" had
 no existing "flagged" concept in the schema. Pass 4 extended `serviceRecords.ticketStatus` with

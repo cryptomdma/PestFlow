@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import {
   AlertDialog,
@@ -10,11 +11,13 @@ import {
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth";
-import { apiRequest, getApiErrorMessage, queryClient } from "@/lib/queryClient";
+import { apiRequest, getApiErrorMessage } from "@/lib/queryClient";
+import { invalidateInvoiceViews } from "@/lib/invalidate-invoice-views";
 import { can, PERMISSIONS } from "@shared/permissions";
 import { formatCents } from "@shared/money";
 import type { FinalizationInvoicingOutcome } from "@shared/invoice-on-finalize";
 import type { Invoice, ServiceRecord } from "@shared/schema";
+import { ApplyLocationBalancePrompt } from "@/components/apply-location-balance-prompt";
 
 // D2 (PLAN_BILLING_V1_1.md): the finalization that completes a visit answers
 // with an invoicing outcome. Under the PROMPT setting the reviewer is asked -
@@ -73,20 +76,10 @@ export function describeFinalizeResult(result: FinalizeServiceRecordResponse): {
   }
 }
 
-/**
- * Every query that reads invoices or the audit trail, whatever its key shape -
- * "/api/invoices", ["/api/invoices/by-location", id], "/api/invoices/ready-for-billing",
- * "/api/audit-logs?locationId=...". A prefix match on the first element would
- * miss the last three, so match on the string itself.
- */
-export function invalidateInvoiceViews() {
-  queryClient.invalidateQueries({
-    predicate: (query) => {
-      const head = String(query.queryKey[0] ?? "");
-      return head.startsWith("/api/invoices") || head.startsWith("/api/audit-logs");
-    },
-  });
-}
+// Lives in lib/ since Pass 6 so the ledger dialogs can share it without
+// importing this prompt (which imports one of them); re-exported here for the
+// two finalize screens that already import it from this module.
+export { invalidateInvoiceViews };
 
 export function InvoiceOnFinalizePrompt({ prompt, onClose }: { prompt: InvoiceOnFinalizePromptState | null; onClose: () => void }) {
   const { toast } = useToast();
@@ -94,6 +87,11 @@ export function InvoiceOnFinalizePrompt({ prompt, onClose }: { prompt: InvoiceOn
   const canGenerate = can(user?.role ?? "", PERMISSIONS.GENERATE_INVOICE);
   const canSend = canGenerate && can(user?.role ?? "", PERMISSIONS.SEND_INVOICE);
   const draft = prompt?.outcome.invoice ?? null;
+  // D4: once the visit's invoice is issued, the second question - "Apply $X
+  // location balance to it?" - belongs at this same moment. The apply prompt
+  // fetches the location's unapplied balance itself and opens only when there
+  // is something to suggest.
+  const [balanceInvoice, setBalanceInvoice] = useState<Invoice | null>(null);
 
   const generateMutation = useMutation({
     mutationFn: async ({ serviceRecordId, send }: { serviceRecordId: string; send: boolean }) => {
@@ -123,6 +121,9 @@ export function InvoiceOnFinalizePrompt({ prompt, onClose }: { prompt: InvoiceOn
         });
       }
       onClose();
+      if (invoice.locationId && invoice.balanceDueCents > 0) {
+        setBalanceInvoice(invoice);
+      }
     },
     onError: (error: Error) => toast({ title: "Unable to generate the invoice", description: getApiErrorMessage(error), variant: "destructive" }),
   });
@@ -130,6 +131,8 @@ export function InvoiceOnFinalizePrompt({ prompt, onClose }: { prompt: InvoiceOn
   const isPending = generateMutation.isPending;
 
   return (
+    <>
+    <ApplyLocationBalancePrompt invoice={balanceInvoice} onClose={() => setBalanceInvoice(null)} />
     <AlertDialog open={!!prompt} onOpenChange={(open) => !open && !isPending && onClose()}>
       <AlertDialogContent>
         <AlertDialogHeader>
@@ -179,5 +182,6 @@ export function InvoiceOnFinalizePrompt({ prompt, onClose }: { prompt: InvoiceOn
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>
+    </>
   );
 }
