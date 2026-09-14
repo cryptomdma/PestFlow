@@ -23,8 +23,8 @@ grounded in what the code and data actually do, not what the decision record ass
 | 4 | `feature/phase-1-draft-invoice-lifecycle` | D3, Q3 | Done (PR #60) |
 | 5 | `feature/phase-1-finalize-invoice-wiring` | D2 | Done (PR #61) |
 | 5.5 | `feature/phase-1-initial-charge-to-agreement` | D4 (owner correction) | Done (PR #62) |
-| 6 | `feature/phase-1-payments-lite` | D5, D4 | Pushed, awaiting merge |
-| 7 | `feature/phase-1-coa-and-field-display` | D6 | Not started |
+| 6 | `feature/phase-1-payments-lite` | D5, D4 | Done (PR #63) |
+| 7 | `feature/phase-1-coa-and-field-display` | D6 | Pushed, awaiting merge |
 | 8 | `feature/phase-1-audit-log-backfill` | D7 (remainder) | Not started |
 | 9 | `feature/phase-1-legacy-billing-frequency-removal` | D9 | Not started |
 
@@ -997,6 +997,93 @@ Behavior worth knowing before Pass 7 touches it:
   Partial refunds. Check photo / cash signature capture from the historical plan. A credit memo
   number series (memos are identified by reason and amount). Applying a payment across customers or
   locations (refused). Aging buckets (derived, not stored - a Reports item).
+
+**Shipped in Pass 7 (D6 COA as payment application; field display; billing-plan pill), for the
+technician payment-collection pass and Pass 8 to build on** - nothing new is stored. One read
+resolves what the field sees, and it resolves it through the code that prices the invoice.
+
+```ts
+// shared/visit-billing.ts - the shape GET /api/appointments/:id/billing-summary returns.
+export type ServiceBillingDesignation = "BILLABLE" | "PRODUCTION";
+export interface VisitServiceBilling {
+  serviceId; serviceRecordId; serviceTypeName; agreementId;
+  designation;                 // PRODUCTION = the visit line is AGREEMENT_COVERED (schedule-billed plan, or warranty callback)
+  priceCents: number | null;   // the line amount before tax; 0 for PRODUCTION; null = cannot be resolved (note says why)
+  taxCents;                    // frozen on the invoice, or the tax engine's current answer before one exists
+  coaAppliedCents;             // issued invoice only: unreleased applications (CONFIRMED and PENDING) allotted to lines in order
+  coaAvailableCents;           // no issued invoice only: the location's unapplied pool this line could draw on, D4 order
+  dueTodayCents: number | null; // price + tax - applied - available, never negative
+  note;                        // "covered by agreement" | "callback" | "warranty callback - no charge" | the refusal reason
+}
+export interface VisitBillingSummary { appointmentId; locationId; invoice: VisitBillingInvoiceRef | null; invoiced: boolean; services; totals: { priceCents; taxCents; coaAppliedCents; coaPendingCents; coaAvailableCents; dueTodayCents; unresolvedCount } }
+export function formatServiceDesignation(d) / describeServiceDesignation(d)   // "Billable" / "Collect today"; "Production" / "Covered by agreement - nothing due today"
+
+// shared/billing-plan.ts - the pill's number IS the nightly run's number.
+export function resolveBillingPlanCharge(plan: BillingPlanChargeFields | null, agreement: AgreementChargeFields): BillingPlanCharge
+  // PER_PERIOD (RECURRING_INTERVAL on schedule): remaining price / (billing periods in the term - 1 if the plan's up-front money buys period 1)
+  // ONCE (PREPAID_TERM): the remaining price      PER_VISIT (everything else, and no plan): remaining price / expectedServiceCount
+export function describeBillingPlanPill(plan, agreement): { label; title }   // "Monthly · $50/mo" | "Prepaid Term · $400 once" | "COD · $75/visit" | "No billing plan · $75/visit" | "<plan> · price not set"
+
+// shared/agreement-schedule.ts - addDays / addMonths / advanceAgreementDate / computeExpectedServiceCount, moved out of
+// server/storage.ts (which re-exports the last two for billing-run.ts and production-value-backfill.ts) so the pill can count periods.
+// shared/money.ts: formatCentsCompact() ("$50", "$12.50").
+
+// server/storage.ts
+getVisitBillingSummary(appointmentId): Promise<VisitBillingSummary | undefined>   // IStorage; undefined = no such appointment
+// private: orderSourcesForAgreementsTx(reader, locationId, agreementIds) - factored out of orderSourcesForInvoiceTx so the
+// field's "available" and the D4 prompt draw the pool in one order. server/jobs/billing-run.ts takes its amount from resolveBillingPlanCharge().
+
+// Route (open read, like every other read):  GET /api/appointments/:id/billing-summary
+// Client: components/visit-billing-summary.tsx (useVisitBillingSummary, ServiceDesignationBadge, ServiceBillingFigures,
+// ServiceBillingBlock, VisitDueTodayTotal, VisitBillingRows, describeBillingSource), components/billing-plan-pill.tsx
+// (BillingPlanPill, useBillingPlanById). invalidateInvoiceViews() now also hits ["/api/appointments", id, "billing-summary"].
+```
+
+Behavior worth knowing before the next passes touch it:
+- **Two sources, never mixed.** An ISSUED invoice (OPEN / PARTIALLY_PAID / PAID) is the truth: its
+  lines give price and tax, its unreleased applications give COA, allotted to lines in `sortOrder`
+  so the per-service figures sum to the invoice's. No invoice, or a DRAFT: every service is priced
+  through `resolveServiceLineBillingTx` + `resolveTaxDecision` - the calls generation will make -
+  and the DRAFT is reported in `invoice` but not trusted for figures (issue re-prices it). A service
+  that cannot be priced (no price, plan-less price-less agreement) is `priceCents: null` with
+  generation's own refusal message as `note`, and is counted in `unresolvedCount` rather than shown
+  as $0 - a $0 reads as "nothing to collect".
+- **Pending counts toward what not to collect.** `coaAppliedCents` sums CONFIRMED and PENDING
+  applications; a check the office has not cleared is still not money to collect twice. The ledger's
+  `amountPaidCents` / `balanceDueCents` (CONFIRMED only) are returned unchanged in `invoice` for the
+  receivable view; `totals.coaPendingCents` says how much of the COA is still pending.
+- **"COA available" is intent, "COA applied" is fact** (D4). Before the visit is invoiced the
+  location's unapplied pool - eligible per `orderSourcesForAgreementsTx`: undesignated or designated
+  to one of the visit's agreements, never designated elsewhere - is allotted to the visit's lines and
+  subtracted from due today, and the client labels it "COA available" with the sentence that the
+  office applies it at invoicing. Verified live: a $40 cash recorded PENDING showed as available on a
+  $100 COD visit; confirming it changed nothing; once the visit was invoiced available went to 0 and
+  applying the location balance made it "COA applied" with due today = total - applied, the line
+  amount, tax and invoice total untouched. A $10 check designated to a different agreement was never
+  offered; one designated to the visit's agreement was.
+- **Designation** is the line type, nothing else: `AGREEMENT_COVERED` (a schedule-billed plan per
+  `isScheduleBilledPlan()`, or a warranty callback) is `PRODUCTION`; every `SERVICE` line, including
+  a chargeable callback and a COD-plan agreement visit at remaining price / expected visits, is
+  `BILLABLE`. The production-value ledger is not read and not changed.
+- **Where it shows.** Service ticket header (designation, the three figures, source sentence; the
+  "Service Price" field on a PRODUCTION service gains a caption saying it is production value and is
+  not billed on the visit - the field itself is untouched). Technician appointment details (per
+  service, compact, then the one due-today total D6 asks for). Dispatch board appointment sheet (in
+  place of the raw stamped "Service value", which was null for agreement work). The schedule's
+  Service Details dialog still shows the raw `service.priceCents` as "Service Value" - it can open
+  for an unscheduled service with no visit to summarize.
+- **The pill.** Agreement card badge row and a per-agreement "Agreements:" row on the Location
+  Profile card (active agreements only; a location is never labeled monthly or COD as a whole).
+  Amount from `resolveBillingPlanCharge()`, which `billing-run.ts` now bills from - the one place the
+  per-period arithmetic lives, the way `isScheduleBilledPlan()` is the one place coverage lives. Ten
+  arithmetic cases checked ($600/yr monthly = $50/mo; $400 with $100 down = $25/mo, $27.27/mo when
+  the plan's down payment buys period 1, $33.33/mo when the down payment is in addition; COD and
+  plan-less = remaining / visits; no price = "price not set"). Plan-less agreements get an honest
+  outline pill - the 11 load-bearing ones are now visible on their cards without touching them.
+- **Not built, deliberately.** Per-line applications (COA is applied to the invoice; the per-service
+  split is an allotment for display). The technician collect action (next pass; the route exists).
+  A per-service "designation" column on the location Services tab. Any change to how a price is set.
+  No migration.
 
 **Design note carried into Pass 4** - resolved there: D3's "flags the linked ticket(s) for review" had
 no existing "flagged" concept in the schema. Pass 4 extended `serviceRecords.ticketStatus` with

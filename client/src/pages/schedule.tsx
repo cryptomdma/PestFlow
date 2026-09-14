@@ -15,6 +15,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, getApiErrorMessage, queryClient } from "@/lib/queryClient";
 import { DraftInvoiceVoidPrompt, getDraftInvoiceDecisionRequired, type DraftInvoiceRef } from "@/components/draft-invoice-void-prompt";
+import { VisitBillingRows, useVisitBillingSummary } from "@/components/visit-billing-summary";
 import { formatCents, dollarsToCents } from "@shared/money";
 import {
   CalendarDays,
@@ -186,6 +187,10 @@ function AppointmentSheet({
   const [lockTime, setLockTime] = useState(false);
   const [lockTechnician, setLockTechnician] = useState(false);
   const [notes, setNotes] = useState("");
+  // D6: the visit's Price / COA / Due today per service and its due-today
+  // sum, server-resolved - in place of the raw stamped service price, which
+  // is null for agreement work and says nothing about coverage.
+  const { data: visitBilling, isLoading: visitBillingLoading, isError: visitBillingError } = useVisitBillingSummary(open ? appointment?.id : null);
 
   useEffect(() => {
     if (!appointment) return;
@@ -218,7 +223,9 @@ function AppointmentSheet({
                 <Badge variant="outline">{appointment.status}</Badge>
               </div>
               <p className="mt-2 text-xs text-muted-foreground">{locationLabel}</p>
-              <p className="mt-1 text-xs text-muted-foreground">Service value: {formatCurrency(service?.priceCents)}</p>
+              <div className="mt-3">
+                <VisitBillingRows summary={visitBilling} isLoading={visitBillingLoading} isError={visitBillingError} />
+              </div>
             </div>
 
             <div className="space-y-2">

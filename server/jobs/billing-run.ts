@@ -2,9 +2,8 @@ import cron from "node-cron";
 import { and, eq, isNotNull, lte } from "drizzle-orm";
 import { db } from "../db";
 import { agreements, billingPlans } from "@shared/schema";
-import { isScheduleBilledPlan } from "@shared/billing-plan";
-import { initialChargeSkipsFirstPeriod, resolveRemainingContractPriceCents } from "@shared/initial-charge";
-import { advanceAgreementDate, computeExpectedServiceCount, createOrgScopedStorage } from "../storage";
+import { isScheduleBilledPlan, resolveBillingPlanCharge } from "@shared/billing-plan";
+import { advanceAgreementDate, createOrgScopedStorage } from "../storage";
 
 function todayDateOnly(): string {
   return new Date().toISOString().slice(0, 10);
@@ -54,40 +53,29 @@ export async function runBillingCycle(): Promise<BillingRunResult> {
       }
 
       const periodKey = agreement.nextBillingDate;
-      let amountCents: number;
+
+      // The amount is resolveBillingPlanCharge's (shared/billing-plan.ts):
+      // the contract price REMAINING after the initial charge (D4, owner
+      // review: a down payment counts toward the price - $400 with $100 down
+      // leaves $300 for the schedule), spread over the term's billing periods,
+      // one fewer when the plan's up-front money buys period 1. Shared with
+      // the agreement card's pill (D6) so what the office sees is what this
+      // run bills. PER_VISIT cannot occur past the predicate above and a null
+      // amount cannot occur past the price check; both are kept as skips
+      // rather than assumed away.
+      const charge = resolveBillingPlanCharge(plan, agreement);
+      if (charge.kind === "PER_VISIT" || charge.amountCents == null) {
+        result.skipped += 1;
+        continue;
+      }
+      const amountCents = charge.amountCents;
       let nextBillingDate: string | null;
 
-      // What the schedule bills is the contract price REMAINING after the
-      // agreement's initial charge (PLAN_BILLING_V1_1.md D4, owner review: a
-      // down payment counts toward the price by default - $400 with $100 down
-      // leaves $300 for the schedule). The initial charge itself was issued
-      // as its own receivable at agreement start.
-      const remainingPriceCents = resolveRemainingContractPriceCents(agreement, agreement.priceCents) ?? agreement.priceCents;
-
-      if (plan.billingMode === "PREPAID_TERM") {
-        amountCents = remainingPriceCents;
+      if (charge.kind === "ONCE") {
         nextBillingDate = null;
       } else {
-        const intervalUnit = plan.intervalUnit ?? "MONTH";
-        const intervalCount = plan.intervalCount ?? 1;
-        const expectedBillingCount = computeExpectedServiceCount(
-          agreement.startDate,
-          agreement.termUnit,
-          agreement.termInterval,
-          intervalUnit,
-          intervalCount,
-        );
-        // When the plan says the up-front money buys period 1 (and the
-        // charge counts toward the price - initialChargeSkipsFirstPeriod is
-        // the same predicate creation used to push nextBillingDate out), the
-        // remainder is spread over one fewer period, so the term still totals
-        // the contract price. With a down payment equal to one period's share
-        // this is exactly the old per-period amount.
-        const billedPeriods = Math.max(expectedBillingCount - (initialChargeSkipsFirstPeriod(plan, agreement) ? 1 : 0), 1);
-        amountCents = Math.round(remainingPriceCents / billedPeriods);
-
         const termEndDate = advanceAgreementDate(agreement.startDate, agreement.termUnit, agreement.termInterval);
-        const candidateNext = advanceAgreementDate(periodKey, intervalUnit, intervalCount);
+        const candidateNext = advanceAgreementDate(periodKey, charge.intervalUnit, charge.intervalCount);
         nextBillingDate = candidateNext < termEndDate ? candidateNext : null;
       }
 

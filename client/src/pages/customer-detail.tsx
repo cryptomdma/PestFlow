@@ -35,6 +35,7 @@ import { OpportunityHistoryDialog } from "@/components/opportunity-history-dialo
 import { OpportunityConvertDialog } from "@/components/opportunity-convert-dialog";
 import { ServiceCompletionDialog } from "@/components/service-completion-dialog";
 import { DraftInvoiceVoidPrompt, getDraftInvoiceDecisionRequired, type DraftInvoiceRef } from "@/components/draft-invoice-void-prompt";
+import { BillingPlanPill, useBillingPlanById } from "@/components/billing-plan-pill";
 import {
   InvoiceOnFinalizePrompt,
   describeFinalizeResult,
@@ -2230,6 +2231,9 @@ function AgreementsTab({
   const { data: services } = useQuery<Service[]>({ queryKey: ["/api/services/by-location", locationId], enabled: !!locationId });
   const { data: serviceTypes } = useQuery<ServiceType[]>({ queryKey: ["/api/service-types"] });
   const { data: agreementTemplates } = useQuery<AgreementTemplate[]>({ queryKey: ["/api/agreement-templates"] });
+  // D6: the billing-plan pill needs the plan's name and cadence; the agreement
+  // row carries only billingPlanId. Inactive included so a retired plan still names itself.
+  const { planById: billingPlanById, isLoading: billingPlansLoading } = useBillingPlanById();
 
   const agreementAppointments = useMemo(() => {
     return (appointments ?? []).filter((appointment) => appointment.source === "AGREEMENT_GENERATED" && !!appointment.agreementId);
@@ -2343,6 +2347,9 @@ function AgreementsTab({
                           {agreement.agreementTemplateId ? `Template: ${templateNameById.get(agreement.agreementTemplateId) || "Template"}` : "Custom agreement"}
                         </Badge>
                         {agreement.contractUrl && <Badge variant="outline" className="text-xs"><Link2 className="h-3 w-3 mr-1" /> Contract</Badge>}
+                        {!billingPlansLoading && agreement.status !== "CANCELLED" && (
+                          <BillingPlanPill agreement={agreement} plan={agreement.billingPlanId ? billingPlanById.get(agreement.billingPlanId) : null} />
+                        )}
                       </div>
                       <p className="text-xs text-muted-foreground">
                         {agreement.status === "CANCELLED"
@@ -3356,6 +3363,13 @@ export default function CustomerDetail() {
   // tab's balance panel, the Apply-balance affordance and payment designation.
   const { data: locationLedgerSummary } = useQuery<LocationLedgerSummary>({ queryKey: ["/api/locations", activeLocationId, "ledger-summary"], enabled: !!activeLocationId });
   const { data: locationAgreements } = useQuery<Agreement[]>({ queryKey: ["/api/agreements/location", activeLocationId], enabled: !!activeLocationId });
+  // D6: the location screen shows each active agreement's billing-plan pill,
+  // named per agreement - a location is never "monthly" or "COD" as a whole.
+  const { planById: locationBillingPlanById, isLoading: locationBillingPlansLoading } = useBillingPlanById();
+  const activeLocationAgreements = useMemo(
+    () => (locationAgreements ?? []).filter((agreement) => agreement.status !== "CANCELLED"),
+    [locationAgreements],
+  );
 
   const sortedContacts = useMemo(() => {
     if (!contacts) return [];
@@ -3712,6 +3726,17 @@ export default function CustomerDetail() {
                   {activeLocation.squareFootage && <span className="flex items-center gap-1"><Ruler className="h-3 w-3" /> {activeLocation.squareFootage.toLocaleString()} sq ft</span>}
                   {activeLocation.gateCode && <span className="flex items-center gap-1"><KeyRound className="h-3 w-3" /> Gate: {activeLocation.gateCode}</span>}
                 </div>
+                {activeLocationAgreements.length > 0 && !locationBillingPlansLoading && (
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs" data-testid="row-location-agreement-plans">
+                    <span className="text-muted-foreground">Agreements:</span>
+                    {activeLocationAgreements.map((agreement) => (
+                      <span key={agreement.id} className="inline-flex items-center gap-1.5">
+                        <span className="font-medium">{agreement.agreementName}</span>
+                        <BillingPlanPill agreement={agreement} plan={agreement.billingPlanId ? locationBillingPlanById.get(agreement.billingPlanId) : null} />
+                      </span>
+                    ))}
+                  </div>
+                )}
               </CardContent>
             </Card>
 

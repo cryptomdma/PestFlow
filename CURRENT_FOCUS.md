@@ -77,7 +77,7 @@ whose `billingPlanSnapshot` carried a charge (their snapshots are left as frozen
 template whose plan set one, then dropped the three plan columns. Signatures and behavior are under
 "Shipped in Pass 5.5" in `PLAN_BILLING_V1_1_EXECUTION.md`.
 
-Pass 6 (`feature/phase-1-payments-lite`, D5 + D4) is pushed and awaiting merge. The payments ledger
+Pass 6 (`feature/phase-1-payments-lite`, D5 + D4) merged as PR #63. The payments ledger
 exists: `payments` (CASH | CHECK | OTHER; posts `PENDING`, confirmed by the office - cash only by a
 manager+), `payment_applications`, `credit_memos`, `credit_applications`, all append-only with
 stamped lifecycle transitions (confirm / void / refund / release, each with a required reason where it
@@ -96,10 +96,27 @@ is the explicit exception, and `resolveRemainingContractPriceCents()` is what th
 PREPAID_TERM charge and a recurring plan's per-period share now bill from. Signatures and behavior
 are under "Shipped in Pass 6" in `PLAN_BILLING_V1_1_EXECUTION.md`.
 
-Next up once it merges: **Pass 7 — `feature/phase-1-coa-and-field-display`** (D6): COA as payment
-application on the tech ticket / appointment detail (Price / COA applied / Due today), the
-`BILLABLE` vs `PRODUCTION` service designation, and the billing-plan pill on the agreement card. The
-tech payment-collection UI relabel (below) is its own pass right after.
+Pass 7 (`feature/phase-1-coa-and-field-display`, D6) is pushed and awaiting merge. The field now sees
+money the way the invoice will: one read, `GET /api/appointments/:id/billing-summary`, prices every
+service on a visit through the same `resolveServiceLineBillingTx` invoicing uses and reports
+**Price / COA / Due today** per service plus the visit's due-today sum, each service designated
+`BILLABLE` (collect today) or `PRODUCTION` (agreement-covered, $0, nothing due). Once the visit's
+invoice is issued the figures are its frozen lines and applications (pending ones included, so a
+check the office has not cleared is not collected twice); before that they are what generation would
+price right now, and "COA available" is the location's unapplied balance the visit could draw on, in
+D4's order (designated-to-this-agreement first, designated-elsewhere never). **COA never touches a
+price** - verified live: applying the location balance moved due today and left the line amount, tax
+and total exactly as issued. Shown on the service ticket, the technician's appointment details, and
+the dispatch board's appointment sheet. The **billing-plan pill** (plan name + periodic amount, e.g.
+`Monthly · $50/mo`) sits on the agreement card and, named per agreement, on the Location Profile
+card; its arithmetic is `resolveBillingPlanCharge()` in `shared/billing-plan.ts`, which the nightly
+run now bills from too, so the card can never promise a number the run does not charge. No migration.
+Signatures and behavior are under "Shipped in Pass 7" in `PLAN_BILLING_V1_1_EXECUTION.md`.
+
+Next up once it merges: the **technician payment-collection UI relabel** - its own pass, per the
+constraints below (`POST /api/payments` already accepts a technician under `TAKE_PAYMENT_FIELD` and
+records the collector; the ticket now shows what is due, so the collect action has a number to sit
+next to). Then **Pass 8 — `feature/phase-1-audit-log-backfill`** (D7 remainder).
 
 Full ordered plan, impact analysis, conflict resolutions, and per-pass verification steps live in
 `PLAN_BILLING_V1_1_EXECUTION.md` — read it before starting a pass, and update its "Pass status" table
