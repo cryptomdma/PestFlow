@@ -24,14 +24,17 @@ grounded in what the code and data actually do, not what the decision record ass
 | 5 | `feature/phase-1-finalize-invoice-wiring` | D2 | Done (PR #61) |
 | 5.5 | `feature/phase-1-initial-charge-to-agreement` | D4 (owner correction) | Done (PR #62) |
 | 6 | `feature/phase-1-payments-lite` | D5, D4 | Done (PR #63) |
-| 7 | `feature/phase-1-coa-and-field-display` | D6 | Pushed, awaiting merge |
+| 7 | `feature/phase-1-coa-and-field-display` | D6 | Done (PR #64) |
+| 7.5 | `feature/phase-1-tech-collect-relabel` | D8 (post-ticket sequence relabel) | Pushed, awaiting merge |
 | 8 | `feature/phase-1-audit-log-backfill` | D7 (remainder) | Not started |
 | 9 | `feature/phase-1-legacy-billing-frequency-removal` | D9 | Not started |
 
 Pass 3.5 is inserted, not renumbered in: it was not in the original D1-D9 sequence at all, but Pass 3's
 live testing found that `billingPlanId` had no writer anywhere in the client, so every agreement was
 plan-less and the schedule-billed half of the billing engine was unreachable through the app. It is
-numbered 3.5 so passes 4-9 keep the numbers every other document already cites.
+numbered 3.5 so passes 4-9 keep the numbers every other document already cites. Pass 7.5 is inserted
+the same way: D8 named the technician collect / post relabel as its own tech-view pass "after
+payments-lite exists to collect against", and `CURRENT_FOCUS.md` held it out of every numbered pass.
 
 Reordered from the original 7-pass sketch for two reasons: (a) audit infrastructure moves from near-last
 to position 2, so passes 3-8 call the already-built helper as they write new financial mutations instead
@@ -1084,6 +1087,53 @@ Behavior worth knowing before the next passes touch it:
   split is an allotment for display). The technician collect action (next pass; the route exists).
   A per-service "designation" column on the location Services tab. Any change to how a price is set.
   No migration.
+
+**Shipped in Pass 7.5 (D8 post-ticket sequence relabel), for Pass 8 to know about** - nothing new is
+stored and no route changed. The field got its collection step on top of Pass 6's route and Pass 7's
+read; the technician flow is finish → collect → post.
+
+```ts
+// client/src/components/collect-payment-dialog.tsx - the FIELD's dialog. The office's stays record-payment-dialog.tsx.
+export function CollectPaymentDialog({ open, onOpenChange, appointmentId, locationId, designatedAgreementId, onPostTicket?, postingTicket? })
+  // summary: VisitBillingRows over useVisitBillingSummary(appointmentId) - the customer-facing Price / COA / Due today rows and total
+  // form: payment type (MANUAL_PAYMENT_METHODS), amount (defaults once to totals.dueTodayCents when > 0), check number (CHECK) /
+  //       reference (OTHER), memo; "Collected this visit" lists what this dialog recorded
+  // POST /api/payments { locationId, method, amountCents, checkNumber, referenceNumber, memo, designatedAgreementId, applyToInvoiceId: null }
+  // onPostTicket given (ticket flow): footer is Back / "Post Service Ticket". Absent (appointment details): Close.
+export function resolveVisitDesignation(agreementIds): string | null   // exactly one distinct agreement -> it; otherwise undesignated
+
+// client/src/components/service-completion-dialog.tsx: the footer button is "Finish & Collect" and opens the dialog above
+// (designated to service.agreementId, location = appointment.locationId ?? service.locationId). "Post Service Ticket" moved
+// into the collect step and runs the unchanged POST /api/services/:id/complete mutation; success closes both dialogs.
+// client/src/pages/technician-work.tsx: "Collect Payment" under the appointment details' due-today total (TAKE_PAYMENT_FIELD,
+// hidden on a CANCELED visit), designated by resolveVisitDesignation() over the visit's services.
+```
+
+Behavior worth knowing before Pass 8 touches it:
+- **The field records, the office applies.** The dialog never sends `applyToInvoiceId`; a technician
+  who sends one anyway gets the route's 403. Every collection posts `PENDING` with
+  `collectedByUserId` / `collectedByLabel` from the session - the recorded collection event D4 says
+  credit must key off. Confirmation is untouched: a technician cannot confirm at all, support cannot
+  confirm cash (`CONFIRM_CASH_PAYMENT` is manager+), a manager can. All verified live.
+- **What the summary does after a collection.** Before the visit is invoiced the recorded money is
+  undesignated or designated to a visit agreement, so the next read shows it as "COA available" and
+  due today drops (verified: a $75 COD visit, $75 cash collected → due today $0, line price and tax
+  untouched, D6). Once the visit is invoiced the summary reads applications only, so an unapplied
+  field collection does not move its figures - that is why the dialog's "Collected this visit" block
+  lists what it recorded, so the technician sees the collection took; the office applies it from the
+  Invoices tab or the D4 prompt. Money designated to a different agreement is never offered to the
+  visit (Pass 7's rule, re-verified with a check designated to Unit 15 Ledger Test).
+- **Amount defaults once**, to due today when it is above zero and the summary has arrived, and is
+  cleared after each recording - a split (cash and a check) is two recordings, and a repeat is never
+  pre-filled. "Nothing collected" is allowed: Post Service Ticket is always available, with a line
+  saying the office bills the balance. A service that is not on an appointment gets no summary and a
+  typed amount at the service's location.
+- **Labels are D8's.** "Finish & Collect" / "Post Service Ticket"; nothing on the technician side says
+  "Complete" - office finalization owns that word. The three call sites of the ticket dialog (technician
+  work, location Services tab, schedule) all get the same flow; the office's `RecordPaymentDialog`
+  (Invoices screen, location ledger panel) is untouched.
+- **Not built, deliberately.** Card / ACH (Phase 2). Signatures and a printable customer copy (D8 names
+  them "future"). A required check number. Applying from the field. No migration.
 
 **Design note carried into Pass 4** - resolved there: D3's "flags the linked ticket(s) for review" had
 no existing "flagged" concept in the schema. Pass 4 extended `serviceRecords.ticketStatus` with

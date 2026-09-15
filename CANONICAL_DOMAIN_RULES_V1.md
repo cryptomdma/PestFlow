@@ -857,6 +857,8 @@ Technician route view is day-driven and should support compact date navigation s
 
 Technician route view supports Time In / Time Out on the Appointment. Service Time Tracking Mode in Settings controls whether ticket posting automatically times out, prompts the technician, or requires manual time out.
 
+The post-ticket sequence is **finish → collect → post** (PLAN_BILLING_V1.1 D8). The technician finishes the ticket, is shown the customer-facing Price / COA / Due today summary for the visit (§13, D6), records what was collected as a `PENDING`, **unapplied** Payment at the Location with the collector stamped from the session (§14; designation to the Agreement is intent, never application), and then posts. The field never applies money to an Invoice and never confirms cash; the office does both. Neither button says "complete" — office finalization owns that word ("Finish & Collect" / "Post Service Ticket").
+
 Target pests are Settings-managed reference data for internal treatment context on the Service Ticket. They are not the same as warranted pests or customer-facing warranty language, which are future contract/terms concepts.
 
 For non-agreement Services, technicians may adjust service type and price as a staged field workflow for evaluations, upgrades, or one-time scope changes. Agreement-generated Services should keep service type and price locked in the technician ticket flow.

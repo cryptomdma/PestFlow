@@ -10,11 +10,14 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { ServiceCompletionDialog } from "@/components/service-completion-dialog";
+import { CollectPaymentDialog, resolveVisitDesignation } from "@/components/collect-payment-dialog";
 import { DraftInvoiceVoidPrompt, getDraftInvoiceDecisionRequired, type DraftInvoiceRef } from "@/components/draft-invoice-void-prompt";
 import { ServiceBillingBlock, VisitDueTodayTotal, describeBillingSource, useVisitBillingSummary } from "@/components/visit-billing-summary";
 import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/hooks/use-auth";
 import { apiRequest, getApiErrorMessage, queryClient } from "@/lib/queryClient";
-import { AlertTriangle, CalendarDays, CheckCircle2, ClipboardList, Clock3, MapPin, Navigation } from "lucide-react";
+import { can, PERMISSIONS } from "@shared/permissions";
+import { AlertTriangle, Banknote, CalendarDays, CheckCircle2, ClipboardList, Clock3, MapPin, Navigation } from "lucide-react";
 import type { Appointment, Customer, Location, Service, ServiceRecord, ServiceType, Technician } from "@shared/schema";
 
 interface TechnicianWorkService {
@@ -92,7 +95,12 @@ export default function TechnicianWork() {
   const [cancelReason, setCancelReason] = useState("");
   const [cancelNotes, setCancelNotes] = useState("");
   const [draftPrompt, setDraftPrompt] = useState<DraftInvoiceRef[] | null>(null);
+  // D8: collect on the visit outside the ticket flow (the customer pays
+  // after the ticket is posted, or before it is started).
+  const [collectOpen, setCollectOpen] = useState(false);
   const { toast } = useToast();
+  const { user } = useAuth();
+  const canCollect = can(user?.role ?? "", PERMISSIONS.TAKE_PAYMENT_FIELD);
 
   const { data: technicians, isLoading: techniciansLoading } = useQuery<Technician[]>({ queryKey: ["/api/technicians?includeInactive=true"] });
   const { data: serviceTypes } = useQuery<ServiceType[]>({ queryKey: ["/api/service-types"] });
@@ -105,6 +113,12 @@ export default function TechnicianWork() {
   // D6: Price / COA / Due today per service and the visit's due-today sum,
   // server-resolved. Refetched by refreshWork's ["/api/appointments"] prefix.
   const { data: detailBilling, isLoading: detailBillingLoading, isError: detailBillingError } = useVisitBillingSummary(detailVisit?.appointment.id);
+  const collectLocationId = detailVisit?.appointment.locationId ?? detailVisit?.location?.id ?? detailVisit?.services[0]?.service.locationId ?? null;
+  const collectDesignation = resolveVisitDesignation((detailVisit?.services ?? []).map(({ service }) => service.agreementId));
+  const closeDetail = () => {
+    setCollectOpen(false);
+    setDetailVisit(null);
+  };
 
   const activeTechnicians = useMemo(() => (technicians ?? []).filter((technician) => technician.status === "ACTIVE"), [technicians]);
   const serviceTypeNameById = useMemo(() => new Map((serviceTypes ?? []).map((serviceType) => [serviceType.id, serviceType.name])), [serviceTypes]);
@@ -262,7 +276,7 @@ export default function TechnicianWork() {
         </div>
       )}
 
-      <Dialog open={!!detailVisit} onOpenChange={(open) => !open && setDetailVisit(null)}>
+      <Dialog open={!!detailVisit} onOpenChange={(open) => !open && closeDetail()}>
         <DialogContent className="max-h-[92vh] overflow-y-auto sm:max-w-2xl">
           <DialogHeader><DialogTitle>Appointment Details</DialogTitle></DialogHeader>
           {detailVisit && (
@@ -379,6 +393,11 @@ export default function TechnicianWork() {
                     <p className="text-xs text-muted-foreground">{describeBillingSource(detailBilling)}</p>
                   </>
                 )}
+                {canCollect && collectLocationId && detailVisit.appointment.status !== "CANCELED" && (
+                  <Button type="button" variant="outline" className="h-11 w-full" onClick={() => setCollectOpen(true)} data-testid="button-collect-payment">
+                    <Banknote className="mr-1 h-4 w-4" /> Collect Payment
+                  </Button>
+                )}
               </div>
               <div className="rounded-lg border border-dashed p-3 text-sm text-muted-foreground">
                 Street View and service device visibility are staged here for a later mapping/device-tracking pass.
@@ -444,6 +463,16 @@ export default function TechnicianWork() {
         onDecide={(voidDraftInvoices) => cancelRescheduleMutation.mutate(voidDraftInvoices)}
         onBack={() => setDraftPrompt(null)}
       />
+
+      {detailVisit && collectLocationId && (
+        <CollectPaymentDialog
+          open={collectOpen}
+          onOpenChange={setCollectOpen}
+          appointmentId={detailVisit.appointment.id}
+          locationId={collectLocationId}
+          designatedAgreementId={collectDesignation}
+        />
+      )}
 
       <ServiceCompletionDialog
         open={!!completionContext}
