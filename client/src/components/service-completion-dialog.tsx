@@ -11,6 +11,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { dollarsToCents, centsToDollarString, formatCents } from "@shared/money";
+import { ServiceBillingBlock, useVisitBillingSummary } from "@/components/visit-billing-summary";
 import { can, PERMISSIONS } from "@shared/permissions";
 import { computeProductionValueCents } from "@shared/production-value";
 import type { Agreement, Appointment, MaterialProduct, ProductApplication, Service, ServiceRecord, ServiceType, TargetPest, Technician } from "@shared/schema";
@@ -189,6 +190,12 @@ export function ServiceCompletionDialog({
     queryKey: [`/api/agreements/${service?.agreementId}`],
     enabled: !!service?.agreementId,
   });
+  // D6: what this service bills and what is due today, resolved by the
+  // server through the same code that prices the visit invoice - not from
+  // the agreement row above, which cannot say whether its plan covers the visit.
+  const visitAppointmentId = appointment?.id ?? service?.appointmentId ?? null;
+  const { data: visitBilling, isLoading: visitBillingLoading, isError: visitBillingError } = useVisitBillingSummary(open ? visitAppointmentId : null);
+  const serviceBilling = visitBilling?.services.find((line) => line.serviceId === service?.id) ?? null;
 
   const serviceTypeName = useMemo(() => {
     return serviceTypes?.find((serviceType) => serviceType.id === ticketServiceTypeId || serviceType.id === service?.serviceTypeId)?.name ?? "Service";
@@ -423,6 +430,13 @@ export function ServiceCompletionDialog({
                 </div>
                 <Badge variant="outline">Office review pending after post</Badge>
               </div>
+              <div className="mt-3 border-t pt-3">
+                {visitAppointmentId ? (
+                  <ServiceBillingBlock summary={visitBilling} serviceId={service.id} isLoading={visitBillingLoading} isError={visitBillingError} />
+                ) : (
+                  <p className="text-xs text-muted-foreground">Not on an appointment - billing is resolved once the visit is scheduled.</p>
+                )}
+              </div>
             </div>
 
             <div className="grid gap-4 sm:grid-cols-2">
@@ -459,6 +473,9 @@ export function ServiceCompletionDialog({
                   <Input type="number" min="0" step="0.01" value={ticketPrice} onChange={(event) => setTicketPrice(event.target.value)} />
                 ) : (
                   <div className="rounded-md border bg-muted/20 px-3 py-2 text-sm">{displayPriceCents != null ? formatCents(displayPriceCents) : "Not set"} <span className="text-xs text-muted-foreground">(agreement locked)</span></div>
+                )}
+                {serviceBilling?.designation === "PRODUCTION" && (
+                  <p className="text-xs text-muted-foreground">Agreement-covered: not billed on this visit. The default shown is the visit's production value.</p>
                 )}
               </div>
             </div>

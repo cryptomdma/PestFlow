@@ -70,6 +70,13 @@ import { can, PERMISSIONS, type UserRole } from "@shared/permissions";
 import { computeProductionValueCents } from "@shared/production-value";
 import { formatCents } from "@shared/money";
 import { isScheduleBilledPlan } from "@shared/billing-plan";
+import { addDays, advanceAgreementDate, computeExpectedServiceCount } from "@shared/agreement-schedule";
+// Transitional re-export (Pass 7): the calendar arithmetic moved to
+// shared/agreement-schedule.ts so the client's billing-plan pill and the
+// nightly run compute a per-period amount the same way. server/jobs/billing-run.ts
+// and server/production-value-backfill.ts still import it from here.
+export { advanceAgreementDate, computeExpectedServiceCount };
+import type { VisitBillingSummary, VisitServiceBilling } from "@shared/visit-billing";
 import {
   formatInitialChargeType,
   initialChargeFromTemplate,
@@ -635,6 +642,8 @@ export interface IStorage {
   timeInAppointment(id: string): Promise<Appointment | undefined>;
   timeOutAppointment(id: string): Promise<Appointment | undefined>;
   getTechnicianWork(technicianId: string, date: string): Promise<TechnicianWorkVisit[]>;
+  // D6: Price / COA applied / Due today for one visit, per service and summed.
+  getVisitBillingSummary(appointmentId: string): Promise<VisitBillingSummary | undefined>;
 
   getServiceRecords(): Promise<ServiceRecord[]>;
   getServiceRecordsByLocation(locationId: string): Promise<ServiceRecord[]>;
@@ -804,51 +813,10 @@ function normalizeAppointmentCancelReasons(value: string | null | undefined): st
   return DEFAULT_APPOINTMENT_CANCEL_REASONS;
 }
 
-function addDays(dateOnly: string, days: number) {
-  const next = new Date(`${dateOnly}T00:00:00.000Z`);
-  next.setUTCDate(next.getUTCDate() + days);
-  return next.toISOString().slice(0, 10);
-}
-
-function addMonths(dateOnly: string, months: number) {
-  const next = new Date(`${dateOnly}T00:00:00.000Z`);
-  next.setUTCMonth(next.getUTCMonth() + months);
-  return next.toISOString().slice(0, 10);
-}
-
-// Exported so server/jobs/billing-run.ts can step a billing cadence with
-// the exact same calendar arithmetic used for service generation and
-// expectedServiceCount, rather than a second, potentially-diverging
-// implementation.
-//
-// Two vocabularies feed this. Service recurrence (agreements.recurrenceUnit)
-// offers MONTH | QUARTER | YEAR | CUSTOM. Billing cadence
-// (billingPlans.intervalUnit) offers DAY | WEEK | MONTH | QUARTER | YEAR - a
-// superset. DAY and WEEK had no case here and fell through to `default`,
-// silently advancing by a MONTH: a daily plan on a one-year term billed 12
-// periods instead of 365, so computeExpectedServiceCount() divided the
-// contract price by 12 and every charge was ~30x the correct amount. That was
-// unreachable until agreements could carry a plan at all, which is why it
-// surfaces with this pass rather than with the billing run that introduced it.
-export function advanceAgreementDate(dateOnly: string, recurrenceUnit: string, recurrenceInterval: number) {
-  const step = Math.max(recurrenceInterval || 1, 1);
-
-  switch (recurrenceUnit) {
-    case "DAY":
-      return addDays(dateOnly, step);
-    case "WEEK":
-      return addDays(dateOnly, step * 7);
-    case "QUARTER":
-      return addMonths(dateOnly, step * 3);
-    case "YEAR":
-      return addMonths(dateOnly, step * 12);
-    case "CUSTOM":
-      return addDays(dateOnly, step);
-    case "MONTH":
-    default:
-      return addMonths(dateOnly, step);
-  }
-}
+// addDays / advanceAgreementDate / computeExpectedServiceCount moved to
+// shared/agreement-schedule.ts in Pass 7 (imported and re-exported at the
+// top of this file) so the client's billing-plan pill and the nightly run
+// share one calendar arithmetic.
 
 function computeDueDateFromInvoiceTerms(invoiceTerms: string | null): Date | null {
   const days: Record<string, number> = {
@@ -868,32 +836,6 @@ function addDaysToDate(date: Date, days: number): Date {
   const next = new Date(date);
   next.setUTCDate(next.getUTCDate() + days);
   return next;
-}
-
-// How many times generateServiceForAgreement would actually fire between
-// startDate and the term end, at the given recurrence cadence. Reuses
-// advanceAgreementDate for both so this count always matches the real
-// generation cadence, including its MONTH/QUARTER/YEAR calendar-month
-// arithmetic (not a fixed-days approximation). Exported so it can also run
-// as a one-time backfill for agreements created before expectedServiceCount
-// existed - see server/production-value-backfill.ts.
-export function computeExpectedServiceCount(
-  startDate: string,
-  termUnit: string,
-  termInterval: number,
-  recurrenceUnit: string,
-  recurrenceInterval: number,
-): number {
-  const termEndDate = advanceAgreementDate(startDate, termUnit, Math.max(termInterval || 1, 1));
-
-  let count = 0;
-  let cursor = startDate;
-  while (cursor < termEndDate) {
-    count += 1;
-    cursor = advanceAgreementDate(cursor, recurrenceUnit, recurrenceInterval);
-  }
-
-  return Math.max(count, 1);
 }
 
 function resolveAgreementStartDateFromValues(
@@ -4575,6 +4517,193 @@ export class DatabaseStorage implements IStorage {
     return rows;
   }
 
+  // PLAN_BILLING_V1_1.md D6 - what the field sees about money on a visit:
+  // Price / COA applied / Due today per service, BILLABLE vs PRODUCTION, and
+  // the sum of due-today amounts for appointment details. Read-only.
+  //
+  // Two sources, never mixed. Once the visit's invoice is ISSUED its lines
+  // and applications are the facts, allotted to services in invoice order so
+  // the per-service figures sum to the invoice's. Before that (no invoice, or
+  // a DRAFT) every service is priced through resolveServiceLineBillingTx and
+  // the tax engine - the same calls generation will make - and "COA" is what
+  // the location's unapplied pool could cover at invoicing, in D4's order.
+  // The client renders this and derives nothing from agreementId itself; a
+  // client-side guess is how a ticket says "covered" for COD agreement work.
+  //
+  // COA is payment application. Nothing here touches a price: priceCents is
+  // the line amount, and the COA figures only reduce what is left to collect.
+  async getVisitBillingSummary(appointmentId: string): Promise<VisitBillingSummary | undefined> {
+    const group = await this.getAppointmentBillingGroupTx(db as any, appointmentId);
+    if (!group) {
+      return undefined;
+    }
+    const { appointment, services: visitServices, records } = group;
+    const recordByServiceId = new Map(records.filter((record) => record.serviceId).map((record) => [record.serviceId!, record]));
+    const serviceTypeIds = Array.from(new Set(visitServices.map((service) => service.serviceTypeId).filter((id): id is string => !!id)));
+    const serviceTypeRows = serviceTypeIds.length
+      ? await db.select().from(serviceTypes).where(and(eq(serviceTypes.orgId, this.orgId), inArray(serviceTypes.id, serviceTypeIds)))
+      : [];
+    const serviceTypeNameById = new Map(serviceTypeRows.map((serviceType) => [serviceType.id, serviceType.name]));
+    const locationId = appointment.locationId ?? null;
+
+    const invoice = await this.findInvoiceForVisitTx(db as any, appointment.id, records.map((record) => record.id));
+    const invoiced = !!invoice && isInvoiceIssued(invoice.status);
+
+    const baseLine = (service: Service): Pick<VisitServiceBilling, "serviceId" | "serviceRecordId" | "serviceTypeName" | "agreementId"> => ({
+      serviceId: service.id,
+      serviceRecordId: recordByServiceId.get(service.id)?.id ?? null,
+      serviceTypeName: serviceTypeNameById.get(service.serviceTypeId ?? "") ?? "Service",
+      agreementId: service.agreementId ?? null,
+    });
+    const unresolved = (service: Service, note: string): VisitServiceBilling => ({
+      ...baseLine(service),
+      designation: "BILLABLE",
+      priceCents: null,
+      taxCents: 0,
+      coaAppliedCents: 0,
+      coaAvailableCents: 0,
+      dueTodayCents: null,
+      note,
+    });
+
+    const lines: VisitServiceBilling[] = [];
+    let coaPendingCents = 0;
+
+    if (invoice && invoiced) {
+      const lineItems = await db
+        .select()
+        .from(invoiceLineItems)
+        .where(and(eq(invoiceLineItems.orgId, this.orgId), eq(invoiceLineItems.invoiceId, invoice.id)))
+        .orderBy(asc(invoiceLineItems.sortOrder));
+      const sums = await this.sumInvoiceApplicationsTx(db as unknown as DbTransaction, invoice.id);
+      coaPendingCents = sums.pendingCents;
+
+      // Applications are against the invoice, not a line. Allot them in line
+      // order across EVERY line (so the sum still equals the invoice's) and
+      // then read each service's line; a pending payment counts here because
+      // a check the office has not cleared is still not money to collect twice.
+      let remainingAppliedCents = sums.allCents;
+      const appliedByLineId = new Map<string, number>();
+      for (const line of lineItems) {
+        const grossCents = line.amountCents + line.taxCents;
+        const take = Math.max(Math.min(grossCents, remainingAppliedCents), 0);
+        appliedByLineId.set(line.id, take);
+        remainingAppliedCents -= take;
+      }
+
+      for (const service of visitServices) {
+        const record = recordByServiceId.get(service.id);
+        const line = lineItems.find((item) => item.serviceId === service.id)
+          ?? (record ? lineItems.find((item) => item.serviceRecordId === record.id) : undefined);
+        if (!line) {
+          // A service that joined the visit after it was invoiced (its ticket
+          // is FLAGGED_FOR_REVIEW, Pass 4). Its price is unknown here, not $0.
+          lines.push(unresolved(service, `Not on invoice ${invoice.invoiceNumber} - flagged for office review`));
+          continue;
+        }
+        const appliedCents = appliedByLineId.get(line.id) ?? 0;
+        const noteMatch = /\(([^()]*)\)\s*$/.exec(line.description);
+        lines.push({
+          ...baseLine(service),
+          designation: line.lineType === "AGREEMENT_COVERED" ? "PRODUCTION" : "BILLABLE",
+          priceCents: line.amountCents,
+          taxCents: line.taxCents,
+          coaAppliedCents: appliedCents,
+          coaAvailableCents: 0,
+          dueTodayCents: Math.max(line.amountCents + line.taxCents - appliedCents, 0),
+          note: noteMatch?.[1] ?? null,
+        });
+      }
+    } else {
+      const agreementIds = visitServices.map((service) => service.agreementId).filter((id): id is string => !!id);
+      const agreementContextById = await this.resolveAgreementBillingContextTx(db as any, agreementIds);
+      const [location] = locationId
+        ? await db.select().from(locations).where(and(eq(locations.orgId, this.orgId), eq(locations.id, locationId)))
+        : [undefined];
+      const accountId = location?.accountId ?? null;
+
+      for (const service of visitServices) {
+        const record = recordByServiceId.get(service.id);
+        try {
+          const billing = await this.resolveServiceLineBillingTx(db as any, {
+            record,
+            service,
+            agreementContext: service.agreementId ? agreementContextById.get(service.agreementId) : undefined,
+          });
+          const taxCents = billing.lineType === "AGREEMENT_COVERED"
+            ? 0
+            : (await this.resolveTaxDecision(db as any, {
+              accountId,
+              locationId: record?.locationId ?? service.locationId ?? locationId,
+              serviceTypeId: record?.serviceTypeId ?? service.serviceTypeId ?? null,
+              amountCents: billing.amountCents,
+            })).taxCents;
+          lines.push({
+            ...baseLine(service),
+            designation: billing.lineType === "AGREEMENT_COVERED" ? "PRODUCTION" : "BILLABLE",
+            priceCents: billing.amountCents,
+            taxCents,
+            coaAppliedCents: 0,
+            coaAvailableCents: 0,
+            dueTodayCents: billing.amountCents + taxCents,
+            note: billing.coverageNote,
+          });
+        } catch (err: any) {
+          // Show the service that generation will refuse, with its reason,
+          // rather than a $0 the technician would read as "nothing to collect".
+          lines.push(unresolved(service, err?.message ?? "Cannot be billed"));
+        }
+      }
+
+      // What the location already holds that this visit could draw on when it
+      // is invoiced - D4's order, D4's eligibility (money designated to another
+      // agreement is never offered), capped at what the visit would owe.
+      if (locationId) {
+        const { eligible } = await this.orderSourcesForAgreementsTx(db, locationId, new Set(agreementIds));
+        let poolCents = eligible.reduce((sum, source) => sum + source.unappliedCents, 0);
+        for (const line of lines) {
+          if (line.priceCents == null || poolCents <= 0) continue;
+          const grossCents = line.priceCents + line.taxCents;
+          const take = Math.min(grossCents, poolCents);
+          line.coaAvailableCents = take;
+          line.dueTodayCents = grossCents - take;
+          poolCents -= take;
+        }
+      }
+    }
+
+    const totals = lines.reduce(
+      (acc, line) => ({
+        priceCents: acc.priceCents + (line.priceCents ?? 0),
+        taxCents: acc.taxCents + line.taxCents,
+        coaAppliedCents: acc.coaAppliedCents + line.coaAppliedCents,
+        coaPendingCents,
+        coaAvailableCents: acc.coaAvailableCents + line.coaAvailableCents,
+        dueTodayCents: acc.dueTodayCents + (line.dueTodayCents ?? 0),
+        unresolvedCount: acc.unresolvedCount + (line.priceCents == null ? 1 : 0),
+      }),
+      { priceCents: 0, taxCents: 0, coaAppliedCents: 0, coaPendingCents, coaAvailableCents: 0, dueTodayCents: 0, unresolvedCount: 0 },
+    );
+
+    return {
+      appointmentId: appointment.id,
+      locationId,
+      invoice: invoice
+        ? {
+          id: invoice.id,
+          invoiceNumber: invoice.invoiceNumber,
+          status: invoice.status,
+          totalAmountCents: invoice.totalAmountCents,
+          amountPaidCents: invoice.amountPaidCents,
+          balanceDueCents: invoice.balanceDueCents,
+        }
+        : null,
+      invoiced,
+      services: lines,
+      totals,
+    };
+  }
+
   // Idempotent by construction (PLAN_BILLING_V1.md §1.6.1): reuses
   // generateInvoiceFromServiceRecord's own pre-check + unique-index catch
   // for every anchor, so running this twice over the same date range
@@ -6842,7 +6971,19 @@ export class DatabaseStorage implements IStorage {
       return { eligible: [], designatedElsewhereCents: 0 };
     }
     const agreementIds = await this.invoiceAgreementIdsTx(reader, invoice.id);
-    const sources = await this.unappliedSourcesForLocationTx(reader, invoice.locationId);
+    return this.orderSourcesForAgreementsTx(reader, invoice.locationId, agreementIds);
+  }
+
+  // The same ordering keyed on the agreements a not-yet-invoiced visit is
+  // for, so the field's "COA available" (getVisitBillingSummary, D6) draws
+  // the pool in exactly the order the D4 prompt will when the visit is
+  // invoiced - one rule, not a field approximation of it.
+  private async orderSourcesForAgreementsTx(
+    reader: Pick<typeof db, "select">,
+    locationId: string,
+    agreementIds: Set<string>,
+  ): Promise<{ eligible: Array<UnappliedSource & { locationId: string }>; designatedElsewhereCents: number }> {
+    const sources = await this.unappliedSourcesForLocationTx(reader, locationId);
     let designatedElsewhereCents = 0;
     const eligible = sources.filter((source) => {
       if (!source.designatedAgreementId || agreementIds.has(source.designatedAgreementId)) {

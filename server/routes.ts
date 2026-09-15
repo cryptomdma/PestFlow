@@ -1527,6 +1527,16 @@ export async function registerRoutes(
     res.json(data);
   });
 
+  // D6: Price / COA applied / Due today for one visit, per service and summed,
+  // with each service's BILLABLE vs PRODUCTION designation - resolved server-
+  // side through the same code that prices the visit invoice. A read like
+  // every other read; the technician's ticket and the dispatch board both use it.
+  app.get("/api/appointments/:id/billing-summary", async (req, res) => {
+    const data = await req.storage.getVisitBillingSummary(req.params.id);
+    if (!data) return res.status(404).json({ message: "Appointment not found" });
+    res.json(data);
+  });
+
   app.post("/api/appointments", async (req, res) => {
     try {
       const validated = appointmentSchema.parse(req.body);

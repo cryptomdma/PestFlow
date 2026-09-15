@@ -8,6 +8,11 @@
 // why this predicate lives in one shared function instead of being spelled out
 // at both call sites.
 
+import { computeExpectedServiceCount } from "./agreement-schedule";
+import { initialChargeSkipsFirstPeriod, resolveRemainingContractPriceCents, type InitialChargeFields } from "./initial-charge";
+import { computeProductionValueCents } from "./production-value";
+import { formatCentsCompact } from "./money";
+
 export interface ScheduleBilledPlanFields {
   chargeTrigger: string;
   billingMode: string;
@@ -76,4 +81,122 @@ export function describeBillingPlanBehavior(plan: BillingPlanBehaviorFields | nu
   }
 
   return "Each visit is billed on its own invoice (COD) - the service's own price, or the contract price divided by expected visits. To bill the whole agreement up front instead, choose a Prepaid Term plan.";
+}
+
+/** What resolveBillingPlanCharge reads from a plan: the predicate's fields, the cadence, and the first-period flag. A live BillingPlan row satisfies it. */
+export interface BillingPlanChargeFields extends BillingPlanBehaviorFields {
+  name: string;
+  initialChargeCoversFirstPeriod: boolean;
+}
+
+/** What it reads from the agreement: the contract price, the initial charge that counts against it, and the term the periods fit in. An Agreement row satisfies it. */
+export interface AgreementChargeFields extends InitialChargeFields {
+  priceCents: number | null;
+  startDate: string;
+  termUnit: string;
+  termInterval: number;
+  expectedServiceCount: number | null;
+}
+
+export type BillingPlanCharge =
+  | { kind: "PER_PERIOD"; amountCents: number | null; periods: number; intervalUnit: string; intervalCount: number }
+  | { kind: "ONCE"; amountCents: number | null }
+  | { kind: "PER_VISIT"; amountCents: number | null };
+
+/**
+ * How much this plan charges this agreement, and how often. This IS the
+ * nightly run's arithmetic - server/jobs/billing-run.ts takes its amount from
+ * here - shared so the agreement card's pill (PLAN_BILLING_V1_1.md D6,
+ * "Monthly - $50") shows the number the run will actually bill, never a
+ * client-side approximation of it.
+ *
+ * - PER_PERIOD (RECURRING_INTERVAL on schedule): the contract price REMAINING
+ *   after the initial charge (D4: a down payment counts toward the price),
+ *   spread over the term's billing periods - one fewer when the plan says the
+ *   up-front money buys period 1 (initialChargeSkipsFirstPeriod).
+ * - ONCE (PREPAID_TERM): the remaining price, billed once at start.
+ * - PER_VISIT (every other plan, and no plan): the visit is the billing event,
+ *   at remaining price / expected visits - resolveServiceLineBillingTx's own
+ *   fallback when the service carries no price. A price stamped on a
+ *   particular service overrides this on that visit; the pill shows the default.
+ *
+ * amountCents is null when there is no contract price to bill from.
+ */
+export function resolveBillingPlanCharge(
+  plan: BillingPlanChargeFields | null | undefined,
+  agreement: AgreementChargeFields,
+): BillingPlanCharge {
+  const remainingCents = resolveRemainingContractPriceCents(agreement, agreement.priceCents);
+
+  if (!plan || !isScheduleBilledPlan(plan)) {
+    return { kind: "PER_VISIT", amountCents: computeProductionValueCents(remainingCents, agreement.expectedServiceCount) };
+  }
+
+  if (plan.billingMode === "PREPAID_TERM") {
+    return { kind: "ONCE", amountCents: remainingCents };
+  }
+
+  const intervalUnit = plan.intervalUnit ?? "MONTH";
+  const intervalCount = plan.intervalCount ?? 1;
+  const expectedBillingCount = computeExpectedServiceCount(agreement.startDate, agreement.termUnit, agreement.termInterval, intervalUnit, intervalCount);
+  const periods = Math.max(expectedBillingCount - (initialChargeSkipsFirstPeriod(plan, agreement) ? 1 : 0), 1);
+  return {
+    kind: "PER_PERIOD",
+    amountCents: remainingCents == null ? null : Math.round(remainingCents / periods),
+    periods,
+    intervalUnit,
+    intervalCount,
+  };
+}
+
+const CADENCE_ABBREVIATIONS: Record<string, string> = {
+  DAY: "day",
+  WEEK: "wk",
+  MONTH: "mo",
+  QUARTER: "qtr",
+  YEAR: "yr",
+};
+
+function cadenceSuffix(intervalUnit: string, intervalCount: number): string {
+  const unit = CADENCE_ABBREVIATIONS[intervalUnit] ?? intervalUnit.toLowerCase();
+  return intervalCount === 1 ? `/${unit}` : `/${intervalCount} ${unit}`;
+}
+
+export interface BillingPlanPill {
+  /** "Monthly - $50/mo", "Prepaid Term - $400 once", "COD - $75/visit", "No billing plan - $75/visit". */
+  label: string;
+  /** The full behavior sentence, for a tooltip. */
+  title: string;
+}
+
+/**
+ * D6's billing-plan pill: plan name + periodic amount, on the agreement card
+ * and the location screen. Plans attach to AGREEMENTS - a customer or a
+ * location is never "monthly" or "COD" as a whole, which is why this takes an
+ * agreement and not a location. A plan-less agreement gets an honest pill
+ * too: it bills at each visit today, and D9 will make a plan required.
+ */
+export function describeBillingPlanPill(
+  plan: BillingPlanChargeFields | null | undefined,
+  agreement: AgreementChargeFields,
+): BillingPlanPill {
+  const charge = resolveBillingPlanCharge(plan, agreement);
+  const name = plan?.name ?? "No billing plan";
+  const title = describeBillingPlanBehavior(plan);
+  if (charge.amountCents == null) {
+    return { label: `${name} · price not set`, title };
+  }
+  const amount = formatCentsCompact(charge.amountCents);
+  switch (charge.kind) {
+    case "PER_PERIOD":
+      return {
+        label: `${name} · ${amount}${cadenceSuffix(charge.intervalUnit, charge.intervalCount)}`,
+        title: `${title} ${charge.periods} billing period${charge.periods === 1 ? "" : "s"} in the term.`,
+      };
+    case "ONCE":
+      return { label: `${name} · ${amount} once`, title };
+    case "PER_VISIT":
+    default:
+      return { label: `${name} · ${amount}/visit`, title };
+  }
 }

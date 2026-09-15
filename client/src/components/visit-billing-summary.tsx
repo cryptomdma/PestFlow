@@ -1,0 +1,182 @@
+import { useQuery } from "@tanstack/react-query";
+import { Badge } from "@/components/ui/badge";
+import { cn } from "@/lib/utils";
+import { formatCents } from "@shared/money";
+import {
+  describeServiceDesignation,
+  formatServiceDesignation,
+  type ServiceBillingDesignation,
+  type VisitBillingSummary,
+  type VisitServiceBilling,
+} from "@shared/visit-billing";
+
+// PLAN_BILLING_V1_1.md D6 - the field's view of money on a visit: Price /
+// COA applied / Due today per service, BILLABLE vs PRODUCTION, and the sum of
+// due-today amounts for appointment details. Everything rendered here comes
+// from GET /api/appointments/:id/billing-summary, which prices the visit
+// through the same resolver invoicing uses. Nothing in this file derives
+// coverage or an amount from agreementId or a plan - that is the drift the
+// server-side resolver exists to prevent.
+
+export function visitBillingSummaryQueryKey(appointmentId: string) {
+  return ["/api/appointments", appointmentId, "billing-summary"] as const;
+}
+
+export function useVisitBillingSummary(appointmentId: string | null | undefined) {
+  return useQuery<VisitBillingSummary>({
+    queryKey: visitBillingSummaryQueryKey(appointmentId ?? ""),
+    enabled: !!appointmentId,
+  });
+}
+
+export function ServiceDesignationBadge({ designation, className }: { designation: ServiceBillingDesignation; className?: string }) {
+  return (
+    <Badge
+      variant="outline"
+      className={cn(
+        designation === "PRODUCTION" ? "border-primary/30 bg-primary/10 text-primary" : "border-chart-3/40 bg-chart-3/10 text-chart-3",
+        className,
+      )}
+      title={describeServiceDesignation(designation)}
+      data-testid={`badge-service-designation-${designation.toLowerCase()}`}
+    >
+      {formatServiceDesignation(designation)}
+    </Badge>
+  );
+}
+
+// "Applied" is a fact on the invoice's ledger; "available" is what the office
+// will apply when the visit is invoiced (D4: designation is intent,
+// application is fact). The label says which one the number is.
+function coaLabel(invoiced: boolean) {
+  return invoiced ? "COA applied" : "COA available";
+}
+
+/** Price / COA / Due today for one service, as three small figures. */
+export function ServiceBillingFigures({ line, invoiced, className }: { line: VisitServiceBilling; invoiced: boolean; className?: string }) {
+  const coaCents = invoiced ? line.coaAppliedCents : line.coaAvailableCents;
+  return (
+    <dl className={cn("grid grid-cols-3 gap-2 text-xs", className)}>
+      <div>
+        <dt className="text-muted-foreground">Price</dt>
+        <dd className="font-medium" data-testid={`text-service-price-${line.serviceId}`}>
+          {line.priceCents == null ? "Not resolved" : formatCents(line.priceCents)}
+        </dd>
+        {line.taxCents > 0 && <dd className="text-muted-foreground">+ {formatCents(line.taxCents)} tax</dd>}
+      </div>
+      <div>
+        <dt className="text-muted-foreground">{coaLabel(invoiced)}</dt>
+        <dd className="font-medium" data-testid={`text-service-coa-${line.serviceId}`}>{formatCents(coaCents)}</dd>
+      </div>
+      <div>
+        <dt className="text-muted-foreground">Due today</dt>
+        <dd className="font-semibold" data-testid={`text-service-due-today-${line.serviceId}`}>
+          {line.dueTodayCents == null ? "Unknown" : formatCents(line.dueTodayCents)}
+        </dd>
+      </div>
+    </dl>
+  );
+}
+
+/** Where the figures come from, in one sentence, so a technician knows whether they are looking at an invoice or a price. */
+export function describeBillingSource(summary: VisitBillingSummary): string {
+  if (summary.invoiced && summary.invoice) {
+    const pending = summary.totals.coaPendingCents > 0
+      ? ` ${formatCents(summary.totals.coaPendingCents)} of the COA is pending confirmation.`
+      : "";
+    return `From invoice ${summary.invoice.invoiceNumber}.${pending}`;
+  }
+  const draft = summary.invoice ? `Draft ${summary.invoice.invoiceNumber} is re-priced when it is issued. ` : "";
+  const coa = summary.totals.coaAvailableCents > 0
+    ? " COA available is the location's balance the office applies when the visit is invoiced - do not collect it again."
+    : "";
+  return `${draft}Priced as the office will invoice it.${coa}`;
+}
+
+/**
+ * One service's billing on the ticket (full) or in a service list (compact):
+ * designation, the three figures, the refusal reason when there is no price,
+ * and - full only - the source sentence.
+ */
+export function ServiceBillingBlock({
+  summary,
+  serviceId,
+  isLoading,
+  isError,
+  compact = false,
+}: {
+  summary: VisitBillingSummary | undefined;
+  serviceId: string;
+  isLoading: boolean;
+  isError: boolean;
+  compact?: boolean;
+}) {
+  if (isLoading) {
+    return <p className="text-xs text-muted-foreground">Loading billing...</p>;
+  }
+  if (isError || !summary) {
+    return <p className="text-xs text-muted-foreground">Billing is unavailable for this visit right now.</p>;
+  }
+  const line = summary.services.find((item) => item.serviceId === serviceId);
+  if (!line) {
+    return <p className="text-xs text-muted-foreground">This service is not on the visit's billing.</p>;
+  }
+  const noteSuffix = line.priceCents != null && line.note ? ` (${line.note})` : "";
+  return (
+    <div className="space-y-2" data-testid={`block-service-billing-${serviceId}`}>
+      <div className="flex items-center gap-2 flex-wrap">
+        <ServiceDesignationBadge designation={line.designation} />
+        <span className="text-xs text-muted-foreground">{describeServiceDesignation(line.designation)}{noteSuffix}</span>
+      </div>
+      <ServiceBillingFigures line={line} invoiced={summary.invoiced} />
+      {line.priceCents == null && line.note && <p className="text-xs text-destructive">{line.note}</p>}
+      {!compact && <p className="text-xs text-muted-foreground">{describeBillingSource(summary)}</p>}
+    </div>
+  );
+}
+
+/** The one number D6 gives appointment details: the sum of due-today amounts. */
+export function VisitDueTodayTotal({ summary, className }: { summary: VisitBillingSummary; className?: string }) {
+  return (
+    <div className={cn("rounded-md border bg-background px-3 py-2", className)}>
+      <div className="flex items-baseline justify-between gap-3">
+        <span className="text-sm font-medium">Due today</span>
+        <span className="text-base font-semibold" data-testid="text-visit-due-today">{formatCents(summary.totals.dueTodayCents)}</span>
+      </div>
+      {summary.totals.unresolvedCount > 0 && (
+        <p className="mt-1 text-xs text-destructive">
+          {summary.totals.unresolvedCount === 1 ? "1 service" : `${summary.totals.unresolvedCount} services`} could not be priced and {summary.totals.unresolvedCount === 1 ? "is" : "are"} not in this total.
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** A visit's services with their figures, then the due-today total - for surfaces that do not already list the services. */
+export function VisitBillingRows({ summary, isLoading, isError }: { summary: VisitBillingSummary | undefined; isLoading: boolean; isError: boolean }) {
+  if (isLoading) {
+    return <p className="text-xs text-muted-foreground">Loading billing...</p>;
+  }
+  if (isError || !summary) {
+    return <p className="text-xs text-muted-foreground">Billing is unavailable for this visit right now.</p>;
+  }
+  if (!summary.services.length) {
+    return <p className="text-xs text-muted-foreground">No services on this visit.</p>;
+  }
+  return (
+    <div className="space-y-2" data-testid="rows-visit-billing">
+      {summary.services.map((line) => (
+        <div key={line.serviceId} className="rounded-md border bg-background p-2">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-sm font-medium">{line.serviceTypeName}</span>
+            <ServiceDesignationBadge designation={line.designation} />
+          </div>
+          <ServiceBillingFigures line={line} invoiced={summary.invoiced} className="mt-2" />
+          {line.priceCents == null && line.note && <p className="mt-1 text-xs text-destructive">{line.note}</p>}
+        </div>
+      ))}
+      <VisitDueTodayTotal summary={summary} />
+      <p className="text-xs text-muted-foreground">{describeBillingSource(summary)}</p>
+    </div>
+  );
+}

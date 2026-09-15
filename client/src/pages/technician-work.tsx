@@ -11,6 +11,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { ServiceCompletionDialog } from "@/components/service-completion-dialog";
 import { DraftInvoiceVoidPrompt, getDraftInvoiceDecisionRequired, type DraftInvoiceRef } from "@/components/draft-invoice-void-prompt";
+import { ServiceBillingBlock, VisitDueTodayTotal, describeBillingSource, useVisitBillingSummary } from "@/components/visit-billing-summary";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, getApiErrorMessage, queryClient } from "@/lib/queryClient";
 import { AlertTriangle, CalendarDays, CheckCircle2, ClipboardList, Clock3, MapPin, Navigation } from "lucide-react";
@@ -100,6 +101,10 @@ export default function TechnicianWork() {
     queryKey: [`/api/technicians/${selectedTechnicianId}/work?date=${selectedDate}`],
     enabled: !!selectedTechnicianId && !!selectedDate,
   });
+
+  // D6: Price / COA / Due today per service and the visit's due-today sum,
+  // server-resolved. Refetched by refreshWork's ["/api/appointments"] prefix.
+  const { data: detailBilling, isLoading: detailBillingLoading, isError: detailBillingError } = useVisitBillingSummary(detailVisit?.appointment.id);
 
   const activeTechnicians = useMemo(() => (technicians ?? []).filter((technician) => technician.status === "ACTIVE"), [technicians]);
   const serviceTypeNameById = useMemo(() => new Map((serviceTypes ?? []).map((serviceType) => [serviceType.id, serviceType.name])), [serviceTypes]);
@@ -353,6 +358,9 @@ export default function TechnicianWork() {
                           {serviceRecord.notes && <div className="mt-1 whitespace-pre-wrap">{serviceRecord.notes}</div>}
                         </div>
                       )}
+                      <div className="mt-3 rounded-md border bg-background p-2">
+                        <ServiceBillingBlock summary={detailBilling} serviceId={service.id} isLoading={detailBillingLoading} isError={detailBillingError} compact />
+                      </div>
                       <Button
                         type="button"
                         className="mt-3 h-11 w-full"
@@ -365,6 +373,12 @@ export default function TechnicianWork() {
                     </div>
                   );
                 })}
+                {detailBilling && (
+                  <>
+                    <VisitDueTodayTotal summary={detailBilling} />
+                    <p className="text-xs text-muted-foreground">{describeBillingSource(detailBilling)}</p>
+                  </>
+                )}
               </div>
               <div className="rounded-lg border border-dashed p-3 text-sm text-muted-foreground">
                 Street View and service device visibility are staged here for a later mapping/device-tracking pass.
