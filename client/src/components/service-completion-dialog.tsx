@@ -12,6 +12,7 @@ import { useAuth } from "@/hooks/use-auth";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { dollarsToCents, centsToDollarString, formatCents } from "@shared/money";
 import { ServiceBillingBlock, useVisitBillingSummary } from "@/components/visit-billing-summary";
+import { CollectPaymentDialog } from "@/components/collect-payment-dialog";
 import { can, PERMISSIONS } from "@shared/permissions";
 import { computeProductionValueCents } from "@shared/production-value";
 import type { Agreement, Appointment, MaterialProduct, ProductApplication, Service, ServiceRecord, ServiceType, TargetPest, Technician } from "@shared/schema";
@@ -179,6 +180,10 @@ export function ServiceCompletionDialog({
   const [targetPestSearch, setTargetPestSearch] = useState("");
   const [ticketServiceTypeId, setTicketServiceTypeId] = useState("");
   const [ticketPrice, setTicketPrice] = useState("");
+  // D8: finish -> collect -> post. "Finish & Collect" opens the collection
+  // step; "Post Service Ticket" lives there. Office finalization owns
+  // "complete", so neither button says it.
+  const [collectOpen, setCollectOpen] = useState(false);
 
   const { data: materialProducts } = useQuery<MaterialProduct[]>({ queryKey: ["/api/material-products"] });
   const { data: productApplications } = useQuery<ProductApplication[]>({ queryKey: ["/api/product-applications"] });
@@ -275,6 +280,10 @@ export function ServiceCompletionDialog({
   }, [open, service, ticketPrice, computedProductionValueCents]);
 
   useEffect(() => {
+    if (!open) setCollectOpen(false);
+  }, [open]);
+
+  useEffect(() => {
     if (!open || !draftKey || !service) return;
     localStorage.setItem(draftKey, JSON.stringify({
       technicianId,
@@ -354,6 +363,7 @@ export function ServiceCompletionDialog({
       queryClient.invalidateQueries({ queryKey: ["/api/appointments/by-location"] });
       queryClient.invalidateQueries({ queryKey: ["/api/opportunities"] });
       queryClient.invalidateQueries({ queryKey: ["/api/opportunities/by-location"] });
+      setCollectOpen(false);
       onCompleted?.();
       onOpenChange(false);
     },
@@ -414,6 +424,7 @@ export function ServiceCompletionDialog({
   };
 
   return (
+    <>
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[92vh] overflow-y-auto sm:max-w-2xl">
         <DialogHeader>
@@ -688,13 +699,25 @@ export function ServiceCompletionDialog({
 
             <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
               <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Close</Button>
-              <Button type="button" onClick={() => completeMutation.mutate()} disabled={completeMutation.isPending || !serviceDate}>
-                {completeMutation.isPending ? "Posting..." : "Post Service Ticket"}
+              <Button type="button" onClick={() => setCollectOpen(true)} disabled={completeMutation.isPending || !serviceDate} data-testid="button-finish-and-collect">
+                {completeMutation.isPending ? "Posting..." : "Finish & Collect"}
               </Button>
             </div>
           </div>
         )}
       </DialogContent>
     </Dialog>
+    {service && (
+      <CollectPaymentDialog
+        open={open && collectOpen}
+        onOpenChange={setCollectOpen}
+        appointmentId={visitAppointmentId}
+        locationId={appointment?.locationId ?? service.locationId}
+        designatedAgreementId={service.agreementId ?? null}
+        onPostTicket={() => completeMutation.mutate()}
+        postingTicket={completeMutation.isPending}
+      />
+    )}
+    </>
   );
 }

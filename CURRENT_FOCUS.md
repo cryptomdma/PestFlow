@@ -96,7 +96,7 @@ is the explicit exception, and `resolveRemainingContractPriceCents()` is what th
 PREPAID_TERM charge and a recurring plan's per-period share now bill from. Signatures and behavior
 are under "Shipped in Pass 6" in `PLAN_BILLING_V1_1_EXECUTION.md`.
 
-Pass 7 (`feature/phase-1-coa-and-field-display`, D6) is pushed and awaiting merge. The field now sees
+Pass 7 (`feature/phase-1-coa-and-field-display`, D6) merged as PR #64. The field now sees
 money the way the invoice will: one read, `GET /api/appointments/:id/billing-summary`, prices every
 service on a visit through the same `resolveServiceLineBillingTx` invoicing uses and reports
 **Price / COA / Due today** per service plus the visit's due-today sum, each service designated
@@ -113,10 +113,38 @@ card; its arithmetic is `resolveBillingPlanCharge()` in `shared/billing-plan.ts`
 run now bills from too, so the card can never promise a number the run does not charge. No migration.
 Signatures and behavior are under "Shipped in Pass 7" in `PLAN_BILLING_V1_1_EXECUTION.md`.
 
-Next up once it merges: the **technician payment-collection UI relabel** - its own pass, per the
-constraints below (`POST /api/payments` already accepts a technician under `TAKE_PAYMENT_FIELD` and
-records the collector; the ticket now shows what is due, so the collect action has a number to sit
-next to). Then **Pass 8 — `feature/phase-1-audit-log-backfill`** (D7 remainder).
+Pass 7.5 (`feature/phase-1-tech-collect-relabel`, D8's post-ticket sequence relabel) is pushed and
+awaiting merge. The technician flow is now **finish → collect → post**: the service ticket's primary
+button is "Finish & Collect", which opens the field's collect step - the customer-facing summary
+(the visit's Price / COA / Due today rows and total, from Pass 7's one read), payment type (cash /
+check / other), check number or reference, memo, and the amount defaulted to the visit's due today -
+and "Post Service Ticket" lives there. Collecting records the payment through the existing
+`POST /api/payments` under `TAKE_PAYMENT_FIELD`: PENDING, **unapplied** (the office applies -
+`APPLY_PAYMENT` is support+ and the dialog never sends `applyToInvoiceId`), the collector stamped
+from the session, designated to the ticket's service agreement as D4 intent. The same dialog opens
+from "Collect Payment" on the technician's appointment details, designated to the one agreement the
+visit's services share. Cash still confirms only by a manager. Nothing says "Complete" - office
+finalization owns that word. The office's Record Payment dialog is untouched. No migration. Not built:
+card / ACH (Phase 2), signatures, a printable customer copy. Signatures and behavior are under
+"Shipped in Pass 7.5" in `PLAN_BILLING_V1_1_EXECUTION.md`.
+
+Owner review of Pass 7.5 (2026-09-15, decisions approved 2026-09-16), from live testing of the
+field → office loop: the Service Ticket Review modal shows no money at all, so the reviewer
+finalizes without seeing what the technician collected; a payment cannot be tied to the visit it
+was collected at; once the D4 prompt applies a PENDING payment the money is visible only behind the
+location Invoices tab's "Applications" toggle (D5's "pending shows, confirmed counts" is right, the
+display is not); and confirmation lives only on the location ledger panel, with no org-wide list,
+no batch confirmation and no collections report. Recorded under D5 in `PLAN_BILLING_V1_1.md` and
+resolved as two inserted passes, in this order, ahead of Pass 8.
+
+Next up once it merges: **Pass 7.6 — `feature/phase-1-review-modal-field-collection`** (D9's
+price/payment and address blocks on the review modal with Next/Back, the "collected at this visit"
+link on payments, confirm from the review modal, and a stored pending-applied rollup shown on every
+invoice row). Then **Pass 7.7 — `feature/phase-1-payments-screen`** (org-wide payments list with
+server-side filters, batch confirmation, a Payments page with the pending queue, and a collections
+report). Then **Pass 8 — `feature/phase-1-audit-log-backfill`** (D7 remainder). Scope, files,
+migration and verification for 7.6 and 7.7 are rows in the Ordered Work Plan of
+`PLAN_BILLING_V1_1_EXECUTION.md`.
 
 Full ordered plan, impact analysis, conflict resolutions, and per-pass verification steps live in
 `PLAN_BILLING_V1_1_EXECUTION.md` — read it before starting a pass, and update its "Pass status" table
@@ -143,9 +171,9 @@ the source of truth for what each pass actually does.
   (void + re-entry, credit memo, forward revert), never edits or deletions.
 - All money integer cents; all tables org-scoped; no route trusts a client-supplied actor.
 - Not in this phase: Stripe/card processing (Phase 2), QBO sync, unschedule action, preferred-tech
-  behavior, opportunity taxonomy migration, proposal generator, tech payment-collection UI relabel
-  (lands immediately after payments-lite as its own pass), Services-tab PENDING_SCHEDULING-vs-SCHEDULED
-  display clarity (a real, separately-noted UI gap — not a billing concern).
+  behavior, opportunity taxonomy migration, proposal generator, Services-tab
+  PENDING_SCHEDULING-vs-SCHEDULED display clarity (a real, separately-noted UI gap — not a billing
+  concern). The tech payment-collection UI relabel that used to sit in this list shipped as Pass 7.5.
 - Also not in this phase, each documented where it belongs rather than scheduled here. The first two
   are the ones that gate real use of the billing engine:
   - ~~**Attach a Billing Plan to an Agreement (UI).**~~ **Done — Pass 3.5**, pushed as

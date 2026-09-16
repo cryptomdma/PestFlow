@@ -24,14 +24,23 @@ grounded in what the code and data actually do, not what the decision record ass
 | 5 | `feature/phase-1-finalize-invoice-wiring` | D2 | Done (PR #61) |
 | 5.5 | `feature/phase-1-initial-charge-to-agreement` | D4 (owner correction) | Done (PR #62) |
 | 6 | `feature/phase-1-payments-lite` | D5, D4 | Done (PR #63) |
-| 7 | `feature/phase-1-coa-and-field-display` | D6 | Pushed, awaiting merge |
+| 7 | `feature/phase-1-coa-and-field-display` | D6 | Done (PR #64) |
+| 7.5 | `feature/phase-1-tech-collect-relabel` | D8 (post-ticket sequence relabel) | Pushed, awaiting merge |
+| 7.6 | `feature/phase-1-review-modal-field-collection` | D9 (review modal price/payment + address blocks), D5 owner review items 1-3 | Not started |
+| 7.7 | `feature/phase-1-payments-screen` | D5 owner review item 4 (Payments screen, batch confirmation, collections report) | Not started |
 | 8 | `feature/phase-1-audit-log-backfill` | D7 (remainder) | Not started |
 | 9 | `feature/phase-1-legacy-billing-frequency-removal` | D9 | Not started |
 
 Pass 3.5 is inserted, not renumbered in: it was not in the original D1-D9 sequence at all, but Pass 3's
 live testing found that `billingPlanId` had no writer anywhere in the client, so every agreement was
 plan-less and the schedule-billed half of the billing engine was unreachable through the app. It is
-numbered 3.5 so passes 4-9 keep the numbers every other document already cites.
+numbered 3.5 so passes 4-9 keep the numbers every other document already cites. Pass 7.5 is inserted
+the same way: D8 named the technician collect / post relabel as its own tech-view pass "after
+payments-lite exists to collect against", and `CURRENT_FOCUS.md` held it out of every numbered pass.
+Passes 7.6 and 7.7 are inserted from the owner's live-testing review of Pass 7.5 (2026-09-15,
+recorded under D5 in `PLAN_BILLING_V1_1.md`): the review modal's price/payment block was decided in
+D9 but the Pass 9 row scoped only the column drop, so it was owned by no pass; the Payments screen
+was never in D1-D9 at all. Both are rows in the Ordered Work Plan below.
 
 Reordered from the original 7-pass sketch for two reasons: (a) audit infrastructure moves from near-last
 to position 2, so passes 3-8 call the already-built helper as they write new financial mutations instead
@@ -298,6 +307,8 @@ Key choices:
 | 5 | `feature/phase-1-finalize-invoice-wiring` | D2 | `storage.ts` (`finalizeServiceRecord`'s existing `allFinalized` branch at `3468-3475` — generate-or-adopt hook, reusing `getLinkedServicesForAppointmentTx`), `shared/schema.ts` (`invoiceOnFinalize` app setting), settings UI, finalize-flow prompt (Generate / Generate & Send / Later) | Yes — new `app_settings` key default | D5 (payments need real issued invoices to apply against) | `npm run check`; boot ×2; PowerShell + manual UI: finalize the last service on an appointment, confirm the prompt fires and each of the 3 choices behaves correctly; finalize again (idempotent, no second invoice) |
 | 6 | `feature/phase-1-payments-lite` | D5, D4 | New `payments`, `payment_applications`, `credit_memos`, `credit_applications` tables (append-only, mirroring `productionValueEntries`'/`billingEvents`' no-update/no-delete `IStorage` surface), new `amountPaidCents`/`balanceDueCents` on `invoices`, apply/release transaction from §2.5, pending-confirmation flow, wiring of `TAKE_PAYMENT_FIELD`/`REFUND_PAYMENT`/`ISSUE_CREDIT_MEMO` (already-defined, currently-unused permission constants) to real routes, deposit-designation prompt at invoice generation | Yes — 4 new tables + 2 new invoice columns | D6 (COA is payment application — needs the ledger to exist) | `npm run check`; boot ×2; PowerShell: record a cash payment PENDING (doesn't mark paid), confirm it (flips amounts/status atomically, audit shows both events), apply/release a payment (audit-logged, reason required on release) |
 | 7 | `feature/phase-1-coa-and-field-display` | D6 | Tech ticket / appointment-detail UI (Price / COA applied / Due today), `BILLABLE` vs `PRODUCTION` service designation, billing-plan pill on agreement card | No | — | `npm run check`; boot ×2; manual UI: COA application changes "due today" without touching price, production value, or tax basis |
+| 7.6 | `feature/phase-1-review-modal-field-collection` | D9 (review modal price/payment + address blocks, Next/Back), D5 owner review items 1-3 | `shared/schema.ts` (`payments.appointmentId` nullable - "collected at this visit", intent like `designatedAgreementId`; `invoices.pendingAppliedCents` stored rollup), `payments-bootstrap.ts` (both columns; one-shot backfill of the pending rollup from unreleased applications of PENDING payments, Pass 6's `WHERE ... IS NULL` pattern), `storage.ts` (`recordPayment` takes `appointmentId` and refuses one at another location; `recomputeInvoiceRollupTx` stores the `pendingCents` that `sumInvoiceApplicationsTx` already computes; `unappliedSourcesForLocationTx` / `orderSourcesForAgreementsTx` carry `appointmentId` and order visit-collected first, then agreement-designated, then undesignated; a by-appointment payments read), `routes.ts` (`recordPaymentSchema.appointmentId`, the by-appointment read), `shared/payments.ts` (`UnappliedSource.appointmentId`), `shared/invoice-status.ts` (`computeInvoiceRollup` returns `pendingAppliedCents`), `collect-payment-dialog.tsx` (sends the appointment), `service-ticket-review.tsx` (the visit's `VisitBillingRows`; a "Collected in the field" list for this visit - method, amount, check #, collector, status - with Confirm gated exactly as `LocationLedgerPanel` gates it; the location's other unapplied balance in one line; address block; Next/Back over `filteredRecords`), `invoices.tsx` + `InvoiceRowLedger` (a "pending confirmation" line and tile sub-line), `apply-location-balance-prompt.tsx` ("collected at this visit" on a source). Not in scope: D9's office edit button and reopen-reason dropdown | Yes - two nullable columns + one backfill | 7.7 (the queue and the report group by visit and collector; the confirm gating is shared) | `npm run check`; boot ×2; PowerShell: a technician's collection on a visit carries `appointmentId`, and one for an appointment at another location is refused; the by-appointment read lists it; support confirms a check and is refused cash, manager confirms cash; `pendingAppliedCents` equals the applied pending sum, drops to 0 on confirm while `amountPaidCents` rises by the same amount; the D4 prompt lists visit-collected money first; the review modal (manual UI) shows the figures and the collection before Finalize |
+| 7.7 | `feature/phase-1-payments-screen` | D5 owner review item 4 | `routes.ts` + `storage.ts` (an org-wide `GET /api/payments` with server-side filters - status, method, received-date range, collector, customer/location search; `POST /api/payments/confirm-batch { paymentIds }` → `{ confirmed, skipped: [{ id, reason }] }` with the permission checked per payment - CASH needs `CONFIRM_CASH_PAYMENT`, so a support user's cash is skipped and reported - one transaction and one `payment_confirmed` audit row per payment, the invoices it sits on re-rolled exactly as single confirm does; a collections read for a date range grouped by day / collector / method, pending against confirmed), `shared/payments.ts` (filter and report shapes), new `client/src/pages/payments.tsx` (pending-confirmation queue with select-all and Batch Confirm, filters, search, rows linking to the location; the collections report as the deposit-slip view), navigation entry. Read-only report, derived, nothing new stored | No | - (closes the field → office loop for real use) | `npm run check`; boot ×2; PowerShell: the list filters by status / method / date / collector; batch confirm as support with one cash and one check pending confirms the check, skips the cash with a reason, writes one audit row; as manager both confirm; the collections totals equal the sum of the listed payments for the range, pending and confirmed separately |
 | 8 | `feature/phase-1-audit-log-backfill` | D7 (remainder) | Add `recordAuditLog()` calls to pre-existing financial mutation points D7 lists that passes 3-7 didn't already cover — e.g. price override in the field-ticket flow, ticket reopen | No | — | `npm run check`; boot ×2; PowerShell: exercise each listed mutation, confirm an audit row with correct before/after/actor appears |
 | 9 | `feature/phase-1-legacy-billing-frequency-removal` | D9 | Drop `agreementTemplates.defaultBillingFrequency` / `agreements.billingFrequency` columns; remove all read/write sites from §1's D9 table | Yes — column drop, guarded by an `information_schema.columns` existence check per this repo's established pattern (`money-bootstrap.ts` precedent) | — (cleanup) | `npm run check`; boot ×2; confirm the 9 "legacy text, no plan" agreements and 2 "neither" agreements are surfaced in a pre-migration report before the column drop runs |
 
@@ -1084,6 +1095,84 @@ Behavior worth knowing before the next passes touch it:
   split is an allotment for display). The technician collect action (next pass; the route exists).
   A per-service "designation" column on the location Services tab. Any change to how a price is set.
   No migration.
+
+**Shipped in Pass 7.5 (D8 post-ticket sequence relabel), for Pass 8 to know about** - nothing new is
+stored and no route changed. The field got its collection step on top of Pass 6's route and Pass 7's
+read; the technician flow is finish → collect → post.
+
+```ts
+// client/src/components/collect-payment-dialog.tsx - the FIELD's dialog. The office's stays record-payment-dialog.tsx.
+export function CollectPaymentDialog({ open, onOpenChange, appointmentId, locationId, designatedAgreementId, onPostTicket?, postingTicket? })
+  // summary: VisitBillingRows over useVisitBillingSummary(appointmentId) - the customer-facing Price / COA / Due today rows and total
+  // form: payment type (MANUAL_PAYMENT_METHODS), amount (defaults once to totals.dueTodayCents when > 0), check number (CHECK) /
+  //       reference (OTHER), memo; "Collected this visit" lists what this dialog recorded
+  // POST /api/payments { locationId, method, amountCents, checkNumber, referenceNumber, memo, designatedAgreementId, applyToInvoiceId: null }
+  // onPostTicket given (ticket flow): footer is Back / "Post Service Ticket". Absent (appointment details): Close.
+export function resolveVisitDesignation(agreementIds): string | null   // exactly one distinct agreement -> it; otherwise undesignated
+
+// client/src/components/service-completion-dialog.tsx: the footer button is "Finish & Collect" and opens the dialog above
+// (designated to service.agreementId, location = appointment.locationId ?? service.locationId). "Post Service Ticket" moved
+// into the collect step and runs the unchanged POST /api/services/:id/complete mutation; success closes both dialogs.
+// client/src/pages/technician-work.tsx: "Collect Payment" under the appointment details' due-today total (TAKE_PAYMENT_FIELD,
+// hidden on a CANCELED visit), designated by resolveVisitDesignation() over the visit's services.
+```
+
+Behavior worth knowing before Pass 8 touches it:
+- **The field records, the office applies.** The dialog never sends `applyToInvoiceId`; a technician
+  who sends one anyway gets the route's 403. Every collection posts `PENDING` with
+  `collectedByUserId` / `collectedByLabel` from the session - the recorded collection event D4 says
+  credit must key off. Confirmation is untouched: a technician cannot confirm at all, support cannot
+  confirm cash (`CONFIRM_CASH_PAYMENT` is manager+), a manager can. All verified live.
+- **What the summary does after a collection.** Before the visit is invoiced the recorded money is
+  undesignated or designated to a visit agreement, so the next read shows it as "COA available" and
+  due today drops (verified: a $75 COD visit, $75 cash collected → due today $0, line price and tax
+  untouched, D6). Once the visit is invoiced the summary reads applications only, so an unapplied
+  field collection does not move its figures - that is why the dialog's "Collected this visit" block
+  lists what it recorded, so the technician sees the collection took; the office applies it from the
+  Invoices tab or the D4 prompt. Money designated to a different agreement is never offered to the
+  visit (Pass 7's rule, re-verified with a check designated to Unit 15 Ledger Test).
+- **Amount defaults once**, to due today when it is above zero and the summary has arrived, and is
+  cleared after each recording - a split (cash and a check) is two recordings, and a repeat is never
+  pre-filled. "Nothing collected" is allowed: Post Service Ticket is always available, with a line
+  saying the office bills the balance. A service that is not on an appointment gets no summary and a
+  typed amount at the service's location.
+- **Labels are D8's.** "Finish & Collect" / "Post Service Ticket"; nothing on the technician side says
+  "Complete" - office finalization owns that word. The three call sites of the ticket dialog (technician
+  work, location Services tab, schedule) all get the same flow; the office's `RecordPaymentDialog`
+  (Invoices screen, location ledger panel) is untouched.
+- **Not built, deliberately.** Card / ACH (Phase 2). Signatures and a printable customer copy (D8 names
+  them "future"). A required check number. Applying from the field. No migration.
+
+**Owner review of Pass 7.5 (2026-09-15, approved 2026-09-16)** - from live testing of the whole
+field → office loop, recorded in full under D5 in `PLAN_BILLING_V1_1.md`. What the review found,
+and the design each finding settled, so Pass 7.6 and 7.7 build the same thing the owner approved:
+- **The reviewer finalizes blind.** `service-ticket-review.tsx`'s modal shows technician, timing,
+  notes, pests and materials - no price, no due today, no field collection. Pass 7's read went to
+  the tech ticket, the appointment details and the dispatch sheet, never here. D9's "price/payment
+  and address blocks" were decided and owned by no pass. Pass 7.6 puts `VisitBillingRows` and the
+  visit's collections on the modal, above Finalize.
+- **A payment cannot name its visit.** `payments` carries location, collector, `receivedAt` and an
+  optional `designatedAgreementId` - nothing links it to an appointment, so "collected in the field
+  for this ticket" has no honest source; a guess by location, date and technician misleads on a day
+  with two visits at one location. The fix is a nullable `payments.appointmentId`, set once by the
+  field collect dialog (both surfaces know the appointment) and never changed: intent, exactly as
+  the agreement designation is. The D4 prompt orders visit-collected money first. Application stays
+  the office's explicit act; the office `RecordPaymentDialog` does not set it.
+- **Pending money vanishes after the D4 prompt.** "Pending shows, confirmed counts" stands - a
+  bounced check must never have marked an invoice paid. But once applied, a pending payment leaves
+  the ledger panel's Pending tile (unapplied only), the row says "Paid $0", the Invoices screen says
+  nothing, and the only trace is behind the row's "Applications" toggle. `sumInvoiceApplicationsTx`
+  already computes `pendingCents` inside every recompute and `recomputeInvoiceRollupTx` discards it;
+  Pass 7.6 stores it as `invoices.pendingAppliedCents`, in the same transaction as the other two
+  rollups, and every invoice row and tile shows it as "pending confirmation".
+- **Confirm lives in one place.** The location ledger panel has the only Confirm (support+, cash
+  manager+). Pass 7.6 offers the same, gated the same, on the review modal. Pass 7.7 adds the
+  org-wide list, the pending queue with batch confirmation, and the collections report - none of
+  which exist today (`GET /api/payments/by-location/:id` is the only payments read, `reports.tsx`
+  has no collections view, the historical plan had "field payment capture" in Phase 2).
+- **Left unscheduled on purpose.** D9's role-gated office edit button and the settings-driven
+  reopen-reason dropdown: both are real workflow work with audit implications, and Pass 8 is about
+  to touch reopen logging.
 
 **Design note carried into Pass 4** - resolved there: D3's "flags the linked ticket(s) for review" had
 no existing "flagged" concept in the schema. Pass 4 extended `serviceRecords.ticketStatus` with
