@@ -19,11 +19,13 @@ import {
   type FinalizeServiceRecordResponse,
   type InvoiceOnFinalizePromptState,
 } from "@/components/invoice-on-finalize-prompt";
-import { apiRequest, queryClient } from "@/lib/queryClient";
+import { apiRequest, getApiErrorMessage, queryClient } from "@/lib/queryClient";
+import { VisitBillingRows, useVisitBillingSummary } from "@/components/visit-billing-summary";
 import { formatCents } from "@shared/money";
 import { can, PERMISSIONS } from "@shared/permissions";
-import { CheckCircle2, ClipboardCheck, FileStack, RotateCcw, Send } from "lucide-react";
-import type { Appointment, Customer, Location, ProductApplication, Service, ServiceRecord, ServiceType, Technician } from "@shared/schema";
+import { formatPaymentMethod, formatPaymentStatus, paymentHoldsValue, type LocationLedgerSummary } from "@shared/payments";
+import { CheckCircle2, ChevronLeft, ChevronRight, ClipboardCheck, FileStack, MapPin, RotateCcw, Send } from "lucide-react";
+import type { Appointment, Customer, Location, Payment, ProductApplication, Service, ServiceRecord, ServiceType, Technician } from "@shared/schema";
 
 interface BatchInvoicePreviewRow extends ServiceRecord {
   billingLineType: "SERVICE" | "AGREEMENT_COVERED" | null;
@@ -70,6 +72,120 @@ function statusBadgeVariant(record: ServiceRecord): "default" | "secondary" | "d
   if (record.confirmed || record.ticketStatus === "FINALIZED") return "default";
   if (record.ticketStatus === "FLAGGED_FOR_REVIEW") return "destructive";
   return "secondary";
+}
+
+function paymentStatusClass(status: string) {
+  switch (status) {
+    case "CONFIRMED": return "bg-primary/10 text-primary";
+    case "PENDING": return "bg-chart-3/10 text-chart-3";
+    default: return "bg-muted text-muted-foreground";
+  }
+}
+
+// What the technician collected at THIS visit (payments.appointmentId - the
+// D5 owner review's visit link), with Confirm gated exactly as the location
+// ledger panel gates it: CONFIRM_PAYMENT, and cash additionally
+// CONFIRM_CASH_PAYMENT. Reads payments by appointment rather than the billing
+// summary: once the visit is invoiced the summary reads applications only,
+// and an unapplied field collection would vanish from it. The last line is
+// the location's OTHER unapplied money, so the reviewer knows the D4 prompt
+// may offer more than this visit's collections.
+function VisitCollectionsBlock({ appointmentId, locationId }: { appointmentId: string | null; locationId: string | null }) {
+  const { toast } = useToast();
+  const { user } = useAuth();
+  const role = user?.role ?? "";
+  const canConfirm = can(role, PERMISSIONS.CONFIRM_PAYMENT);
+  const canConfirmCash = can(role, PERMISSIONS.CONFIRM_CASH_PAYMENT);
+
+  const { data: visitPayments, isLoading } = useQuery<Payment[]>({
+    queryKey: ["/api/payments/by-appointment", appointmentId ?? ""],
+    enabled: !!appointmentId,
+  });
+  const { data: ledger } = useQuery<LocationLedgerSummary>({
+    queryKey: ["/api/locations", locationId ?? "", "ledger-summary"],
+    enabled: !!locationId,
+  });
+
+  const unappliedById = useMemo(() => new Map((ledger?.sources ?? []).map((source) => [source.id, source.unappliedCents])), [ledger]);
+  const otherSources = useMemo(() => (ledger?.sources ?? []).filter((source) => !appointmentId || source.appointmentId !== appointmentId), [ledger, appointmentId]);
+  const otherCents = otherSources.reduce((sum, source) => sum + source.unappliedCents, 0);
+  const otherPendingCents = otherSources.filter((source) => source.status === "PENDING").reduce((sum, source) => sum + source.unappliedCents, 0);
+
+  const confirmMutation = useMutation({
+    mutationFn: async (paymentId: string) => {
+      const response = await apiRequest("POST", `/api/payments/${paymentId}/confirm`, {});
+      return (await response.json()) as Payment;
+    },
+    onSuccess: (payment) => {
+      invalidateInvoiceViews();
+      toast({ title: `${formatPaymentMethod(payment.method)} payment of ${formatCents(payment.amountCents)} confirmed`, description: "It now counts toward every invoice it is applied to." });
+    },
+    onError: (error: Error) => toast({ title: "Unable to confirm the payment", description: getApiErrorMessage(error), variant: "destructive" }),
+  });
+
+  const live = (visitPayments ?? []).filter((payment) => paymentHoldsValue(payment.status));
+  const collectedCents = live.reduce((sum, payment) => sum + payment.amountCents, 0);
+  const pendingCents = live.filter((payment) => payment.status === "PENDING").reduce((sum, payment) => sum + payment.amountCents, 0);
+
+  const describeApplication = (payment: Payment) => {
+    if (!ledger || !paymentHoldsValue(payment.status)) return "";
+    const unapplied = unappliedById.get(payment.id) ?? 0;
+    if (unapplied >= payment.amountCents) return " - on the location balance, not yet applied";
+    if (unapplied <= 0) return " - applied to the invoice";
+    return ` - ${formatCents(payment.amountCents - unapplied)} applied, ${formatCents(unapplied)} on the location balance`;
+  };
+
+  return (
+    <div className="rounded-md border p-3" data-testid="block-visit-collections">
+      <p className="text-xs uppercase tracking-wide text-muted-foreground">Collected in the field</p>
+      {!appointmentId ? (
+        <p className="mt-1 text-sm text-muted-foreground">Not on an appointment - no collection can be tied to this ticket.</p>
+      ) : isLoading ? (
+        <p className="mt-1 text-xs text-muted-foreground">Loading collections...</p>
+      ) : !visitPayments?.length ? (
+        <p className="mt-1 text-sm text-muted-foreground">Nothing collected in the field for this visit.</p>
+      ) : (
+        <div className="mt-2 space-y-2">
+          {visitPayments.map((payment) => {
+            const mayConfirm = payment.status === "PENDING" && canConfirm && (payment.method !== "CASH" || canConfirmCash);
+            return (
+              <div key={payment.id} className="flex items-start justify-between gap-2 rounded-md bg-muted/20 p-2" data-testid={`row-visit-payment-${payment.id}`}>
+                <div className="min-w-0 text-sm">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-medium">{formatPaymentMethod(payment.method)}{payment.checkNumber ? ` #${payment.checkNumber}` : ""}{payment.referenceNumber ? ` (${payment.referenceNumber})` : ""}</span>
+                    <span className="font-semibold">{formatCents(payment.amountCents)}</span>
+                    <Badge variant="secondary" className={`text-xs ${paymentStatusClass(payment.status)}`}>{formatPaymentStatus(payment.status)}</Badge>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    {new Date(payment.receivedAt).toLocaleString()}{payment.collectedByLabel ? ` by ${payment.collectedByLabel}` : ""}
+                    {describeApplication(payment)}
+                    {payment.status === "VOIDED" && payment.voidReason ? ` - voided: ${payment.voidReason}` : ""}
+                    {payment.memo ? ` - ${payment.memo}` : ""}
+                  </p>
+                  {payment.status === "PENDING" && payment.method === "CASH" && canConfirm && !canConfirmCash ? (
+                    <p className="text-xs text-muted-foreground">Cash is confirmed by a manager or admin.</p>
+                  ) : null}
+                </div>
+                {mayConfirm ? (
+                  <Button size="sm" variant="outline" className="h-7 shrink-0 text-xs" onClick={() => confirmMutation.mutate(payment.id)} disabled={confirmMutation.isPending} data-testid={`button-confirm-visit-payment-${payment.id}`}>Confirm</Button>
+                ) : null}
+              </div>
+            );
+          })}
+          <p className="text-sm" data-testid="text-visit-collected-total">
+            Collected {formatCents(collectedCents)}{pendingCents > 0 ? ` - ${formatCents(pendingCents)} pending confirmation` : ""}.
+          </p>
+        </div>
+      )}
+      {locationId && ledger ? (
+        <p className="mt-2 text-xs text-muted-foreground" data-testid="text-location-other-balance">
+          {otherCents > 0
+            ? `This location also has ${formatCents(otherCents)} on account not from this visit${otherPendingCents > 0 ? ` (${formatCents(otherPendingCents)} of it pending confirmation)` : ""}.`
+            : "No other balance on account at this location."}
+        </p>
+      ) : null}
+    </div>
+  );
 }
 
 export default function ServiceTicketReview() {
@@ -122,6 +238,10 @@ export default function ServiceTicketReview() {
   const selectedLocation = selectedRecord?.locationId ? locationById.get(selectedRecord.locationId) ?? null : null;
   const selectedCustomer = selectedRecord ? customerById.get(selectedRecord.customerId) ?? null : null;
   const selectedMaterials = selectedRecord ? applicationsByRecordId.get(selectedRecord.id) ?? [] : [];
+  // D6's figures for the visit under review - the same read the ticket, the
+  // appointment details and the collect dialog show, so the reviewer
+  // finalizes against what the technician and the customer saw.
+  const { data: visitBilling, isLoading: visitBillingLoading, isError: visitBillingError } = useVisitBillingSummary(selectedAppointment?.id ?? null);
 
   const filteredRecords = useMemo(() => {
     return (serviceRecords ?? []).filter((record) => {
@@ -138,6 +258,17 @@ export default function ServiceTicketReview() {
       return true;
     }).sort((a, b) => new Date(b.postedAt || b.serviceDate).getTime() - new Date(a.postedAt || a.serviceDate).getTime());
   }, [dateFrom, dateTo, serviceById, serviceRecords, serviceTypeFilter, statusFilter, technicianFilter]);
+
+  // Next / Back walk the queue as filtered and sorted above. A ticket that
+  // leaves the filter (finalized under "Pending Review") stays open but drops
+  // out of the count until the modal is closed.
+  const selectedIndex = selectedRecordId ? filteredRecords.findIndex((record) => record.id === selectedRecordId) : -1;
+  const goToRecord = (index: number) => {
+    const target = filteredRecords[index];
+    if (!target) return;
+    setReopenReason("");
+    setSelectedRecordId(target.id);
+  };
 
   const invalidateReviewData = () => {
     queryClient.invalidateQueries({ queryKey: ["/api/service-records"] });
@@ -347,7 +478,22 @@ export default function ServiceTicketReview() {
 
       <Dialog open={!!selectedRecord} onOpenChange={(open) => { if (!open) setSelectedRecordId(null); }}>
         <DialogContent className="max-h-[92vh] overflow-y-auto sm:max-w-3xl">
-          <DialogHeader><DialogTitle>Service Ticket Review</DialogTitle></DialogHeader>
+          <DialogHeader>
+            <div className="flex items-center justify-between gap-3 pr-6">
+              <DialogTitle>Service Ticket Review</DialogTitle>
+              {selectedIndex >= 0 && filteredRecords.length > 1 ? (
+                <div className="flex items-center gap-1 text-xs text-muted-foreground" data-testid="nav-review-tickets">
+                  <Button type="button" variant="ghost" size="sm" className="h-7 px-2" onClick={() => goToRecord(selectedIndex - 1)} disabled={selectedIndex <= 0} data-testid="button-review-back">
+                    <ChevronLeft className="h-4 w-4" /> Back
+                  </Button>
+                  <span className="tabular-nums">{selectedIndex + 1} of {filteredRecords.length}</span>
+                  <Button type="button" variant="ghost" size="sm" className="h-7 px-2" onClick={() => goToRecord(selectedIndex + 1)} disabled={selectedIndex >= filteredRecords.length - 1} data-testid="button-review-next">
+                    Next <ChevronRight className="h-4 w-4" />
+                  </Button>
+                </div>
+              ) : null}
+            </div>
+          </DialogHeader>
           {selectedRecord ? (
             <div className="space-y-4">
               <div className="rounded-lg border bg-muted/20 p-3">
@@ -358,6 +504,20 @@ export default function ServiceTicketReview() {
                     <p className="text-xs text-muted-foreground">{selectedService?.agreementId ? "Agreement service" : "Non-agreement service"}</p>
                   </div>
                   <Badge variant={statusBadgeVariant(selectedRecord)}>{statusLabel(selectedRecord)}</Badge>
+                </div>
+                <div className="mt-2 flex items-start gap-2 text-sm" data-testid="block-review-address">
+                  <MapPin className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+                  {selectedLocation ? (
+                    <div>
+                      {selectedLocation.name && selectedLocation.name !== getCustomerLabel(selectedCustomer ?? undefined, selectedLocation) ? (
+                        <p className="font-medium">{selectedLocation.name}</p>
+                      ) : null}
+                      <p>{selectedLocation.address}</p>
+                      <p className="text-muted-foreground">{[selectedLocation.city, selectedLocation.state].filter(Boolean).join(", ")} {selectedLocation.zip}</p>
+                    </div>
+                  ) : (
+                    <p className="text-muted-foreground">Location unavailable</p>
+                  )}
                 </div>
               </div>
               {selectedRecord.flaggedAt ? (
@@ -370,6 +530,19 @@ export default function ServiceTicketReview() {
                   </p>
                 </div>
               ) : null}
+              <div className="grid gap-3 md:grid-cols-2">
+                <div className="rounded-md border p-3" data-testid="block-review-visit-billing">
+                  <p className="text-xs uppercase tracking-wide text-muted-foreground">Visit billing</p>
+                  {selectedAppointment ? (
+                    <div className="mt-2">
+                      <VisitBillingRows summary={visitBilling} isLoading={visitBillingLoading} isError={visitBillingError} />
+                    </div>
+                  ) : (
+                    <p className="mt-1 text-sm text-muted-foreground">Not on an appointment - there is no visit to price.</p>
+                  )}
+                </div>
+                <VisitCollectionsBlock appointmentId={selectedAppointment?.id ?? null} locationId={selectedLocation?.id ?? null} />
+              </div>
               <div className="grid gap-3 md:grid-cols-3">
                 <div className="rounded-md border p-3">
                   <p className="text-xs uppercase tracking-wide text-muted-foreground">Technician</p>

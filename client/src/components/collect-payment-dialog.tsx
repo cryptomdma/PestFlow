@@ -117,6 +117,11 @@ export function CollectPaymentDialog({
         referenceNumber: method === "OTHER" ? referenceNumber || null : null,
         memo: memo || null,
         designatedAgreementId,
+        // The visit this money was collected at - intent of the same kind as
+        // the agreement designation, recorded once here and never by the
+        // office. It is what the review modal's "Collected in the field" list
+        // reads, and what the D4 prompt offers first.
+        appointmentId,
         // The field records; the office applies (APPLY_PAYMENT is support+).
         applyToInvoiceId: null,
       });

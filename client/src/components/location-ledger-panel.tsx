@@ -365,6 +365,9 @@ export function InvoiceRowLedger({
         {issued ? (
           <span data-testid={`text-invoice-balance-${invoice.id}`}>
             Paid {formatCents(invoice.amountPaidCents)} - Due {formatCents(invoice.balanceDueCents)}
+            {invoice.pendingAppliedCents > 0 ? (
+              <span className="text-chart-3" data-testid={`text-invoice-pending-${invoice.id}`}> - {formatCents(invoice.pendingAppliedCents)} pending confirmation</span>
+            ) : null}
           </span>
         ) : (
           <span>{invoice.status === "DRAFT" ? "Draft - not a receivable until issued" : "Voided - nothing owed"}</span>
@@ -418,6 +421,12 @@ export function LocationLedgerPanel({
 
   const unappliedById = useMemo(() => new Map((summary?.sources ?? []).map((source) => [source.id, source.unappliedCents])), [summary]);
   const agreementNameById = useMemo(() => new Map((agreements ?? []).map((agreement) => [agreement.id, agreement.agreementName])), [agreements]);
+  // Pending money that has already been applied leaves the unapplied Pending
+  // figure; the stored rollup keeps it visible here (D5 owner review, item 3).
+  const pendingAppliedCents = useMemo(
+    () => invoices.filter((invoice) => isInvoiceIssued(invoice.status)).reduce((sum, invoice) => sum + invoice.pendingAppliedCents, 0),
+    [invoices],
+  );
 
   const [recordOpen, setRecordOpen] = useState(false);
   const [creditOpen, setCreditOpen] = useState(false);
@@ -489,6 +498,9 @@ export function LocationLedgerPanel({
             <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Pending</p>
             <p className="mt-1 text-lg font-bold" data-testid="text-ledger-unapplied-pending">{formatCents(summary?.unappliedPendingCents ?? 0)}</p>
             <p className="text-xs text-muted-foreground">Recorded, awaiting office confirmation, not yet applied</p>
+            {pendingAppliedCents > 0 ? (
+              <p className="text-xs text-muted-foreground" data-testid="text-ledger-pending-applied">+ {formatCents(pendingAppliedCents)} applied to invoices, awaiting confirmation</p>
+            ) : null}
           </div>
         </CardContent>
       </Card>

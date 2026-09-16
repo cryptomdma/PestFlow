@@ -697,6 +697,13 @@ export const invoices = pgTable("invoices", {
   // derived from them by the same call.
   amountPaidCents: integer("amount_paid_cents").notNull().default(0),
   balanceDueCents: integer("balance_due_cents").notNull().default(0),
+  // The third rollup (D5 owner review of Pass 7.5, item 3): unreleased
+  // applications from PENDING payments - money sitting on the invoice that
+  // does not count yet. "Pending shows, confirmed counts" stands; this makes
+  // the pending part visible on every invoice row instead of only behind the
+  // ledger panel's Applications toggle. Recomputed with the other two in the
+  // same transaction; 0 for a DRAFT or VOID invoice.
+  pendingAppliedCents: integer("pending_applied_cents").notNull().default(0),
   notes: text("notes"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
@@ -725,6 +732,13 @@ export const payments = pgTable("payments", {
   // agreement"); application is the fact. The D4 prompt suggests designated
   // balances first and the office decides.
   designatedAgreementId: varchar("designated_agreement_id").references(() => agreements.id),
+  // The visit the money was collected at (D5 owner review of Pass 7.5, item
+  // 2). The same kind of intent as designatedAgreementId: set once by the
+  // field's collect dialog, never changed, never set by the office's Record
+  // Payment dialog. It is what lets the Service Ticket Review modal show
+  // "collected in the field for this ticket" honestly, and the D4 prompt
+  // offers visit-collected money first. Application stays the office's act.
+  appointmentId: varchar("appointment_id").references(() => appointments.id),
   checkNumber: text("check_number"),
   referenceNumber: text("reference_number"),
   memo: text("memo"),

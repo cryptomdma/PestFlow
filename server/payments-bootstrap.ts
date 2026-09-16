@@ -1,6 +1,14 @@
 import { sql } from "drizzle-orm";
 import { db } from "./db";
 
+async function columnIsNullable(table: string, column: string): Promise<boolean> {
+  const result = await db.execute(
+    sql`SELECT is_nullable FROM information_schema.columns WHERE table_name = ${table} AND column_name = ${column}`,
+  );
+  const row = result.rows[0] as { is_nullable?: string } | undefined;
+  return row?.is_nullable === "YES";
+}
+
 // PLAN_BILLING_V1_1.md D5 - the payments ledger (Pass 6). Idempotent, run on
 // every boot after bootstrapInvoices (the tables reference invoices) and
 // bootstrapAgreements (payments designate an agreement). org_id is NOT NULL
@@ -135,4 +143,42 @@ export async function bootstrapPayments(): Promise<void> {
   await db.execute(sql`ALTER TABLE invoices ALTER COLUMN balance_due_cents SET DEFAULT 0`);
   await db.execute(sql`ALTER TABLE invoices ALTER COLUMN amount_paid_cents SET NOT NULL`);
   await db.execute(sql`ALTER TABLE invoices ALTER COLUMN balance_due_cents SET NOT NULL`);
+
+  // Pass 7.6 (owner review of Pass 7.5, recorded under D5). Two nullable
+  // columns and one one-shot backfill.
+  //
+  // payments.appointment_id - the visit the money was collected at. Intent
+  // like designated_agreement_id: set once by the field's collect dialog,
+  // never changed. Nullable for good: office-recorded money has no visit, and
+  // nothing before this pass recorded one, so there is nothing to backfill -
+  // guessing a visit from location, date and technician is exactly the
+  // misattribution the column exists to end.
+  await db.execute(sql`ALTER TABLE payments ADD COLUMN IF NOT EXISTS appointment_id varchar REFERENCES appointments(id)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS payments_appointment_id_idx ON payments (appointment_id)`);
+
+  // invoices.pending_applied_cents - the third rollup: unreleased applications
+  // from PENDING payments, which show on the invoice but do not count yet.
+  // Same pattern as the two above: add nullable, backfill WHERE ... IS NULL
+  // from the ledger (the same sum recomputeInvoiceRollupTx stores from now
+  // on), then default and constrain. The information_schema guard skips the
+  // table-wide UPDATE on every boot after the first - once the column is NOT
+  // NULL there is nothing left to backfill.
+  await db.execute(sql`ALTER TABLE invoices ADD COLUMN IF NOT EXISTS pending_applied_cents integer`);
+  if (await columnIsNullable("invoices", "pending_applied_cents")) {
+    await db.execute(sql`
+      UPDATE invoices i
+      SET pending_applied_cents = CASE
+        WHEN i.status IN ('DRAFT', 'VOID') THEN 0
+        ELSE COALESCE((
+          SELECT SUM(pa.amount_cents)::int
+          FROM payment_applications pa
+          JOIN payments p ON p.id = pa.payment_id
+          WHERE pa.invoice_id = i.id AND pa.released = false AND p.status = 'PENDING'
+        ), 0)
+      END
+      WHERE i.pending_applied_cents IS NULL
+    `);
+    await db.execute(sql`ALTER TABLE invoices ALTER COLUMN pending_applied_cents SET DEFAULT 0`);
+    await db.execute(sql`ALTER TABLE invoices ALTER COLUMN pending_applied_cents SET NOT NULL`);
+  }
 }

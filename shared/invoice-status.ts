@@ -85,21 +85,29 @@ export function isInvoiceIssued(status: string | null | undefined): boolean {
 export interface InvoiceRollup {
   amountPaidCents: number;
   balanceDueCents: number;
+  /** Unreleased applications from PENDING payments: on the invoice, not yet counted. */
+  pendingAppliedCents: number;
   status: InvoiceStatus;
 }
 
 /**
- * The three computed-and-stored fields D5 puts on an invoice, from the one
- * number the ledger supplies: the sum of unreleased applications from
- * CONFIRMED payments and issued credit memos. Recomputed fresh at every
- * change (application, release, confirmation, void, issue) and never
- * incremented, so a missed update heals on the next one. A DRAFT or VOID
- * invoice owes nothing - it is not a receivable - so its balance due is 0
- * whatever its total says, and its lifecycle status passes through untouched.
+ * The computed-and-stored fields D5 puts on an invoice, from the two numbers
+ * the ledger supplies: the sum of unreleased applications from CONFIRMED
+ * payments and issued credit memos (counts), and the sum from PENDING
+ * payments (shows, does not count - D5's "pending shows, confirmed counts",
+ * stored since Pass 7.6 so every invoice row can say so). Recomputed fresh
+ * at every change (application, release, confirmation, void, issue) and
+ * never incremented, so a missed update heals on the next one. A DRAFT or
+ * VOID invoice owes nothing and holds nothing - it is not a receivable - so
+ * its balance due and pending figure are 0 whatever its total says, and its
+ * lifecycle status passes through untouched. Status never reads the pending
+ * figure: a bounced check must never have marked an invoice paid.
  */
 export function computeInvoiceRollup(state: {
   totalAmountCents: number;
   amountPaidCents: number;
+  /** Defaults to 0 - the issue transition, where a DRAFT holds no applications. */
+  pendingAppliedCents?: number;
   currentStatus?: string | null;
 }): InvoiceRollup {
   const status = deriveInvoiceStatus(state);
@@ -107,6 +115,7 @@ export function computeInvoiceRollup(state: {
   return {
     amountPaidCents: state.amountPaidCents,
     balanceDueCents: issued ? Math.max(state.totalAmountCents - state.amountPaidCents, 0) : 0,
+    pendingAppliedCents: issued ? state.pendingAppliedCents ?? 0 : 0,
     status,
   };
 }

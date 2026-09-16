@@ -441,6 +441,12 @@ export interface RecordPaymentInput {
   /** Intent: the agreement this money is meant for. Application is the fact. */
   designatedAgreementId?: string | null;
   /**
+   * Intent of the same kind: the visit the money was collected at, set by the
+   * field's collect dialog and never by the office (D5 owner review of Pass
+   * 7.5). Must be an appointment at the payment's location.
+   */
+  appointmentId?: string | null;
+  /**
    * Apply to this invoice in the same transaction - the "collect against this
    * bill" path. Capped by what the invoice can still take; any remainder
    * stays unapplied at the location.
@@ -700,6 +706,8 @@ export interface IStorage {
   // recorded. Invoice rollups (amountPaidCents / balanceDueCents / status) are
   // recomputed from the ledger inside every one of these transactions.
   getPaymentsByLocation(locationId: string): Promise<Payment[]>;
+  /** What the field collected at one visit (payments.appointmentId) - the review modal's "Collected in the field" list. */
+  getPaymentsByAppointment(appointmentId: string): Promise<Payment[]>;
   getPayment(id: string): Promise<Payment | undefined>;
   recordPayment(input: RecordPaymentInput): Promise<RecordPaymentResult>;
   confirmPayment(id: string, actor?: AuditActor | null): Promise<Payment | undefined>;
@@ -4659,7 +4667,7 @@ export class DatabaseStorage implements IStorage {
       // is invoiced - D4's order, D4's eligibility (money designated to another
       // agreement is never offered), capped at what the visit would owe.
       if (locationId) {
-        const { eligible } = await this.orderSourcesForAgreementsTx(db, locationId, new Set(agreementIds));
+        const { eligible } = await this.orderSourcesForAgreementsTx(db, locationId, new Set(agreementIds), appointment.id);
         let poolCents = eligible.reduce((sum, source) => sum + source.unappliedCents, 0);
         for (const line of lines) {
           if (line.priceCents == null || poolCents <= 0) continue;
@@ -5684,6 +5692,7 @@ export class DatabaseStorage implements IStorage {
         status: rollup.status,
         amountPaidCents: rollup.amountPaidCents,
         balanceDueCents: rollup.balanceDueCents,
+        pendingAppliedCents: rollup.pendingAppliedCents,
         issuedAt: new Date(),
         dueDate: terms.dueDate,
       })
@@ -6072,6 +6081,17 @@ export class DatabaseStorage implements IStorage {
       .orderBy(desc(payments.receivedAt), desc(payments.createdAt));
   }
 
+  // Only payments that NAMED the visit at collection. Not a guess by location,
+  // date and technician - that misleads on a day with two visits at one
+  // location, which is why the column exists.
+  async getPaymentsByAppointment(appointmentId: string): Promise<Payment[]> {
+    return db
+      .select()
+      .from(payments)
+      .where(and(eq(payments.orgId, this.orgId), eq(payments.appointmentId, appointmentId)))
+      .orderBy(asc(payments.receivedAt), asc(payments.createdAt));
+  }
+
   async getPayment(id: string): Promise<Payment | undefined> {
     const [payment] = await db.select().from(payments).where(and(eq(payments.orgId, this.orgId), eq(payments.id, id)));
     return payment;
@@ -6166,6 +6186,7 @@ export class DatabaseStorage implements IStorage {
     const rollup = computeInvoiceRollup({
       totalAmountCents: invoice.totalAmountCents,
       amountPaidCents: sums.paidCents,
+      pendingAppliedCents: sums.pendingCents,
       currentStatus: invoice.status,
     });
     const [updated] = await tx
@@ -6173,6 +6194,7 @@ export class DatabaseStorage implements IStorage {
       .set({
         amountPaidCents: rollup.amountPaidCents,
         balanceDueCents: rollup.balanceDueCents,
+        pendingAppliedCents: rollup.pendingAppliedCents,
         status: rollup.status,
         paidDate: rollup.status === "PAID" ? invoice.paidDate ?? new Date() : null,
       })
@@ -6233,6 +6255,7 @@ export class DatabaseStorage implements IStorage {
         amountCents: payment.amountCents,
         unappliedCents,
         designatedAgreementId: payment.designatedAgreementId ?? null,
+        appointmentId: payment.appointmentId ?? null,
         recordedAt: payment.receivedAt.toISOString(),
         locationId: payment.locationId,
       });
@@ -6248,6 +6271,7 @@ export class DatabaseStorage implements IStorage {
         amountCents: memo.amountCents,
         unappliedCents,
         designatedAgreementId: null,
+        appointmentId: null,
         recordedAt: memo.issuedAt.toISOString(),
         locationId: memo.locationId,
       });
@@ -6283,6 +6307,26 @@ export class DatabaseStorage implements IStorage {
           throw new Error("The designated agreement belongs to a different location");
         }
       }
+      if (input.appointmentId) {
+        // Validated the way the agreement designation is: the visit must exist
+        // and sit at the location the money lands on. appointments.locationId
+        // is nullable, so an appointment without one is placed by its
+        // services (the same join every other visit rollup uses).
+        const [appointment] = await tx.select().from(appointments).where(and(eq(appointments.orgId, this.orgId), eq(appointments.id, input.appointmentId)));
+        if (!appointment) {
+          throw new Error("Appointment not found");
+        }
+        const appointmentLocationIds = new Set<string>();
+        if (appointment.locationId) {
+          appointmentLocationIds.add(appointment.locationId);
+        } else {
+          const linkedServices = await this.getLinkedServicesForAppointmentTx(tx, appointment.id, appointment.serviceId);
+          for (const service of linkedServices) appointmentLocationIds.add(service.locationId);
+        }
+        if (!appointmentLocationIds.has(location.id)) {
+          throw new Error("The appointment is at a different location than the payment");
+        }
+      }
 
       const [payment] = await tx
         .insert(payments)
@@ -6296,6 +6340,7 @@ export class DatabaseStorage implements IStorage {
           // permission-gated act.
           status: "PENDING",
           designatedAgreementId: input.designatedAgreementId ?? null,
+          appointmentId: input.appointmentId ?? null,
           checkNumber: input.checkNumber?.trim() || null,
           referenceNumber: input.referenceNumber?.trim() || null,
           memo: input.memo?.trim() || null,
@@ -6959,10 +7004,10 @@ export class DatabaseStorage implements IStorage {
     return ids;
   }
 
-  // Order the pool the way one "Apply" should draw on it: money designated
-  // to this invoice's agreement first, then undesignated; confirmed before
-  // pending; oldest first. Money designated to a different agreement is set
-  // aside, not drawn on.
+  // Order the pool the way one "Apply" should draw on it: money collected at
+  // this invoice's visit first, then money designated to this invoice's
+  // agreement, then undesignated; confirmed before pending; oldest first.
+  // Money designated to a different agreement is set aside, not drawn on.
   private async orderSourcesForInvoiceTx(
     reader: Pick<typeof db, "select">,
     invoice: Invoice,
@@ -6971,17 +7016,24 @@ export class DatabaseStorage implements IStorage {
       return { eligible: [], designatedElsewhereCents: 0 };
     }
     const agreementIds = await this.invoiceAgreementIdsTx(reader, invoice.id);
-    return this.orderSourcesForAgreementsTx(reader, invoice.locationId, agreementIds);
+    return this.orderSourcesForAgreementsTx(reader, invoice.locationId, agreementIds, invoice.appointmentId ?? null);
   }
 
-  // The same ordering keyed on the agreements a not-yet-invoiced visit is
-  // for, so the field's "COA available" (getVisitBillingSummary, D6) draws
-  // the pool in exactly the order the D4 prompt will when the visit is
-  // invoiced - one rule, not a field approximation of it.
+  // The same ordering keyed on the agreements (and the visit) a
+  // not-yet-invoiced visit is for, so the field's "COA available"
+  // (getVisitBillingSummary, D6) draws the pool in exactly the order the D4
+  // prompt will when the visit is invoiced - one rule, not a field
+  // approximation of it.
+  //
+  // Money collected at a DIFFERENT visit at this location is not set aside
+  // the way money designated to a different agreement is: the visit link is
+  // a preference, not a fence, or a payment collected at a visit that was
+  // already settled could never reach the customer's next invoice.
   private async orderSourcesForAgreementsTx(
     reader: Pick<typeof db, "select">,
     locationId: string,
     agreementIds: Set<string>,
+    appointmentId: string | null = null,
   ): Promise<{ eligible: Array<UnappliedSource & { locationId: string }>; designatedElsewhereCents: number }> {
     const sources = await this.unappliedSourcesForLocationTx(reader, locationId);
     let designatedElsewhereCents = 0;
@@ -6992,8 +7044,12 @@ export class DatabaseStorage implements IStorage {
       designatedElsewhereCents += source.unappliedCents;
       return false;
     });
-    const rank = (source: UnappliedSource) =>
-      (source.designatedAgreementId ? 0 : 2) + (source.status === "PENDING" ? 1 : 0);
+    const tier = (source: UnappliedSource) => {
+      if (appointmentId && source.appointmentId === appointmentId) return 0;
+      if (source.designatedAgreementId) return 2;
+      return 4;
+    };
+    const rank = (source: UnappliedSource) => tier(source) + (source.status === "PENDING" ? 1 : 0);
     eligible.sort((a, b) => rank(a) - rank(b) || a.recordedAt.localeCompare(b.recordedAt));
     return { eligible, designatedElsewhereCents };
   }
