@@ -1214,12 +1214,16 @@ GET  /api/payments/by-appointment/:appointmentId    open read like the other pay
 //   information_schema is_nullable guard, so every boot after the first skips the table-wide UPDATE.
 
 // client
-// pages/service-ticket-review.tsx: address block in the header card (MapPin, street, city/state zip); "Visit billing" = VisitBillingRows over
-//   useVisitBillingSummary(appointment); VisitCollectionsBlock = GET /api/payments/by-appointment + the location's ledger-summary -
-//   method / check # / amount / status badge / received-by / applied-or-on-balance, Confirm gated exactly as LocationLedgerPanel
-//   (CONFIRM_PAYMENT; cash also CONFIRM_CASH_PAYMENT; "Cash is confirmed by a manager or admin." for support), "Collected $X - $Y
-//   pending confirmation", then "This location also has $Z on account not from this visit" / "No other balance on account";
-//   Back / "n of N" / Next in the dialog header over filteredRecords (goToRecord clears the reopen reason).
+// pages/service-ticket-review.tsx: the header card is ONE row - identity (customer, service type, agreement) | address (MapPin, street,
+//   city/state zip) | status badge - then two FULL-WIDTH blocks above Finalize. "Visit billing" = VisitBillingTable (new in
+//   visit-billing-summary.tsx: one table row per service - name + designation | Price (+ tax) | COA | Due today - and a Due today
+//   footer; the same figures as VisitBillingRows, which stays for the phone-width collect dialog) over useVisitBillingSummary(appointment).
+//   VisitCollectionsBlock = GET /api/payments/by-appointment + the location's ledger-summary: one line per payment - method / check # /
+//   amount / status badge / received-by / applied-or-on-balance - with Confirm at the right, gated exactly as LocationLedgerPanel
+//   (CONFIRM_PAYMENT; cash also CONFIRM_CASH_PAYMENT; "Cash is confirmed by a manager or admin." for support); "Collected $X - $Y pending
+//   confirmation" in the block's title row; then "This location also has $Z on account not linked to this visit" / "No other balance on
+//   account". A failed by-appointment read says "could not be loaded", never "nothing collected". Back / "n of N" / Next in the dialog
+//   header over filteredRecords (goToRecord clears the reopen reason).
 // components/collect-payment-dialog.tsx: POST body gains appointmentId (both surfaces already knew the appointment).
 // components/apply-location-balance-prompt.tsx: a source collected at the invoice's visit says ", collected at this visit".
 // pages/invoices.tsx: row prints Paid / Balance when paid OR pending > 0, plus "$X pending confirmation"; Open tile sub-line
@@ -1253,10 +1257,21 @@ Behavior worth knowing before Pass 7.7 touches it:
 - **Backfill on the dev DB.** Zero unreleased applications of PENDING payments existed, so every row
   backfilled to 0; after boot 1 no row was NULL and zero rows disagreed with the ledger sum; boot 2
   found the column NOT NULL and skipped the block. `payments.appointment_id` is nullable for good.
-- **The modal was not rendered in the agent session.** Vite compiled every edited client module
-  (200 from `/src/...tsx`) and `tsc` is clean, but the review modal's layout - the two-column money
-  grid, the header Back / Next row, the address block - has had no human eyes. The owner's live
-  test is its first render; expect wording and spacing notes, not logic ones.
+- **The owner's first render (2026-09-16) found two things, fixed in the branch's second commit.**
+  (1) "Nothing collected in the field" while the location showed $216.50 pending. The test ran
+  against a dev server started the evening before on pre-7.6 server code: its request schema
+  dropped `appointmentId` (zod strips unknown keys), so the two collections landed with a NULL
+  visit link, and `/api/payments/by-appointment` fell through to the SPA's index.html, which the
+  modal read as an empty list. **A pass with server changes needs the owner's `npm run dev:full`
+  restarted before a manual test** - Vite hot-reloads the new client against the OLD API otherwise,
+  and the failure looks exactly like a logic bug. The two unlinked payments stay unlinked (the ledger
+  is append-only, and guessing the visit is what the column exists to end); they show under the
+  "not linked to this visit" line, which is why that line says *not linked* rather than *not from*.
+  The modal now shows a failed read as "could not be loaded", never as "nothing collected". (2) Dead
+  space: the header card was one column of text plus a badge, and the short collections block sat
+  beside the tall billing block. The header is now identity | address | status on one row, and the
+  money blocks are full width - a per-service table for billing, one line per payment for
+  collections.
 - **Not built, deliberately.** D9's office edit button and settings-driven reopen-reason dropdown
   (unscheduled). Anything on a Payments screen (7.7: the org-wide list, the pending queue with batch
   confirmation, the collections report). Setting or changing `appointmentId` from the office (the

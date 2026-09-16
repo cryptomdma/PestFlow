@@ -155,8 +155,13 @@ never read by status - shown as "pending confirmation" on the Invoices screen's 
 the location Invoices tab's rows and the ledger panel's Pending tile. Migration: two nullable
 columns and a one-shot backfill of the pending rollup from the ledger (0 everywhere on the dev DB).
 Not built: D9's office edit button and reopen-reason dropdown (unscheduled); anything on a Payments
-screen (7.7). The modal itself was not rendered in the agent session - `tsc` and Vite compile it;
-the owner's live test is its first look. Signatures and behavior are under "Shipped in Pass 7.6" in
+screen (7.7). The owner's first render found a stale-dev-server test artifact (a server started on
+pre-7.6 code dropped the collect dialog's `appointmentId`, so two payments have no visit link and
+never will) and dead space in the header and money blocks; the second commit makes the header
+identity | address | status on one row, the billing a full-width per-service table, and the
+collections one line per payment, and reports a failed read as such rather than as "nothing
+collected". **Restart `npm run dev:full` before manually testing any pass that changes server
+code.** Signatures and behavior are under "Shipped in Pass 7.6" in
 `PLAN_BILLING_V1_1_EXECUTION.md`.
 
 Next up once it merges: **Pass 7.7 — `feature/phase-1-payments-screen`** (org-wide payments list

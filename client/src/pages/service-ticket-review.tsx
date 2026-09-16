@@ -20,7 +20,7 @@ import {
   type InvoiceOnFinalizePromptState,
 } from "@/components/invoice-on-finalize-prompt";
 import { apiRequest, getApiErrorMessage, queryClient } from "@/lib/queryClient";
-import { VisitBillingRows, useVisitBillingSummary } from "@/components/visit-billing-summary";
+import { VisitBillingTable, useVisitBillingSummary } from "@/components/visit-billing-summary";
 import { formatCents } from "@shared/money";
 import { can, PERMISSIONS } from "@shared/permissions";
 import { formatPaymentMethod, formatPaymentStatus, paymentHoldsValue, type LocationLedgerSummary } from "@shared/payments";
@@ -97,7 +97,7 @@ function VisitCollectionsBlock({ appointmentId, locationId }: { appointmentId: s
   const canConfirm = can(role, PERMISSIONS.CONFIRM_PAYMENT);
   const canConfirmCash = can(role, PERMISSIONS.CONFIRM_CASH_PAYMENT);
 
-  const { data: visitPayments, isLoading } = useQuery<Payment[]>({
+  const { data: visitPayments, isLoading, isError } = useQuery<Payment[]>({
     queryKey: ["/api/payments/by-appointment", appointmentId ?? ""],
     enabled: !!appointmentId,
   });
@@ -135,33 +135,45 @@ function VisitCollectionsBlock({ appointmentId, locationId }: { appointmentId: s
     return ` - ${formatCents(payment.amountCents - unapplied)} applied, ${formatCents(unapplied)} on the location balance`;
   };
 
+  // Full width, one line per payment. A failed read is reported as a failed
+  // read: "nothing collected" is a statement about the ledger, and the office
+  // must not finalize on it when the list simply did not load.
   return (
     <div className="rounded-md border p-3" data-testid="block-visit-collections">
-      <p className="text-xs uppercase tracking-wide text-muted-foreground">Collected in the field</p>
+      <div className="flex items-baseline justify-between gap-3 flex-wrap">
+        <p className="text-xs uppercase tracking-wide text-muted-foreground">Collected in the field</p>
+        {appointmentId && visitPayments?.length ? (
+          <p className="text-sm" data-testid="text-visit-collected-total">
+            Collected <span className="font-semibold">{formatCents(collectedCents)}</span>{pendingCents > 0 ? ` - ${formatCents(pendingCents)} pending confirmation` : ""}
+          </p>
+        ) : null}
+      </div>
       {!appointmentId ? (
         <p className="mt-1 text-sm text-muted-foreground">Not on an appointment - no collection can be tied to this ticket.</p>
       ) : isLoading ? (
         <p className="mt-1 text-xs text-muted-foreground">Loading collections...</p>
+      ) : isError ? (
+        <p className="mt-1 text-sm text-destructive" data-testid="text-visit-collections-error">Collections could not be loaded for this visit. Do not finalize on this alone - check the location's Invoices tab.</p>
       ) : !visitPayments?.length ? (
         <p className="mt-1 text-sm text-muted-foreground">Nothing collected in the field for this visit.</p>
       ) : (
-        <div className="mt-2 space-y-2">
+        <div className="mt-2 space-y-1.5">
           {visitPayments.map((payment) => {
             const mayConfirm = payment.status === "PENDING" && canConfirm && (payment.method !== "CASH" || canConfirmCash);
             return (
-              <div key={payment.id} className="flex items-start justify-between gap-2 rounded-md bg-muted/20 p-2" data-testid={`row-visit-payment-${payment.id}`}>
+              <div key={payment.id} className="flex items-center justify-between gap-3 rounded-md bg-muted/20 px-3 py-2" data-testid={`row-visit-payment-${payment.id}`}>
                 <div className="min-w-0 text-sm">
-                  <div className="flex items-center gap-2 flex-wrap">
+                  <div className="flex items-center gap-x-2 gap-y-0.5 flex-wrap">
                     <span className="font-medium">{formatPaymentMethod(payment.method)}{payment.checkNumber ? ` #${payment.checkNumber}` : ""}{payment.referenceNumber ? ` (${payment.referenceNumber})` : ""}</span>
                     <span className="font-semibold">{formatCents(payment.amountCents)}</span>
                     <Badge variant="secondary" className={`text-xs ${paymentStatusClass(payment.status)}`}>{formatPaymentStatus(payment.status)}</Badge>
+                    <span className="text-xs text-muted-foreground">
+                      {new Date(payment.receivedAt).toLocaleString()}{payment.collectedByLabel ? ` by ${payment.collectedByLabel}` : ""}
+                      {describeApplication(payment)}
+                      {payment.status === "VOIDED" && payment.voidReason ? ` - voided: ${payment.voidReason}` : ""}
+                      {payment.memo ? ` - ${payment.memo}` : ""}
+                    </span>
                   </div>
-                  <p className="text-xs text-muted-foreground">
-                    {new Date(payment.receivedAt).toLocaleString()}{payment.collectedByLabel ? ` by ${payment.collectedByLabel}` : ""}
-                    {describeApplication(payment)}
-                    {payment.status === "VOIDED" && payment.voidReason ? ` - voided: ${payment.voidReason}` : ""}
-                    {payment.memo ? ` - ${payment.memo}` : ""}
-                  </p>
                   {payment.status === "PENDING" && payment.method === "CASH" && canConfirm && !canConfirmCash ? (
                     <p className="text-xs text-muted-foreground">Cash is confirmed by a manager or admin.</p>
                   ) : null}
@@ -172,15 +184,12 @@ function VisitCollectionsBlock({ appointmentId, locationId }: { appointmentId: s
               </div>
             );
           })}
-          <p className="text-sm" data-testid="text-visit-collected-total">
-            Collected {formatCents(collectedCents)}{pendingCents > 0 ? ` - ${formatCents(pendingCents)} pending confirmation` : ""}.
-          </p>
         </div>
       )}
       {locationId && ledger ? (
         <p className="mt-2 text-xs text-muted-foreground" data-testid="text-location-other-balance">
           {otherCents > 0
-            ? `This location also has ${formatCents(otherCents)} on account not from this visit${otherPendingCents > 0 ? ` (${formatCents(otherPendingCents)} of it pending confirmation)` : ""}.`
+            ? `This location also has ${formatCents(otherCents)} on account not linked to this visit${otherPendingCents > 0 ? ` (${formatCents(otherPendingCents)} of it pending confirmation)` : ""}.`
             : "No other balance on account at this location."}
         </p>
       ) : null}
@@ -497,27 +506,30 @@ export default function ServiceTicketReview() {
           {selectedRecord ? (
             <div className="space-y-4">
               <div className="rounded-lg border bg-muted/20 p-3">
-                <div className="flex items-start justify-between gap-3">
+                {/* One row: who and what | where | ticket status. The address
+                    sits beside the identity rather than under it, so the card
+                    is three columns of content instead of one column and a badge. */}
+                <div className="grid gap-3 sm:grid-cols-[1.2fr_1fr_auto] sm:items-start">
                   <div>
                     <p className="font-medium">{getCustomerLabel(selectedCustomer ?? undefined, selectedLocation ?? undefined)}</p>
                     <p className="text-sm text-muted-foreground">{serviceTypeById.get(selectedRecord.serviceTypeId || selectedService?.serviceTypeId || "")?.name || "Service"}</p>
                     <p className="text-xs text-muted-foreground">{selectedService?.agreementId ? "Agreement service" : "Non-agreement service"}</p>
                   </div>
-                  <Badge variant={statusBadgeVariant(selectedRecord)}>{statusLabel(selectedRecord)}</Badge>
-                </div>
-                <div className="mt-2 flex items-start gap-2 text-sm" data-testid="block-review-address">
-                  <MapPin className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
-                  {selectedLocation ? (
-                    <div>
-                      {selectedLocation.name && selectedLocation.name !== getCustomerLabel(selectedCustomer ?? undefined, selectedLocation) ? (
-                        <p className="font-medium">{selectedLocation.name}</p>
-                      ) : null}
-                      <p>{selectedLocation.address}</p>
-                      <p className="text-muted-foreground">{[selectedLocation.city, selectedLocation.state].filter(Boolean).join(", ")} {selectedLocation.zip}</p>
-                    </div>
-                  ) : (
-                    <p className="text-muted-foreground">Location unavailable</p>
-                  )}
+                  <div className="flex items-start gap-2 text-sm" data-testid="block-review-address">
+                    <MapPin className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+                    {selectedLocation ? (
+                      <div>
+                        {selectedLocation.name && selectedLocation.name !== getCustomerLabel(selectedCustomer ?? undefined, selectedLocation) ? (
+                          <p className="font-medium">{selectedLocation.name}</p>
+                        ) : null}
+                        <p>{selectedLocation.address}</p>
+                        <p className="text-muted-foreground">{[selectedLocation.city, selectedLocation.state].filter(Boolean).join(", ")} {selectedLocation.zip}</p>
+                      </div>
+                    ) : (
+                      <p className="text-muted-foreground">Location unavailable</p>
+                    )}
+                  </div>
+                  <Badge variant={statusBadgeVariant(selectedRecord)} className="order-first w-fit sm:order-none sm:justify-self-end">{statusLabel(selectedRecord)}</Badge>
                 </div>
               </div>
               {selectedRecord.flaggedAt ? (
@@ -530,19 +542,21 @@ export default function ServiceTicketReview() {
                   </p>
                 </div>
               ) : null}
-              <div className="grid gap-3 md:grid-cols-2">
-                <div className="rounded-md border p-3" data-testid="block-review-visit-billing">
-                  <p className="text-xs uppercase tracking-wide text-muted-foreground">Visit billing</p>
-                  {selectedAppointment ? (
-                    <div className="mt-2">
-                      <VisitBillingRows summary={visitBilling} isLoading={visitBillingLoading} isError={visitBillingError} />
-                    </div>
-                  ) : (
-                    <p className="mt-1 text-sm text-muted-foreground">Not on an appointment - there is no visit to price.</p>
-                  )}
-                </div>
-                <VisitCollectionsBlock appointmentId={selectedAppointment?.id ?? null} locationId={selectedLocation?.id ?? null} />
+              {/* Money, full width and above Finalize: the visit priced as the
+                  office will invoice it, then what the technician collected at
+                  it. Two stacked blocks, not two columns - a short collections
+                  list beside a tall billing block left a column of dead space. */}
+              <div className="rounded-md border p-3" data-testid="block-review-visit-billing">
+                <p className="text-xs uppercase tracking-wide text-muted-foreground">Visit billing</p>
+                {selectedAppointment ? (
+                  <div className="mt-1">
+                    <VisitBillingTable summary={visitBilling} isLoading={visitBillingLoading} isError={visitBillingError} />
+                  </div>
+                ) : (
+                  <p className="mt-1 text-sm text-muted-foreground">Not on an appointment - there is no visit to price.</p>
+                )}
               </div>
+              <VisitCollectionsBlock appointmentId={selectedAppointment?.id ?? null} locationId={selectedLocation?.id ?? null} />
               <div className="grid gap-3 md:grid-cols-3">
                 <div className="rounded-md border p-3">
                   <p className="text-xs uppercase tracking-wide text-muted-foreground">Technician</p>
