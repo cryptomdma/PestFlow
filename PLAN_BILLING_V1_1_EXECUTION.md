@@ -25,8 +25,8 @@ grounded in what the code and data actually do, not what the decision record ass
 | 5.5 | `feature/phase-1-initial-charge-to-agreement` | D4 (owner correction) | Done (PR #62) |
 | 6 | `feature/phase-1-payments-lite` | D5, D4 | Done (PR #63) |
 | 7 | `feature/phase-1-coa-and-field-display` | D6 | Done (PR #64) |
-| 7.5 | `feature/phase-1-tech-collect-relabel` | D8 (post-ticket sequence relabel) | Pushed, awaiting merge |
-| 7.6 | `feature/phase-1-review-modal-field-collection` | D9 (review modal price/payment + address blocks), D5 owner review items 1-3 | Not started |
+| 7.5 | `feature/phase-1-tech-collect-relabel` | D8 (post-ticket sequence relabel) | Done (PR #65) |
+| 7.6 | `feature/phase-1-review-modal-field-collection` | D9 (review modal price/payment + address blocks), D5 owner review items 1-3 | Pushed, awaiting merge |
 | 7.7 | `feature/phase-1-payments-screen` | D5 owner review item 4 (Payments screen, batch confirmation, collections report) | Not started |
 | 8 | `feature/phase-1-audit-log-backfill` | D7 (remainder) | Not started |
 | 9 | `feature/phase-1-legacy-billing-frequency-removal` | D9 | Not started |
@@ -1173,6 +1173,125 @@ and the design each finding settled, so Pass 7.6 and 7.7 build the same thing th
 - **Left unscheduled on purpose.** D9's role-gated office edit button and the settings-driven
   reopen-reason dropdown: both are real workflow work with audit implications, and Pass 8 is about
   to touch reopen logging.
+
+**Shipped in Pass 7.6 (D9 review-modal blocks; D5 owner review items 1-3), for Pass 7.7 to build
+on** - two columns, one backfill, one read, and the reviewer sees money before Finalize.
+
+```ts
+// shared/schema.ts
+payments.appointmentId          // varchar, nullable. The visit the money was collected at - intent like designatedAgreementId,
+                                // set once by the field's collect dialog, never by the office's RecordPaymentDialog, never changed.
+invoices.pendingAppliedCents    // integer NOT NULL DEFAULT 0. Unreleased applications of PENDING payments: shown, never counted.
+
+// shared/invoice-status.ts
+export function computeInvoiceRollup({ totalAmountCents, amountPaidCents, pendingAppliedCents?, currentStatus? })
+  : { amountPaidCents; balanceDueCents; pendingAppliedCents; status }
+  // pendingAppliedCents defaults to 0 (the DRAFT -> issued transition, where nothing is applied); 0 for DRAFT / VOID;
+  // status never reads it - a bounced check must never have marked an invoice paid.
+
+// shared/payments.ts
+UnappliedSource.appointmentId: string | null     // null for office-recorded money and for credit memos
+
+// server/storage.ts
+RecordPaymentInput.appointmentId?: string | null // refused unless the appointment exists and sits at the payment's location
+                                                 // (appointments.locationId; its services' locations when that is null - getLinkedServicesForAppointmentTx)
+getPaymentsByAppointment(appointmentId): Promise<Payment[]>   // IStorage. Payments that NAMED the visit, oldest first - never a guess by location/date/tech
+// private: recomputeInvoiceRollupTx now stores sums.pendingCents (sumInvoiceApplicationsTx already computed it);
+// collectUnappliedSourcesTx carries appointmentId; orderSourcesForAgreementsTx(reader, locationId, agreementIds, appointmentId = null)
+// ranks visit-collected (0) < agreement-designated (2) < undesignated (4), +1 when PENDING, then oldest first.
+// orderSourcesForInvoiceTx passes invoice.appointmentId; getVisitBillingSummary passes appointment.id - the D4 prompt and the
+// field's "COA available" still draw the pool in ONE order.
+
+// Routes
+POST /api/payments                                  body gains appointmentId (nullable, optional); TAKE_PAYMENT_FIELD as before
+GET  /api/payments/by-appointment/:appointmentId    open read like the other payments reads - the review modal's list
+
+// server/payments-bootstrap.ts (runs every boot, idempotent)
+//   ALTER TABLE payments ADD COLUMN IF NOT EXISTS appointment_id varchar REFERENCES appointments(id); index on it. No backfill: nothing
+//   before this pass recorded a visit, and inferring one is the misattribution the column ends.
+//   ALTER TABLE invoices ADD COLUMN IF NOT EXISTS pending_applied_cents integer; UPDATE ... WHERE pending_applied_cents IS NULL from
+//   unreleased applications of PENDING payments (0 for DRAFT / VOID); SET DEFAULT 0; SET NOT NULL - the whole block behind an
+//   information_schema is_nullable guard, so every boot after the first skips the table-wide UPDATE.
+
+// client
+// pages/service-ticket-review.tsx: the header card is ONE row - identity (customer, service type, agreement) | address (MapPin, street,
+//   city/state zip) | status badge - then two FULL-WIDTH blocks above Finalize. "Visit billing" = VisitBillingTable (new in
+//   visit-billing-summary.tsx: one table row per service - name + designation | Price (+ tax) | COA | Due today - and a Due today
+//   footer; the same figures as VisitBillingRows, which stays for the phone-width collect dialog) over useVisitBillingSummary(appointment).
+//   VisitCollectionsBlock = GET /api/payments/by-appointment + the location's ledger-summary: one line per payment - method / check # /
+//   amount / status badge / received-by / applied-or-on-balance - with Confirm at the right, gated exactly as LocationLedgerPanel
+//   (CONFIRM_PAYMENT; cash also CONFIRM_CASH_PAYMENT; "Cash is confirmed by a manager or admin." for support); "Collected $X - $Y pending
+//   confirmation" in the block's title row; then "This location also has $Z on account not linked to this visit" / "No other balance on
+//   account". A failed by-appointment read says "could not be loaded", never "nothing collected". Back / "n of N" / Next in the dialog
+//   header, always rendered while a ticket from the queue is open (the ends disable rather than disappear); each move clears the
+//   reopen reason.
+// lib/review-queue-nav.ts (new, pure, no React): resolveReviewNav(runRecordIds, selectedRecordId, liveRecordIds) -> { index, total,
+//   previous, next }. The run is a SNAPSHOT of the queue taken when a ticket is opened from it, never the live filtered list -
+//   finalizing under the "Pending Review" filter drops the ticket out of that list, which would put it at index -1 and hide the
+//   controls at exactly the moment the reviewer wants Next. "Live" is every record that still EXISTS (not the filtered queue), so a
+//   finalized ticket keeps its place and an id that no longer resolves is stepped over rather than opened.
+// components/collect-payment-dialog.tsx: POST body gains appointmentId (both surfaces already knew the appointment).
+// components/apply-location-balance-prompt.tsx: a source collected at the invoice's visit says ", collected at this visit".
+// pages/invoices.tsx: row prints Paid / Balance when paid OR pending > 0, plus "$X pending confirmation"; Open tile sub-line
+//   "$X of it pending confirmation". components/location-ledger-panel.tsx: InvoiceRowLedger appends " - $X pending confirmation";
+//   the Pending tile gains "+ $X applied to invoices, awaiting confirmation" summed from the tab's issued invoices.
+```
+
+Behavior worth knowing before Pass 7.7 touches it:
+- **The visit link is a preference, not a fence.** Money designated to a *different agreement* is set
+  aside (Pass 6, unchanged). Money collected at a *different visit* at the same location is still
+  eligible for this invoice, ranked by its designation - otherwise a payment collected at a visit
+  that was already settled could never reach the customer's next invoice. Verified live: an office
+  check with no visit, recorded *before* the technician's check and cash, was listed and drawn third.
+- **Read payments by appointment, never the summary.** Once the visit is invoiced,
+  `getVisitBillingSummary` reads applications only, so an unapplied field collection does not move
+  its figures; the modal's list reads `payments.appointmentId` directly and survives invoicing,
+  application and confirmation. The list's "applied / on the location balance" suffix comes from the
+  ledger-summary sources (a fully applied payment is absent from them, so absent = applied).
+- **Where the pending figure moves.** Recorded PENDING and unapplied: the ledger panel's Pending tile
+  (unchanged). Applied while PENDING: leaves that tile, lands in `pendingAppliedCents` on the invoice
+  row, the Invoices screen row and Open tile, the InvoiceRowLedger line and the panel's new sub-line.
+  Confirmed: leaves `pendingAppliedCents`, enters `amountPaidCents`, `balanceDueCents` drops - all in
+  `confirmPayment`'s transaction. Verified live: $8,500 applied pending on a $100 visit read
+  pending 8500 / paid 0 / due 10000; support's check confirmation moved 2500 across; the manager's
+  cash confirmation moved 5000; the row, the list and `pending_applied_cents` in the table agreed at
+  every step. `coaPendingCents` on the billing summary equals the stored rollup.
+- **Validation is the agreement designation's, applied to the visit.** Unknown appointment: 400
+  "Appointment not found". Appointment at another location: 400 "The appointment is at a different
+  location than the payment". An appointment with no `locationId` is placed by its linked services.
+  Verified both refusals live as the technician.
+- **Backfill on the dev DB.** Zero unreleased applications of PENDING payments existed, so every row
+  backfilled to 0; after boot 1 no row was NULL and zero rows disagreed with the ledger sum; boot 2
+  found the column NOT NULL and skipped the block. `payments.appointment_id` is nullable for good.
+- **The owner's first render (2026-09-16) found two things, fixed in the branch's second commit.**
+  (1) "Nothing collected in the field" while the location showed $216.50 pending. The test ran
+  against a dev server started the evening before on pre-7.6 server code: its request schema
+  dropped `appointmentId` (zod strips unknown keys), so the two collections landed with a NULL
+  visit link, and `/api/payments/by-appointment` fell through to the SPA's index.html, which the
+  modal read as an empty list. **A pass with server changes needs the owner's `npm run dev:full`
+  restarted before a manual test** - Vite hot-reloads the new client against the OLD API otherwise,
+  and the failure looks exactly like a logic bug. The two unlinked payments stay unlinked (the ledger
+  is append-only, and guessing the visit is what the column exists to end); they show under the
+  "not linked to this visit" line, which is why that line says *not linked* rather than *not from*.
+  The modal now shows a failed read as "could not be loaded", never as "nothing collected". (2) Dead
+  space: the header card was one column of text plus a badge, and the short collections block sat
+  beside the tall billing block. The header is now identity | address | status on one row, and the
+  money blocks are full width - a per-service table for billing, one line per payment for
+  collections. (3) Next / Back vanished after Finalize, which is where a review run most wants them:
+  they walked the live filtered queue, and a finalized ticket leaves it under the "Pending Review"
+  filter. They now walk a snapshot of the queue (`lib/review-queue-nav.ts`) and are always rendered
+  while a ticket from the queue is open.
+- **Verification without a browser.** This repo has no test runner, no browser automation and no
+  test files, so neither the agent session nor any future one can render this modal. What was
+  possible was done instead: the stepping rules are a pure module exercised by a 15-case script
+  (`resolveReviewNav`, including a regression guard that navigating the filtered queue yields
+  index -1), `tsc`, the 46-assertion API smoke test, and a Vite 200 on every touched module. Layout
+  and wording still reach a human first. If a future pass adds a component test runner, this modal
+  is the first thing worth covering.
+- **Not built, deliberately.** D9's office edit button and settings-driven reopen-reason dropdown
+  (unscheduled). Anything on a Payments screen (7.7: the org-wide list, the pending queue with batch
+  confirmation, the collections report). Setting or changing `appointmentId` from the office (the
+  ledger is append-only: a wrong visit is a void and a re-entry). Card / ACH (Phase 2).
 
 **Design note carried into Pass 4** - resolved there: D3's "flags the linked ticket(s) for review" had
 no existing "flagged" concept in the schema. Pass 4 extended `serviceRecords.ticketStatus` with

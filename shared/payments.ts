@@ -113,6 +113,8 @@ export interface UnappliedSource {
   amountCents: number;
   unappliedCents: number;
   designatedAgreementId: string | null;
+  /** The visit a payment was collected at, when the field recorded it (D5 owner review). Null for office-recorded money and credit memos. */
+  appointmentId: string | null;
   recordedAt: string;
 }
 

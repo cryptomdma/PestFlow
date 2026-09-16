@@ -2039,6 +2039,9 @@ export async function registerRoutes(
     referenceNumber: z.string().nullable().optional(),
     memo: z.string().nullable().optional(),
     designatedAgreementId: z.string().nullable().optional(),
+    // The visit the money was collected at - the field's collect dialog sets
+    // it; the office's Record Payment dialog never does. Validated in storage.
+    appointmentId: z.string().nullable().optional(),
     applyToInvoiceId: z.string().nullable().optional(),
   });
   const issueCreditMemoSchema = z.object({
@@ -2075,6 +2078,15 @@ export async function registerRoutes(
 
   app.get("/api/payments/by-location/:locationId", async (req, res) => {
     const data = await req.storage.getPaymentsByLocation(req.params.locationId);
+    res.json(data);
+  });
+
+  // What the field collected at one visit - the Service Ticket Review modal's
+  // "Collected in the field" list. Reads payments.appointmentId, never the
+  // billing summary: once the visit is invoiced the summary reads
+  // applications only, so an unapplied field collection would vanish from it.
+  app.get("/api/payments/by-appointment/:appointmentId", async (req, res) => {
+    const data = await req.storage.getPaymentsByAppointment(req.params.appointmentId);
     res.json(data);
   });
 

@@ -1033,11 +1033,13 @@ invoices only — agreement revenue on schedule-billed plans still comes solely 
 * A **Credit Memo** is the ledger's only correction mechanism. It is issued against a Location
   (optionally naming the Invoice it corrects), sits in the same unapplied pool as a payment, and is
   applied the same way. It never changes an Invoice's price (D6).
-* An Invoice's `amountPaidCents` and `balanceDueCents` are **computed and stored from the ledger** —
-  recomputed in full, under a row lock, inside the same transaction as every application, release,
-  confirmation and void — and its status is derived from them. No status is ever hand-set; there is
-  no "mark paid". A DRAFT or VOID invoice owes nothing and can hold nothing; voiding an invoice
-  releases what was applied to it back to the location.
+* An Invoice's `amountPaidCents`, `balanceDueCents` and `pendingAppliedCents` are **computed and
+  stored from the ledger** — recomputed in full, under a row lock, inside the same transaction as
+  every application, release, confirmation and void — and its status is derived from the first two.
+  `pendingAppliedCents` is the applied money that does not count yet (unreleased applications of
+  PENDING payments): it is shown wherever the invoice is shown, and never read by status. No status
+  is ever hand-set; there is no "mark paid". A DRAFT or VOID invoice owes nothing and can hold
+  nothing; voiding an invoice releases what was applied to it back to the location.
 * The Agreement's initial charge is a **real issued receivable** at agreement creation — its own
   Invoice with an `INITIAL_CHARGE` line, fired once per Agreement — refused, never issued at $0, when a
   percent charge has no price to resolve against.
@@ -1086,6 +1088,11 @@ Money collection or recorded payment event.
 ### Optional fields
 
 * designatedAgreementId nullable — intent, not application
+* appointmentId nullable — the visit the money was collected at (PLAN_BILLING_V1.1 D5, owner review
+  of Pass 7.5). Intent of the same kind as the agreement designation: set once by the field's collect
+  dialog, never by the office, never changed; the appointment must sit at the payment's location.
+  The D4 prompt offers visit-collected money first, then agreement-designated, then undesignated.
+  Application stays the office's explicit act.
 * checkNumber nullable
 * referenceNumber nullable
 * memo nullable

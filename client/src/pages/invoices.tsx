@@ -280,6 +280,9 @@ export default function Invoices() {
   const totalOpenCents = filtered.filter((i) => isInvoiceIssued(i.status)).reduce((s, i) => s + i.balanceDueCents, 0);
   const totalPaidCents = filtered.filter((i) => isInvoiceIssued(i.status)).reduce((s, i) => s + i.amountPaidCents, 0);
   const totalOverdueCents = filtered.filter(isOverdue).reduce((s, i) => s + i.balanceDueCents, 0);
+  // Applied but not yet counted (D5: pending shows, confirmed counts). Part
+  // of the Open figure until the payments behind it are confirmed.
+  const totalPendingAppliedCents = filtered.filter((i) => isInvoiceIssued(i.status)).reduce((s, i) => s + i.pendingAppliedCents, 0);
 
   const statusIcon = (invoice: Invoice) => {
     if (invoice.status === "VOID") return <Ban className="h-4 w-4 text-muted-foreground" />;
@@ -328,7 +331,13 @@ export default function Invoices() {
         <Card>
           <CardContent className="p-4 flex items-center gap-3">
             <div className="h-9 w-9 rounded-md bg-chart-3/10 flex items-center justify-center shrink-0"><Clock className="h-4 w-4 text-chart-3" /></div>
-            <div><p className="text-xs text-muted-foreground">Open</p><p className="text-lg font-bold" data-testid="text-total-pending">{formatCents(totalOpenCents)}</p></div>
+            <div>
+              <p className="text-xs text-muted-foreground">Open</p>
+              <p className="text-lg font-bold" data-testid="text-total-pending">{formatCents(totalOpenCents)}</p>
+              {totalPendingAppliedCents > 0 ? (
+                <p className="text-xs text-muted-foreground" data-testid="text-total-pending-applied">{formatCents(totalPendingAppliedCents)} of it pending confirmation</p>
+              ) : null}
+            </div>
           </CardContent>
         </Card>
         <Card>
@@ -399,8 +408,11 @@ export default function Invoices() {
                         <span>{new Date(inv.issuedAt ?? inv.createdAt).toLocaleDateString()}</span>
                         {inv.status === "DRAFT" ? <span>Draft - not issued; amounts are re-priced at issue</span> : null}
                         {inv.dueDate && <span>Due: {new Date(inv.dueDate).toLocaleDateString()}</span>}
-                        {isInvoiceIssued(inv.status) && inv.amountPaidCents > 0 ? (
+                        {isInvoiceIssued(inv.status) && (inv.amountPaidCents > 0 || inv.pendingAppliedCents > 0) ? (
                           <span data-testid={`text-invoice-paid-${inv.id}`}>Paid {formatCents(inv.amountPaidCents)} - Balance {formatCents(inv.balanceDueCents)}</span>
+                        ) : null}
+                        {isInvoiceIssued(inv.status) && inv.pendingAppliedCents > 0 ? (
+                          <span className="text-chart-3" data-testid={`text-invoice-pending-${inv.id}`}>{formatCents(inv.pendingAppliedCents)} pending confirmation</span>
                         ) : null}
                       </div>
                     </div>

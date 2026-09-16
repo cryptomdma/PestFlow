@@ -113,8 +113,8 @@ card; its arithmetic is `resolveBillingPlanCharge()` in `shared/billing-plan.ts`
 run now bills from too, so the card can never promise a number the run does not charge. No migration.
 Signatures and behavior are under "Shipped in Pass 7" in `PLAN_BILLING_V1_1_EXECUTION.md`.
 
-Pass 7.5 (`feature/phase-1-tech-collect-relabel`, D8's post-ticket sequence relabel) is pushed and
-awaiting merge. The technician flow is now **finish → collect → post**: the service ticket's primary
+Pass 7.5 (`feature/phase-1-tech-collect-relabel`, D8's post-ticket sequence relabel) merged as
+PR #65. The technician flow is now **finish → collect → post**: the service ticket's primary
 button is "Finish & Collect", which opens the field's collect step - the customer-facing summary
 (the visit's Price / COA / Due today rows and total, from Pass 7's one read), payment type (cash /
 check / other), check number or reference, memo, and the amount defaulted to the visit's due today -
@@ -137,14 +137,41 @@ display is not); and confirmation lives only on the location ledger panel, with 
 no batch confirmation and no collections report. Recorded under D5 in `PLAN_BILLING_V1_1.md` and
 resolved as two inserted passes, in this order, ahead of Pass 8.
 
-Next up once it merges: **Pass 7.6 — `feature/phase-1-review-modal-field-collection`** (D9's
-price/payment and address blocks on the review modal with Next/Back, the "collected at this visit"
-link on payments, confirm from the review modal, and a stored pending-applied rollup shown on every
-invoice row). Then **Pass 7.7 — `feature/phase-1-payments-screen`** (org-wide payments list with
-server-side filters, batch confirmation, a Payments page with the pending queue, and a collections
-report). Then **Pass 8 — `feature/phase-1-audit-log-backfill`** (D7 remainder). Scope, files,
-migration and verification for 7.6 and 7.7 are rows in the Ordered Work Plan of
+Pass 7.6 (`feature/phase-1-review-modal-field-collection`, D9's review-modal blocks and D5 owner
+review items 1-3) is pushed and awaiting merge. The Service Ticket Review modal now shows money
+before Finalize: the visit's Price / COA / Due today rows (Pass 7's one read), a **"Collected in the
+field"** list of what the technician recorded at *this visit* with Confirm gated exactly as the
+ledger panel gates it (`CONFIRM_PAYMENT`; cash also `CONFIRM_CASH_PAYMENT`, with the "cash is
+confirmed by a manager" line for support), one line for the location's *other* unapplied balance,
+the address block, and Back / Next over the filtered queue. A payment now records the visit it was
+collected at: `payments.appointmentId`, nullable, set once by the field collect dialog on both of
+its surfaces, never by the office's Record Payment dialog, validated like the agreement designation
+(the appointment must exist and sit at the payment's location). The D4 order is now
+**visit-collected → agreement-designated → undesignated**, confirmed before pending, oldest first,
+in the prompt and in the field's "COA available" alike; money collected at a different visit stays
+eligible (a preference, not a fence). Invoices carry a third stored rollup, `pendingAppliedCents` -
+applied money from PENDING payments, recomputed with the other two in the same transaction and
+never read by status - shown as "pending confirmation" on the Invoices screen's rows and Open tile,
+the location Invoices tab's rows and the ledger panel's Pending tile. Migration: two nullable
+columns and a one-shot backfill of the pending rollup from the ledger (0 everywhere on the dev DB).
+Not built: D9's office edit button and reopen-reason dropdown (unscheduled); anything on a Payments
+screen (7.7). The owner's first render found a stale-dev-server test artifact (a server started on
+pre-7.6 code dropped the collect dialog's `appointmentId`, so two payments have no visit link and
+never will) and dead space in the header and money blocks; the second commit makes the header
+identity | address | status on one row, the billing a full-width per-service table, and the
+collections one line per payment, and reports a failed read as such rather than as "nothing
+collected", and keeps Next / Back visible after Finalize by walking a snapshot of the queue rather
+than the live filtered list (`client/src/lib/review-queue-nav.ts`, pure, exercised by a scratchpad
+script since the repo has no test runner). **Restart `npm run dev:full` before manually testing any
+pass that changes server code.** Signatures and behavior are under "Shipped in Pass 7.6" in
 `PLAN_BILLING_V1_1_EXECUTION.md`.
+
+Next up once it merges: **Pass 7.7 — `feature/phase-1-payments-screen`** (org-wide payments list
+with server-side filters, batch confirmation with the permission checked per payment, a Payments
+page with the pending queue, and a collections report by day / collector / method). Then **Pass 8 —
+`feature/phase-1-audit-log-backfill`** (D7 remainder). Scope, files, migration and verification for
+7.7 are its row in the Ordered Work Plan of `PLAN_BILLING_V1_1_EXECUTION.md`; the queue and the
+report group by the visit link and the collector that 7.6 and 7.5 recorded.
 
 Full ordered plan, impact analysis, conflict resolutions, and per-pass verification steps live in
 `PLAN_BILLING_V1_1_EXECUTION.md` — read it before starting a pass, and update its "Pass status" table

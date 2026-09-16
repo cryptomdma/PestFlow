@@ -20,8 +20,9 @@ import { invalidateInvoiceViews } from "@/lib/invalidate-invoice-views";
 
 // PLAN_BILLING_V1_1.md D4: "Apply $X location balance to this invoice?" The
 // server decides the X - unapplied payments and credit memos at the invoice's
-// location, designated ones first, capped by what the invoice can still take
-// - and one Apply draws on them in that order. Money designated to a
+// location, money collected at this invoice's visit first, then designated
+// to its agreement, then undesignated, capped by what the invoice can still
+// take - and one Apply draws on them in that order. Money designated to a
 // different agreement is named but never drawn on. Opens only when there is
 // something to suggest; otherwise it closes itself so the caller's flow
 // (the finalize prompt) continues without a beat.
@@ -90,6 +91,7 @@ export function ApplyLocationBalancePrompt({ invoice, onClose }: { invoice: Invo
                     {source.kind === "payment" ? `${formatPaymentMethod(source.label)} payment` : `Credit memo (${formatCreditMemoReason(source.label)})`}
                     {" - "}{formatCents(source.unappliedCents)} unapplied
                     {source.status === "PENDING" ? ", pending" : ""}
+                    {source.appointmentId && invoice?.appointmentId && source.appointmentId === invoice.appointmentId ? ", collected at this visit" : ""}
                     {source.designatedAgreementId ? ", designated to this agreement" : ""}
                   </li>
                 ))}

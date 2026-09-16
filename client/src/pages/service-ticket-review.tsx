@@ -19,11 +19,14 @@ import {
   type FinalizeServiceRecordResponse,
   type InvoiceOnFinalizePromptState,
 } from "@/components/invoice-on-finalize-prompt";
-import { apiRequest, queryClient } from "@/lib/queryClient";
+import { apiRequest, getApiErrorMessage, queryClient } from "@/lib/queryClient";
+import { VisitBillingTable, useVisitBillingSummary } from "@/components/visit-billing-summary";
+import { resolveReviewNav, type ReviewNavStep } from "@/lib/review-queue-nav";
 import { formatCents } from "@shared/money";
 import { can, PERMISSIONS } from "@shared/permissions";
-import { CheckCircle2, ClipboardCheck, FileStack, RotateCcw, Send } from "lucide-react";
-import type { Appointment, Customer, Location, ProductApplication, Service, ServiceRecord, ServiceType, Technician } from "@shared/schema";
+import { formatPaymentMethod, formatPaymentStatus, paymentHoldsValue, type LocationLedgerSummary } from "@shared/payments";
+import { CheckCircle2, ChevronLeft, ChevronRight, ClipboardCheck, FileStack, MapPin, RotateCcw, Send } from "lucide-react";
+import type { Appointment, Customer, Location, Payment, ProductApplication, Service, ServiceRecord, ServiceType, Technician } from "@shared/schema";
 
 interface BatchInvoicePreviewRow extends ServiceRecord {
   billingLineType: "SERVICE" | "AGREEMENT_COVERED" | null;
@@ -72,6 +75,129 @@ function statusBadgeVariant(record: ServiceRecord): "default" | "secondary" | "d
   return "secondary";
 }
 
+function paymentStatusClass(status: string) {
+  switch (status) {
+    case "CONFIRMED": return "bg-primary/10 text-primary";
+    case "PENDING": return "bg-chart-3/10 text-chart-3";
+    default: return "bg-muted text-muted-foreground";
+  }
+}
+
+// What the technician collected at THIS visit (payments.appointmentId - the
+// D5 owner review's visit link), with Confirm gated exactly as the location
+// ledger panel gates it: CONFIRM_PAYMENT, and cash additionally
+// CONFIRM_CASH_PAYMENT. Reads payments by appointment rather than the billing
+// summary: once the visit is invoiced the summary reads applications only,
+// and an unapplied field collection would vanish from it. The last line is
+// the location's OTHER unapplied money, so the reviewer knows the D4 prompt
+// may offer more than this visit's collections.
+function VisitCollectionsBlock({ appointmentId, locationId }: { appointmentId: string | null; locationId: string | null }) {
+  const { toast } = useToast();
+  const { user } = useAuth();
+  const role = user?.role ?? "";
+  const canConfirm = can(role, PERMISSIONS.CONFIRM_PAYMENT);
+  const canConfirmCash = can(role, PERMISSIONS.CONFIRM_CASH_PAYMENT);
+
+  const { data: visitPayments, isLoading, isError } = useQuery<Payment[]>({
+    queryKey: ["/api/payments/by-appointment", appointmentId ?? ""],
+    enabled: !!appointmentId,
+  });
+  const { data: ledger } = useQuery<LocationLedgerSummary>({
+    queryKey: ["/api/locations", locationId ?? "", "ledger-summary"],
+    enabled: !!locationId,
+  });
+
+  const unappliedById = useMemo(() => new Map((ledger?.sources ?? []).map((source) => [source.id, source.unappliedCents])), [ledger]);
+  const otherSources = useMemo(() => (ledger?.sources ?? []).filter((source) => !appointmentId || source.appointmentId !== appointmentId), [ledger, appointmentId]);
+  const otherCents = otherSources.reduce((sum, source) => sum + source.unappliedCents, 0);
+  const otherPendingCents = otherSources.filter((source) => source.status === "PENDING").reduce((sum, source) => sum + source.unappliedCents, 0);
+
+  const confirmMutation = useMutation({
+    mutationFn: async (paymentId: string) => {
+      const response = await apiRequest("POST", `/api/payments/${paymentId}/confirm`, {});
+      return (await response.json()) as Payment;
+    },
+    onSuccess: (payment) => {
+      invalidateInvoiceViews();
+      toast({ title: `${formatPaymentMethod(payment.method)} payment of ${formatCents(payment.amountCents)} confirmed`, description: "It now counts toward every invoice it is applied to." });
+    },
+    onError: (error: Error) => toast({ title: "Unable to confirm the payment", description: getApiErrorMessage(error), variant: "destructive" }),
+  });
+
+  const live = (visitPayments ?? []).filter((payment) => paymentHoldsValue(payment.status));
+  const collectedCents = live.reduce((sum, payment) => sum + payment.amountCents, 0);
+  const pendingCents = live.filter((payment) => payment.status === "PENDING").reduce((sum, payment) => sum + payment.amountCents, 0);
+
+  const describeApplication = (payment: Payment) => {
+    if (!ledger || !paymentHoldsValue(payment.status)) return "";
+    const unapplied = unappliedById.get(payment.id) ?? 0;
+    if (unapplied >= payment.amountCents) return " - on the location balance, not yet applied";
+    if (unapplied <= 0) return " - applied to the invoice";
+    return ` - ${formatCents(payment.amountCents - unapplied)} applied, ${formatCents(unapplied)} on the location balance`;
+  };
+
+  // Full width, one line per payment. A failed read is reported as a failed
+  // read: "nothing collected" is a statement about the ledger, and the office
+  // must not finalize on it when the list simply did not load.
+  return (
+    <div className="rounded-md border p-3" data-testid="block-visit-collections">
+      <div className="flex items-baseline justify-between gap-3 flex-wrap">
+        <p className="text-xs uppercase tracking-wide text-muted-foreground">Collected in the field</p>
+        {appointmentId && visitPayments?.length ? (
+          <p className="text-sm" data-testid="text-visit-collected-total">
+            Collected <span className="font-semibold">{formatCents(collectedCents)}</span>{pendingCents > 0 ? ` - ${formatCents(pendingCents)} pending confirmation` : ""}
+          </p>
+        ) : null}
+      </div>
+      {!appointmentId ? (
+        <p className="mt-1 text-sm text-muted-foreground">Not on an appointment - no collection can be tied to this ticket.</p>
+      ) : isLoading ? (
+        <p className="mt-1 text-xs text-muted-foreground">Loading collections...</p>
+      ) : isError ? (
+        <p className="mt-1 text-sm text-destructive" data-testid="text-visit-collections-error">Collections could not be loaded for this visit. Do not finalize on this alone - check the location's Invoices tab.</p>
+      ) : !visitPayments?.length ? (
+        <p className="mt-1 text-sm text-muted-foreground">Nothing collected in the field for this visit.</p>
+      ) : (
+        <div className="mt-2 space-y-1.5">
+          {visitPayments.map((payment) => {
+            const mayConfirm = payment.status === "PENDING" && canConfirm && (payment.method !== "CASH" || canConfirmCash);
+            return (
+              <div key={payment.id} className="flex items-center justify-between gap-3 rounded-md bg-muted/20 px-3 py-2" data-testid={`row-visit-payment-${payment.id}`}>
+                <div className="min-w-0 text-sm">
+                  <div className="flex items-center gap-x-2 gap-y-0.5 flex-wrap">
+                    <span className="font-medium">{formatPaymentMethod(payment.method)}{payment.checkNumber ? ` #${payment.checkNumber}` : ""}{payment.referenceNumber ? ` (${payment.referenceNumber})` : ""}</span>
+                    <span className="font-semibold">{formatCents(payment.amountCents)}</span>
+                    <Badge variant="secondary" className={`text-xs ${paymentStatusClass(payment.status)}`}>{formatPaymentStatus(payment.status)}</Badge>
+                    <span className="text-xs text-muted-foreground">
+                      {new Date(payment.receivedAt).toLocaleString()}{payment.collectedByLabel ? ` by ${payment.collectedByLabel}` : ""}
+                      {describeApplication(payment)}
+                      {payment.status === "VOIDED" && payment.voidReason ? ` - voided: ${payment.voidReason}` : ""}
+                      {payment.memo ? ` - ${payment.memo}` : ""}
+                    </span>
+                  </div>
+                  {payment.status === "PENDING" && payment.method === "CASH" && canConfirm && !canConfirmCash ? (
+                    <p className="text-xs text-muted-foreground">Cash is confirmed by a manager or admin.</p>
+                  ) : null}
+                </div>
+                {mayConfirm ? (
+                  <Button size="sm" variant="outline" className="h-7 shrink-0 text-xs" onClick={() => confirmMutation.mutate(payment.id)} disabled={confirmMutation.isPending} data-testid={`button-confirm-visit-payment-${payment.id}`}>Confirm</Button>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {locationId && ledger ? (
+        <p className="mt-2 text-xs text-muted-foreground" data-testid="text-location-other-balance">
+          {otherCents > 0
+            ? `This location also has ${formatCents(otherCents)} on account not linked to this visit${otherPendingCents > 0 ? ` (${formatCents(otherPendingCents)} of it pending confirmation)` : ""}.`
+            : "No other balance on account at this location."}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 export default function ServiceTicketReview() {
   const { toast } = useToast();
   const { user } = useAuth();
@@ -82,6 +208,9 @@ export default function ServiceTicketReview() {
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [selectedRecordId, setSelectedRecordId] = useState<string | null>(null);
+  // The review run: the queue as it stood when a ticket was opened from it.
+  // Held so Next / Back survive a ticket leaving the live filter.
+  const [navRecordIds, setNavRecordIds] = useState<string[]>([]);
   const [reopenReason, setReopenReason] = useState("");
   const [batchDialogOpen, setBatchDialogOpen] = useState(false);
   const [batchResult, setBatchResult] = useState<BatchGenerateResult | null>(null);
@@ -122,6 +251,10 @@ export default function ServiceTicketReview() {
   const selectedLocation = selectedRecord?.locationId ? locationById.get(selectedRecord.locationId) ?? null : null;
   const selectedCustomer = selectedRecord ? customerById.get(selectedRecord.customerId) ?? null : null;
   const selectedMaterials = selectedRecord ? applicationsByRecordId.get(selectedRecord.id) ?? [] : [];
+  // D6's figures for the visit under review - the same read the ticket, the
+  // appointment details and the collect dialog show, so the reviewer
+  // finalizes against what the technician and the customer saw.
+  const { data: visitBilling, isLoading: visitBillingLoading, isError: visitBillingError } = useVisitBillingSummary(selectedAppointment?.id ?? null);
 
   const filteredRecords = useMemo(() => {
     return (serviceRecords ?? []).filter((record) => {
@@ -138,6 +271,35 @@ export default function ServiceTicketReview() {
       return true;
     }).sort((a, b) => new Date(b.postedAt || b.serviceDate).getTime() - new Date(a.postedAt || a.serviceDate).getTime());
   }, [dateFrom, dateTo, serviceById, serviceRecords, serviceTypeFilter, statusFilter, technicianFilter]);
+
+  // Next / Back walk a SNAPSHOT of the queue, taken when a ticket is opened
+  // from it - not the live filtered list. Finalizing a ticket under the
+  // "Pending Review" filter drops it out of that list, and navigating over
+  // the live one would leave the open ticket at index -1 and hide the
+  // controls at exactly the moment the reviewer wants Next. The snapshot
+  // keeps the run intact until the modal is closed.
+  const openRecordFromQueue = (recordId: string) => {
+    setNavRecordIds(filteredRecords.map((record) => record.id));
+    setReopenReason("");
+    setSelectedRecordId(recordId);
+  };
+  const closeReviewModal = () => {
+    setSelectedRecordId(null);
+    setNavRecordIds([]);
+    setReopenReason("");
+  };
+
+  // Stepping rules live in lib/review-queue-nav.ts (pure, so they can be
+  // exercised without rendering this modal). "Live" is every record that
+  // still exists, NOT the filtered queue - that is what keeps a finalized
+  // ticket in its place in the run.
+  const liveRecordIds = useMemo(() => new Set((serviceRecords ?? []).map((record) => record.id)), [serviceRecords]);
+  const { index: selectedIndex, total: navTotal, previous: previousStep, next: nextStep } = resolveReviewNav(navRecordIds, selectedRecordId, liveRecordIds);
+  const goToRecord = (step: ReviewNavStep | null) => {
+    if (!step) return;
+    setReopenReason("");
+    setSelectedRecordId(step.id);
+  };
 
   const invalidateReviewData = () => {
     queryClient.invalidateQueries({ queryKey: ["/api/service-records"] });
@@ -320,7 +482,7 @@ export default function ServiceTicketReview() {
             const serviceType = serviceTypeById.get(record.serviceTypeId || service?.serviceTypeId || "");
             const technician = record.technicianId ? technicianById.get(record.technicianId) : undefined;
             return (
-              <button key={record.id} type="button" onClick={() => setSelectedRecordId(record.id)} className="grid w-full gap-3 rounded-md border px-3 py-3 text-left transition-colors hover:bg-muted/20 md:grid-cols-[1.3fr_1fr_1fr_1fr_auto]">
+              <button key={record.id} type="button" onClick={() => openRecordFromQueue(record.id)} className="grid w-full gap-3 rounded-md border px-3 py-3 text-left transition-colors hover:bg-muted/20 md:grid-cols-[1.3fr_1fr_1fr_1fr_auto]">
                 <div>
                   <p className="font-medium">{getCustomerLabel(customer, location)}</p>
                   <p className="text-xs text-muted-foreground">{location ? [location.address, location.city, location.state].filter(Boolean).join(", ") : "Location unavailable"}</p>
@@ -345,19 +507,54 @@ export default function ServiceTicketReview() {
         </CardContent>
       </Card>
 
-      <Dialog open={!!selectedRecord} onOpenChange={(open) => { if (!open) setSelectedRecordId(null); }}>
+      <Dialog open={!!selectedRecord} onOpenChange={(open) => { if (!open) closeReviewModal(); }}>
         <DialogContent className="max-h-[92vh] overflow-y-auto sm:max-w-3xl">
-          <DialogHeader><DialogTitle>Service Ticket Review</DialogTitle></DialogHeader>
+          <DialogHeader>
+            <div className="flex items-center justify-between gap-3 pr-6">
+              <DialogTitle>Service Ticket Review</DialogTitle>
+              {/* Always rendered while a ticket from the queue is open, so the
+                  run reads the same before and after Finalize; the ends
+                  disable rather than disappear. */}
+              {selectedIndex >= 0 ? (
+                <div className="flex items-center gap-1 text-xs text-muted-foreground" data-testid="nav-review-tickets">
+                  <Button type="button" variant="ghost" size="sm" className="h-7 px-2" onClick={() => goToRecord(previousStep)} disabled={!previousStep} data-testid="button-review-back">
+                    <ChevronLeft className="h-4 w-4" /> Back
+                  </Button>
+                  <span className="tabular-nums" data-testid="text-review-position">{selectedIndex + 1} of {navTotal}</span>
+                  <Button type="button" variant="ghost" size="sm" className="h-7 px-2" onClick={() => goToRecord(nextStep)} disabled={!nextStep} data-testid="button-review-next">
+                    Next <ChevronRight className="h-4 w-4" />
+                  </Button>
+                </div>
+              ) : null}
+            </div>
+          </DialogHeader>
           {selectedRecord ? (
             <div className="space-y-4">
               <div className="rounded-lg border bg-muted/20 p-3">
-                <div className="flex items-start justify-between gap-3">
+                {/* One row: who and what | where | ticket status. The address
+                    sits beside the identity rather than under it, so the card
+                    is three columns of content instead of one column and a badge. */}
+                <div className="grid gap-3 sm:grid-cols-[1.2fr_1fr_auto] sm:items-start">
                   <div>
                     <p className="font-medium">{getCustomerLabel(selectedCustomer ?? undefined, selectedLocation ?? undefined)}</p>
                     <p className="text-sm text-muted-foreground">{serviceTypeById.get(selectedRecord.serviceTypeId || selectedService?.serviceTypeId || "")?.name || "Service"}</p>
                     <p className="text-xs text-muted-foreground">{selectedService?.agreementId ? "Agreement service" : "Non-agreement service"}</p>
                   </div>
-                  <Badge variant={statusBadgeVariant(selectedRecord)}>{statusLabel(selectedRecord)}</Badge>
+                  <div className="flex items-start gap-2 text-sm" data-testid="block-review-address">
+                    <MapPin className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+                    {selectedLocation ? (
+                      <div>
+                        {selectedLocation.name && selectedLocation.name !== getCustomerLabel(selectedCustomer ?? undefined, selectedLocation) ? (
+                          <p className="font-medium">{selectedLocation.name}</p>
+                        ) : null}
+                        <p>{selectedLocation.address}</p>
+                        <p className="text-muted-foreground">{[selectedLocation.city, selectedLocation.state].filter(Boolean).join(", ")} {selectedLocation.zip}</p>
+                      </div>
+                    ) : (
+                      <p className="text-muted-foreground">Location unavailable</p>
+                    )}
+                  </div>
+                  <Badge variant={statusBadgeVariant(selectedRecord)} className="order-first w-fit sm:order-none sm:justify-self-end">{statusLabel(selectedRecord)}</Badge>
                 </div>
               </div>
               {selectedRecord.flaggedAt ? (
@@ -370,6 +567,21 @@ export default function ServiceTicketReview() {
                   </p>
                 </div>
               ) : null}
+              {/* Money, full width and above Finalize: the visit priced as the
+                  office will invoice it, then what the technician collected at
+                  it. Two stacked blocks, not two columns - a short collections
+                  list beside a tall billing block left a column of dead space. */}
+              <div className="rounded-md border p-3" data-testid="block-review-visit-billing">
+                <p className="text-xs uppercase tracking-wide text-muted-foreground">Visit billing</p>
+                {selectedAppointment ? (
+                  <div className="mt-1">
+                    <VisitBillingTable summary={visitBilling} isLoading={visitBillingLoading} isError={visitBillingError} />
+                  </div>
+                ) : (
+                  <p className="mt-1 text-sm text-muted-foreground">Not on an appointment - there is no visit to price.</p>
+                )}
+              </div>
+              <VisitCollectionsBlock appointmentId={selectedAppointment?.id ?? null} locationId={selectedLocation?.id ?? null} />
               <div className="grid gap-3 md:grid-cols-3">
                 <div className="rounded-md border p-3">
                   <p className="text-xs uppercase tracking-wide text-muted-foreground">Technician</p>
@@ -436,7 +648,7 @@ export default function ServiceTicketReview() {
               <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-between">
                 <Button type="button" variant="outline" onClick={() => selectedLocation && setLocation(`/customers/${selectedRecord.customerId}?locationId=${selectedLocation.id}`)}>Open Location</Button>
                 <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-                  <Button type="button" variant="outline" onClick={() => setSelectedRecordId(null)}>Close</Button>
+                  <Button type="button" variant="outline" onClick={closeReviewModal}>Close</Button>
                   <Button type="button" variant="secondary" onClick={() => reopenMutation.mutate({ id: selectedRecord.id, reason: reopenReason })} disabled={reopenMutation.isPending || !reopenReason.trim()}>
                     <RotateCcw className="mr-1 h-4 w-4" /> Reopen
                   </Button>

@@ -152,6 +152,77 @@ export function VisitDueTodayTotal({ summary, className }: { summary: VisitBilli
   );
 }
 
+/**
+ * The same figures as VisitBillingRows laid out for a WIDE surface (the
+ * Service Ticket Review modal): one table row per service - name and
+ * designation | Price (+ tax) | COA | Due today - and a Due today footer. The
+ * stacked cards of VisitBillingRows suit a phone-width dialog; beside a
+ * short block on a desktop modal they leave a column of dead space.
+ */
+export function VisitBillingTable({ summary, isLoading, isError }: { summary: VisitBillingSummary | undefined; isLoading: boolean; isError: boolean }) {
+  if (isLoading) {
+    return <p className="text-xs text-muted-foreground">Loading billing...</p>;
+  }
+  if (isError || !summary) {
+    return <p className="text-xs text-muted-foreground">Billing is unavailable for this visit right now.</p>;
+  }
+  if (!summary.services.length) {
+    return <p className="text-xs text-muted-foreground">No services on this visit.</p>;
+  }
+  return (
+    <div className="space-y-2" data-testid="table-visit-billing">
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-left text-xs text-muted-foreground">
+              <th className="py-1 pr-3 font-normal">Service</th>
+              <th className="py-1 pr-3 text-right font-normal">Price</th>
+              <th className="py-1 pr-3 text-right font-normal">{coaLabel(summary.invoiced)}</th>
+              <th className="py-1 text-right font-normal">Due today</th>
+            </tr>
+          </thead>
+          <tbody>
+            {summary.services.map((line) => {
+              const coaCents = summary.invoiced ? line.coaAppliedCents : line.coaAvailableCents;
+              return (
+                <tr key={line.serviceId} className="border-t" data-testid={`row-visit-billing-${line.serviceId}`}>
+                  <td className="py-1.5 pr-3 align-top">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-medium">{line.serviceTypeName}</span>
+                      <ServiceDesignationBadge designation={line.designation} />
+                    </div>
+                    {line.priceCents == null && line.note && <p className="mt-0.5 text-xs text-destructive">{line.note}</p>}
+                  </td>
+                  <td className="py-1.5 pr-3 text-right align-top whitespace-nowrap">
+                    <span className="font-medium" data-testid={`text-service-price-${line.serviceId}`}>{line.priceCents == null ? "Not resolved" : formatCents(line.priceCents)}</span>
+                    {line.taxCents > 0 && <span className="block text-xs text-muted-foreground">+ {formatCents(line.taxCents)} tax</span>}
+                  </td>
+                  <td className="py-1.5 pr-3 text-right align-top font-medium whitespace-nowrap" data-testid={`text-service-coa-${line.serviceId}`}>{formatCents(coaCents)}</td>
+                  <td className="py-1.5 text-right align-top font-semibold whitespace-nowrap" data-testid={`text-service-due-today-${line.serviceId}`}>
+                    {line.dueTodayCents == null ? "Unknown" : formatCents(line.dueTodayCents)}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+          <tfoot>
+            <tr className="border-t">
+              <td colSpan={3} className="py-1.5 pr-3 text-right font-medium">Due today</td>
+              <td className="py-1.5 text-right text-base font-semibold whitespace-nowrap" data-testid="text-visit-billing-due-today">{formatCents(summary.totals.dueTodayCents)}</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+      {summary.totals.unresolvedCount > 0 && (
+        <p className="text-xs text-destructive">
+          {summary.totals.unresolvedCount === 1 ? "1 service" : `${summary.totals.unresolvedCount} services`} could not be priced and {summary.totals.unresolvedCount === 1 ? "is" : "are"} not in this total.
+        </p>
+      )}
+      <p className="text-xs text-muted-foreground">{describeBillingSource(summary)}</p>
+    </div>
+  );
+}
+
 /** A visit's services with their figures, then the due-today total - for surfaces that do not already list the services. */
 export function VisitBillingRows({ summary, isLoading, isError }: { summary: VisitBillingSummary | undefined; isLoading: boolean; isError: boolean }) {
   if (isLoading) {
