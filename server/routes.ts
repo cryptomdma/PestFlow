@@ -33,7 +33,15 @@ import {
   normalizeInitialCharge,
   validateInitialCharge,
 } from "@shared/initial-charge";
-import { CREDIT_MEMO_REASON_CODES, MANUAL_PAYMENT_METHODS } from "@shared/payments";
+import {
+  CASH_CONFIRM_AUTHORITY_MESSAGE,
+  CREDIT_MEMO_REASON_CODES,
+  MANUAL_PAYMENT_METHODS,
+  PAYMENT_BATCH_CONFIRM_MAX,
+  PAYMENT_LIST_MAX_LIMIT,
+  PAYMENT_METHODS,
+  PAYMENT_STATUSES,
+} from "@shared/payments";
 import { runBillingCycle } from "./jobs/billing-run";
 
 function handleZodError(res: any, error: ZodError) {
@@ -2090,6 +2098,60 @@ export async function registerRoutes(
     res.json(data);
   });
 
+  // The Payments screen (D5 owner review of Pass 7.5, item 4). Reads are open
+  // like every other read in this file. The query keys are the
+  // PaymentListFilters names (shared/payments.ts); dates are YYYY-MM-DD UTC
+  // calendar days, inclusive, validated here and applied in SQL in storage.
+  const dateOnlySchema = z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, "expected YYYY-MM-DD")
+    .refine((value) => !Number.isNaN(Date.parse(`${value}T00:00:00Z`)), "not a calendar date");
+  const csvListSchema = z.string().transform((value) => value.split(",").map((part) => part.trim()).filter(Boolean));
+  const paymentListQuerySchema = z
+    .object({
+      status: csvListSchema.pipe(z.array(z.enum(PAYMENT_STATUSES)).min(1)).optional(),
+      method: csvListSchema.pipe(z.array(z.enum(PAYMENT_METHODS)).min(1)).optional(),
+      receivedFrom: dateOnlySchema.optional(),
+      receivedTo: dateOnlySchema.optional(),
+      collectedByUserId: z.string().min(1).optional(),
+      search: z.string().trim().max(200).optional(),
+      limit: z.coerce.number().int().positive().max(PAYMENT_LIST_MAX_LIMIT).optional(),
+    })
+    .refine((value) => !value.receivedFrom || !value.receivedTo || value.receivedFrom <= value.receivedTo, {
+      message: "receivedFrom is after receivedTo",
+      path: ["receivedTo"],
+    });
+  const collectionsRangeSchema = z
+    .object({ receivedFrom: dateOnlySchema, receivedTo: dateOnlySchema })
+    .refine((value) => value.receivedFrom <= value.receivedTo, { message: "receivedFrom is after receivedTo", path: ["receivedTo"] });
+  const confirmBatchSchema = z.object({
+    paymentIds: z.array(z.string().min(1)).min(1, "paymentIds is required").max(PAYMENT_BATCH_CONFIRM_MAX),
+  });
+
+  app.get("/api/payments", async (req, res) => {
+    try {
+      const filters = paymentListQuerySchema.parse(req.query);
+      const data = await req.storage.listPayments(filters);
+      res.json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  // The deposit-slip view: collections in a range by day / collector /
+  // method, pending against confirmed. Derived, nothing stored.
+  app.get("/api/payments/collections", async (req, res) => {
+    try {
+      const range = collectionsRangeSchema.parse(req.query);
+      const data = await req.storage.getCollectionsReport(range);
+      res.json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
   app.get("/api/credit-memos/by-location/:locationId", async (req, res) => {
     const data = await req.storage.getCreditMemosByLocation(req.params.locationId);
     res.json(data);
@@ -2129,12 +2191,31 @@ export async function registerRoutes(
       const payment = await req.storage.getPayment(req.params.id);
       if (!payment) return res.status(404).json({ message: "Payment not found" });
       if (payment.method === "CASH" && !can(req.user!.role, PERMISSIONS.CONFIRM_CASH_PAYMENT)) {
-        return res.status(403).json({ message: "Confirming a cash payment requires cash-handling authority (manager or admin)" });
+        return res.status(403).json({ message: CASH_CONFIRM_AUTHORITY_MESSAGE });
       }
       const data = await req.storage.confirmPayment(req.params.id, getAuditActor(req));
       if (!data) return res.status(404).json({ message: "Payment not found" });
       res.json(data);
     } catch (e: any) {
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  // Batch confirmation from the Payments screen's queue. The route gate is
+  // CONFIRM_PAYMENT (a technician gets the 403); cash authority is decided
+  // here once and applied PER PAYMENT in storage, so a support user's cash is
+  // skipped and reported while their checks confirm. One transaction and one
+  // payment_confirmed audit row per confirmed payment - confirmPayment's body.
+  app.post("/api/payments/confirm-batch", requirePermission(PERMISSIONS.CONFIRM_PAYMENT), async (req, res) => {
+    try {
+      const { paymentIds } = confirmBatchSchema.parse(req.body ?? {});
+      const data = await req.storage.confirmPayments(paymentIds, {
+        actor: getAuditActor(req),
+        allowCash: can(req.user!.role, PERMISSIONS.CONFIRM_CASH_PAYMENT),
+      });
+      res.json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
       res.status(400).json({ message: e.message });
     }
   });

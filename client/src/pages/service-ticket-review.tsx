@@ -24,7 +24,7 @@ import { VisitBillingTable, useVisitBillingSummary } from "@/components/visit-bi
 import { resolveReviewNav, type ReviewNavStep } from "@/lib/review-queue-nav";
 import { formatCents } from "@shared/money";
 import { can, PERMISSIONS } from "@shared/permissions";
-import { formatPaymentMethod, formatPaymentStatus, paymentHoldsValue, type LocationLedgerSummary } from "@shared/payments";
+import { CASH_CONFIRM_NOTE, formatPaymentMethod, formatPaymentStatus, mayConfirmPayment, needsCashAuthority, paymentHoldsValue, type LocationLedgerSummary } from "@shared/payments";
 import { CheckCircle2, ChevronLeft, ChevronRight, ClipboardCheck, FileStack, MapPin, RotateCcw, Send } from "lucide-react";
 import type { Appointment, Customer, Location, Payment, ProductApplication, Service, ServiceRecord, ServiceType, Technician } from "@shared/schema";
 
@@ -95,8 +95,7 @@ function VisitCollectionsBlock({ appointmentId, locationId }: { appointmentId: s
   const { toast } = useToast();
   const { user } = useAuth();
   const role = user?.role ?? "";
-  const canConfirm = can(role, PERMISSIONS.CONFIRM_PAYMENT);
-  const canConfirmCash = can(role, PERMISSIONS.CONFIRM_CASH_PAYMENT);
+  const authority = { canConfirm: can(role, PERMISSIONS.CONFIRM_PAYMENT), canConfirmCash: can(role, PERMISSIONS.CONFIRM_CASH_PAYMENT) };
 
   const { data: visitPayments, isLoading, isError } = useQuery<Payment[]>({
     queryKey: ["/api/payments/by-appointment", appointmentId ?? ""],
@@ -160,7 +159,7 @@ function VisitCollectionsBlock({ appointmentId, locationId }: { appointmentId: s
       ) : (
         <div className="mt-2 space-y-1.5">
           {visitPayments.map((payment) => {
-            const mayConfirm = payment.status === "PENDING" && canConfirm && (payment.method !== "CASH" || canConfirmCash);
+            const mayConfirm = mayConfirmPayment(payment, authority);
             return (
               <div key={payment.id} className="flex items-center justify-between gap-3 rounded-md bg-muted/20 px-3 py-2" data-testid={`row-visit-payment-${payment.id}`}>
                 <div className="min-w-0 text-sm">
@@ -175,8 +174,8 @@ function VisitCollectionsBlock({ appointmentId, locationId }: { appointmentId: s
                       {payment.memo ? ` - ${payment.memo}` : ""}
                     </span>
                   </div>
-                  {payment.status === "PENDING" && payment.method === "CASH" && canConfirm && !canConfirmCash ? (
-                    <p className="text-xs text-muted-foreground">Cash is confirmed by a manager or admin.</p>
+                  {needsCashAuthority(payment, authority) ? (
+                    <p className="text-xs text-muted-foreground">{CASH_CONFIRM_NOTE}</p>
                   ) : null}
                 </div>
                 {mayConfirm ? (

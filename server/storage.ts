@@ -60,7 +60,7 @@ import {
   type AuditLog,
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, and, or, inArray, notInArray, sql, gte, lte, asc, desc, ne, isNull } from "drizzle-orm";
+import { eq, and, or, inArray, notInArray, sql, gte, lte, lt, asc, desc, ne, isNull, isNotNull, ilike, count, sum, max, type SQL } from "drizzle-orm";
 import type { AuditAction, AuditEntityType } from "@shared/audit";
 import { PLACEHOLDER_LOCATION_NAME, PLACEHOLDER_LOCATION_NOTE } from "./account-bootstrap";
 import { createHash } from "crypto";
@@ -90,12 +90,24 @@ import {
 } from "@shared/initial-charge";
 import { computeInvoiceRollup, deriveInvoiceStatus, isFullyAgreementCovered, isInvoiceIssued } from "@shared/invoice-status";
 import {
+  CASH_CONFIRM_AUTHORITY_MESSAGE,
   isCreditMemoReasonCode,
   isManualPaymentMethod,
+  PAYMENT_LIST_DEFAULT_LIMIT,
+  PAYMENT_LIST_MAX_LIMIT,
   paymentCountsAsPaid,
   paymentHoldsValue,
+  summarizeCollections,
+  utcDayRange,
+  type BatchConfirmResult,
+  type CollectionsReport,
   type InvoiceLocationBalance,
   type LocationLedgerSummary,
+  type PaymentCollectorOption,
+  type PaymentListFilters,
+  type PaymentListResult,
+  type PaymentListRow,
+  type PaymentListSummary,
   type UnappliedSource,
 } from "@shared/payments";
 import {
@@ -708,9 +720,15 @@ export interface IStorage {
   getPaymentsByLocation(locationId: string): Promise<Payment[]>;
   /** What the field collected at one visit (payments.appointmentId) - the review modal's "Collected in the field" list. */
   getPaymentsByAppointment(appointmentId: string): Promise<Payment[]>;
+  /** The Payments screen's org-wide list: filters applied in SQL, a capped page with the total, tiles over the whole filtered set, the collector options. */
+  listPayments(filters: PaymentListFilters): Promise<PaymentListResult>;
+  /** Collections by day / collector / method for an inclusive range of UTC days, pending against confirmed. Derived, nothing stored. */
+  getCollectionsReport(range: { receivedFrom: string; receivedTo: string }): Promise<CollectionsReport>;
   getPayment(id: string): Promise<Payment | undefined>;
   recordPayment(input: RecordPaymentInput): Promise<RecordPaymentResult>;
   confirmPayment(id: string, actor?: AuditActor | null): Promise<Payment | undefined>;
+  /** Confirm several, each in its own transaction; a refusal is reported per payment, never fatal to the batch. `allowCash` is the route's CONFIRM_CASH_PAYMENT decision. */
+  confirmPayments(paymentIds: string[], input: { actor?: AuditActor | null; allowCash: boolean }): Promise<BatchConfirmResult>;
   voidPayment(id: string, reason: string, actor?: AuditActor | null): Promise<Payment | undefined>;
   refundPayment(id: string, reason: string, actor?: AuditActor | null): Promise<Payment | undefined>;
   applyPayment(paymentId: string, input: ApplyLedgerSourceInput): Promise<{ application: PaymentApplication; invoice: Invoice } | undefined>;
@@ -6097,6 +6115,159 @@ export class DatabaseStorage implements IStorage {
     return payment;
   }
 
+  // The Payments screen's org-wide read (D5 owner review of Pass 7.5, item
+  // 4). Filters are applied in SQL so the office can narrow a year of
+  // payments without downloading it; the page is capped and `total` says
+  // when the cap cut it. The summary deliberately ignores the STATUS filter:
+  // the tiles report what is pending and what is confirmed for the range /
+  // collector / method / search in view, whichever status the list shows.
+  // Dates are UTC calendar days, the clock every date-only value here keeps.
+  async listPayments(filters: PaymentListFilters): Promise<PaymentListResult> {
+    const limit = Math.min(Math.max(Math.trunc(filters.limit ?? PAYMENT_LIST_DEFAULT_LIMIT), 1), PAYMENT_LIST_MAX_LIMIT);
+
+    const scope: SQL[] = [eq(payments.orgId, this.orgId)];
+    if (filters.method?.length) scope.push(inArray(payments.method, filters.method));
+    if (filters.receivedFrom) scope.push(gte(payments.receivedAt, utcDayRange(filters.receivedFrom, filters.receivedFrom).start));
+    if (filters.receivedTo) scope.push(lt(payments.receivedAt, utcDayRange(filters.receivedTo, filters.receivedTo).endExclusive));
+    if (filters.collectedByUserId) scope.push(eq(payments.collectedByUserId, filters.collectedByUserId));
+    const term = filters.search?.trim();
+    if (term) {
+      // The customer and location matches are subqueries rather than joins so
+      // the count and the summary below can run on `payments` alone.
+      const pattern = `%${term.replace(/[\\%_]/g, (match) => `\\${match}`)}%`;
+      scope.push(
+        or(
+          inArray(
+            payments.customerId,
+            db
+              .select({ id: customers.id })
+              .from(customers)
+              .where(and(eq(customers.orgId, this.orgId), or(ilike(sql`${customers.firstName} || ' ' || ${customers.lastName}`, pattern), ilike(customers.companyName, pattern)))),
+          ),
+          inArray(
+            payments.locationId,
+            db
+              .select({ id: locations.id })
+              .from(locations)
+              .where(and(eq(locations.orgId, this.orgId), or(ilike(locations.name, pattern), ilike(locations.address, pattern), ilike(locations.city, pattern)))),
+          ),
+          ilike(payments.checkNumber, pattern),
+          ilike(payments.referenceNumber, pattern),
+          ilike(payments.memo, pattern),
+        )!,
+      );
+    }
+    const listed: SQL[] = filters.status?.length ? [...scope, inArray(payments.status, filters.status)] : scope;
+
+    const rows = await db
+      .select({
+        payment: payments,
+        customer: { firstName: customers.firstName, lastName: customers.lastName, companyName: customers.companyName },
+        location: { name: locations.name, address: locations.address, city: locations.city },
+        appointmentScheduledDate: appointments.scheduledDate,
+      })
+      .from(payments)
+      .innerJoin(customers, eq(payments.customerId, customers.id))
+      .innerJoin(locations, eq(payments.locationId, locations.id))
+      .leftJoin(appointments, eq(payments.appointmentId, appointments.id))
+      .where(and(...listed))
+      .orderBy(desc(payments.receivedAt), desc(payments.createdAt))
+      .limit(limit);
+
+    const [{ total }] = await db.select({ total: count() }).from(payments).where(and(...listed));
+
+    const summaryRows = await db
+      .select({ status: payments.status, method: payments.method, cents: sum(payments.amountCents), n: count() })
+      .from(payments)
+      .where(and(...scope))
+      .groupBy(payments.status, payments.method);
+    const summary: PaymentListSummary = { pendingCents: 0, pendingCount: 0, pendingCashCents: 0, pendingCashCount: 0, confirmedCents: 0, confirmedCount: 0 };
+    for (const row of summaryRows) {
+      const cents = Number(row.cents ?? 0);
+      const n = Number(row.n);
+      if (row.status === "PENDING") {
+        summary.pendingCents += cents;
+        summary.pendingCount += n;
+        if (row.method === "CASH") {
+          summary.pendingCashCents += cents;
+          summary.pendingCashCount += n;
+        }
+      } else if (row.status === "CONFIRMED") {
+        summary.confirmedCents += cents;
+        summary.confirmedCount += n;
+      }
+    }
+
+    // Everyone who has recorded a payment, newest label per user (a renamed
+    // user keeps one entry), independent of the filters so the dropdown does
+    // not shrink as the office narrows the list.
+    const collectorRows = await db
+      .select({ userId: payments.collectedByUserId, label: payments.collectedByLabel, latest: max(payments.createdAt) })
+      .from(payments)
+      .where(and(eq(payments.orgId, this.orgId), isNotNull(payments.collectedByUserId)))
+      .groupBy(payments.collectedByUserId, payments.collectedByLabel)
+      .orderBy(desc(max(payments.createdAt)));
+    const collectorById = new Map<string, PaymentCollectorOption>();
+    for (const row of collectorRows) {
+      if (!row.userId || collectorById.has(row.userId)) continue;
+      collectorById.set(row.userId, { userId: row.userId, label: row.label || row.userId });
+    }
+    const collectors = Array.from(collectorById.values()).sort((a, b) => a.label.localeCompare(b.label));
+
+    const applied = await this.appliedCentsByPaymentTx(db, rows.map((row) => row.payment.id));
+    const listRows: PaymentListRow[] = rows.map(({ payment, customer, location, appointmentScheduledDate }) => ({
+      id: payment.id,
+      customerId: payment.customerId,
+      locationId: payment.locationId,
+      appointmentId: payment.appointmentId ?? null,
+      designatedAgreementId: payment.designatedAgreementId ?? null,
+      method: payment.method,
+      status: payment.status,
+      amountCents: payment.amountCents,
+      appliedCents: applied.get(payment.id) ?? 0,
+      checkNumber: payment.checkNumber ?? null,
+      referenceNumber: payment.referenceNumber ?? null,
+      memo: payment.memo ?? null,
+      receivedAt: payment.receivedAt.toISOString(),
+      createdAt: payment.createdAt.toISOString(),
+      collectedByUserId: payment.collectedByUserId ?? null,
+      collectedByLabel: payment.collectedByLabel ?? null,
+      confirmedByLabel: payment.confirmedByLabel ?? null,
+      confirmedAt: payment.confirmedAt ? payment.confirmedAt.toISOString() : null,
+      voidReason: payment.voidReason ?? null,
+      refundReason: payment.refundReason ?? null,
+      customerLabel: `${customer.firstName ?? ""} ${customer.lastName ?? ""}`.trim() || customer.companyName || location.name,
+      locationName: location.name,
+      locationAddress: [location.address, location.city].filter(Boolean).join(", "),
+      appointmentScheduledAt: appointmentScheduledDate ? appointmentScheduledDate.toISOString() : null,
+    }));
+
+    return { payments: listRows, total: Number(total), limit, summary, collectors };
+  }
+
+  // The deposit-slip view: what was collected in a range, grouped in
+  // summarizeCollections() (shared, pure) so a script can exercise the
+  // grouping without a server. Nothing is stored.
+  async getCollectionsReport(range: { receivedFrom: string; receivedTo: string }): Promise<CollectionsReport> {
+    const { start, endExclusive } = utcDayRange(range.receivedFrom, range.receivedTo);
+    const rows = await db
+      .select({
+        id: payments.id,
+        status: payments.status,
+        method: payments.method,
+        amountCents: payments.amountCents,
+        receivedAt: payments.receivedAt,
+        collectedByUserId: payments.collectedByUserId,
+        collectedByLabel: payments.collectedByLabel,
+      })
+      .from(payments)
+      .where(and(eq(payments.orgId, this.orgId), gte(payments.receivedAt, start), lt(payments.receivedAt, endExclusive)));
+    return summarizeCollections(
+      rows.map((row) => ({ ...row, receivedAt: row.receivedAt.toISOString() })),
+      range,
+    );
+  }
+
   async getCreditMemosByLocation(locationId: string): Promise<CreditMemo[]> {
     return db
       .select()
@@ -6735,6 +6906,50 @@ export class DatabaseStorage implements IStorage {
 
       return confirmed;
     });
+  }
+
+  // Batch confirmation for the Payments screen's queue. Each payment goes
+  // through confirmPayment() above - its own transaction, its own audit rows,
+  // the invoices it sits on re-rolled - so one refusal never rolls back the
+  // rest, and the result says which were skipped and why. `allowCash` is the
+  // route's permission decision (CONFIRM_CASH_PAYMENT), applied here per row
+  // because only this loop sees each payment's method: a support user's cash
+  // is skipped and reported, not a 403 for the whole batch. A payment that
+  // changes state between the read here and the lock in confirmPayment() is
+  // handled by confirmPayment()'s own checks (an already-confirmed one is
+  // returned as-is and writes no second audit row).
+  async confirmPayments(paymentIds: string[], input: { actor?: AuditActor | null; allowCash: boolean }): Promise<BatchConfirmResult> {
+    const result: BatchConfirmResult = { confirmed: [], skipped: [] };
+    for (const id of Array.from(new Set(paymentIds))) {
+      const payment = await this.getPayment(id);
+      if (!payment) {
+        result.skipped.push({ id, reason: "Payment not found" });
+        continue;
+      }
+      if (payment.status === "CONFIRMED") {
+        result.skipped.push({ id, reason: "Already confirmed" });
+        continue;
+      }
+      if (payment.status !== "PENDING") {
+        result.skipped.push({ id, reason: `A ${payment.status.toLowerCase()} payment cannot be confirmed` });
+        continue;
+      }
+      if (payment.method === "CASH" && !input.allowCash) {
+        result.skipped.push({ id, reason: CASH_CONFIRM_AUTHORITY_MESSAGE });
+        continue;
+      }
+      try {
+        const confirmed = await this.confirmPayment(id, input.actor);
+        if (!confirmed) {
+          result.skipped.push({ id, reason: "Payment not found" });
+          continue;
+        }
+        result.confirmed.push({ id: confirmed.id, method: confirmed.method, amountCents: confirmed.amountCents, status: confirmed.status });
+      } catch (error) {
+        result.skipped.push({ id, reason: error instanceof Error ? error.message : String(error) });
+      }
+    }
+    return result;
   }
 
   // A payment recorded in error. It must hold no applications - release them

@@ -16,10 +16,13 @@ import { can, PERMISSIONS } from "@shared/permissions";
 import { centsToDollarString, dollarsToCents, formatCents } from "@shared/money";
 import { isInvoiceIssued } from "@shared/invoice-status";
 import {
+  CASH_CONFIRM_NOTE,
   CREDIT_MEMO_REASON_CODES,
   formatCreditMemoReason,
   formatPaymentMethod,
   formatPaymentStatus,
+  mayConfirmPayment,
+  needsCashAuthority,
   paymentHoldsValue,
   type LocationLedgerSummary,
 } from "@shared/payments";
@@ -409,8 +412,7 @@ export function LocationLedgerPanel({
   const role = user?.role ?? "";
   const canRecord = can(role, PERMISSIONS.TAKE_PAYMENT_FIELD);
   const canApply = can(role, PERMISSIONS.APPLY_PAYMENT);
-  const canConfirm = can(role, PERMISSIONS.CONFIRM_PAYMENT);
-  const canConfirmCash = can(role, PERMISSIONS.CONFIRM_CASH_PAYMENT);
+  const authority = { canConfirm: can(role, PERMISSIONS.CONFIRM_PAYMENT), canConfirmCash: can(role, PERMISSIONS.CONFIRM_CASH_PAYMENT) };
   const canVoid = can(role, PERMISSIONS.VOID_PAYMENT);
   const canRefund = can(role, PERMISSIONS.REFUND_PAYMENT);
   const canCredit = can(role, PERMISSIONS.ISSUE_CREDIT_MEMO);
@@ -513,7 +515,7 @@ export function LocationLedgerPanel({
               const unapplied = unappliedById.get(payment.id) ?? 0;
               const live = paymentHoldsValue(payment.status);
               const label = `${formatPaymentMethod(payment.method)} payment of ${formatCents(payment.amountCents)}`;
-              const mayConfirm = payment.status === "PENDING" && canConfirm && (payment.method !== "CASH" || canConfirmCash);
+              const mayConfirm = mayConfirmPayment(payment, authority);
               return (
                 <div key={payment.id} className="flex items-center justify-between gap-3 rounded-md bg-muted/40 px-3 py-2" data-testid={`row-payment-${payment.id}`}>
                   <div className="min-w-0 text-sm">
@@ -530,8 +532,8 @@ export function LocationLedgerPanel({
                       {payment.status === "REFUNDED" && payment.refundReason ? ` - refunded: ${payment.refundReason}` : ""}
                       {payment.memo ? ` - ${payment.memo}` : ""}
                     </p>
-                    {payment.status === "PENDING" && payment.method === "CASH" && canConfirm && !canConfirmCash ? (
-                      <p className="text-xs text-muted-foreground">Cash is confirmed by a manager or admin.</p>
+                    {needsCashAuthority(payment, authority) ? (
+                      <p className="text-xs text-muted-foreground">{CASH_CONFIRM_NOTE}</p>
                     ) : null}
                   </div>
                   <div className="flex items-center gap-1 shrink-0">

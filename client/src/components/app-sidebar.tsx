@@ -11,6 +11,7 @@ import {
   Bug,
   Target,
   Wrench,
+  Banknote,
   LogOut,
 } from "lucide-react";
 import {
@@ -40,6 +41,7 @@ const mainNav = [
 const operationsNav = [
   { title: "Ticket Review", url: "/service-ticket-review", icon: ClipboardList },
   { title: "Invoices", url: "/invoices", icon: FileText },
+  { title: "Payments", url: "/payments", icon: Banknote },
   { title: "Communications", url: "/communications", icon: MessageSquare },
   { title: "Reports", url: "/reports", icon: BarChart3 },
 ];
