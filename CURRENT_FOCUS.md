@@ -138,7 +138,7 @@ no batch confirmation and no collections report. Recorded under D5 in `PLAN_BILL
 resolved as two inserted passes, in this order, ahead of Pass 8.
 
 Pass 7.6 (`feature/phase-1-review-modal-field-collection`, D9's review-modal blocks and D5 owner
-review items 1-3) is pushed and awaiting merge. The Service Ticket Review modal now shows money
+review items 1-3) merged as PR #66. The Service Ticket Review modal now shows money
 before Finalize: the visit's Price / COA / Due today rows (Pass 7's one read), a **"Collected in the
 field"** list of what the technician recorded at *this visit* with Confirm gated exactly as the
 ledger panel gates it (`CONFIRM_PAYMENT`; cash also `CONFIRM_CASH_PAYMENT`, with the "cash is
@@ -166,12 +166,36 @@ script since the repo has no test runner). **Restart `npm run dev:full` before m
 pass that changes server code.** Signatures and behavior are under "Shipped in Pass 7.6" in
 `PLAN_BILLING_V1_1_EXECUTION.md`.
 
-Next up once it merges: **Pass 7.7 — `feature/phase-1-payments-screen`** (org-wide payments list
-with server-side filters, batch confirmation with the permission checked per payment, a Payments
-page with the pending queue, and a collections report by day / collector / method). Then **Pass 8 —
-`feature/phase-1-audit-log-backfill`** (D7 remainder). Scope, files, migration and verification for
-7.7 are its row in the Ordered Work Plan of `PLAN_BILLING_V1_1_EXECUTION.md`; the queue and the
-report group by the visit link and the collector that 7.6 and 7.5 recorded.
+Pass 7.7 (`feature/phase-1-payments-screen`, D5 owner review item 4) is pushed and awaiting merge.
+The office has a **Payments** screen (sidebar Operations → Payments, route `/payments`). One read,
+`GET /api/payments`, is the org-wide list with every filter applied in SQL - status, method,
+received-date range, collector, and a search over customer name / company, location name / address /
+city, check number, reference and memo - capped at 200 rows with the total reported, plus summary
+tiles (pending, pending cash, confirmed) computed over the *whole* filtered set with the status
+filter deliberately ignored, and the collector options. The **pending-confirmation queue** is that
+list under its default Pending filter: a checkbox on every row the user may confirm, select-all over
+those, and **Batch Confirm** through `POST /api/payments/confirm-batch`, where the route gate is
+`CONFIRM_PAYMENT` and cash authority is decided once and applied *per payment*, so a support user's
+cash is skipped and reported with the reason while their checks confirm; each confirmation is
+`confirmPayment`'s own transaction and audit row, and a skipped one never rolls back the rest. Rows
+link to the location and, when the payment named its visit, to the appointment on the schedule.
+The **Collections report** tab, `GET /api/payments/collections`, groups a date range by day /
+collector / method, pending against confirmed, with voided and refunded payments counted as
+excluded and never summed - the deposit-slip view. The grouping (`summarizeCollections`) and the
+confirm gate (`mayConfirmPayment`) are pure functions in `shared/payments.ts`; the location ledger
+panel and the review modal now read the gate from there too. Nothing new is stored; no migration.
+Days are **UTC calendar days**, like every other date-only value in this repo, so an evening
+collection lands on the next day's slip until an org timezone exists (not scheduled). Not built:
+a printable slip, paging past the cap, void / refund / apply from this screen (the location ledger
+panel keeps those), D9's office edit button and reopen-reason dropdown. **Restart `npm run
+dev:full` before manually testing - this pass adds routes.** Signatures and behavior are under
+"Shipped in Pass 7.7" in `PLAN_BILLING_V1_1_EXECUTION.md`.
+
+Next up once it merges: **Pass 8 — `feature/phase-1-audit-log-backfill`** (D7 remainder:
+`recordAuditLog()` on the pre-existing financial mutation points passes 3-7.7 did not already
+cover - the price override in the field-ticket flow, ticket reopen). Then **Pass 9 —
+`feature/phase-1-legacy-billing-frequency-removal`** (D9's column drop). Scope, files and
+verification for Pass 8 are its row in the Ordered Work Plan of `PLAN_BILLING_V1_1_EXECUTION.md`.
 
 Full ordered plan, impact analysis, conflict resolutions, and per-pass verification steps live in
 `PLAN_BILLING_V1_1_EXECUTION.md` — read it before starting a pass, and update its "Pass status" table

@@ -26,8 +26,8 @@ grounded in what the code and data actually do, not what the decision record ass
 | 6 | `feature/phase-1-payments-lite` | D5, D4 | Done (PR #63) |
 | 7 | `feature/phase-1-coa-and-field-display` | D6 | Done (PR #64) |
 | 7.5 | `feature/phase-1-tech-collect-relabel` | D8 (post-ticket sequence relabel) | Done (PR #65) |
-| 7.6 | `feature/phase-1-review-modal-field-collection` | D9 (review modal price/payment + address blocks), D5 owner review items 1-3 | Pushed, awaiting merge |
-| 7.7 | `feature/phase-1-payments-screen` | D5 owner review item 4 (Payments screen, batch confirmation, collections report) | Not started |
+| 7.6 | `feature/phase-1-review-modal-field-collection` | D9 (review modal price/payment + address blocks), D5 owner review items 1-3 | Done (PR #66) |
+| 7.7 | `feature/phase-1-payments-screen` | D5 owner review item 4 (Payments screen, batch confirmation, collections report) | Pushed, awaiting merge |
 | 8 | `feature/phase-1-audit-log-backfill` | D7 (remainder) | Not started |
 | 9 | `feature/phase-1-legacy-billing-frequency-removal` | D9 | Not started |
 
@@ -1292,6 +1292,103 @@ Behavior worth knowing before Pass 7.7 touches it:
   (unscheduled). Anything on a Payments screen (7.7: the org-wide list, the pending queue with batch
   confirmation, the collections report). Setting or changing `appointmentId` from the office (the
   ledger is append-only: a wrong visit is a void and a re-entry). Card / ACH (Phase 2).
+
+**Shipped in Pass 7.7 (D5 owner review item 4: the Payments screen), for Pass 8 to know about** -
+three routes, one page, nothing stored. The confirm gate and the report's grouping are pure
+functions in `shared/payments.ts`, so the four surfaces that gate Confirm read one expression and
+the deposit slip's arithmetic can be exercised without a server.
+
+```ts
+// shared/payments.ts
+export interface ConfirmAuthority { canConfirm; canConfirmCash }     // can(role, CONFIRM_PAYMENT) / can(role, CONFIRM_CASH_PAYMENT)
+export function mayConfirmPayment(payment, authority): boolean        // PENDING && canConfirm && (method !== "CASH" || canConfirmCash)
+export function needsCashAuthority(payment, authority): boolean      // pending cash in front of a user who confirms checks but not cash
+export const CASH_CONFIRM_NOTE                                       // "Cash is confirmed by a manager or admin." - the row note
+export const CASH_CONFIRM_AUTHORITY_MESSAGE                          // the single route's 403 AND the batch's per-payment skip reason
+export interface PaymentListFilters { status?[]; method?[]; receivedFrom?; receivedTo?; collectedByUserId?; search?; limit? }   // = the query keys
+export function paymentListSearchParams(filters): string             // the client's query string, "" when nothing is set
+export interface PaymentListRow    // the payment's fields as ISO strings + appliedCents, customerLabel, locationName, locationAddress, appointmentScheduledAt
+export interface PaymentListResult { payments; total; limit; summary: { pendingCents/Count; pendingCashCents/Count; confirmedCents/Count }; collectors: [{ userId; label }] }
+export interface BatchConfirmResult { confirmed: [{ id; method; amountCents; status }]; skipped: [{ id; reason }] }
+export interface CollectionsReport { receivedFrom; receivedTo; totals: { pending*; confirmed*; totalCents; excludedCount; excludedCents }; byDay; byCollector; byMethod: CollectionsBucket[] }
+export function summarizeCollections(rows: CollectionsInput[], range): CollectionsReport   // pure: PENDING against CONFIRMED; VOIDED / REFUNDED counted as excluded, never summed
+export function utcDayKey(instant) / utcDayRange(from, to)            // UTC calendar days; [start, endExclusive)
+PAYMENT_LIST_DEFAULT_LIMIT = 200; PAYMENT_LIST_MAX_LIMIT = 1000; PAYMENT_BATCH_CONFIRM_MAX = 200
+
+// server/storage.ts (IStorage)
+listPayments(filters): Promise<PaymentListResult>
+  // every filter in SQL: status / method IN, receivedAt in [from 00:00Z, to+1 00:00Z), collectedByUserId, search as subqueries on
+  // customers (first || ' ' || last, company) and locations (name, address, city) plus ILIKE on check #, reference, memo; newest first;
+  // `total` counts the filtered set; `summary` sums the filtered set with the STATUS filter dropped; `collectors` is org-wide
+getCollectionsReport({ receivedFrom, receivedTo }): Promise<CollectionsReport>    // the range in SQL, the grouping in summarizeCollections()
+confirmPayments(paymentIds, { actor, allowCash }): Promise<BatchConfirmResult>
+  // dedupes ids; per payment: not found / "Already confirmed" / "A voided payment cannot be confirmed" / cash without authority ->
+  // skipped with the reason; otherwise confirmPayment() - ITS transaction, ITS payment_confirmed row, the invoices it sits on re-rolled
+
+// Routes (reads open like every other read; the filter vocabulary is PaymentListFilters)
+GET  /api/payments?status=PENDING,CONFIRMED&method=CASH&receivedFrom=YYYY-MM-DD&receivedTo=YYYY-MM-DD&collectedByUserId=&search=&limit=
+                                                     // 400 on an unknown status / method, a non-date, an inverted range, limit > 1000
+GET  /api/payments/collections?receivedFrom=&receivedTo=     // both required
+POST /api/payments/confirm-batch { paymentIds }              // CONFIRM_PAYMENT (technician: 403); allowCash = can(role, CONFIRM_CASH_PAYMENT)
+POST /api/payments/:id/confirm                               // unchanged; its 403 text is now CASH_CONFIRM_AUTHORITY_MESSAGE
+
+// client
+// pages/payments.tsx (route /payments; sidebar Operations → Payments, between Invoices and Communications). Tabs "Payments" |
+//   "Collections report". Payments: three tiles (pending / pending cash / confirmed - "totals cover every status for the range,
+//   collector, method and search in view"), the filter card (status defaulting to Pending confirmation, method, received from / to,
+//   collected by from `collectors`, a 300 ms-debounced search), the table - a checkbox on every row mayConfirmPayment() allows and a
+//   header select-all over exactly those; Received / Customer (link to /customers/:id?locationId=) with location and address /
+//   Method with check # or reference and memo / Amount / Status with "applied" or "on the location balance", void or refund reason,
+//   and the cash note / Collected by with confirmer / Visit (link to /schedule?appointmentId=&date=<local day>, "-" when the payment
+//   named no visit) / a per-row Confirm - "Batch Confirm (n)" in the card header, "Showing the newest N of M" when the cap cut the
+//   page, and a dismissable result panel naming every skipped payment and its reason. Both Confirm paths call confirm-batch.
+//   Collections: from / to with Today / Last 7 days / This month (UTC), three tiles, the excluded note, and By day / By collector /
+//   By method tables with footer totals. invalidateInvoiceViews() already matches the "/api/payments?..." keys.
+// pages/service-ticket-review.tsx, components/location-ledger-panel.tsx: read mayConfirmPayment / needsCashAuthority /
+//   CASH_CONFIRM_NOTE from shared instead of their own copies of the expression. No behavior change.
+```
+
+Behavior worth knowing before Pass 8 touches it:
+- **Per-payment permission, per-payment transaction.** The batch route is gated by `CONFIRM_PAYMENT`
+  and computes `allowCash` once; storage applies it to each row, because only the loop sees each
+  payment's method. A support user sending a check and a cash gets `confirmed: [check]`,
+  `skipped: [{ cash, "Confirming a cash payment requires cash-handling authority (manager or
+  admin)" }]`, one `payment_confirmed` row on the check and none on the cash - verified live.
+  A duplicate id is collapsed; an already-confirmed, voided or unknown id is skipped with its own
+  reason and writes nothing. The single confirm route and the batch read the same message
+  constant, so the two cannot drift.
+- **The summary ignores the status filter on purpose.** Under the default Pending filter the tiles
+  still show what is confirmed for the same range / collector / method / search, so the office
+  does not have to flip the filter to see both halves; the status filter only changes which rows
+  are listed. The report's totals and the list's summary agree for the same range (verified: both
+  before and after the confirmations, pending and confirmed separately, and per collector and per
+  method).
+- **Days are UTC calendar days.** `receivedFrom` / `receivedTo` and the report's day buckets use
+  `receivedAt` on the UTC clock, exactly as the billing run's "today" and the batch-invoicing range
+  do. A check collected at 8pm Central is 01:00Z and sits on the *next* day's slip. The honest fix
+  is an org timezone setting read by every date-only value; it is not scheduled, and the page says
+  which clock it keeps. Verified: a payment stamped 10 days ago is excluded from a
+  [today-2, today+2] range and appears alone in [today-12, today-8], on its own day bucket.
+- **The visit link.** A row whose payment named its appointment links to
+  `/schedule?appointmentId=<id>&date=<local day of scheduledDate>`; the schedule page reads `date`
+  as a local calendar day and finds the appointment by id in the full list, so the sheet opens on
+  the right day. The two live payments left unlinked by the Pass 7.6 stale-server test show "-" in
+  that column and always will.
+- **Search** is one box over customer first + last name, company, location name / street / city,
+  check number, reference and memo, case-insensitive, LIKE wildcards escaped. Verified: "Sarah
+  Chen" lists Downtown's rows and not the other location's; a check number or reference finds
+  exactly its payment.
+- **Verification without a browser.** 57 API assertions on PORT=5001 (list filters one by one, the
+  three-role confirm ladder, audit rows per payment, the report against the list), a 36-case
+  scratchpad script over the shared helpers (the gating table, the query string, UTC boundaries
+  including 23:59:59Z and midnight, the grouping and its ordering), `tsc`, and a Vite 200 on every
+  touched module. Layout and wording still reach a human first - **restart `npm run dev:full`
+  before manually testing**, this pass adds routes.
+- **Not built, deliberately.** A printable or exportable slip. Paging past the cap (narrow the
+  filters; the page says when it was cut). Void / refund / apply / record from this screen - the
+  location ledger panel keeps those, and every row links to its location. A collector or method
+  filter on the report (the list's summary already answers that). D9's office edit button and
+  reopen-reason dropdown. Card / ACH (Phase 2). No migration.
 
 **Design note carried into Pass 4** - resolved there: D3's "flags the linked ticket(s) for review" had
 no existing "flagged" concept in the schema. Pass 4 extended `serviceRecords.ticketStatus` with

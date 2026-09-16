@@ -20,6 +20,7 @@ import ServiceTicketReview from "@/pages/service-ticket-review";
 import Services from "@/pages/services";
 import Opportunities from "@/pages/opportunities";
 import Invoices from "@/pages/invoices";
+import Payments from "@/pages/payments";
 import Communications from "@/pages/communications";
 import Reports from "@/pages/reports";
 import Settings from "@/pages/settings";
@@ -37,6 +38,7 @@ function Router() {
       <Route path="/services" component={Services} />
       <Route path="/opportunities" component={Opportunities} />
       <Route path="/invoices" component={Invoices} />
+      <Route path="/payments" component={Payments} />
       <Route path="/communications" component={Communications} />
       <Route path="/reports" component={Reports} />
       <Route path="/settings" component={Settings} />
