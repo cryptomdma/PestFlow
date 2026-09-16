@@ -1223,7 +1223,13 @@ GET  /api/payments/by-appointment/:appointmentId    open read like the other pay
 //   (CONFIRM_PAYMENT; cash also CONFIRM_CASH_PAYMENT; "Cash is confirmed by a manager or admin." for support); "Collected $X - $Y pending
 //   confirmation" in the block's title row; then "This location also has $Z on account not linked to this visit" / "No other balance on
 //   account". A failed by-appointment read says "could not be loaded", never "nothing collected". Back / "n of N" / Next in the dialog
-//   header over filteredRecords (goToRecord clears the reopen reason).
+//   header, always rendered while a ticket from the queue is open (the ends disable rather than disappear); each move clears the
+//   reopen reason.
+// lib/review-queue-nav.ts (new, pure, no React): resolveReviewNav(runRecordIds, selectedRecordId, liveRecordIds) -> { index, total,
+//   previous, next }. The run is a SNAPSHOT of the queue taken when a ticket is opened from it, never the live filtered list -
+//   finalizing under the "Pending Review" filter drops the ticket out of that list, which would put it at index -1 and hide the
+//   controls at exactly the moment the reviewer wants Next. "Live" is every record that still EXISTS (not the filtered queue), so a
+//   finalized ticket keeps its place and an id that no longer resolves is stepped over rather than opened.
 // components/collect-payment-dialog.tsx: POST body gains appointmentId (both surfaces already knew the appointment).
 // components/apply-location-balance-prompt.tsx: a source collected at the invoice's visit says ", collected at this visit".
 // pages/invoices.tsx: row prints Paid / Balance when paid OR pending > 0, plus "$X pending confirmation"; Open tile sub-line
@@ -1271,7 +1277,17 @@ Behavior worth knowing before Pass 7.7 touches it:
   space: the header card was one column of text plus a badge, and the short collections block sat
   beside the tall billing block. The header is now identity | address | status on one row, and the
   money blocks are full width - a per-service table for billing, one line per payment for
-  collections.
+  collections. (3) Next / Back vanished after Finalize, which is where a review run most wants them:
+  they walked the live filtered queue, and a finalized ticket leaves it under the "Pending Review"
+  filter. They now walk a snapshot of the queue (`lib/review-queue-nav.ts`) and are always rendered
+  while a ticket from the queue is open.
+- **Verification without a browser.** This repo has no test runner, no browser automation and no
+  test files, so neither the agent session nor any future one can render this modal. What was
+  possible was done instead: the stepping rules are a pure module exercised by a 15-case script
+  (`resolveReviewNav`, including a regression guard that navigating the filtered queue yields
+  index -1), `tsc`, the 46-assertion API smoke test, and a Vite 200 on every touched module. Layout
+  and wording still reach a human first. If a future pass adds a component test runner, this modal
+  is the first thing worth covering.
 - **Not built, deliberately.** D9's office edit button and settings-driven reopen-reason dropdown
   (unscheduled). Anything on a Payments screen (7.7: the org-wide list, the pending queue with batch
   confirmation, the collections report). Setting or changing `appointmentId` from the office (the

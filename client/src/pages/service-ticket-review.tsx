@@ -21,6 +21,7 @@ import {
 } from "@/components/invoice-on-finalize-prompt";
 import { apiRequest, getApiErrorMessage, queryClient } from "@/lib/queryClient";
 import { VisitBillingTable, useVisitBillingSummary } from "@/components/visit-billing-summary";
+import { resolveReviewNav, type ReviewNavStep } from "@/lib/review-queue-nav";
 import { formatCents } from "@shared/money";
 import { can, PERMISSIONS } from "@shared/permissions";
 import { formatPaymentMethod, formatPaymentStatus, paymentHoldsValue, type LocationLedgerSummary } from "@shared/payments";
@@ -207,6 +208,9 @@ export default function ServiceTicketReview() {
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [selectedRecordId, setSelectedRecordId] = useState<string | null>(null);
+  // The review run: the queue as it stood when a ticket was opened from it.
+  // Held so Next / Back survive a ticket leaving the live filter.
+  const [navRecordIds, setNavRecordIds] = useState<string[]>([]);
   const [reopenReason, setReopenReason] = useState("");
   const [batchDialogOpen, setBatchDialogOpen] = useState(false);
   const [batchResult, setBatchResult] = useState<BatchGenerateResult | null>(null);
@@ -268,15 +272,33 @@ export default function ServiceTicketReview() {
     }).sort((a, b) => new Date(b.postedAt || b.serviceDate).getTime() - new Date(a.postedAt || a.serviceDate).getTime());
   }, [dateFrom, dateTo, serviceById, serviceRecords, serviceTypeFilter, statusFilter, technicianFilter]);
 
-  // Next / Back walk the queue as filtered and sorted above. A ticket that
-  // leaves the filter (finalized under "Pending Review") stays open but drops
-  // out of the count until the modal is closed.
-  const selectedIndex = selectedRecordId ? filteredRecords.findIndex((record) => record.id === selectedRecordId) : -1;
-  const goToRecord = (index: number) => {
-    const target = filteredRecords[index];
-    if (!target) return;
+  // Next / Back walk a SNAPSHOT of the queue, taken when a ticket is opened
+  // from it - not the live filtered list. Finalizing a ticket under the
+  // "Pending Review" filter drops it out of that list, and navigating over
+  // the live one would leave the open ticket at index -1 and hide the
+  // controls at exactly the moment the reviewer wants Next. The snapshot
+  // keeps the run intact until the modal is closed.
+  const openRecordFromQueue = (recordId: string) => {
+    setNavRecordIds(filteredRecords.map((record) => record.id));
     setReopenReason("");
-    setSelectedRecordId(target.id);
+    setSelectedRecordId(recordId);
+  };
+  const closeReviewModal = () => {
+    setSelectedRecordId(null);
+    setNavRecordIds([]);
+    setReopenReason("");
+  };
+
+  // Stepping rules live in lib/review-queue-nav.ts (pure, so they can be
+  // exercised without rendering this modal). "Live" is every record that
+  // still exists, NOT the filtered queue - that is what keeps a finalized
+  // ticket in its place in the run.
+  const liveRecordIds = useMemo(() => new Set((serviceRecords ?? []).map((record) => record.id)), [serviceRecords]);
+  const { index: selectedIndex, total: navTotal, previous: previousStep, next: nextStep } = resolveReviewNav(navRecordIds, selectedRecordId, liveRecordIds);
+  const goToRecord = (step: ReviewNavStep | null) => {
+    if (!step) return;
+    setReopenReason("");
+    setSelectedRecordId(step.id);
   };
 
   const invalidateReviewData = () => {
@@ -460,7 +482,7 @@ export default function ServiceTicketReview() {
             const serviceType = serviceTypeById.get(record.serviceTypeId || service?.serviceTypeId || "");
             const technician = record.technicianId ? technicianById.get(record.technicianId) : undefined;
             return (
-              <button key={record.id} type="button" onClick={() => setSelectedRecordId(record.id)} className="grid w-full gap-3 rounded-md border px-3 py-3 text-left transition-colors hover:bg-muted/20 md:grid-cols-[1.3fr_1fr_1fr_1fr_auto]">
+              <button key={record.id} type="button" onClick={() => openRecordFromQueue(record.id)} className="grid w-full gap-3 rounded-md border px-3 py-3 text-left transition-colors hover:bg-muted/20 md:grid-cols-[1.3fr_1fr_1fr_1fr_auto]">
                 <div>
                   <p className="font-medium">{getCustomerLabel(customer, location)}</p>
                   <p className="text-xs text-muted-foreground">{location ? [location.address, location.city, location.state].filter(Boolean).join(", ") : "Location unavailable"}</p>
@@ -485,18 +507,21 @@ export default function ServiceTicketReview() {
         </CardContent>
       </Card>
 
-      <Dialog open={!!selectedRecord} onOpenChange={(open) => { if (!open) setSelectedRecordId(null); }}>
+      <Dialog open={!!selectedRecord} onOpenChange={(open) => { if (!open) closeReviewModal(); }}>
         <DialogContent className="max-h-[92vh] overflow-y-auto sm:max-w-3xl">
           <DialogHeader>
             <div className="flex items-center justify-between gap-3 pr-6">
               <DialogTitle>Service Ticket Review</DialogTitle>
-              {selectedIndex >= 0 && filteredRecords.length > 1 ? (
+              {/* Always rendered while a ticket from the queue is open, so the
+                  run reads the same before and after Finalize; the ends
+                  disable rather than disappear. */}
+              {selectedIndex >= 0 ? (
                 <div className="flex items-center gap-1 text-xs text-muted-foreground" data-testid="nav-review-tickets">
-                  <Button type="button" variant="ghost" size="sm" className="h-7 px-2" onClick={() => goToRecord(selectedIndex - 1)} disabled={selectedIndex <= 0} data-testid="button-review-back">
+                  <Button type="button" variant="ghost" size="sm" className="h-7 px-2" onClick={() => goToRecord(previousStep)} disabled={!previousStep} data-testid="button-review-back">
                     <ChevronLeft className="h-4 w-4" /> Back
                   </Button>
-                  <span className="tabular-nums">{selectedIndex + 1} of {filteredRecords.length}</span>
-                  <Button type="button" variant="ghost" size="sm" className="h-7 px-2" onClick={() => goToRecord(selectedIndex + 1)} disabled={selectedIndex >= filteredRecords.length - 1} data-testid="button-review-next">
+                  <span className="tabular-nums" data-testid="text-review-position">{selectedIndex + 1} of {navTotal}</span>
+                  <Button type="button" variant="ghost" size="sm" className="h-7 px-2" onClick={() => goToRecord(nextStep)} disabled={!nextStep} data-testid="button-review-next">
                     Next <ChevronRight className="h-4 w-4" />
                   </Button>
                 </div>
@@ -623,7 +648,7 @@ export default function ServiceTicketReview() {
               <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-between">
                 <Button type="button" variant="outline" onClick={() => selectedLocation && setLocation(`/customers/${selectedRecord.customerId}?locationId=${selectedLocation.id}`)}>Open Location</Button>
                 <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-                  <Button type="button" variant="outline" onClick={() => setSelectedRecordId(null)}>Close</Button>
+                  <Button type="button" variant="outline" onClick={closeReviewModal}>Close</Button>
                   <Button type="button" variant="secondary" onClick={() => reopenMutation.mutate({ id: selectedRecord.id, reason: reopenReason })} disabled={reopenMutation.isPending || !reopenReason.trim()}>
                     <RotateCcw className="mr-1 h-4 w-4" /> Reopen
                   </Button>
