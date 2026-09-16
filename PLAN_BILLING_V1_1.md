@@ -161,6 +161,35 @@ Stripe remains Phase 2. Phase 1 builds the ledger with manual instruments:
 - The existing permission stubs (`TAKE_PAYMENT_FIELD`, `REFUND_PAYMENT`, `ISSUE_CREDIT_MEMO`) get wired
   to real routes. Refunds against CASH/CHECK are manual records; card refunds wait for Phase 2.
 
+> **Owner review of Pass 7.5 (2026-09-15, approved 2026-09-16)** — from live testing of the
+> field → office loop. Four findings, each landing in a named pass:
+> 1. **The reviewer must see the field collection before finalizing.** The Service Ticket Review
+>    modal shows no money; the flow was Finalize → Generate → "apply the location balance?" with
+>    the collection invisible until the last step. D9's "price/payment and address blocks" on the
+>    review modal were decided but never scoped into a pass (the Pass 9 row is the column drop
+>    only). Lands in **Pass 7.6**.
+> 2. **A payment records the visit it was collected at.** `payments.appointmentId`, nullable, set
+>    by the field collect dialog and never changed — the same kind of intent as
+>    `designatedAgreementId` (D4). The D4 prompt suggests visit-collected money first, then
+>    agreement-designated, then undesignated. Application stays the office's explicit act. Pass 7.6.
+> 3. **Pending money is visible wherever an invoice is shown.** "Pending shows, confirmed counts"
+>    stands — a bounced check must never have marked an invoice paid — but applied-pending money
+>    was visible only behind the location Invoices tab's Applications toggle. Invoices gain a stored
+>    `pendingAppliedCents` rollup, recomputed with `amountPaidCents` / `balanceDueCents` in the same
+>    transaction, shown on every invoice row and tile as "pending confirmation". Confirmation is
+>    also offered from the review modal, gated exactly as the ledger panel gates it
+>    (`CONFIRM_PAYMENT`; cash `CONFIRM_CASH_PAYMENT`). Pass 7.6.
+> 4. **A Payments screen.** Org-wide list with server-side filters (status, method, date range,
+>    collector, customer/location search), a pending-confirmation queue with **batch confirmation**
+>    (permission checked per payment — cash is skipped and reported for a support user; one
+>    transaction and one audit row per payment), and a **collections report** by day, collector and
+>    method with pending against confirmed — the deposit-slip view. Read-only, derived, no new
+>    stored data. Lands in **Pass 7.7**, after 7.6, since the queue and the report group by the
+>    visit link and the collector.
+>
+> Sequenced 7.6 → 7.7 → 8 → 9. D9's office edit button and settings-driven reopen-reason dropdown
+> remain unscheduled.
+
 ## D6. COA is payment application. Price is never mutated.
 
 - Cash-on-account **never** adjusts a service or invoice price. Revenue, tax basis, production value,
@@ -209,6 +238,9 @@ Decided now, built later, so they stop resurfacing as ambiguity:
   future signatures, customer-facing summary) → post. Button label must NOT be "Complete Service" —
   office finalization owns "complete." Use "Finish & Collect" / "Post Service Ticket."
   (Tech-view pass, after payments-lite exists to collect against.)
+  **Built as Pass 7.5** (`feature/phase-1-tech-collect-relabel`, 2026-09-15). Signatures and a
+  printable customer copy remain future; the office-side follow-ups from the owner's review of that
+  pass are recorded under D5.
 - **Proposal generator** from the field: future/external, API-linked. Framework note only.
 
 ## D9. Schema cleanups riding along in Phase 1
@@ -224,6 +256,8 @@ Decided now, built later, so they stop resurfacing as ambiguity:
 - Reopen-reason UX per notes: pop-up with settings-configured dropdown; "Other" requires text
   (role-gated). Review modal gains Next/Back ticket navigation, price/payment and address blocks, and
   the role-gated office edit button.
+  The price/payment and address blocks and Next/Back land in **Pass 7.6** (owner review of Pass 7.5,
+  under D5). The reopen-reason dropdown and the office edit button are not yet scheduled.
 
 ---
 

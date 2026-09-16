@@ -128,7 +128,23 @@ finalization owns that word. The office's Record Payment dialog is untouched. No
 card / ACH (Phase 2), signatures, a printable customer copy. Signatures and behavior are under
 "Shipped in Pass 7.5" in `PLAN_BILLING_V1_1_EXECUTION.md`.
 
-Next up once it merges: **Pass 8 — `feature/phase-1-audit-log-backfill`** (D7 remainder).
+Owner review of Pass 7.5 (2026-09-15, decisions approved 2026-09-16), from live testing of the
+field → office loop: the Service Ticket Review modal shows no money at all, so the reviewer
+finalizes without seeing what the technician collected; a payment cannot be tied to the visit it
+was collected at; once the D4 prompt applies a PENDING payment the money is visible only behind the
+location Invoices tab's "Applications" toggle (D5's "pending shows, confirmed counts" is right, the
+display is not); and confirmation lives only on the location ledger panel, with no org-wide list,
+no batch confirmation and no collections report. Recorded under D5 in `PLAN_BILLING_V1_1.md` and
+resolved as two inserted passes, in this order, ahead of Pass 8.
+
+Next up once it merges: **Pass 7.6 — `feature/phase-1-review-modal-field-collection`** (D9's
+price/payment and address blocks on the review modal with Next/Back, the "collected at this visit"
+link on payments, confirm from the review modal, and a stored pending-applied rollup shown on every
+invoice row). Then **Pass 7.7 — `feature/phase-1-payments-screen`** (org-wide payments list with
+server-side filters, batch confirmation, a Payments page with the pending queue, and a collections
+report). Then **Pass 8 — `feature/phase-1-audit-log-backfill`** (D7 remainder). Scope, files,
+migration and verification for 7.6 and 7.7 are rows in the Ordered Work Plan of
+`PLAN_BILLING_V1_1_EXECUTION.md`.
 
 Full ordered plan, impact analysis, conflict resolutions, and per-pass verification steps live in
 `PLAN_BILLING_V1_1_EXECUTION.md` — read it before starting a pass, and update its "Pass status" table
