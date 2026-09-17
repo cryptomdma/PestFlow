@@ -238,6 +238,8 @@ export interface CancelAgreementInput {
 export interface CompleteServiceInput {
   serviceId: string;
   actorRole: UserRole;
+  /** Session actor (routes.ts getAuditActor) for the D7 price-override row. */
+  actor?: AuditActor | null;
   appointmentId?: string | null;
   technicianId?: string | null;
   serviceDate: Date;
@@ -709,7 +711,7 @@ export interface IStorage {
   generateScheduleDrivenInvoice(input: GenerateScheduleDrivenInvoiceInput): Promise<Invoice>;
   batchGenerateInvoicesForDateRange(dateFrom: string, dateTo: string, actor?: AuditActor | null): Promise<BatchGenerateResult>;
   batchSendInvoices(invoiceIds: string[]): Promise<Invoice[]>;
-  updateInvoice(id: string, data: Partial<InsertInvoice>): Promise<Invoice | undefined>;
+  updateInvoice(id: string, data: Partial<InsertInvoice>, actor?: AuditActor | null): Promise<Invoice | undefined>;
   voidInvoice(id: string, actor?: AuditActor | null): Promise<Invoice | undefined>;
 
   // D5 payments ledger. Append-only: payments, applications and credit memos
@@ -945,11 +947,18 @@ export class DatabaseStorage implements IStorage {
       .select({ id: invoices.id })
       .from(invoices)
       .where(and(eq(invoices.orgId, this.orgId), eq(invoices.locationId, locationId)));
-    // Service tickets, for the D3 review flag (prefinalization_issue_override).
+    // Service tickets, for the D3 review flag (prefinalization_issue_override)
+    // and, since Pass 8, ticket_reopened.
     const locationTickets = await db
       .select({ id: serviceRecords.id })
       .from(serviceRecords)
       .where(and(eq(serviceRecords.orgId, this.orgId), eq(serviceRecords.locationId, locationId)));
+    // Services, for the field price override (price_overridden) - the price
+    // lives on the Service, not the ticket.
+    const locationServices = await db
+      .select({ id: services.id })
+      .from(services)
+      .where(and(eq(services.orgId, this.orgId), eq(services.locationId, locationId)));
     // The ledger (D5): payments and credit memos live at the location.
     const locationPayments = await db
       .select({ id: payments.id })
@@ -965,6 +974,7 @@ export class DatabaseStorage implements IStorage {
       { entityType: "customer", entityIds: [location.customerId] },
       { entityType: "invoice", entityIds: locationInvoices.map((invoice) => invoice.id) },
       { entityType: "service_record", entityIds: locationTickets.map((ticket) => ticket.id) },
+      { entityType: "service", entityIds: locationServices.map((service) => service.id) },
       { entityType: "payment", entityIds: locationPayments.map((payment) => payment.id) },
       { entityType: "credit_memo", entityIds: locationCredits.map((memo) => memo.id) },
     ];
@@ -3919,6 +3929,23 @@ export class DatabaseStorage implements IStorage {
           .where(and(eq(services.orgId, this.orgId), eq(services.id, service.id)))
           .returning();
         effectiveService = updatedService ?? service;
+
+        // D7: a price override is a financial mutation. Logged only when the
+        // price actually moved - the ticket dialog sends the current price on
+        // every post of a manual service, and a row per unchanged post would
+        // bury the one override that matters. The snapshot is the Service
+        // row, so a service-type change made in the same post shows in the
+        // diff; a type-only change writes nothing (not a price override).
+        if (updatedService && updatedService.priceCents !== service.priceCents) {
+          await this.recordAuditLogTx(tx, {
+            entityType: "service",
+            entityId: service.id,
+            action: "price_overridden",
+            actor: input.actor,
+            before: service,
+            after: updatedService,
+          });
+        }
       }
 
       const [existingRecord] = await tx.select().from(serviceRecords).where(and(eq(serviceRecords.orgId, this.orgId), eq(serviceRecords.serviceId, effectiveService.id)));
@@ -4214,6 +4241,20 @@ export class DatabaseStorage implements IStorage {
         })
         .where(and(eq(serviceRecords.orgId, this.orgId), eq(serviceRecords.id, id)))
         .returning();
+
+      // D7: reopening unlocks a ticket that finalization made immutable and
+      // pulls it off the ready-for-billing list, so it is recorded with the
+      // reason. The reopened* stamps on the row stay for display; this row is
+      // the history (D7: "single last-actor stamps remain for display; the
+      // log is the truth").
+      await this.recordAuditLogTx(tx, {
+        entityType: "service_record",
+        entityId: record.id,
+        action: "ticket_reopened",
+        actor,
+        before: existingRecord,
+        after: record,
+      });
 
       if (record.serviceId) {
         await tx
@@ -6045,20 +6086,37 @@ export class DatabaseStorage implements IStorage {
   // Notes and due date only. Status, amount paid and balance due are derived
   // from the ledger (D5) and cannot be set here - "Mark Paid" ended with
   // Pass 6; recording a payment is what marks an invoice paid now.
-  async updateInvoice(id: string, data: Partial<InsertInvoice>): Promise<Invoice | undefined> {
-    const [existing] = await db.select().from(invoices).where(and(eq(invoices.orgId, this.orgId), eq(invoices.id, id)));
-    if (!existing) {
-      return undefined;
-    }
-    if (existing.status === "VOID") {
-      throw new Error("Voided invoices cannot be changed");
-    }
-    if (data.status !== undefined || data.amountPaidCents !== undefined || data.balanceDueCents !== undefined || data.paidDate !== undefined) {
-      throw new Error("Invoice status and paid amounts are derived from recorded payments; record a payment instead");
-    }
+  //
+  // D7 (Pass 8): the due date is a term of the receivable, so a change here
+  // is recorded as an `update` on the invoice, in the same transaction. A
+  // PATCH that changes nothing writes no row.
+  async updateInvoice(id: string, data: Partial<InsertInvoice>, actor?: AuditActor | null): Promise<Invoice | undefined> {
+    return db.transaction(async (tx) => {
+      const [existing] = await tx.select().from(invoices).where(and(eq(invoices.orgId, this.orgId), eq(invoices.id, id)));
+      if (!existing) {
+        return undefined;
+      }
+      if (existing.status === "VOID") {
+        throw new Error("Voided invoices cannot be changed");
+      }
+      if (data.status !== undefined || data.amountPaidCents !== undefined || data.balanceDueCents !== undefined || data.paidDate !== undefined) {
+        throw new Error("Invoice status and paid amounts are derived from recorded payments; record a payment instead");
+      }
 
-    const [inv] = await db.update(invoices).set(data).where(and(eq(invoices.orgId, this.orgId), eq(invoices.id, id))).returning();
-    return inv;
+      const [inv] = await tx.update(invoices).set(data).where(and(eq(invoices.orgId, this.orgId), eq(invoices.id, id))).returning();
+      const dueDateChanged = (existing.dueDate?.getTime() ?? null) !== (inv.dueDate?.getTime() ?? null);
+      if (dueDateChanged || (existing.notes ?? null) !== (inv.notes ?? null)) {
+        await this.recordAuditLogTx(tx, {
+          entityType: "invoice",
+          entityId: inv.id,
+          action: "update",
+          actor,
+          before: existing,
+          after: inv,
+        });
+      }
+      return inv;
+    });
   }
 
   async voidInvoice(id: string, actor?: AuditActor | null): Promise<Invoice | undefined> {

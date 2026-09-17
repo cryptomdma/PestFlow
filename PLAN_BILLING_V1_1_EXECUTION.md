@@ -27,8 +27,8 @@ grounded in what the code and data actually do, not what the decision record ass
 | 7 | `feature/phase-1-coa-and-field-display` | D6 | Done (PR #64) |
 | 7.5 | `feature/phase-1-tech-collect-relabel` | D8 (post-ticket sequence relabel) | Done (PR #65) |
 | 7.6 | `feature/phase-1-review-modal-field-collection` | D9 (review modal price/payment + address blocks), D5 owner review items 1-3 | Done (PR #66) |
-| 7.7 | `feature/phase-1-payments-screen` | D5 owner review item 4 (Payments screen, batch confirmation, collections report) | Pushed, awaiting merge |
-| 8 | `feature/phase-1-audit-log-backfill` | D7 (remainder) | Not started |
+| 7.7 | `feature/phase-1-payments-screen` | D5 owner review item 4 (Payments screen, batch confirmation, collections report) | Done (PR #67) |
+| 8 | `feature/phase-1-audit-log-backfill` | D7 (remainder) | Pushed, awaiting merge |
 | 9 | `feature/phase-1-legacy-billing-frequency-removal` | D9 | Not started |
 
 Pass 3.5 is inserted, not renumbered in: it was not in the original D1-D9 sequence at all, but Pass 3's
@@ -1389,6 +1389,76 @@ Behavior worth knowing before Pass 8 touches it:
   location ledger panel keeps those, and every row links to its location. A collector or method
   filter on the report (the list's summary already answers that). D9's office edit button and
   reopen-reason dropdown. Card / ACH (Phase 2). No migration.
+
+**Shipped in Pass 8 (D7 remainder: the audit backfill), for Pass 9 to know about** - three call
+sites, one union member, no route shape or schema change. Every mutation D7 lists now writes the
+log; the table below is the coverage.
+
+```ts
+// shared/audit.ts
+AuditEntityType += "service"      // label "Service". The field price override mutates services.priceCents - the ticket only reads
+                                  // it - so the before/after snapshot is the Service row. AuditAction is unchanged: writers now exist
+                                  // for price_overridden and ticket_reopened; invoice_line_edited still has none (see below).
+
+// server/storage.ts
+CompleteServiceInput.actor?: AuditActor | null     // the session actor, set by the route AFTER the validated body spread
+completeService(input)            // after the field-override UPDATE: one price_overridden row { entityType: "service", entityId: service.id,
+                                  //   before: the Service row as read, after: as written } ONLY when after.priceCents !== before.priceCents.
+                                  //   The override block runs only when the actor may price this service (manual: anyone posting;
+                                  //   agreement: ADJUST_PRICE_AGREEMENT, manager+) - a refused override changes nothing and writes nothing.
+reopenServiceRecord(id, reason, actor)   // one ticket_reopened row on the ticket: before = the row as it was (FINALIZED, readyForBilling
+                                  //   true), after = REOPENED, readyForBilling false, reopenReason set. The reopened* stamps stay for display.
+updateInvoice(id, data, actor?)   // now a transaction; one `update` row on the invoice when notes or dueDate changed. The same values
+                                  //   again write nothing; status / paid amounts through this path are refused before any write.
+getAuditLogsForLocation(locationId)      // refs += { entityType: "service", entityIds: the location's services }
+
+// server/routes.ts
+POST  /api/services/:id/complete  // passes actor: getAuditActor(req) after ...validated, so a body-supplied actor can never win
+PATCH /api/invoices/:id           // passes getAuditActor(req)
+```
+
+D7's scope list, and where each item writes the log now:
+
+| D7 item | Writer | Since |
+|---|---|---|
+| invoice issue / void | `invoice_issued` (generation, issue, initial charge), `invoice_voided`, `invoice_drafted` | 3, 4, 6 |
+| line edits while DRAFT | **no mutation exists** - lines are inserted at draft / issue and re-priced from the tickets on issue; `invoice_line_edited` stays reserved | - |
+| credit memo issue / apply | `credit_memo_issued` / `_applied` / `_released` / `_voided` | 6 |
+| payment record / confirm / apply / release / refund | `payment_recorded` / `_confirmed` / `_applied` / `_released` / `_refunded` / `_voided` (batch confirm reuses the single confirm) | 6, 7.7 |
+| COA application | `payment_applied` / `credit_memo_applied` from the D4 prompt | 6 |
+| price override | `price_overridden` on `service` | **8** |
+| ticket reopen | `ticket_reopened` on `service_record` | **8** |
+| pre-finalization issue override | `prefinalization_issue_override` on the invoice and each flagged ticket | 4 |
+| (invoice notes / due date) | `update` on `invoice` - not in D7's list, but it is the one invoice edit that exists | **8** |
+
+Behavior worth knowing before Pass 9 touches it:
+- **Changed-only, decided by the row, not the client.** The ticket dialog sends the ticket price on
+  every post of a manual service, and for an agreement service only when it differs from the
+  computed per-visit amount; the storage layer compares the Service row before and after the
+  override UPDATE and writes the row on a real change, so there is no client "changed" flag to
+  trust. Verified live: 5000 → 7500 one row (technician), re-post at 7500 nothing, → 8000 a second
+  row newest first, and the visit invoice then billed 8000; a technician's 9900 on an agreement
+  service was not stamped and wrote nothing, a manager's was (null → 9900, one row).
+- **Reopen logs whatever the prior status was.** The route requires `REOPEN_TICKET` (support+) and
+  a non-blank reason (400 otherwise); a refused call writes nothing. The single-actor stamps on the
+  ticket (`reopenedBy*`, `reopenReason`) remain for the review screen; the log row is the history.
+- **The invoice edit** is `SEND_INVOICE` (support+; technician 403). A row only when notes or the
+  due date moved; a no-op PATCH and a refused status PATCH both leave the trail as it was.
+- **The History tab.** A `service`-typed row surfaces on the location's History panel through the
+  same rollup as the others (services carry `locationId`); it renders with the existing entity
+  badge ("Service") and the field-level diff, so `priceCents` shows as the changed field. No client
+  change was needed.
+- **Not built, deliberately.** A row for a field service-type change with no price change - the
+  same override block, but it is not a price override, and D7 does not list it; if it is wanted it
+  is one more action member and a second comparison. Per-line edits (no editor exists). D7's
+  non-financial entities (customer / location field changes beyond the profile edit, agreements,
+  scheduling) - its own follow-up pass, same table, same helper. A `service` filter on the History
+  tab. D9's office edit button and reopen-reason dropdown.
+- **Verification without a browser.** 35 API assertions on PORT=5001 (both fixtures, the four
+  roles, every row read back through `GET /api/audit-logs` with the session actor and both
+  snapshots, the rollup, and two unrelated trails unchanged), `tsc`, double boot. Nothing here has
+  a visual surface beyond the History badge, but **restart `npm run dev:full` before manually
+  testing** - the pass changes server code, and a stale server writes none of these rows.
 
 **Design note carried into Pass 4** - resolved there: D3's "flags the linked ticket(s) for review" had
 no existing "flagged" concept in the schema. Pass 4 extended `serviceRecords.ticketStatus` with

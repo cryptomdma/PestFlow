@@ -9,19 +9,27 @@
 // financial mutations - that edit is the point, not a nuisance.
 
 /** Entities that carry an audit trail. Seeded with the two the legacy call site
- *  already writes plus the financial entities named in D7's Phase 1 scope. */
+ *  already writes plus the financial entities named in D7's Phase 1 scope.
+ *  `service` joined in Pass 8: a field price override mutates the Service's
+ *  own `priceCents` (the ticket only reads it), so that is the row the
+ *  before/after snapshot has to be of. */
 export type AuditEntityType =
   | "customer"
   | "location"
   | "invoice"
   | "invoice_line_item"
+  | "service"
   | "service_record"
   | "payment"
   | "credit_memo";
 
 /** One member per mutation in D7's Phase 1 scope list, plus the pre-existing
- *  `update` written by `updateLocationProfile()`. Past tense, snake_case:
- *  an audit row records something that already happened. */
+ *  `update` written by `updateLocationProfile()` (and, since Pass 8, by
+ *  `updateInvoice()` for an invoice's notes / due date). Past tense,
+ *  snake_case: an audit row records something that already happened.
+ *  `invoice_line_edited` has no writer: nothing edits an invoice line in
+ *  place - lines are written once at draft / issue and re-priced from the
+ *  tickets on issue - so it stays reserved for the day a line editor exists. */
 export type AuditAction =
   | "update"
   | "invoice_drafted"
@@ -47,6 +55,7 @@ const ENTITY_TYPE_LABELS: Record<AuditEntityType, string> = {
   location: "Location",
   invoice: "Invoice",
   invoice_line_item: "Invoice line",
+  service: "Service",
   service_record: "Service ticket",
   payment: "Payment",
   credit_memo: "Credit memo",

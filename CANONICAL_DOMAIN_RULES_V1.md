@@ -675,6 +675,9 @@ flow** for agreement work — overriding it requires `ADJUST_PRICE_AGREEMENT`.
 
 A stamped `priceCents` therefore means one of exactly two things: a non-agreement
 Service's own price, or a deliberate override. Both outrank the derived amount.
+A price stamped or changed through the ticket flow is a financial mutation and is
+recorded in the audit log (§17) as `price_overridden` on the Service, with the row
+before and after (PLAN_BILLING_V1.1 D7).
 
 ### Service designation and warranty callbacks (not yet modeled — roadmap)
 
@@ -823,7 +826,7 @@ When a Service Ticket is posted, the system must copy the technician display nam
 
 An Appointment can be marked completed only when all Services linked to that Appointment have posted Service Records, unless a future explicit close/exception workflow is built.
 
-Technician posting and office finalization are distinct lifecycle steps. Technician posting creates the compliance record and sends it to office review. Office finalization is the authoritative completion event: it marks the Service completed, locks the ticket, makes the Service Record billing-ready, advances agreement recurrence when applicable, and allows downstream reporting/billing workflows. Reopen behavior should be role-gated when roles are available and must capture a reopen reason.
+Technician posting and office finalization are distinct lifecycle steps. Technician posting creates the compliance record and sends it to office review. Office finalization is the authoritative completion event: it marks the Service completed, locks the ticket, makes the Service Record billing-ready, advances agreement recurrence when applicable, and allows downstream reporting/billing workflows. Reopen behavior should be role-gated when roles are available and must capture a reopen reason; a reopen is recorded in the audit log (§17) as `ticket_reopened` with the ticket before and after, the reason included (PLAN_BILLING_V1.1 D7).
 
 Ticket status vocabulary is `OFFICE_REVIEW_PENDING | FLAGGED_FOR_REVIEW | FINALIZED | REOPENED`.
 `FLAGGED_FOR_REVIEW` (PLAN_BILLING_V1.1 D3) is a pending ticket on a visit whose invoice was issued

@@ -241,6 +241,15 @@ Decided now, built later, so they stop resurfacing as ambiguity:
   **Built as Pass 7.5** (`feature/phase-1-tech-collect-relabel`, 2026-09-15). Signatures and a
   printable customer copy remain future; the office-side follow-ups from the owner's review of that
   pass are recorded under D5.
+- **Technician ticket modal (owner notes, 2026-09-16, after Pass 8):** the price typed on the
+  ticket must drive the Price / tax / Due today block and the collect step immediately, on
+  leaving the price box. Today both read the *stored* price, so Finish & Collect shows and
+  defaults to the old amount, and the new price lands only when the ticket is posted, after
+  Collect. Tax stays the tax engine's answer, display-only. Also: service instructions inside
+  the open ticket, dollars.cents formatting on the price box, adding a service from the field,
+  and creating an agreement from the field (which wants sale attribution first). Recorded in
+  full, with what exists today and the proposed design, in `CURRENT_FOCUS.md`; one
+  technician-view pass after Pass 9.
 - **Proposal generator** from the field: future/external, API-linked. Framework note only.
 
 ## D9. Schema cleanups riding along in Phase 1
