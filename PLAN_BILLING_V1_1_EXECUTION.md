@@ -29,7 +29,8 @@ grounded in what the code and data actually do, not what the decision record ass
 | 7.6 | `feature/phase-1-review-modal-field-collection` | D9 (review modal price/payment + address blocks), D5 owner review items 1-3 | Done (PR #66) |
 | 7.7 | `feature/phase-1-payments-screen` | D5 owner review item 4 (Payments screen, batch confirmation, collections report) | Done (PR #67) |
 | 8 | `feature/phase-1-audit-log-backfill` | D7 (remainder) | Done (PR #68) |
-| 9 | `feature/phase-1-legacy-billing-frequency-removal` | D9 (column drop) | Pushed, awaiting merge |
+| 9 | `feature/phase-1-legacy-billing-frequency-removal` | D9 (column drop) | Done (PR #69) |
+| V | `verify/phase-1-acceptance` | Phase 1 verification: the acceptance targets + the three guards, end to end (docs only) | Pushed, awaiting merge |
 
 Pass 3.5 is inserted, not renumbered in: it was not in the original D1-D9 sequence at all, but Pass 3's
 live testing found that `billingPlanId` had no writer anywhere in the client, so every agreement was
@@ -1583,4 +1584,54 @@ conflict-resolution guards this plan adds are holding:
   legacy text in `notes`, none was assigned a plan; they are still plan-less until the "Billing Plan
   required on every Agreement" item resolves them.
 - Canceling an appointment with a DRAFT invoice prompts rather than silently voiding or orphaning it,
-  on both call sites.
+  on both call sites. **Held (2026-09-16):** on all three - see the run below.
+
+### Run of 2026-09-16 (`verify/phase-1-acceptance`)
+
+On the merged D1-D9 code (origin/main at PR #69), PORT=5001, `invoiceOnFinalize = PROMPT`, as the
+four roles (`admin` for fixtures and settings, `technician` for posting and field collection,
+`support` for finalize / generate / apply / confirm, `manager` for cash and void). A 91-assertion
+PowerShell script created every fixture through the API, ran the targets, and deleted its rows in
+FK order; the eleven table counts (agreements, plan-less agreements, invoices, payments,
+billing_events, audit_logs, services, appointments, service_records, production_value_entries,
+opportunities) were identical before and after (22 / 11 / 60 / 11 / 3 / 99 / 85 / 93 / 62 / 45 / 16).
+Fixture design worth keeping: the Sarah Chen account (Downtown) carries an exemption certificate,
+so its invoices are tax 0 with `EXEMPTION_CERTIFICATE` and gave the $500 / $250 target its literal
+numbers; the two-service visit sat at a location without one, where a service type with no rule is
+taxed at the default 8.25% (`reason: DEFAULT`), so the tax-basis assertions had real figures. The
+batch range filters on the ticket's `postedAt`, so the fixture tickets' `posted_at` was pinned to
+2025-06-15 by SQL and the preview asserted to hold only the fixture visit before generating. The
+nightly run was triggered only after `SELECT ... WHERE status = 'ACTIVE' AND next_billing_date <=
+today` returned the fixture agreement alone (no live agreement is due before 2026-10-09).
+
+| Target | How it was exercised | Result |
+|---|---|---|
+| Two services finalized on one appointment → one invoice, two lines; batch or manual again creates nothing | Two manual services ($125 GPC, $175 Rodent) on one appointment, posted by the technician, finalized by support (first finalize: `invoicing` null; second: `PROMPT`). Batch preview over a range holding only this visit → `batch-generate` → `totalVisits 1`, one invoice with two `SERVICE` lines 12500 / 17500 and 8.25% tax on each (1031 / 1444), anchored on `appointmentId` with `serviceRecordId` null, OPEN, balance 32475. Manual generate on either ticket returned the same id; batch again `totalVisits 0`; one non-void invoice on the appointment; the visit left the ready-for-billing list | Held |
+| Agreement-covered service at $0 billable; the monthly invoice still arrives from the run; production value unaffected | Agreement on Monthly Recurring ($600 / yr, 12 visits) with one agreement service. Field read before posting: `PRODUCTION`, $0, nothing due. Finalize → one `SCHEDULED_AGREEMENT_SERVICE` entry of 5000. Generate → one `AGREEMENT_COVERED` line, 0, `taxable false`, total 0 (status derived `PAID`), no `billing_events` row. `POST /api/billing-run` → `{ due 1, invoiced 1, skipped 0, errors 0 }`: one `SCHEDULE_DRIVEN` event for today's period key, 5000, on a second invoice (one `SERVICE` line "scheduled charge", no visit anchor), `nextBillingDate` + 1 month, no other agreement's date moved, the production entry and the covered line unchanged; a second run found nothing due | Held |
+| A $250 designated deposit at scheduling auto-suggests on the $500 invoice → $250 due | COD-plan agreement, service stamped $500. The office recorded $250 cash designated to the agreement (PENDING; technician and support refused to confirm cash, manager confirmed). Field read: $500 billable, $250 available, $250 due. Finalize → generate → $500 OPEN; `location-balance` suggested 25000 from that one source (designated to the agreement, `CONFIRMED`); apply → paid 25000, balance 25000, `PARTIALLY_PAID` | Held |
+| A hand-edit of invoice `status` to PAID is impossible | `PATCH /api/invoices/:id` with `status`, `amountPaidCents`, `balanceDueCents`, `paidDate`, and `status` beside a legal `notes` → 400 each (strict schema); invoice and trail unchanged | Held |
+| A PENDING check shows on the invoice without marking it paid; confirming flips amounts and status atomically; the audit log shows both events with actors | Technician recorded a $250 check at the visit (`appointmentId` set, collector = technician; the by-appointment read listed it). Support applied it → `pendingAppliedCents` 25000, paid still 25000, `PARTIALLY_PAID`; field read: applied 50000 of which 25000 pending, due 0. Technician refused to confirm. Support confirmed → paid 50000, pending 0, balance 0, `PAID`, `paidDate` stamped, in the same response and the next ledger read. Payment trail: `payment_recorded` (technician), `payment_confirmed` (support, PENDING → CONFIRMED). Invoice trail: `invoice_issued`, two `payment_applied`, `payment_confirmed` carrying PARTIALLY_PAID → PAID | Held |
+| COA application changes "due today" on the tech ticket without touching price, production value, or tax basis | $40 cash on account before invoicing: COA available 4000, due today down by 4000, per-service price and tax unchanged. After invoicing: apply location balance → COA applied 4000, due today = total − 4000; per-service price and tax, invoice amount / tax / total, the line rows (byte-identical) and both production entries unchanged | Held |
+| Voiding an invoice requires Manager+, writes audit, and frees the appointment for regeneration | Support and technician → 403, invoice still OPEN. Manager → VOID, paid 0, balance 0; the $40 application released with a reason naming the void and back in the location pool; `invoice_voided` with the manager as actor and OPEN → VOID snapshots; `payment_released` on the invoice. The visit returned to ready-for-billing; generate issued a new invoice number on the same appointment with two lines; two rows on the appointment, one VOID | Held, with the defect below |
+| No route can write `audit_logs` deletions / updates; the customer-screen history renders from it | Code: `audit_logs` has one insert (`recordAuditLogTx`) and two selects in `storage.ts` and one GET route. Live: DELETE / PATCH / PUT / POST on `/api/audit-logs[/:id]` as admin changed nothing (row intact, count unchanged); `GET /api/audit-logs?locationId=` returned this run's `invoice_issued` / `payment_recorded` / `payment_confirmed` / `payment_applied` / `invoice_voided` rows for both locations, and `client/src/pages/customer-detail.tsx` (the History tab's reader of that route) compiled under Vite | Held |
+| Guard: a covered line is always $0 / non-taxable and never a `billing_events` row | Second row above: 0 events after the visit invoice, 1 `SCHEDULE_DRIVEN` event after the run, pointing at the run's invoice and not the visit's | Held |
+| Guard: the 9 + 2 plan-less agreements were resolved before the drop | Held by Pass 9; 11 plan-less rows on this run's baseline and after cleanup | Held |
+| Guard: cancelling an appointment with a DRAFT prompts on every call site | Three drafts on three scheduled visits of one COD agreement. `PATCH /api/appointments/:id { status: CANCELED }` → 409 `DRAFT_INVOICE_DECISION_REQUIRED` naming the draft, appointment still SCHEDULED; with `voidDraftInvoices: false` → CANCELED, draft kept. `POST .../cancel-reschedule` → 409; with `true` → CANCELED, draft VOID, `invoice_voided`. `POST /api/agreements/:id/cancel { cancelScheduledAppointments: true }` → 409 with the agreement still ACTIVE and the visit SCHEDULED (rolled back); with `true` → CANCELLED / CANCELED / VOID | Held on three call sites |
+
+**Defect (recorded, not fixed - this branch verifies):** `voidInvoiceTx` (`server/storage.ts`)
+sets `status: "VOID", amountPaidCents: 0, balanceDueCents: 0, paidDate: null` by hand. It predates
+Pass 7.6's `pendingAppliedCents`, which `computeInvoiceRollup` zeroes for VOID but which this UPDATE
+never touches, so an invoice voided while a PENDING payment was applied to it keeps that amount
+(4000 in the run) as "pending applied" after `releaseAllApplicationsForInvoiceTx` has released the
+application. Status, balance, the released row and the location pool were all correct; only the
+stored rollup lies. Fix: `pendingAppliedCents: 0` in that `.set()` (or a `recomputeInvoiceRollupTx`
+call after the release), plus a one-shot `UPDATE invoices SET pending_applied_cents = 0 WHERE status
+= 'VOID' AND pending_applied_cents <> 0` in `payments-bootstrap.ts`. On the dev DB no VOID row
+carries a non-zero value today (the run's own row was deleted with the fixture).
+
+**Observations, not defects:** `getServiceRecordsReadyForBillingInRange` filters on `postedAt`
+(falling back to `serviceDate`), so the Batch Invoice dialog's date range means "posted between",
+which its labels should say. A DELETE / PATCH / PUT / POST to `/api/audit-logs` reaches the Vite
+SPA fallback (200, HTML) rather than a 404 or 405, like every unknown `/api` path in dev; nothing is
+written, but an API client cannot distinguish "no route" from "page". Every fixture consumes
+invoice numbers from the org counter (`INV-000115` onward on the dev DB) and nothing resets it.
