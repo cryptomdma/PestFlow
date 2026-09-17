@@ -1083,7 +1083,6 @@ export class DatabaseStorage implements IStorage {
       termInterval: Math.max(data.termInterval || 1, 1),
       renewalDate: normalizeDateOnly(data.renewalDate),
       nextServiceDate: normalizeDateOnly(data.nextServiceDate)!,
-      billingFrequency: data.billingFrequency?.trim() || null,
       priceCents: data.priceCents ?? null,
       ...normalizeInitialCharge(data),
       recurrenceUnit: data.recurrenceUnit,
@@ -1135,7 +1134,6 @@ export class DatabaseStorage implements IStorage {
     if (data.termInterval !== undefined) payload.termInterval = Math.max(data.termInterval || 1, 1);
     if (data.renewalDate !== undefined) payload.renewalDate = normalizeDateOnly(data.renewalDate as any) as any;
     if (data.nextServiceDate !== undefined) payload.nextServiceDate = normalizeDateOnly(data.nextServiceDate as any) as any;
-    if (data.billingFrequency !== undefined) payload.billingFrequency = data.billingFrequency?.trim() || null;
     if (data.recurrenceUnit !== undefined) payload.recurrenceUnit = data.recurrenceUnit || "MONTH";
     if (data.recurrenceInterval !== undefined) payload.recurrenceInterval = Math.max(data.recurrenceInterval || 1, 1);
     if (data.generationLeadDays !== undefined) payload.generationLeadDays = Math.max(data.generationLeadDays || 0, 0);
@@ -1178,7 +1176,6 @@ export class DatabaseStorage implements IStorage {
       description: data.description?.trim() || null,
       cancellationPolicyId: data.cancellationPolicyId || null,
       defaultAgreementType: data.defaultAgreementType?.trim() || null,
-      defaultBillingFrequency: data.defaultBillingFrequency?.trim() || null,
       defaultTermUnit: data.defaultTermUnit || "YEAR",
       defaultTermInterval: Math.max(data.defaultTermInterval || 1, 1),
       defaultRecurrenceUnit: data.defaultRecurrenceUnit,
@@ -1204,7 +1201,6 @@ export class DatabaseStorage implements IStorage {
     if (data.description !== undefined) payload.description = data.description?.trim() || null;
     if (data.cancellationPolicyId !== undefined) payload.cancellationPolicyId = data.cancellationPolicyId || null;
     if (data.defaultAgreementType !== undefined) payload.defaultAgreementType = data.defaultAgreementType?.trim() || null;
-    if (data.defaultBillingFrequency !== undefined) payload.defaultBillingFrequency = data.defaultBillingFrequency?.trim() || null;
     if (data.defaultTermUnit !== undefined) payload.defaultTermUnit = data.defaultTermUnit || "YEAR";
     if (data.defaultTermInterval !== undefined) payload.defaultTermInterval = Math.max(data.defaultTermInterval || 1, 1);
     if (data.defaultRecurrenceUnit !== undefined) payload.defaultRecurrenceUnit = data.defaultRecurrenceUnit || "MONTH";
@@ -1689,7 +1685,6 @@ export class DatabaseStorage implements IStorage {
       termInterval,
       renewalDate: agreementData.renewalDate ?? null,
       nextServiceDate: agreementData.nextServiceDate,
-      billingFrequency: agreementData.billingFrequency ?? template?.defaultBillingFrequency ?? null,
       priceCents: agreementData.priceCents ?? template?.defaultPriceCents ?? null,
       ...initialCharge,
       expectedServiceCount: agreementData.expectedServiceCount ?? computeExpectedServiceCount(startDate, termUnit, termInterval, recurrenceUnit, recurrenceInterval),

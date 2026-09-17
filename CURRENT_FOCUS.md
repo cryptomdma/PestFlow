@@ -191,7 +191,7 @@ panel keeps those), D9's office edit button and reopen-reason dropdown. **Restar
 dev:full` before manually testing - this pass adds routes.** Signatures and behavior are under
 "Shipped in Pass 7.7" in `PLAN_BILLING_V1_1_EXECUTION.md`.
 
-Pass 8 (`feature/phase-1-audit-log-backfill`, D7 remainder) is pushed and awaiting merge. The
+Pass 8 (`feature/phase-1-audit-log-backfill`, D7 remainder) merged as PR #68. The
 financial mutations that predate the audit helper now write it, each inside its own transaction
 and each **only when a value actually changed**: the **field price override** - a ticket post
 (`POST /api/services/:id/complete`) that stamps a different `priceCents`, by a technician on a
@@ -214,12 +214,36 @@ figures until Post, which is after Collect). **Restart `npm run
 dev:full` before manually testing - this pass changes server code.** Signatures and behavior are
 under "Shipped in Pass 8" in `PLAN_BILLING_V1_1_EXECUTION.md`.
 
-Next up once it merges: **Pass 9 — `feature/phase-1-legacy-billing-frequency-removal`** (D9's
-column drop: `agreementTemplates.defaultBillingFrequency` / `agreements.billingFrequency`, with the
-pre-migration report of legacy-text-no-plan agreements). Scope, files and verification for Pass 9
-are its row in the Ordered Work Plan of `PLAN_BILLING_V1_1_EXECUTION.md`; the 11 plan-less
-agreements it surfaces are the same rows the "Billing Plan required on every Agreement" item
-below resolves.
+Pass 9 (`feature/phase-1-legacy-billing-frequency-removal`, D9's column drop) is pushed and
+awaiting merge. `agreements.billingFrequency` and `agreementTemplates.defaultBillingFrequency` are
+gone - from the schema, both `CREATE TABLE` statements, the four normalize writes, the
+template-to-agreement propagation line and the seed - so `billingPlanId` + `billingPlanSnapshot` is
+the only billing mechanism in the code, as it already was in the nightly run. The migration is one
+guarded block in `server/agreement-bootstrap.ts`, keyed on the column still existing (the D4 /
+money-bootstrap shape), so it ran once on the dev DB and every later boot is a no-op. Before the
+drop it printed the **pre-migration report**: every plan-less agreement, in two buckets - the 9
+with legacy text (all `"Monthly"`, all named `Quarterly Control`) and the 2 with no billing data at
+all (both `Wildlife Trapping Program`). **No plan was assigned**: the 11 remain plan-less and bill
+per visit, and they are exactly the rows the "Billing Plan required on every Agreement" item below
+resolves. The legacy text of the 9 was carried into each agreement's `notes` as one marked line
+(`Legacy billing frequency "Monthly" - no Billing Plan attached. Assign one on the agreement form;
+until then this agreement bills per visit.`) so whoever assigns the plan still sees what was typed
+at the sale and can delete the line afterward; the 4 agreements that had legacy text *and* a plan
+lost the text without a note (the plan governs), the 2 no-data rows were reported only, and no
+template was in the legacy-text-no-plan bucket, so nothing was carried for templates. A client
+that still sends either legacy key has it stripped by zod, not refused; no client has since Pass
+3.5. **Restart `npm run dev:full` now, not after the merge: a server started on pre-Pass-9 code
+selects the dropped column by name and every agreement read on it fails, and the migration ran on
+the shared dev DB during this pass's verification boot.** Signatures and behavior are under
+"Shipped in Pass 9" in `PLAN_BILLING_V1_1_EXECUTION.md`.
+
+With Pass 9 the D1-D9 sequence is built. Next up: the **Phase 1 verification** at the end of
+`PLAN_BILLING_V1_1_EXECUTION.md` (the acceptance targets in `PLAN_BILLING_V1_1.md` plus the three
+conflict-resolution guards, run end to end on a fresh session), or whichever unscheduled item
+below the owner picks. The two that gate real use of the billing engine are still the invoice
+document / manual-invoice-location pair and **Billing Plan required on every Agreement** (with
+sale attribution), which resolves the 11 plan-less rows Pass 9 reported; the technician ticket
+modal entry below is owner-specified scope for a technician-view pass and is now unblocked.
 
 Full ordered plan, impact analysis, conflict resolutions, and per-pass verification steps live in
 `PLAN_BILLING_V1_1_EXECUTION.md` — read it before starting a pass, and update its "Pass status" table
@@ -271,8 +295,12 @@ the source of truth for what each pass actually does.
   - **Billing Plan required on every Agreement** — backfill the 11 plan-less agreements, then
     `billingPlanId NOT NULL` + zod. **Unblocked by Pass 3.5**: the creation UI, template propagation,
     and plan-attachment-on-update all exist now, so what remains is the backfill and the constraint.
-    Until then a plan-less agreement bills COD per visit. Sequence before D9's column drop, which
-    resolves the same rows. **Carry sale attribution with it** — a sold-by reference on the agreement,
+    Until then a plan-less agreement bills COD per visit. D9's column drop (Pass 9, 2026-09-16)
+    reported the same 11 rows without assigning anything: the 9 `Quarterly Control` agreements
+    carry their old free-text `"Monthly"` in `notes` (a marked line - read it before choosing, since
+    "Monthly" on a quarterly agreement is a question for the owner, not a mapping, and delete the
+    line once the plan is attached); the 2 `Wildlife Trapping Program` agreements never had any
+    billing data. **Carry sale attribution with it** — a sold-by reference on the agreement,
     assignable to any user and role-gated — per the compensation entry below: same form, same zod,
     same propagation path, and it is basis that cannot be reconstructed later.
   - **Service designation + callback attribution** — `ServiceType.category`

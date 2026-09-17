@@ -315,7 +315,10 @@ export const agreements = pgTable("agreements", {
   termInterval: integer("term_interval").notNull().default(1),
   renewalDate: date("renewal_date"),
   nextServiceDate: date("next_service_date").notNull(),
-  billingFrequency: text("billing_frequency"),
+  // How and when this agreement is billed is its Billing Plan (billingPlanId
+  // + billingPlanSnapshot) and nothing else. The free-text billing_frequency
+  // column that predated plans was dropped by PLAN_BILLING_V1_1.md D9
+  // (server/agreement-bootstrap.ts).
   priceCents: integer("price_cents"),
   // The initial charge owed at agreement start - a term of THIS sale, derived
   // from THIS contract price, so it belongs here and not on the shared Billing
@@ -391,7 +394,8 @@ export const agreementTemplates = pgTable("agreement_templates", {
   cancellationPolicyId: varchar("cancellation_policy_id").references(() => agreementCancellationPolicies.id),
   billingPlanId: varchar("billing_plan_id").references(() => billingPlans.id),
   defaultAgreementType: text("default_agreement_type"),
-  defaultBillingFrequency: text("default_billing_frequency"),
+  // The template's billing default is billingPlanId alone; the free-text
+  // default_billing_frequency column was dropped by D9 (see agreements).
   defaultTermUnit: text("default_term_unit").notNull().default("YEAR"),
   defaultTermInterval: integer("default_term_interval").notNull().default(1),
   defaultRecurrenceUnit: text("default_recurrence_unit").notNull().default("MONTH"),

@@ -65,7 +65,6 @@ export async function bootstrapAgreements(): Promise<void> {
       cancellation_policy_id varchar REFERENCES agreement_cancellation_policies(id),
       billing_plan_id varchar REFERENCES billing_plans(id),
       default_agreement_type text,
-      default_billing_frequency text,
       default_term_unit text NOT NULL DEFAULT 'YEAR',
       default_term_interval integer NOT NULL DEFAULT 1,
       default_recurrence_unit text NOT NULL DEFAULT 'MONTH',
@@ -113,7 +112,6 @@ export async function bootstrapAgreements(): Promise<void> {
       term_interval integer NOT NULL DEFAULT 1,
       renewal_date date,
       next_service_date date NOT NULL,
-      billing_frequency text,
       price_cents integer,
       initial_charge_type text,
       initial_charge_amount_mode text,
@@ -257,6 +255,92 @@ export async function bootstrapAgreements(): Promise<void> {
     await db.execute(sql`ALTER TABLE billing_plans DROP COLUMN IF EXISTS initial_charge_type`);
     await db.execute(sql`ALTER TABLE billing_plans DROP COLUMN IF EXISTS initial_charge_cents`);
     await db.execute(sql`ALTER TABLE billing_plans DROP COLUMN IF EXISTS initial_charge_collected_by`);
+  }
+
+  // PLAN_BILLING_V1_1.md D9: the legacy free-text billing frequency is gone.
+  // billingPlanId + billingPlanSnapshot is the only billing mechanism - the
+  // nightly run never read these columns, and Pass 3.5 replaced both inputs
+  // with the Billing Plan selector - so the columns held text nobody acted
+  // on. Same shape as the D4 block above: keyed on the column still existing,
+  // it runs once per database and can never match again after the drop.
+  //
+  // Nothing here guesses a plan. Every plan-less agreement is reported at
+  // boot before the drop, in two buckets: rows carrying legacy text and rows
+  // with no billing data at all. The legacy text is carried into the
+  // agreement's notes, clearly marked, so the office assigning the plan
+  // later ("Billing Plan required on every Agreement", CURRENT_FOCUS.md)
+  // still sees what was typed at the sale; until then the agreement bills
+  // per visit, the visible failure canon chooses. Legacy text on an
+  // agreement that already HAS a plan is dead - the plan governs - and is
+  // dropped without a note.
+  if (await columnExists("agreements", "billing_frequency")) {
+    const planless = await db.execute(sql`
+      SELECT a.id, a.agreement_name, a.status, a.billing_frequency,
+             l.name AS location_name, c.first_name, c.last_name, c.company_name
+      FROM agreements a
+      LEFT JOIN locations l ON l.id = a.location_id
+      LEFT JOIN customers c ON c.id = a.customer_id
+      WHERE a.billing_plan_id IS NULL
+      ORDER BY (a.billing_frequency IS NULL), a.agreement_name, a.id
+    `);
+    const rows = planless.rows as Array<{
+      id: string;
+      agreement_name: string;
+      status: string;
+      billing_frequency: string | null;
+      location_name: string | null;
+      first_name: string | null;
+      last_name: string | null;
+      company_name: string | null;
+    }>;
+    const withText = rows.filter((row) => (row.billing_frequency ?? "").trim() !== "");
+    const withoutText = rows.filter((row) => (row.billing_frequency ?? "").trim() === "");
+    console.log(
+      `[agreement-bootstrap] D9 pre-migration report: dropping agreements.billing_frequency. ` +
+        `${rows.length} agreement(s) have no Billing Plan - ${withText.length} with legacy text ` +
+        `(carried into notes), ${withoutText.length} with no billing data at all. ` +
+        `None is assigned a plan here; each needs one chosen on the agreement form.`,
+    );
+    for (const row of rows) {
+      const customer = row.company_name?.trim() || `${row.first_name ?? ""} ${row.last_name ?? ""}`.trim() || "unknown customer";
+      const legacy = (row.billing_frequency ?? "").trim();
+      console.log(
+        `[agreement-bootstrap]   ${row.id}  "${row.agreement_name}"  ${row.status}  ` +
+          `${customer} @ ${row.location_name ?? "unknown location"}  ` +
+          (legacy ? `legacy billing frequency "${legacy}"` : "no legacy text, no plan"),
+      );
+    }
+    await db.execute(sql`
+      UPDATE agreements
+      SET notes = CASE WHEN notes IS NULL OR btrim(notes) = '' THEN '' ELSE notes || chr(10) || chr(10) END
+                  || 'Legacy billing frequency "' || btrim(billing_frequency)
+                  || '" - no Billing Plan attached. Assign one on the agreement form; until then this agreement bills per visit.'
+      WHERE billing_plan_id IS NULL
+        AND billing_frequency IS NOT NULL
+        AND btrim(billing_frequency) <> ''
+    `);
+    await db.execute(sql`ALTER TABLE agreements DROP COLUMN IF EXISTS billing_frequency`);
+  }
+  if (await columnExists("agreement_templates", "default_billing_frequency")) {
+    // A template default is reconstructible (the admin picks a plan in
+    // Settings), so it is reported and dropped, never carried anywhere.
+    const templates = await db.execute(sql`
+      SELECT id, name, default_billing_frequency
+      FROM agreement_templates
+      WHERE billing_plan_id IS NULL
+        AND default_billing_frequency IS NOT NULL
+        AND btrim(default_billing_frequency) <> ''
+      ORDER BY name, id
+    `);
+    const rows = templates.rows as Array<{ id: string; name: string; default_billing_frequency: string }>;
+    console.log(
+      `[agreement-bootstrap] D9 pre-migration report: dropping agreement_templates.default_billing_frequency. ` +
+        `${rows.length} template(s) carry legacy text and no Billing Plan.`,
+    );
+    for (const row of rows) {
+      console.log(`[agreement-bootstrap]   ${row.id}  "${row.name}"  legacy default billing frequency "${row.default_billing_frequency.trim()}"`);
+    }
+    await db.execute(sql`ALTER TABLE agreement_templates DROP COLUMN IF EXISTS default_billing_frequency`);
   }
 
   await db.execute(sql`

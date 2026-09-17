@@ -28,8 +28,8 @@ grounded in what the code and data actually do, not what the decision record ass
 | 7.5 | `feature/phase-1-tech-collect-relabel` | D8 (post-ticket sequence relabel) | Done (PR #65) |
 | 7.6 | `feature/phase-1-review-modal-field-collection` | D9 (review modal price/payment + address blocks), D5 owner review items 1-3 | Done (PR #66) |
 | 7.7 | `feature/phase-1-payments-screen` | D5 owner review item 4 (Payments screen, batch confirmation, collections report) | Done (PR #67) |
-| 8 | `feature/phase-1-audit-log-backfill` | D7 (remainder) | Pushed, awaiting merge |
-| 9 | `feature/phase-1-legacy-billing-frequency-removal` | D9 | Not started |
+| 8 | `feature/phase-1-audit-log-backfill` | D7 (remainder) | Done (PR #68) |
+| 9 | `feature/phase-1-legacy-billing-frequency-removal` | D9 (column drop) | Pushed, awaiting merge |
 
 Pass 3.5 is inserted, not renumbered in: it was not in the original D1-D9 sequence at all, but Pass 3's
 live testing found that `billingPlanId` had no writer anywhere in the client, so every agreement was
@@ -145,30 +145,36 @@ update all ~39 write/comparison sites above to the new literals in the same comm
 
 ### D9 — defaultBillingFrequency / billingFrequency reads, and legacy-row count
 
-**Live DB count** (read-only query, dev DB, 2026-08-25):
+**Done in Pass 9** (2026-09-16) — both columns are dropped; the table below is kept as the record of
+what was removed. See "Shipped in Pass 9" under the Ordered Work Plan for the migration and the report.
+
+**Live DB count** (read-only query, dev DB, 2026-08-25; re-counted 2026-09-16 immediately before the
+drop, in parentheses):
 
 | | Total | Legacy text, no plan | Has plan | Neither |
 |---|---|---|---|---|
-| `agreements` | 17 | 9 (all `"Monthly"`) | 6 | **2** |
-| `agreement_templates` | 2 | 0 | 2 | 0 |
+| `agreements` | 17 (22) | 9 (9, all `"Monthly"`, all named `Quarterly Control`) | 6 (11, four of them carrying dead `"Monthly"` text) | **2** (2) |
+| `agreement_templates` | 2 (3) | 0 (0) | 2 (3, `Quarterly Control` carrying a dead `"Monthly"` default) | 0 (0) |
 
 The 2 agreements with **neither** field set (`1044779c-2358-4254-8e23-220062c21719`,
-`6e6f03c3-f069-46ae-9d52-a044129a9a2f`, both `status = ACTIVE`) are a distinct bucket from the 9
-"has legacy text" rows — they can't be caught by a `WHERE billing_frequency IS NOT NULL` flag query,
-since they have no billing data at all. `agreement_templates` is already fully clean.
+`6e6f03c3-f069-46ae-9d52-a044129a9a2f`, both `status = ACTIVE`, both `Wildlife Trapping Program`) are
+a distinct bucket from the 9 "has legacy text" rows — they can't be caught by a
+`WHERE billing_frequency IS NOT NULL` flag query, since they have no billing data at all.
+`agreement_templates` is already fully clean.
 
-**Every reader/writer:**
+**Every reader/writer — all removed in Pass 9:**
 
 | File:Line | Field | Kind |
 |---|---|---|
-| `shared/schema.ts:311,368` | both | column definitions (being dropped) |
-| `storage.ts:670,721` | `billingFrequency` | write (agreement insert/update normalize) |
-| `storage.ts:760,785` | `defaultBillingFrequency` | write (template insert/update normalize) |
-| `storage.ts:1112` | both | the one place they intersect — template→agreement propagation |
-| `seed.ts:145,167,189` | `defaultBillingFrequency` | write — must delete, or the build breaks (TS excess-property check) |
-| ~~`customer-detail.tsx`~~ | — | **Removed in Pass 3.5.** No client file reads or writes either column any more — verified by full-repo grep. Pass 9 is now a server-plus-schema change only |
+| ~~`shared/schema.ts:311,368`~~ | both | column definitions — **dropped**, a comment marks where each sat |
+| ~~`storage.ts:670,721`~~ | `billingFrequency` | write (agreement insert/update normalize) — **removed** |
+| ~~`storage.ts:760,785`~~ | `defaultBillingFrequency` | write (template insert/update normalize) — **removed** |
+| ~~`storage.ts:1112`~~ | both | the one place they intersect — template→agreement propagation — **removed** |
+| ~~`seed.ts:145,167,189`~~ | `defaultBillingFrequency` | write — **removed** (the build would otherwise break on the TS excess-property check) |
+| ~~`customer-detail.tsx`~~ | — | **Removed in Pass 3.5.** No client file reads or writes either column any more — verified by full-repo grep. Pass 9 was a server-plus-schema change only |
 | ~~`settings.tsx`~~ | — | **Removed in Pass 3.5**, same as above |
-| `routes.ts` (schema `.extend()` calls) | both | inherited implicitly — no line-level edit needed, resolves when the columns are dropped |
+| `routes.ts` (schema `.extend()` calls) | both | inherited implicitly — resolved when the columns were dropped; a client still sending either key has it stripped by zod, not refused |
+| `agreement-bootstrap.ts` (both `CREATE TABLE`s) | both | **removed** from the create statements, so a fresh database never has them and the guarded drop only ever fires on a database that does |
 
 **Confirmed clean**: the nightly billing run (`server/jobs/billing-run.ts`) uses only
 `nextBillingDate`, `billingPlanId`, `priceCents`, `billingPlans.intervalUnit/intervalCount/
@@ -498,9 +504,10 @@ Behavior worth knowing before a later pass changes it:
   dropdowns still offer `CUSTOM`, which `advanceAgreementDate()` maps to days — `CUSTOM(7)` behaves
   identically to `WEEK(1)` and nothing in the UI says so. Replacing it needs a data migration on 7
   agreements and 2 templates, so it is its own change.
-- **Still legacy, still D9's job**: `agreements.billingFrequency` and
+- ~~**Still legacy, still D9's job**: `agreements.billingFrequency` and
   `agreementTemplates.defaultBillingFrequency` columns, and the server-side normalize/propagation
-  writes. Pass 3.5 removed only the inputs and the one list-card that displayed the free text.
+  writes. Pass 3.5 removed only the inputs and the one list-card that displayed the free text.~~
+  **Done in Pass 9** — see "Shipped in Pass 9".
 
 **Shipped in Pass 4, for Pass 5 (D2) to build on** — the DRAFT lifecycle, the issue transition, the
 review flag, and the Q3 cancel prompt. D2's generate-or-adopt is already half built: generation adopts
@@ -1460,6 +1467,67 @@ Behavior worth knowing before Pass 9 touches it:
   a visual surface beyond the History badge, but **restart `npm run dev:full` before manually
   testing** - the pass changes server code, and a stale server writes none of these rows.
 
+**Shipped in Pass 9 (D9: the legacy billing-frequency columns are gone)** - schema, both `CREATE
+TABLE`s, five storage lines and three seed lines removed; one guarded migration block; no route shape
+change, no client change, no new helper. `billingPlanId` + `billingPlanSnapshot` is now the only
+billing mechanism in the code, as it already was in the nightly run.
+
+```ts
+// server/agreement-bootstrap.ts - one block after the D4 block, the same guard shape (keyed on the
+// legacy column still existing, so it runs once per database and can never match again).
+if (await columnExists("agreements", "billing_frequency")) {
+  // 1. REPORT, before anything changes: every agreement with billing_plan_id IS NULL, joined to its
+  //    customer and location, legacy-text rows first, one boot-log line per row, prefixed
+  //    "[agreement-bootstrap]" - id, name, status, customer @ location, and either
+  //    `legacy billing frequency "<text>"` or `no legacy text, no plan`. The header carries the
+  //    bucket counts. Agreements that HAVE a plan are not reported: their text is dead.
+  // 2. CARRY: UPDATE agreements SET notes = <existing notes, blank line,> 'Legacy billing frequency
+  //    "<text>" - no Billing Plan attached. Assign one on the agreement form; until then this
+  //    agreement bills per visit.' WHERE billing_plan_id IS NULL AND btrim(billing_frequency) <> ''
+  // 3. ALTER TABLE agreements DROP COLUMN IF EXISTS billing_frequency
+}
+if (await columnExists("agreement_templates", "default_billing_frequency")) {
+  // REPORT templates with legacy text and no plan, then DROP COLUMN. Nothing is carried: a template
+  // default is reconstructible in Settings, and no template on the dev DB was in that bucket.
+}
+```
+
+Behavior worth knowing:
+- **What the dev DB looked like when it ran (2026-09-16, 22 agreements, 3 templates).** 9 legacy-text-
+  no-plan agreements, all `"Monthly"`, all named `Quarterly Control` (`c21e8f9e`, `43438e38`,
+  `12ffbbcb`, `9662bca9`, `94343aa9`, `83408897`, `76c15778`, `1957a3ed`, `d8de7167`; four of them
+  `CANCELLED`); 2 with no billing data at all (`1044779c`, `6e6f03c3`, both `Wildlife Trapping
+  Program`, `ACTIVE`); 11 with plans, four of which carried a dead `"Monthly"`. All 3 templates had a
+  plan; `Quarterly Control` carried a dead `"Monthly"` default. The full report is in the boot log of
+  the pass's verification boot and reproduced above by id.
+- **No plan was assigned.** The 11 remain plan-less and bill per visit (canon §13's visible
+  failure); they are exactly the rows the "Billing Plan required on every Agreement" item in
+  `CURRENT_FOCUS.md` resolves, and whoever does that should read the note on each of the 9 before
+  picking a plan - `"Monthly"` on an agreement named `Quarterly Control` is a question for the owner,
+  not a mapping.
+- **The note is the only durable trace of the legacy text.** It is ordinary `notes` text, appended
+  after a blank line when notes already existed (none did), and the office deletes it once a plan is
+  attached. It is a one-shot carry, not a flag: an agreement created plan-less *after* the migration
+  gets no note, and `billing_plan_id IS NULL` remains the durable signal for "needs a plan".
+- **Both legacy keys are stripped, not refused.** `createInsertSchema` objects strip unknown keys, so
+  a client still posting `billingFrequency` / `defaultBillingFrequency` gets a 200 and nothing stored;
+  a PATCH carrying only a legacy key is a no-op that stamps `updatedAt` (pre-existing behavior for
+  any empty PATCH). No client sends either key since Pass 3.5.
+- **A server started on pre-Pass-9 code fails every agreement read once the migration has run.**
+  Drizzle names every schema column in its `SELECT`, so the old code asks for `billing_frequency`
+  and Postgres refuses. The migration ran on the shared dev DB during this pass's verification boot,
+  so `npm run dev:full` needs its restart *now*, not after the merge. Same class of event as Pass
+  5.5's plan-column drop.
+- **Verification without a browser.** 40 API / SQL assertions on PORT=5001 plus `tsc` and a double
+  boot: a JSON snapshot of all 22 agreement rows and 3 template rows taken before the boot and
+  compared field by field afterward (only the dropped column and the 9 flagged `notes` differ; plan
+  ids untouched; plan-less count still 11); every plan-less id present in the boot log in its
+  bucket, no has-plan id present; both columns absent from `information_schema.columns`; template
+  create / update / list and agreement create-from-template / update / read with plan propagation,
+  an explicit-null plan sticking, COD ↔ schedule-billed switching moving `nextBillingDate` and the
+  snapshot, and a new plan-less agreement getting no note; `server/jobs/billing-run.ts` byte-identical
+  to `origin/main`; the second boot printed no report and changed nothing.
+
 **Design note carried into Pass 4** - resolved there: D3's "flags the linked ticket(s) for review" had
 no existing "flagged" concept in the schema. Pass 4 extended `serviceRecords.ticketStatus` with
 `FLAGGED_FOR_REVIEW` (vocabulary now `OFFICE_REVIEW_PENDING | FLAGGED_FOR_REVIEW | FINALIZED |
@@ -1511,5 +1579,8 @@ conflict-resolution guards this plan adds are holding:
   `billing_events` row (§2.1).
 - The 9 legacy-`billingFrequency`-only agreements and the 2 no-billing-data agreements were each
   explicitly resolved (plan assigned or flagged), not silently dropped, before Pass 9's column drop.
+  **Held (Pass 9, 2026-09-16):** all 11 were named in the pre-migration report, the 9 carry their
+  legacy text in `notes`, none was assigned a plan; they are still plan-less until the "Billing Plan
+  required on every Agreement" item resolves them.
 - Canceling an appointment with a DRAFT invoice prompts rather than silently voiding or orphaning it,
   on both call sites.
