@@ -208,7 +208,9 @@ DRAFT", which has no mutation to log: nothing edits an invoice line in place (li
 draft / issue and re-priced from the tickets on issue), so `invoice_line_edited` keeps no writer
 until a line editor exists. Nothing new is stored; no migration. Not built: a row for a field
 service-type change with no price change (not a price override), D7's non-financial entities
-(its own follow-up pass), D9's office edit button and reopen-reason dropdown. **Restart `npm run
+(its own follow-up pass), D9's office edit button and reopen-reason dropdown, and the technician
+ticket modal items in the owner's notes below (the draft price does not move the ticket's
+figures until Post, which is after Collect). **Restart `npm run
 dev:full` before manually testing - this pass changes server code.** Signatures and behavior are
 under "Shipped in Pass 8" in `PLAN_BILLING_V1_1_EXECUTION.md`.
 
@@ -300,6 +302,45 @@ the source of truth for what each pass actually does.
     migrated or dropped. Sequence after Pass 6, since the line is an invoice line and the credit wants
     the payments ledger's collection record. Whether the *comp* for that line is production or
     commission is a comp-plan question (§1.6.2), not this unit's.
+  - **Technician ticket modal — owner notes (2026-09-16, after Pass 8).** Six items on the field
+    ticket. None was built by Pass 8 (which only *logged* the price override) and none is
+    scheduled; together they are one technician-view pass, to be planned after Pass 9. What
+    exists today, and the gap:
+    1. **The draft price must drive the figures.** The ticket's billing block (top of the modal:
+       designation badge, Price + tax, COA, Due today) and the collect step's summary both read
+       `GET /api/appointments/:id/billing-summary`, which prices from the **stored**
+       `services.priceCents`. The price typed in the Service Price box lives in browser state
+       until Post Service Ticket writes it. So the block does not move when the technician
+       changes the price, and, worse, **Finish & Collect shows the old Price / Due today and
+       defaults the collected amount to it**, because Post happens after Collect. Wanted: the
+       block updates when the technician leaves the price box, and the collect step prices from
+       the new price. Design: give the billing-summary read a draft-price override
+       (`?serviceId=&priceCents=`) so the server prices the draft through the same
+       `resolveServiceLineBillingTx` and the tax engine, rather than a second pricing path in the
+       browser. Tax stays computed from the org's tax settings, display-only, never editable or
+       recomputed client-side. The stored price still changes only at Post, and Pass 8 already
+       logs that as `price_overridden`; the preview writes nothing.
+    2. **Tax on the ticket** already exists: the tax engine's per-line answer shows as
+       "+ $x tax" under Price in that block (the dev org's Standard Rate, 8.25%, default and
+       active, with a rule on the general service type), display only. Item 1 makes it follow
+       the draft price; nothing else to build.
+    3. **Dollars.cents formatting.** The price input is a bare number field: "250" parses as
+       $250.00 but is not reformatted. Format to two decimals on blur.
+    4. **Service instructions inside the open ticket**, near the top with the service info: the
+       agreement's `serviceInstructions` (defaulted from the template's `defaultInstructions`),
+       the service's own notes, and the location's notes. The technician's *appointment details*
+       already show location notes and service notes; the ticket modal shows none of the three.
+    5. **Add a service in the field.** Changing the service *type* exists (non-agreement
+       services only; agreement work is locked). Adding a second service to the visit from the
+       field does not exist anywhere. The field-surcharge line above is the nearest unit (an
+       add-on line, not a service). A real add must go through the appointment↔services rollup
+       (`getLinkedServicesForAppointmentTx`, dev behavior rule 10) and the same designation and
+       pricing rules office scheduling applies, so the visit invoice sees it as one more line.
+    6. **Create an agreement from the field.** Not built; the technician cannot reach the
+       agreement form. D8 names a field proposal generator as future/external, and the
+       compensation entry below wants **sale attribution** recorded on the agreement before
+       field selling is real: a technician who sells an annual program on site is exactly the
+       "same person earns production and commission" case.
   - **Compensation & attribution — crew splits, sales commission, non-technician payees.**
     Owner-specified 2026-09-10. **Read `PLAN_BILLING_V1.md` §1.6.2 first.** An earlier version of this
     entry said the comp model was nowhere in the plan. That was wrong: §1.6.2 ("Compensation — build
