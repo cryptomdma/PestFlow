@@ -214,8 +214,8 @@ figures until Post, which is after Collect). **Restart `npm run
 dev:full` before manually testing - this pass changes server code.** Signatures and behavior are
 under "Shipped in Pass 8" in `PLAN_BILLING_V1_1_EXECUTION.md`.
 
-Pass 9 (`feature/phase-1-legacy-billing-frequency-removal`, D9's column drop) is pushed and
-awaiting merge. `agreements.billingFrequency` and `agreementTemplates.defaultBillingFrequency` are
+Pass 9 (`feature/phase-1-legacy-billing-frequency-removal`, D9's column drop) merged as PR #69.
+`agreements.billingFrequency` and `agreementTemplates.defaultBillingFrequency` are
 gone - from the schema, both `CREATE TABLE` statements, the four normalize writes, the
 template-to-agreement propagation line and the seed - so `billingPlanId` + `billingPlanSnapshot` is
 the only billing mechanism in the code, as it already was in the nightly run. The migration is one
@@ -237,13 +237,36 @@ selects the dropped column by name and every agreement read on it fails, and the
 the shared dev DB during this pass's verification boot.** Signatures and behavior are under
 "Shipped in Pass 9" in `PLAN_BILLING_V1_1_EXECUTION.md`.
 
-With Pass 9 the D1-D9 sequence is built. Next up: the **Phase 1 verification** at the end of
-`PLAN_BILLING_V1_1_EXECUTION.md` (the acceptance targets in `PLAN_BILLING_V1_1.md` plus the three
-conflict-resolution guards, run end to end on a fresh session), or whichever unscheduled item
-below the owner picks. The two that gate real use of the billing engine are still the invoice
-document / manual-invoice-location pair and **Billing Plan required on every Agreement** (with
-sale attribution), which resolves the 11 plan-less rows Pass 9 reported; the technician ticket
-modal entry below is owner-specified scope for a technician-view pass and is now unblocked.
+With Pass 9 the D1-D9 sequence is built.
+
+Phase 1 verification (`verify/phase-1-acceptance`, 2026-09-16) is pushed and awaiting merge. A
+docs-only branch: no code changed. The eight acceptance targets in `PLAN_BILLING_V1_1.md` and the
+three conflict-resolution guards at the end of `PLAN_BILLING_V1_1_EXECUTION.md` were run end to end
+on the merged D1-D9 code (PORT=5001, `invoiceOnFinalize = PROMPT`) by a 91-assertion scratchpad
+script: fixtures built through the API as the four roles, the nightly run triggered with the fixture
+as the only due agreement, everything deleted afterward with all eleven table counts back at their
+pre-run values. **Every target and guard held.** One defect surfaced and was left unfixed on purpose
+(this pass verifies, it does not build): `voidInvoiceTx` in `server/storage.ts` zeroes
+`amountPaidCents` / `balanceDueCents` / `paidDate` by hand and predates Pass 7.6's
+`pendingAppliedCents`, so an invoice voided while a PENDING payment was applied to it keeps that
+amount in `pendingAppliedCents` after the application is released (verified: 4000 left on a VOID
+invoice whose status, balance, released application and location pool were all correct). The
+stored rollup is wrong; which screens print it for a VOID row was not rendered here. Fix, one
+line plus a backfill: `pendingAppliedCents: 0` in that UPDATE (or call `recomputeInvoiceRollupTx`),
+and a one-shot `UPDATE invoices SET pending_applied_cents = 0 WHERE status = 'VOID'` in
+`payments-bootstrap.ts`. Two observations, not defects: the batch-invoicing date range filters on
+the ticket's posting date (`postedAt`, falling back to `serviceDate`), which the Batch Invoice
+dialog should say; and a DELETE / PATCH / PUT / POST to `/api/audit-logs` falls through to the SPA
+shell with a 200 rather than a 404, because no such route exists - nothing is written, but an API
+client cannot tell "no route" from "page". Per-target evidence is under "Verification" at the end
+of `PLAN_BILLING_V1_1_EXECUTION.md`.
+
+Next up: whichever unscheduled item below the owner picks. The two that gate real use of the
+billing engine are still the invoice document / manual-invoice-location pair and **Billing Plan
+required on every Agreement** (with sale attribution), which resolves the 11 plan-less rows Pass 9
+reported; the technician ticket modal entry below is owner-specified scope for a technician-view
+pass and is unblocked. The void rollup defect above is small enough to ride with whichever of
+those touches `storage.ts` first, or to be its own one-line pass.
 
 Full ordered plan, impact analysis, conflict resolutions, and per-pass verification steps live in
 `PLAN_BILLING_V1_1_EXECUTION.md` — read it before starting a pass, and update its "Pass status" table
