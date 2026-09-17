@@ -1321,6 +1321,8 @@ export async function registerRoutes(
         serviceId: req.params.id,
         actorRole: req.user!.role as UserRole,
         ...validated,
+        // After the spread: the actor is the session's, never the body's (D7).
+        actor: getAuditActor(req),
       });
       if (!data) return res.status(404).json({ message: "Service not found" });
       res.status(201).json(data);
@@ -2002,7 +2004,7 @@ export async function registerRoutes(
       const data = await req.storage.updateInvoice(req.params.id, {
         notes: validated.notes,
         dueDate: validated.dueDate === undefined ? undefined : validated.dueDate ? new Date(validated.dueDate) : null,
-      });
+      }, getAuditActor(req));
       if (!data) return res.status(404).json({ message: "Invoice not found" });
       res.json(data);
     } catch (e: any) {

@@ -166,7 +166,7 @@ script since the repo has no test runner). **Restart `npm run dev:full` before m
 pass that changes server code.** Signatures and behavior are under "Shipped in Pass 7.6" in
 `PLAN_BILLING_V1_1_EXECUTION.md`.
 
-Pass 7.7 (`feature/phase-1-payments-screen`, D5 owner review item 4) is pushed and awaiting merge.
+Pass 7.7 (`feature/phase-1-payments-screen`, D5 owner review item 4) merged as PR #67.
 The office has a **Payments** screen (sidebar Operations → Payments, route `/payments`). One read,
 `GET /api/payments`, is the org-wide list with every filter applied in SQL - status, method,
 received-date range, collector, and a search over customer name / company, location name / address /
@@ -191,11 +191,33 @@ panel keeps those), D9's office edit button and reopen-reason dropdown. **Restar
 dev:full` before manually testing - this pass adds routes.** Signatures and behavior are under
 "Shipped in Pass 7.7" in `PLAN_BILLING_V1_1_EXECUTION.md`.
 
-Next up once it merges: **Pass 8 — `feature/phase-1-audit-log-backfill`** (D7 remainder:
-`recordAuditLog()` on the pre-existing financial mutation points passes 3-7.7 did not already
-cover - the price override in the field-ticket flow, ticket reopen). Then **Pass 9 —
-`feature/phase-1-legacy-billing-frequency-removal`** (D9's column drop). Scope, files and
-verification for Pass 8 are its row in the Ordered Work Plan of `PLAN_BILLING_V1_1_EXECUTION.md`.
+Pass 8 (`feature/phase-1-audit-log-backfill`, D7 remainder) is pushed and awaiting merge. The
+financial mutations that predate the audit helper now write it, each inside its own transaction
+and each **only when a value actually changed**: the **field price override** - a ticket post
+(`POST /api/services/:id/complete`) that stamps a different `priceCents`, by a technician on a
+manual service or by a manager+ (`ADJUST_PRICE_AGREEMENT`) on an agreement service - records
+`price_overridden` on a new `service` audit entity, because the price lives on the Service and the
+ticket only reads it; a technician's price on an agreement service is not stamped and writes
+nothing, and the ticket dialog sends the current price on every post of a manual service, so an
+unchanged post writes nothing either. **Ticket reopen** records `ticket_reopened` on the ticket,
+before FINALIZED / ready for billing, after REOPENED with the reason. The invoice **notes /
+due-date PATCH** (the only invoice edit that exists) records an `update` on the invoice. The
+location History tab's rollup now includes the location's services, so an override shows there
+with a "Service" badge. With this, every mutation D7 lists writes the log except "line edits while
+DRAFT", which has no mutation to log: nothing edits an invoice line in place (lines are written at
+draft / issue and re-priced from the tickets on issue), so `invoice_line_edited` keeps no writer
+until a line editor exists. Nothing new is stored; no migration. Not built: a row for a field
+service-type change with no price change (not a price override), D7's non-financial entities
+(its own follow-up pass), D9's office edit button and reopen-reason dropdown. **Restart `npm run
+dev:full` before manually testing - this pass changes server code.** Signatures and behavior are
+under "Shipped in Pass 8" in `PLAN_BILLING_V1_1_EXECUTION.md`.
+
+Next up once it merges: **Pass 9 — `feature/phase-1-legacy-billing-frequency-removal`** (D9's
+column drop: `agreementTemplates.defaultBillingFrequency` / `agreements.billingFrequency`, with the
+pre-migration report of legacy-text-no-plan agreements). Scope, files and verification for Pass 9
+are its row in the Ordered Work Plan of `PLAN_BILLING_V1_1_EXECUTION.md`; the 11 plan-less
+agreements it surfaces are the same rows the "Billing Plan required on every Agreement" item
+below resolves.
 
 Full ordered plan, impact analysis, conflict resolutions, and per-pass verification steps live in
 `PLAN_BILLING_V1_1_EXECUTION.md` — read it before starting a pass, and update its "Pass status" table
