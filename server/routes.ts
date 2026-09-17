@@ -1850,7 +1850,9 @@ export async function registerRoutes(
   // Invoices
   const manualInvoiceSchema = z.object({
     customerId: z.string(),
-    locationId: z.string().nullable().optional(),
+    // Required (Pass 10): a manual invoice is billed to one of the
+    // customer's locations, or refused. Storage checks it belongs to them.
+    locationId: z.string().min(1),
     description: z.string().nullable().optional(),
     amountCents: z.number().int().nonnegative(),
     taxCents: z.number().int().nonnegative().nullable().optional(),
@@ -1879,6 +1881,7 @@ export async function registerRoutes(
       const data = await req.storage.createManualInvoice({
         ...validated,
         dueDate: validated.dueDate ? new Date(validated.dueDate) : null,
+        actor: getAuditActor(req),
       });
       res.status(201).json(data);
     } catch (e: any) {
@@ -2319,14 +2322,18 @@ export async function registerRoutes(
 
   // Document rendering (PLAN_BILLING_V1.md §1.7) - generates the PDF on
   // first request and stores it; every request after that returns the
-  // same stored artifact rather than re-rendering.
+  // same stored artifact rather than re-rendering. Inline by default (the
+  // browser shows it in a tab); ?download=1 asks for an attachment so the
+  // Invoices screens' Download button saves it. A read, so no permission
+  // gate beyond the session, like every other invoice read here.
   app.get("/api/invoices/:id/document", async (req, res) => {
     try {
       const document = await req.storage.getOrCreateInvoiceDocument(req.params.id);
       if (!document) return res.status(404).json({ message: "Invoice not found" });
       const invoice = await req.storage.getInvoice(req.params.id);
+      const disposition = req.query.download === "1" ? "attachment" : "inline";
       res.setHeader("Content-Type", document.mimeType);
-      res.setHeader("Content-Disposition", `inline; filename="invoice-${invoice?.invoiceNumber ?? document.id}.pdf"`);
+      res.setHeader("Content-Disposition", `${disposition}; filename="invoice-${invoice?.invoiceNumber ?? document.id}.pdf"`);
       res.send(Buffer.from(document.contentBase64, "base64"));
     } catch (e: any) {
       res.status(400).json({ message: e.message });

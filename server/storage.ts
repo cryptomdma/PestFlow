@@ -421,12 +421,18 @@ export interface ApplyOpportunityDispositionInput {
 
 export interface CreateManualInvoiceInput {
   customerId: string;
-  locationId?: string | null;
+  // Required since Pass 10 (canon rule 1: the location is the customer
+  // record). A manual invoice without one showed on the global Invoices list
+  // but on no location Invoices tab and in no location balance - an
+  // invisible receivable. Validated in createManualInvoice: it must exist
+  // in the org and belong to customerId.
+  locationId: string;
   description?: string | null;
   amountCents: number;
   taxCents?: number | null;
   dueDate?: Date | null;
   notes?: string | null;
+  actor?: AuditActor | null;
 }
 
 export interface GenerateScheduleDrivenInvoiceInput {
@@ -4830,6 +4836,13 @@ export class DatabaseStorage implements IStorage {
     return result;
   }
 
+  // "Send" stamps sentAt - there is no delivery mechanism yet (the office
+  // opens or downloads the PDF and delivers it itself). What it does do,
+  // since Pass 10, is pin the document: the stored PDF is created here if
+  // no request has rendered it yet, so "what you sent is what you can always
+  // re-produce" (PLAN_BILLING_V1.md §1.7) holds from the moment the invoice
+  // is marked sent rather than from whenever someone first opens it. Already
+  // sent (sentAt set) stays as it was; the stamp is never moved.
   async batchSendInvoices(invoiceIds: string[]): Promise<Invoice[]> {
     const sent: Invoice[] = [];
     for (const id of invoiceIds) {
@@ -4839,6 +4852,10 @@ export class DatabaseStorage implements IStorage {
       if (!invoice || !isInvoiceIssued(invoice.status)) {
         continue;
       }
+
+      // Before the stamp, so a render failure leaves the invoice unsent
+      // rather than sent with nothing to reproduce.
+      await this.getOrCreateInvoiceDocument(invoice.id);
 
       const [updated] = await db
         .update(invoices)
@@ -4872,9 +4889,26 @@ export class DatabaseStorage implements IStorage {
 
   // Preserves the existing manual/ad-hoc invoice path (not tied to a
   // Service Record) as an ADJUSTMENT line item, per PLAN_BILLING_V1.md
-  // §1.3's line-type taxonomy.
+  // §1.3's line-type taxonomy. Issued directly (no DRAFT), so it is an
+  // "invoice issue" in D7's sense and writes invoice_issued like the other
+  // issuing paths - it was the one that did not until Pass 10.
   async createManualInvoice(input: CreateManualInvoiceInput): Promise<Invoice> {
+    if (!input.locationId) {
+      throw new Error("A manual invoice must be billed to a location");
+    }
+
     return db.transaction(async (tx) => {
+      // The location is the customer record (canon rule 1), so the invoice
+      // must land on one of this customer's locations - never on another
+      // customer's, and never on none.
+      const [location] = await tx.select().from(locations).where(and(eq(locations.orgId, this.orgId), eq(locations.id, input.locationId)));
+      if (!location) {
+        throw new Error("Location not found");
+      }
+      if (location.customerId !== input.customerId) {
+        throw new Error("The location belongs to a different customer");
+      }
+
       const taxCents = input.taxCents ?? 0;
       const totalAmountCents = input.amountCents + taxCents;
       const invoiceNumber = await this.getNextInvoiceNumber(tx);
@@ -4884,16 +4918,15 @@ export class DatabaseStorage implements IStorage {
         .values({
           orgId: this.orgId,
           customerId: input.customerId,
-          locationId: input.locationId ?? null,
+          locationId: location.id,
           serviceRecordId: null,
           invoiceNumber,
           billingProfileSnapshot: null,
-          // The manual/ad-hoc path keeps its existing direct tax entry
-          // rather than running the tax engine - it isn't tied to a
-          // specific service or location, so there's nothing for
-          // resolveTaxDecision to key off of. Snapshotted as "manual" so
-          // it's still visible in the invoice's tax history, just not
-          // engine-derived.
+          // The manual/ad-hoc path keeps its direct tax entry rather than
+          // running the tax engine: it has a location now, but no service
+          // type for a tax rule to key off, and the office types the tax it
+          // means to charge. Snapshotted as "manual" so it's still visible
+          // in the invoice's tax history, just not engine-derived.
           taxSnapshot: { taxable: taxCents > 0, reason: "MANUAL", taxCents, snapshottedAt: new Date().toISOString() },
           amountCents: input.amountCents,
           taxCents,
@@ -4917,6 +4950,15 @@ export class DatabaseStorage implements IStorage {
         taxable: taxCents > 0,
         taxCents,
         sortOrder: 0,
+      });
+
+      await this.recordAuditLogTx(tx, {
+        entityType: "invoice",
+        entityId: invoice.id,
+        action: "invoice_issued",
+        actor: input.actor,
+        before: null,
+        after: invoice,
       });
 
       return invoice;
@@ -5909,6 +5951,11 @@ export class DatabaseStorage implements IStorage {
   // location's unapplied balance first (each release audit-logged with the
   // void as its reason) - a VOID invoice owes nothing and can hold nothing,
   // and stranding a payment on one would make it vanish from every balance.
+  // All three stored rollups are zeroed here by hand (what computeInvoiceRollup
+  // answers for VOID): pendingAppliedCents was missed when Pass 7.6 added it,
+  // so an invoice voided while a PENDING payment was applied kept that amount
+  // as "pending confirmation" after the release - the Phase 1 verification
+  // defect, fixed in Pass 10 with a one-shot backfill in payments-bootstrap.ts.
   private async voidInvoiceTx(tx: DbTransaction, invoice: Invoice, actor: AuditActor | null | undefined): Promise<Invoice> {
     if (invoice.status === "VOID") {
       return invoice;
@@ -5918,7 +5965,7 @@ export class DatabaseStorage implements IStorage {
 
     const [voided] = await tx
       .update(invoices)
-      .set({ status: "VOID", amountPaidCents: 0, balanceDueCents: 0, paidDate: null })
+      .set({ status: "VOID", amountPaidCents: 0, balanceDueCents: 0, pendingAppliedCents: 0, paidDate: null })
       .where(and(eq(invoices.orgId, this.orgId), eq(invoices.id, invoice.id)))
       .returning();
 

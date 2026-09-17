@@ -181,4 +181,20 @@ export async function bootstrapPayments(): Promise<void> {
     await db.execute(sql`ALTER TABLE invoices ALTER COLUMN pending_applied_cents SET DEFAULT 0`);
     await db.execute(sql`ALTER TABLE invoices ALTER COLUMN pending_applied_cents SET NOT NULL`);
   }
+
+  // Pass 10 - the Phase 1 verification defect. voidInvoiceTx zeroed
+  // amount_paid_cents / balance_due_cents by hand and never touched
+  // pending_applied_cents, so an invoice voided while a PENDING payment was
+  // applied to it kept that amount as "pending confirmation" after the
+  // application was released. The code now zeroes it with the other two;
+  // this squares any row voided before the fix. A VOID invoice holds nothing
+  // (computeInvoiceRollup), so 0 is the only right value and the WHERE makes
+  // it a no-op on every boot after the first - nothing to guard.
+  const squared = await db.execute(sql`
+    UPDATE invoices SET pending_applied_cents = 0
+    WHERE status = 'VOID' AND pending_applied_cents <> 0
+  `);
+  if (squared.rowCount) {
+    console.log(`[payments-bootstrap] zeroed pending_applied_cents on ${squared.rowCount} VOID invoice(s) voided before the Pass 10 fix`);
+  }
 }

@@ -239,7 +239,7 @@ the shared dev DB during this pass's verification boot.** Signatures and behavio
 
 With Pass 9 the D1-D9 sequence is built.
 
-Phase 1 verification (`verify/phase-1-acceptance`, 2026-09-16) is pushed and awaiting merge. A
+Phase 1 verification (`verify/phase-1-acceptance`, 2026-09-16) merged as PR #70. A
 docs-only branch: no code changed. The eight acceptance targets in `PLAN_BILLING_V1_1.md` and the
 three conflict-resolution guards at the end of `PLAN_BILLING_V1_1_EXECUTION.md` were run end to end
 on the merged D1-D9 code (PORT=5001, `invoiceOnFinalize = PROMPT`) by a 91-assertion scratchpad
@@ -254,19 +254,43 @@ invoice whose status, balance, released application and location pool were all c
 stored rollup is wrong; which screens print it for a VOID row was not rendered here. Fix, one
 line plus a backfill: `pendingAppliedCents: 0` in that UPDATE (or call `recomputeInvoiceRollupTx`),
 and a one-shot `UPDATE invoices SET pending_applied_cents = 0 WHERE status = 'VOID'` in
-`payments-bootstrap.ts`. Two observations, not defects: the batch-invoicing date range filters on
+`payments-bootstrap.ts`. **Fixed in Pass 10 below.** Two observations, not defects: the batch-invoicing date range filters on
 the ticket's posting date (`postedAt`, falling back to `serviceDate`), which the Batch Invoice
 dialog should say; and a DELETE / PATCH / PUT / POST to `/api/audit-logs` falls through to the SPA
 shell with a 200 rather than a 404, because no such route exists - nothing is written, but an API
 client cannot tell "no route" from "page". Per-target evidence is under "Verification" at the end
 of `PLAN_BILLING_V1_1_EXECUTION.md`.
 
-Next up: whichever unscheduled item below the owner picks. The two that gate real use of the
-billing engine are still the invoice document / manual-invoice-location pair and **Billing Plan
+Pass 10 (`feature/phase-1-invoice-document-and-location`, 2026-09-17) is pushed and awaiting
+merge. The owner's pick from the unscheduled items: the two Invoices-screen gaps that gated real
+use of the billing engine, with the void rollup defect riding along. **The invoice document has
+an affordance**: every invoice row on the Invoices screen and on the location's Invoices tab now
+carries Open PDF (a new tab), Download (the same route with `?download=1`, answered as an
+attachment) and, for an issued invoice not yet sent, Mark Sent (`SEND_INVOICE`), with "Sent
+<date>" shown once stamped; a draft's buttons say Preview and store nothing. "Send" is still
+only the `sentAt` stamp - there is no email delivery and the button says so - but marking sent
+now **pins the stored PDF** (`batchSendInvoices` renders it before the stamp), so §1.7's "what
+you sent is what you can reproduce" holds from the moment of sending rather than from whenever
+someone first opened it. **A manual invoice carries a location**: the New Invoice dialog has a
+required Location selector (the customer's locations, defaulting to the primary), the server
+refuses a manual invoice without one or with another customer's, and the path now writes
+`invoice_issued` like every other issuing path, so the invoice lands on the location's Invoices
+tab, in its balance and on its History tab. The Invoices screen names each row's location and
+marks the two pre-existing location-less rows "No location" - INV-000001 and INV-000072 (still
+OPEN; an earlier note here said voided), both on two-location customers, so **neither was
+backfilled** (a guess, and Pass 9's rule is report, never guess). The void fix is
+`pendingAppliedCents: 0` in `voidInvoiceTx` plus a self-guarding one-shot UPDATE in
+`payments-bootstrap.ts`, which squared nothing on the dev DB and squared the smoke test's forced
+row. Not built: email delivery, engine-driven tax on manual invoices, a repair path for the two
+location-less rows. **Restart `npm run dev:full` before manually testing - this pass changes
+server code and a route.** Signatures and behavior are under "Shipped in Pass 10" in
+`PLAN_BILLING_V1_1_EXECUTION.md`.
+
+Next up: whichever unscheduled item below the owner picks. With Pass 10 the two Invoices-screen
+gaps are closed; the one that still gates real use of the billing engine is **Billing Plan
 required on every Agreement** (with sale attribution), which resolves the 11 plan-less rows Pass 9
 reported; the technician ticket modal entry below is owner-specified scope for a technician-view
-pass and is unblocked. The void rollup defect above is small enough to ride with whichever of
-those touches `storage.ts` first, or to be its own one-line pass.
+pass and is unblocked.
 
 Full ordered plan, impact analysis, conflict resolutions, and per-pass verification steps live in
 `PLAN_BILLING_V1_1_EXECUTION.md` — read it before starting a pass, and update its "Pass status" table
@@ -303,18 +327,19 @@ the source of truth for what each pass actually does.
     plan-attachment-on-update sets the billing schedule instead of silently doing nothing. This
     unblocks D9's column drop and the required-field work below, and clears the sequencing constraint
     that Pass 5 (D2) could not land before it.
-  - **Open / download / send an invoice document.** `GET /api/invoices/:id/document` renders the PDF
-    and has no UI affordance anywhere — no button on the invoice list or detail. Owner calls this
-    mandatory, not optional.
-  - **Manual invoices must carry a location.** The Invoices screen's "New Invoice" dialog takes only
-    a customer, and `createManualInvoice` stores `locationId` null, so the invoice appears on the
-    global Invoices list but on neither of the customer's location Invoices tabs and in no location
-    balance (`getLocationBalancesByCustomer` skips location-less rows) — an invisible receivable.
-    Found 2026-09-10 on INV-000072 (Alex Jones, who has two locations; voided as test data);
-    INV-000001 has the same hole. Fix: a required location selector on the form, defaulting to the
-    customer's primary location, and the server refusing a manual invoice without one. Rides
-    naturally with the document item above — both are Invoices-screen gaps — and it is canon rule 1
-    (location is the canonical customer record) applied to the one invoice path that ignores it.
+  - ~~**Open / download / send an invoice document.**~~ **Done — Pass 10**, pushed as
+    `feature/phase-1-invoice-document-and-location`. Open PDF / Download / Mark Sent on every
+    invoice row of the Invoices screen and the location Invoices tab, from one component; Mark Sent
+    pins the stored PDF. Still no email delivery: "send" is the `sentAt` stamp, the button says so,
+    and the office delivers the PDF itself.
+  - ~~**Manual invoices must carry a location.**~~ **Done — Pass 10**, same branch: a required
+    Location selector on New Invoice (the customer's locations, defaulting to the primary) and the
+    server refusing a manual invoice without one or with another customer's; the path also writes
+    `invoice_issued` now. The two pre-existing location-less rows were **not** backfilled:
+    INV-000001 (Sarah Chen) and INV-000072 (Alex Jones - still OPEN, not voided as this entry once
+    said) each belong to a two-location customer, so a backfill would be a guess. They show "No
+    location" on the Invoices screen with Record Payment disabled; void them, or leave them until a
+    location-assignment repair exists (not scheduled).
   - **Billing Plan required on every Agreement** — backfill the 11 plan-less agreements, then
     `billingPlanId NOT NULL` + zod. **Unblocked by Pass 3.5**: the creation UI, template propagation,
     and plan-attachment-on-update all exist now, so what remains is the backfill and the constraint.

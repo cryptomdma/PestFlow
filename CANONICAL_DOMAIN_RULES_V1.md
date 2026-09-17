@@ -1051,7 +1051,9 @@ invoices only — agreement revenue on schedule-billed plans still comes solely 
 
 * id
 * accountId
-* locationId nullable
+* locationId nullable in the column, set by every writing path — a manual invoice is refused
+  without one (rule 1: the location is the customer record; PLAN_BILLING_V1.1 Pass 10). Null only
+  on the two manual rows that predate that.
 * appointmentId nullable — the billing anchor for visit work
 * serviceRecordId nullable — the fallback anchor for appointment-less work
 * billingProfileId nullable

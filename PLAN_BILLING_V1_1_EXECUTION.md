@@ -30,7 +30,8 @@ grounded in what the code and data actually do, not what the decision record ass
 | 7.7 | `feature/phase-1-payments-screen` | D5 owner review item 4 (Payments screen, batch confirmation, collections report) | Done (PR #67) |
 | 8 | `feature/phase-1-audit-log-backfill` | D7 (remainder) | Done (PR #68) |
 | 9 | `feature/phase-1-legacy-billing-frequency-removal` | D9 (column drop) | Done (PR #69) |
-| V | `verify/phase-1-acceptance` | Phase 1 verification: the acceptance targets + the three guards, end to end (docs only) | Pushed, awaiting merge |
+| V | `verify/phase-1-acceptance` | Phase 1 verification: the acceptance targets + the three guards, end to end (docs only) | Done (PR #70) |
+| 10 | `feature/phase-1-invoice-document-and-location` | — (the two Invoices-screen gaps from `CURRENT_FOCUS.md`: the invoice document affordance and the manual-invoice location; plus the verification run's void-rollup defect) | Pushed, awaiting merge |
 
 Pass 3.5 is inserted, not renumbered in: it was not in the original D1-D9 sequence at all, but Pass 3's
 live testing found that `billingPlanId` had no writer anywhere in the client, so every agreement was
@@ -318,6 +319,7 @@ Key choices:
 | 7.7 | `feature/phase-1-payments-screen` | D5 owner review item 4 | `routes.ts` + `storage.ts` (an org-wide `GET /api/payments` with server-side filters - status, method, received-date range, collector, customer/location search; `POST /api/payments/confirm-batch { paymentIds }` → `{ confirmed, skipped: [{ id, reason }] }` with the permission checked per payment - CASH needs `CONFIRM_CASH_PAYMENT`, so a support user's cash is skipped and reported - one transaction and one `payment_confirmed` audit row per payment, the invoices it sits on re-rolled exactly as single confirm does; a collections read for a date range grouped by day / collector / method, pending against confirmed), `shared/payments.ts` (filter and report shapes), new `client/src/pages/payments.tsx` (pending-confirmation queue with select-all and Batch Confirm, filters, search, rows linking to the location; the collections report as the deposit-slip view), navigation entry. Read-only report, derived, nothing new stored | No | - (closes the field → office loop for real use) | `npm run check`; boot ×2; PowerShell: the list filters by status / method / date / collector; batch confirm as support with one cash and one check pending confirms the check, skips the cash with a reason, writes one audit row; as manager both confirm; the collections totals equal the sum of the listed payments for the range, pending and confirmed separately |
 | 8 | `feature/phase-1-audit-log-backfill` | D7 (remainder) | Add `recordAuditLog()` calls to pre-existing financial mutation points D7 lists that passes 3-7 didn't already cover — e.g. price override in the field-ticket flow, ticket reopen | No | — | `npm run check`; boot ×2; PowerShell: exercise each listed mutation, confirm an audit row with correct before/after/actor appears |
 | 9 | `feature/phase-1-legacy-billing-frequency-removal` | D9 | Drop `agreementTemplates.defaultBillingFrequency` / `agreements.billingFrequency` columns; remove all read/write sites from §1's D9 table | Yes — column drop, guarded by an `information_schema.columns` existence check per this repo's established pattern (`money-bootstrap.ts` precedent) | — (cleanup) | `npm run check`; boot ×2; confirm the 9 "legacy text, no plan" agreements and 2 "neither" agreements are surfaced in a pre-migration report before the column drop runs |
+| 10 | `feature/phase-1-invoice-document-and-location` | — (the two `CURRENT_FOCUS.md` items the owner called mandatory for real use: open / download / send the invoice document; manual invoices carry a location) + the Phase 1 verification defect | `routes.ts` (`manualInvoiceSchema.locationId` required, `POST /api/invoices` passes the actor, `GET /api/invoices/:id/document?download=1` answers `attachment`), `storage.ts` (`createManualInvoice` validates the location against the customer and writes `invoice_issued`; `voidInvoiceTx` zeroes `pendingAppliedCents`; `batchSendInvoices` pins the document before the stamp), `payments-bootstrap.ts` (one-shot VOID backfill), new `client/src/components/invoice-document-actions.tsx` (Open PDF / Download / Mark Sent + the sent stamp), `invoices.tsx` (required Location selector defaulting to the primary; location on every row; the actions), `location-ledger-panel.tsx` (`InvoiceRowLedger` carries the same actions) | Yes - one self-guarding UPDATE (`WHERE status = 'VOID' AND pending_applied_cents <> 0`) | — (closes the last two Invoices-screen gaps) | `npm run check`; boot ×3; PowerShell: a manual invoice without a location, with an empty one, with an unknown one and with another customer's is refused and writes nothing; with the customer's location it lands on the by-location read, in the location balance and in the audit log; the document route answers inline and, with `?download=1`, attachment, storing one row; marking sent stores the document without anyone opening it and a second send moves nothing; a PENDING payment applied then voided leaves `pendingAppliedCents` 0; a VOID row forced to 4000 by SQL is 0 after the next boot with the log line; counts back at baseline |
 
 **Shipped in Pass 2, for Passes 3-8 to call** — the audit helper's actual signature, so no later pass
 has to re-derive it:
@@ -1529,6 +1531,81 @@ Behavior worth knowing:
   snapshot, and a new plan-less agreement getting no note; `server/jobs/billing-run.ts` byte-identical
   to `origin/main`; the second boot printed no report and changed nothing.
 
+**Shipped in Pass 10 (the two Invoices-screen gaps from `CURRENT_FOCUS.md`, and the Phase 1
+verification defect)** - no decision letter: these were the two "not in this phase, documented where
+they belong" items the owner called mandatory for real use of the billing engine, and the one defect
+the verification run recorded. Nothing here changes the domain model; it gives existing code its
+affordance, closes the one invoice path that ignored canon rule 1, and squares one rollup.
+
+- **The invoice document has an affordance.** `GET /api/invoices/:id/document` (PLAN_BILLING_V1.md
+  §1.7: rendered on first request, stored, byte-identical after) had no button anywhere. Every
+  invoice row on both surfaces - the Invoices screen and the location's Invoices tab
+  (`InvoiceRowLedger`) - now carries one component, `client/src/components/invoice-document-actions.tsx`:
+  **Open PDF** (a new tab; the route answers `inline`), **Download** (the same route with
+  `?download=1`, answered with `Content-Disposition: attachment; filename="invoice-<number>.pdf"`),
+  and **Mark Sent** (`SEND_INVOICE`; only on an issued invoice not yet sent). A DRAFT's buttons say
+  *Preview* - the route renders it with "Status: DRAFT" and stores nothing, exactly as Pass 4 built.
+  Once `sentAt` is stamped the row says "Sent <date>" (`InvoiceSentStamp`). Mark Sent reuses
+  `POST /api/invoices/batch-send` with one id; the button's hover text and its toast say what
+  exists - there is no email delivery, the stamp is the record, the office delivers the PDF itself
+  (dev behavior rule 6: a button called "Send" that sends nothing would be the misleading control).
+  The document route stays a read with no permission beyond the session, like every invoice read.
+- **Sending pins the document.** `batchSendInvoices()` now calls `getOrCreateInvoiceDocument()` for
+  each invoice *before* stamping `sentAt`, so the stored artifact exists from the moment an invoice
+  is marked sent rather than from whenever someone first opens it - §1.7's "what you sent is what
+  you can always re-produce" held only if someone had opened the PDF first. A render failure leaves
+  the invoice unsent rather than sent with nothing to reproduce. An already-stored document is
+  returned as it was and a second send moves nothing. This reaches Batch Invoice's "Send All" and
+  the finalize prompt's Generate & Send, which both go through the same method.
+- **A manual invoice carries a location.** `manualInvoiceSchema.locationId` is `z.string().min(1)`
+  and `CreateManualInvoiceInput.locationId` is `string`; `createManualInvoice()` loads the location
+  inside its transaction and refuses "Location not found" or "The location belongs to a different
+  customer" (400 either way, nothing written). The New Invoice dialog has a required **Location**
+  selector, populated from `GET /api/locations/:customerId` once a customer is chosen, defaulted to
+  the primary location (or the only one), reset when the customer changes, and it says where the
+  invoice will land; the form cannot submit without it. `createManualInvoice()` also writes
+  `invoice_issued` with the session actor - it was the one issuing path that wrote no audit row
+  (Pass 4's note; Pass 8 did not reach it) - so a manual invoice shows on the location's History tab
+  like every other. The manual tax entry stays manual: the invoice has a location now but no service
+  type for a tax rule to key off, and the office types the tax it means to charge.
+- **The Invoices screen names the location** on every row (`GET /api/all-locations`; name - address)
+  and the search matches it. A row with no location says **No location** in red with the reason on
+  hover, and Record Payment stays disabled on it as Pass 6 left it.
+- **The void rollup defect is fixed.** `voidInvoiceTx` sets `pendingAppliedCents: 0` with the other
+  two hand-zeroed rollups (what `computeInvoiceRollup` answers for VOID), and `payments-bootstrap.ts`
+  runs `UPDATE invoices SET pending_applied_cents = 0 WHERE status = 'VOID' AND pending_applied_cents
+  <> 0` on every boot - self-guarding (0 rows after the first) with a log line naming the count
+  when it squares anything. On the dev DB it squared nothing on its first boot; the smoke test forced
+  a VOID row to 4000 by SQL and the next boot squared that one.
+- **Not backfilled, deliberately**: the two location-less manual invoices, INV-000001 (Sarah Chen,
+  $54.00 OPEN) and INV-000072 (Alex Jones, $1,082.50 OPEN - `CURRENT_FOCUS.md` had recorded it as
+  voided; it is not), each belong to a customer with two locations, so assigning one would be a
+  guess, and Pass 9's rule stands: report, never guess. They stay location-less, visibly, until the
+  owner voids them or a location-assignment repair exists. `invoices.location_id` stays nullable for
+  them; every writing path sets it now (visit, draft, schedule-driven, initial charge, manual).
+- **Not built**: email delivery (the stamp is still the whole of "send"); a credit-memo or statement
+  document; engine-driven tax or a billing-profile snapshot on manual invoices; a repair path that
+  assigns a location to an existing location-less invoice.
+- **Verified (2026-09-17, PORT=5001, three boots, 49 assertions)**: as admin, `POST /api/invoices`
+  without `locationId` → 400 "locationId: Required", with `""` → 400, with an unknown id → 400
+  "Location not found", with another customer's location → 400 "The location belongs to a different
+  customer", the invoice count unchanged after all four; with Sarah Chen's Downtown location →
+  INV-000142 OPEN 5846 carrying it, on `GET /api/invoices/by-location/<downtown>`, in
+  `GET /api/location-balances/<customer>` (open +5846, count +1), one `ADJUSTMENT` line, and
+  `invoice_issued` with the admin as actor. `GET .../document` → 200 `application/pdf`, `inline;
+  filename="invoice-INV-000142.pdf"`, a `%PDF-` body; `?download=1` → `attachment` with the same
+  bytes; `document-info` a stored id; one `documents` row after two requests; an unknown invoice →
+  404. A second invoice marked sent through `batch-send` without anyone opening it: `sentAt` set,
+  one `documents` row for it, a second send keeping the stamp and storing nothing. A $40 cash payment
+  (PENDING) applied to the first invoice (pending 4000, paid 0, due 5846), then void → response and
+  row `0|0|0|VOID`, the application released, the 4000 back in Downtown's pending pool. That VOID
+  row forced to `pending_applied_cents = 4000` by SQL; boot 3 printed "zeroed pending_applied_cents
+  on 1 VOID invoice(s)" and the row read 0; support downloaded the sent invoice's pinned PDF after
+  the reboot. Boots 1 and 2 printed only "serving on port 5001". Cleanup in FK order left invoices /
+  payments / payment_applications / audit_logs / documents / invoice_line_items at 60 / 11 / 15 / 99
+  / 3 / 59, Downtown's unapplied pool empty; the org counter moved 141 → 143 (nothing resets it).
+  The three changed client modules transformed under Vite; the UI itself was not rendered here.
+
 **Design note carried into Pass 4** - resolved there: D3's "flags the linked ticket(s) for review" had
 no existing "flagged" concept in the schema. Pass 4 extended `serviceRecords.ticketStatus` with
 `FLAGGED_FOR_REVIEW` (vocabulary now `OFFICE_REVIEW_PENDING | FLAGGED_FOR_REVIEW | FINALIZED |
@@ -1618,8 +1695,9 @@ today` returned the fixture agreement alone (no live agreement is due before 202
 | Guard: the 9 + 2 plan-less agreements were resolved before the drop | Held by Pass 9; 11 plan-less rows on this run's baseline and after cleanup | Held |
 | Guard: cancelling an appointment with a DRAFT prompts on every call site | Three drafts on three scheduled visits of one COD agreement. `PATCH /api/appointments/:id { status: CANCELED }` → 409 `DRAFT_INVOICE_DECISION_REQUIRED` naming the draft, appointment still SCHEDULED; with `voidDraftInvoices: false` → CANCELED, draft kept. `POST .../cancel-reschedule` → 409; with `true` → CANCELED, draft VOID, `invoice_voided`. `POST /api/agreements/:id/cancel { cancelScheduledAppointments: true }` → 409 with the agreement still ACTIVE and the visit SCHEDULED (rolled back); with `true` → CANCELLED / CANCELED / VOID | Held on three call sites |
 
-**Defect (recorded, not fixed - this branch verifies):** `voidInvoiceTx` (`server/storage.ts`)
-sets `status: "VOID", amountPaidCents: 0, balanceDueCents: 0, paidDate: null` by hand. It predates
+**Defect (recorded here; fixed in Pass 10 - see "Shipped in Pass 10"):** `voidInvoiceTx`
+(`server/storage.ts`) set `status: "VOID", amountPaidCents: 0, balanceDueCents: 0, paidDate: null`
+by hand. It predated
 Pass 7.6's `pendingAppliedCents`, which `computeInvoiceRollup` zeroes for VOID but which this UPDATE
 never touches, so an invoice voided while a PENDING payment was applied to it keeps that amount
 (4000 in the run) as "pending applied" after `releaseAllApplicationsForInvoiceTx` has released the
@@ -1627,7 +1705,9 @@ application. Status, balance, the released row and the location pool were all co
 stored rollup lies. Fix: `pendingAppliedCents: 0` in that `.set()` (or a `recomputeInvoiceRollupTx`
 call after the release), plus a one-shot `UPDATE invoices SET pending_applied_cents = 0 WHERE status
 = 'VOID' AND pending_applied_cents <> 0` in `payments-bootstrap.ts`. On the dev DB no VOID row
-carries a non-zero value today (the run's own row was deleted with the fixture).
+carried a non-zero value at the time (the run's own row was deleted with the fixture). Pass 10 did
+both, and its smoke test reproduced the scenario on the live path (0 after void) and through the
+backfill (a forced 4000 squared on the next boot).
 
 **Observations, not defects:** `getServiceRecordsReadyForBillingInRange` filters on `postedAt`
 (falling back to `serviceDate`), so the Batch Invoice dialog's date range means "posted between",

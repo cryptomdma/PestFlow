@@ -29,6 +29,7 @@ import {
 import type { Agreement, CreditApplication, CreditMemo, Invoice, Payment, PaymentApplication } from "@shared/schema";
 import { RecordPaymentDialog } from "@/components/record-payment-dialog";
 import { ApplyLocationBalancePrompt } from "@/components/apply-location-balance-prompt";
+import { InvoiceDocumentActions, InvoiceSentStamp } from "@/components/invoice-document-actions";
 import { DollarSign, ReceiptText } from "lucide-react";
 
 // PLAN_BILLING_V1_1.md D5 / D4: the location's ledger, on its Invoices tab.
@@ -375,6 +376,8 @@ export function InvoiceRowLedger({
         ) : (
           <span>{invoice.status === "DRAFT" ? "Draft - not a receivable until issued" : "Voided - nothing owed"}</span>
         )}
+        <InvoiceSentStamp invoice={invoice} />
+        <InvoiceDocumentActions invoice={invoice} compact />
         {issued ? (
           <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={() => setShowApplications((prev) => !prev)} data-testid={`button-toggle-applications-${invoice.id}`}>
             {showApplications ? "Hide applications" : "Applications"}
