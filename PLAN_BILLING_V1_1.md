@@ -277,10 +277,10 @@ Decided now, built later, so they stop resurfacing as ambiguity:
 
 ## Verification targets (Phase 1 acceptance)
 
-> Run end to end on 2026-09-16 after Pass 9 merged (branch `verify/phase-1-acceptance`). Every
-> target below held; the per-target evidence and the one defect it surfaced (a voided invoice keeps
-> a stale `pendingAppliedCents`) are recorded under "Verification" at the end of
-> `PLAN_BILLING_V1_1_EXECUTION.md`.
+> Run end to end on 2026-09-16 after Pass 9 merged (branch `verify/phase-1-acceptance`, PR #70).
+> Every target below held; the per-target evidence and the one defect it surfaced (a voided invoice
+> kept a stale `pendingAppliedCents`; fixed in Pass 10) are recorded under "Verification" at the
+> end of `PLAN_BILLING_V1_1_EXECUTION.md`.
 
 - Two services finalized on one appointment → **one** invoice, two service lines; running the batch or
   the manual route again creates nothing.

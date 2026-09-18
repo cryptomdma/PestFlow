@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -38,6 +38,7 @@ import { dollarsToCents, formatCents } from "@shared/money";
 import { can, PERMISSIONS } from "@shared/permissions";
 import { isInvoiceIssued } from "@shared/invoice-status";
 import { RecordPaymentDialog } from "@/components/record-payment-dialog";
+import { InvoiceDocumentActions, InvoiceSentStamp } from "@/components/invoice-document-actions";
 import {
   Plus,
   Search,
@@ -50,10 +51,14 @@ import {
   Ban,
   ReceiptText,
 } from "lucide-react";
-import type { Customer, Invoice, ServiceRecord, ServiceType } from "@shared/schema";
+import type { Customer, Invoice, Location, ServiceRecord, ServiceType } from "@shared/schema";
 
 function isOverdue(invoice: Invoice) {
   return invoice.status === "OPEN" && !!invoice.dueDate && new Date(invoice.dueDate).getTime() < Date.now();
+}
+
+function getLocationLabel(location: Location) {
+  return [location.name, location.address].filter(Boolean).join(" - ");
 }
 
 // Mirrors the server's UnfinalizedTicketRef (server/storage.ts) - what a
@@ -72,12 +77,30 @@ function InvoiceForm({ onClose }: { onClose: () => void }) {
 
   const [form, setForm] = useState({
     customerId: "",
+    locationId: "",
     description: "",
     amount: "",
     tax: "0",
     dueDate: "",
     notes: "",
   });
+
+  // The location is the customer record (canon rule 1), so a manual invoice
+  // is billed to one of the customer's locations - required, defaulting to
+  // the primary. Without one the invoice showed on this list but on no
+  // location's Invoices tab and in no location balance.
+  const { data: customerLocations, isLoading: locationsLoading } = useQuery<Location[]>({
+    queryKey: ["/api/locations", form.customerId],
+    enabled: !!form.customerId,
+  });
+  useEffect(() => {
+    if (!customerLocations) return;
+    setForm((prev) => {
+      if (prev.locationId && customerLocations.some((location) => location.id === prev.locationId)) return prev;
+      const primary = customerLocations.find((location) => location.isPrimary) ?? customerLocations[0];
+      return { ...prev, locationId: primary?.id ?? "" };
+    });
+  }, [customerLocations]);
 
   const amountCents = dollarsToCents(form.amount) ?? 0;
   const taxCents = dollarsToCents(form.tax) ?? 0;
@@ -87,6 +110,7 @@ function InvoiceForm({ onClose }: { onClose: () => void }) {
     mutationFn: (data: typeof form) =>
       apiRequest("POST", "/api/invoices", {
         customerId: data.customerId,
+        locationId: data.locationId,
         description: data.description || null,
         amountCents,
         taxCents,
@@ -107,10 +131,28 @@ function InvoiceForm({ onClose }: { onClose: () => void }) {
     <form onSubmit={(e) => { e.preventDefault(); mutation.mutate(form); }} className="space-y-4">
       <div className="space-y-1.5">
         <Label>Customer *</Label>
-        <Select value={form.customerId} onValueChange={(v) => setForm((p) => ({ ...p, customerId: v }))}>
+        <Select value={form.customerId} onValueChange={(v) => setForm((p) => ({ ...p, customerId: v, locationId: "" }))}>
           <SelectTrigger data-testid="select-inv-customer"><SelectValue placeholder="Select customer" /></SelectTrigger>
           <SelectContent>{customers?.map((c) => <SelectItem key={c.id} value={c.id}>{c.firstName} {c.lastName}</SelectItem>)}</SelectContent>
         </Select>
+      </div>
+      <div className="space-y-1.5">
+        <Label>Location *</Label>
+        <Select value={form.locationId} onValueChange={(v) => setForm((p) => ({ ...p, locationId: v }))} disabled={!form.customerId || locationsLoading}>
+          <SelectTrigger data-testid="select-inv-location">
+            <SelectValue placeholder={!form.customerId ? "Select a customer first" : locationsLoading ? "Loading locations..." : "Select location"} />
+          </SelectTrigger>
+          <SelectContent>
+            {customerLocations?.map((location) => (
+              <SelectItem key={location.id} value={location.id}>{getLocationLabel(location)}{location.isPrimary ? " (primary)" : ""}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        {form.customerId && customerLocations && customerLocations.length === 0 ? (
+          <p className="text-xs text-destructive">This customer has no location to bill. Add one on the customer screen first.</p>
+        ) : (
+          <p className="text-xs text-muted-foreground">The invoice lands on this location's Invoices tab and balance.</p>
+        )}
       </div>
       <div className="space-y-1.5">
         <Label>Description</Label>
@@ -140,7 +182,7 @@ function InvoiceForm({ onClose }: { onClose: () => void }) {
       </div>
       <div className="flex justify-end gap-2">
         <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
-        <Button type="submit" disabled={mutation.isPending || !form.customerId || !form.amount} data-testid="button-save-invoice">
+        <Button type="submit" disabled={mutation.isPending || !form.customerId || !form.locationId || !form.amount} data-testid="button-save-invoice">
           {mutation.isPending ? "Creating..." : "Create Invoice"}
         </Button>
       </div>
@@ -221,6 +263,11 @@ export default function Invoices() {
 
   const { data: invoices, isLoading } = useQuery<Invoice[]>({ queryKey: ["/api/invoices"] });
   const { data: customers } = useQuery<Customer[]>({ queryKey: ["/api/customers"] });
+  // Every row names its location (canon rule 1). A row with none is one of
+  // the manual invoices from before the location was required - it is on no
+  // location tab and in no location balance, and the row says so.
+  const { data: allLocations } = useQuery<Location[]>({ queryKey: ["/api/all-locations"] });
+  const locationById = new Map((allLocations ?? []).map((location) => [location.id, location]));
 
   // D5: "Mark Paid" is gone. Paid and balance due are derived from recorded
   // payments, so the action here is to record one against the invoice; the
@@ -268,7 +315,8 @@ export default function Invoices() {
 
   const filtered = (invoices ?? []).filter((i) => {
     const cust = customers?.find((c) => c.id === i.customerId);
-    const text = `${cust?.firstName || ""} ${cust?.lastName || ""} ${i.invoiceNumber}`.toLowerCase();
+    const location = i.locationId ? locationById.get(i.locationId) : undefined;
+    const text = `${cust?.firstName || ""} ${cust?.lastName || ""} ${i.invoiceNumber} ${location?.name || ""} ${location?.address || ""}`.toLowerCase();
     const matchesSearch = text.includes(search.toLowerCase());
     const status = isOverdue(i) ? "OVERDUE" : i.status;
     const matchesStatus = filterStatus === "all" || status === filterStatus;
@@ -392,6 +440,7 @@ export default function Invoices() {
             .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
             .map((inv) => {
               const cust = customers?.find((c) => c.id === inv.customerId);
+              const location = inv.locationId ? locationById.get(inv.locationId) : undefined;
               return (
                 <Card key={inv.id} data-testid={`card-invoice-${inv.id}`}>
                   <CardContent className="p-4 flex items-center gap-4">
@@ -405,9 +454,15 @@ export default function Invoices() {
                       </div>
                       <div className="text-xs text-muted-foreground mt-0.5 flex items-center gap-3 flex-wrap">
                         <span>{cust ? `${cust.firstName} ${cust.lastName}` : "Unknown"}</span>
+                        {inv.locationId ? (
+                          <span data-testid={`text-invoice-location-${inv.id}`}>{location ? getLocationLabel(location) : "Location"}</span>
+                        ) : (
+                          <span className="text-destructive" title="Created before a location was required. It is on no location's Invoices tab and in no location balance." data-testid={`text-invoice-no-location-${inv.id}`}>No location</span>
+                        )}
                         <span>{new Date(inv.issuedAt ?? inv.createdAt).toLocaleDateString()}</span>
                         {inv.status === "DRAFT" ? <span>Draft - not issued; amounts are re-priced at issue</span> : null}
                         {inv.dueDate && <span>Due: {new Date(inv.dueDate).toLocaleDateString()}</span>}
+                        <InvoiceSentStamp invoice={inv} />
                         {isInvoiceIssued(inv.status) && (inv.amountPaidCents > 0 || inv.pendingAppliedCents > 0) ? (
                           <span data-testid={`text-invoice-paid-${inv.id}`}>Paid {formatCents(inv.amountPaidCents)} - Balance {formatCents(inv.balanceDueCents)}</span>
                         ) : null}
@@ -416,8 +471,9 @@ export default function Invoices() {
                         ) : null}
                       </div>
                     </div>
-                    <div className="flex items-center gap-3 shrink-0">
+                    <div className="flex items-center gap-3 shrink-0 flex-wrap justify-end">
                       <span className="text-lg font-bold">{formatCents(inv.totalAmountCents)}</span>
+                      <InvoiceDocumentActions invoice={inv} />
                       {inv.status === "DRAFT" && canIssue && (
                         <Button
                           size="sm"
