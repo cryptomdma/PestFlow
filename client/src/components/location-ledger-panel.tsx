@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -39,7 +39,7 @@ import { DollarSign, ReceiptText } from "lucide-react";
 // had, each row with its paid / due figures and its applications.
 
 /** Mirrors InvoiceLedger (server/storage.ts). */
-interface InvoiceLedgerResponse {
+export interface InvoiceLedgerResponse {
   invoice: Invoice;
   paymentApplications: Array<{ application: PaymentApplication; payment: Payment }>;
   creditApplications: Array<{ application: CreditApplication; creditMemo: CreditMemo }>;
@@ -176,20 +176,30 @@ function ApplySourceDialog({
   );
 }
 
-function IssueCreditMemoDialog({
+// Exported since Pass 11a: the invoice modal issues a memo against the
+// invoice it is showing, so it opens this with that invoice preselected.
+export function IssueCreditMemoDialog({
   open,
   onOpenChange,
   locationId,
   invoices,
+  defaultInvoiceId,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   locationId: string;
   invoices: Invoice[];
+  /** Preselects "Corrects invoice" when that invoice is open (issued with a balance due); otherwise no specific invoice. */
+  defaultInvoiceId?: string | null;
 }) {
   const { toast } = useToast();
-  const [form, setForm] = useState({ reasonCode: "BILLING_ERROR", reason: "", amount: "", invoiceId: "NONE", applyNow: true });
   const openInvoices = invoices.filter((invoice) => isInvoiceIssued(invoice.status) && invoice.balanceDueCents > 0);
+  const initialInvoiceId = defaultInvoiceId && openInvoices.some((invoice) => invoice.id === defaultInvoiceId) ? defaultInvoiceId : "NONE";
+  const emptyForm = { reasonCode: "BILLING_ERROR", reason: "", amount: "", invoiceId: initialInvoiceId, applyNow: true };
+  const [form, setForm] = useState(emptyForm);
+  useEffect(() => {
+    if (open) setForm((prev) => ({ ...prev, invoiceId: initialInvoiceId }));
+  }, [open, initialInvoiceId]);
   const amountCents = dollarsToCents(form.amount);
 
   const mutation = useMutation({
@@ -214,7 +224,7 @@ function IssueCreditMemoDialog({
           : "On the location balance, unapplied.",
       });
       onOpenChange(false);
-      setForm({ reasonCode: "BILLING_ERROR", reason: "", amount: "", invoiceId: "NONE", applyNow: true });
+      setForm(emptyForm);
     },
     onError: (error: Error) => toast({ title: "Unable to issue the credit memo", description: getApiErrorMessage(error), variant: "destructive" }),
   });
@@ -272,11 +282,36 @@ function IssueCreditMemoDialog({
   );
 }
 
-// Everything applied to one invoice, with Release on the live rows.
-function InvoiceApplications({ invoice }: { invoice: Invoice }) {
+// Confirming a payment: one mutation shared by the ledger panel's payment rows
+// and the invoice modal's application rows (Pass 11a), so the toast and the
+// invalidation are the same wherever Confirm is pressed. The gate is
+// mayConfirmPayment at the call site; the server checks it again.
+function useConfirmPaymentMutation() {
+  const { toast } = useToast();
+  return useMutation({
+    mutationFn: async (paymentId: string) => {
+      const response = await apiRequest("POST", `/api/payments/${paymentId}/confirm`, {});
+      return (await response.json()) as Payment;
+    },
+    onSuccess: (payment) => {
+      invalidateInvoiceViews();
+      toast({ title: `${formatPaymentMethod(payment.method)} payment of ${formatCents(payment.amountCents)} confirmed`, description: "It now counts toward every invoice it is applied to." });
+    },
+    onError: (error: Error) => toast({ title: "Unable to confirm the payment", description: getApiErrorMessage(error), variant: "destructive" }),
+  });
+}
+
+// Everything applied to one invoice, with Release on the live rows. Exported
+// since Pass 11a for the invoice modal's ledger section, which also asks for
+// Confirm on the pending payments sitting on the invoice - gated exactly as
+// the ledger panel gates it (CONFIRM_PAYMENT; cash also CONFIRM_CASH_PAYMENT).
+export function InvoiceApplications({ invoice, confirmPending = false }: { invoice: Invoice; confirmPending?: boolean }) {
   const { toast } = useToast();
   const { user } = useAuth();
-  const canApply = can(user?.role ?? "", PERMISSIONS.APPLY_PAYMENT);
+  const role = user?.role ?? "";
+  const canApply = can(role, PERMISSIONS.APPLY_PAYMENT);
+  const authority = { canConfirm: can(role, PERMISSIONS.CONFIRM_PAYMENT), canConfirmCash: can(role, PERMISSIONS.CONFIRM_CASH_PAYMENT) };
+  const confirmMutation = useConfirmPaymentMutation();
   const { data: ledger } = useQuery<InvoiceLedgerResponse>({ queryKey: ["/api/invoices", invoice.id, "ledger"] });
   const [release, setRelease] = useState<{ kind: "payment" | "credit_memo"; applicationId: string; label: string } | null>(null);
 
@@ -301,6 +336,7 @@ function InvoiceApplications({ invoice }: { invoice: Invoice }) {
       label: `${formatPaymentMethod(payment.method)} payment${payment.checkNumber ? ` #${payment.checkNumber}` : ""}`,
       status: payment.status,
       counted: payment.status === "CONFIRMED",
+      payment: payment as Payment | null,
     })),
     ...(ledger?.creditApplications ?? []).map(({ application, creditMemo }) => ({
       kind: "credit_memo" as const,
@@ -308,6 +344,7 @@ function InvoiceApplications({ invoice }: { invoice: Invoice }) {
       label: `Credit memo (${formatCreditMemoReason(creditMemo.reasonCode)})`,
       status: creditMemo.status,
       counted: creditMemo.status === "ISSUED",
+      payment: null as Payment | null,
     })),
   ].sort((a, b) => new Date(a.application.appliedAt).getTime() - new Date(b.application.appliedAt).getTime());
 
@@ -318,18 +355,29 @@ function InvoiceApplications({ invoice }: { invoice: Invoice }) {
 
   return (
     <div className="space-y-1.5">
-      {rows.map(({ kind, application, label, status, counted }) => (
-        <div key={`${kind}-${application.id}`} className={`flex items-center justify-between gap-2 text-xs ${application.released ? "text-muted-foreground line-through" : ""}`} data-testid={`row-application-${application.id}`}>
-          <span>
-            {label} - {formatCents(application.amountCents)} on {formatDate(application.appliedAt)}
-            {!application.released && !counted ? ` (${formatPaymentStatus(status).toLowerCase()} - not yet counted)` : ""}
-            {application.released ? ` - released ${formatDate(application.releasedAt)}: ${application.releaseReason}` : ""}
-          </span>
-          {!application.released && canApply ? (
-            <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={() => setRelease({ kind, applicationId: application.id, label })} data-testid={`button-release-${application.id}`}>Release</Button>
-          ) : null}
-        </div>
-      ))}
+      {rows.map(({ kind, application, label, status, counted, payment }) => {
+        const pendingPayment = confirmPending && !application.released && payment ? payment : null;
+        const mayConfirm = !!pendingPayment && mayConfirmPayment(pendingPayment, authority);
+        const cashNote = !!pendingPayment && needsCashAuthority(pendingPayment, authority);
+        return (
+          <div key={`${kind}-${application.id}`} className={`flex items-center justify-between gap-2 text-xs ${application.released ? "text-muted-foreground line-through" : ""}`} data-testid={`row-application-${application.id}`}>
+            <span>
+              {label} - {formatCents(application.amountCents)} on {formatDate(application.appliedAt)}
+              {!application.released && !counted ? ` (${formatPaymentStatus(status).toLowerCase()} - not yet counted)` : ""}
+              {application.released ? ` - released ${formatDate(application.releasedAt)}: ${application.releaseReason}` : ""}
+              {cashNote ? ` - ${CASH_CONFIRM_NOTE}` : ""}
+            </span>
+            <span className="flex items-center gap-1 shrink-0">
+              {mayConfirm && pendingPayment ? (
+                <Button variant="outline" size="sm" className="h-6 px-2 text-xs" onClick={() => confirmMutation.mutate(pendingPayment.id)} disabled={confirmMutation.isPending} data-testid={`button-confirm-payment-${pendingPayment.id}`}>Confirm</Button>
+              ) : null}
+              {!application.released && canApply ? (
+                <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={() => setRelease({ kind, applicationId: application.id, label })} data-testid={`button-release-${application.id}`}>Release</Button>
+              ) : null}
+            </span>
+          </div>
+        );
+      })}
       <ReasonDialog
         title={`Release ${release?.label ?? ""} from ${invoice.invoiceNumber}?`}
         description="The application stays on the record as released; the money returns to the location's unapplied balance and the invoice's balance due goes back up."
@@ -438,17 +486,7 @@ export function LocationLedgerPanel({
   const [applySource, setApplySource] = useState<{ kind: "payment" | "credit_memo"; id: string; label: string; unappliedCents: number } | null>(null);
   const [reasonAct, setReasonAct] = useState<{ kind: "void_payment" | "refund_payment" | "void_credit"; id: string; label: string } | null>(null);
 
-  const confirmMutation = useMutation({
-    mutationFn: async (paymentId: string) => {
-      const response = await apiRequest("POST", `/api/payments/${paymentId}/confirm`, {});
-      return (await response.json()) as Payment;
-    },
-    onSuccess: (payment) => {
-      invalidateInvoiceViews();
-      toast({ title: `${formatPaymentMethod(payment.method)} payment of ${formatCents(payment.amountCents)} confirmed`, description: "It now counts toward every invoice it is applied to." });
-    },
-    onError: (error: Error) => toast({ title: "Unable to confirm the payment", description: getApiErrorMessage(error), variant: "destructive" }),
-  });
+  const confirmMutation = useConfirmPaymentMutation();
 
   const reasonMutation = useMutation({
     mutationFn: async ({ kind, id, reason }: { kind: "void_payment" | "refund_payment" | "void_credit"; id: string; reason: string }) => {
