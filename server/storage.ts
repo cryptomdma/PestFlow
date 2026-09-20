@@ -77,6 +77,7 @@ import { addDays, advanceAgreementDate, computeExpectedServiceCount } from "@sha
 // and server/production-value-backfill.ts still import it from here.
 export { advanceAgreementDate, computeExpectedServiceCount };
 import type { VisitBillingSummary, VisitServiceBilling } from "@shared/visit-billing";
+import type { InvoiceDetail } from "@shared/invoice-detail";
 import {
   formatInitialChargeType,
   initialChargeFromTemplate,
@@ -707,6 +708,8 @@ export interface IStorage {
   getLocationBalancesByCustomer(customerId: string): Promise<LocationBalanceSummary[]>;
   getInvoice(id: string): Promise<Invoice | undefined>;
   getInvoiceLineItems(invoiceId: string): Promise<InvoiceLineItem[]>;
+  /** The invoice modal's read (Pass 11a): row + lines + customer / location / visit. Undefined outside the org. */
+  getInvoiceDetail(id: string): Promise<InvoiceDetail | undefined>;
   getServiceRecordsReadyForBilling(): Promise<ServiceRecord[]>;
   getServiceRecordsReadyForBillingInRange(dateFrom: string, dateTo: string): Promise<ServiceRecord[]>;
   getBatchInvoicePreviewForDateRange(dateFrom: string, dateTo: string): Promise<BatchInvoicePreviewRow[]>;
@@ -4464,6 +4467,89 @@ export class DatabaseStorage implements IStorage {
 
   async getInvoiceLineItems(invoiceId: string): Promise<InvoiceLineItem[]> {
     return db.select().from(invoiceLineItems).where(and(eq(invoiceLineItems.orgId, this.orgId), eq(invoiceLineItems.invoiceId, invoiceId))).orderBy(asc(invoiceLineItems.sortOrder));
+  }
+
+  // The invoice modal's one read (PLAN_ROADMAP_V2.md Part D, Pass 11a). The
+  // row, its lines with what the ticket behind each one knows (service type,
+  // service date, ticket status), and the customer, location and visit it
+  // belongs to. Composed from the reads that already exist - getInvoice for
+  // the org scope (an id outside the org is undefined, the route's 404),
+  // getInvoiceLineItems, getAppointment - because there is no
+  // single-appointment route and this is where the modal gets the visit.
+  // Reads only; every act on an invoice keeps its own route.
+  async getInvoiceDetail(id: string): Promise<InvoiceDetail | undefined> {
+    const invoice = await this.getInvoice(id);
+    if (!invoice) {
+      return undefined;
+    }
+
+    const [lines, customer, location, appointment] = await Promise.all([
+      this.getInvoiceLineItems(id),
+      this.getCustomer(invoice.customerId),
+      invoice.locationId ? this.getLocation(invoice.locationId) : Promise.resolve(undefined),
+      invoice.appointmentId ? this.getAppointment(invoice.appointmentId) : Promise.resolve(undefined),
+    ]);
+
+    const recordIds = lines.map((line) => line.serviceRecordId).filter((value): value is string => !!value);
+    const serviceIds = lines.map((line) => line.serviceId).filter((value): value is string => !!value);
+    const records = recordIds.length
+      ? await db.select().from(serviceRecords).where(and(eq(serviceRecords.orgId, this.orgId), inArray(serviceRecords.id, recordIds)))
+      : [];
+    const lineServices = serviceIds.length
+      ? await db.select().from(services).where(and(eq(services.orgId, this.orgId), inArray(services.id, serviceIds)))
+      : [];
+    const recordById = new Map(records.map((record) => [record.id, record]));
+    const serviceById = new Map(lineServices.map((service) => [service.id, service]));
+
+    // The ticket's service type when there is a ticket, else the service's:
+    // a DRAFT line may have been priced from a service with no ticket yet.
+    const serviceTypeIdForLine = (line: InvoiceLineItem): string | null => {
+      const record = line.serviceRecordId ? recordById.get(line.serviceRecordId) : undefined;
+      const service = line.serviceId ? serviceById.get(line.serviceId) : undefined;
+      return record?.serviceTypeId ?? service?.serviceTypeId ?? null;
+    };
+    const serviceTypeIds = Array.from(new Set(lines.map(serviceTypeIdForLine).filter((value): value is string => !!value)));
+    const lineServiceTypes = serviceTypeIds.length
+      ? await db.select().from(serviceTypes).where(and(eq(serviceTypes.orgId, this.orgId), inArray(serviceTypes.id, serviceTypeIds)))
+      : [];
+    const serviceTypeNameById = new Map(lineServiceTypes.map((serviceType) => [serviceType.id, serviceType.name]));
+
+    // Who ran the visit: the appointment's technician, falling back to the
+    // name a ticket recorded (a technician row may have been deactivated).
+    let technicianLabel: string | null = null;
+    if (appointment?.assignedTechnicianId) {
+      const [technician] = await db
+        .select()
+        .from(technicians)
+        .where(and(eq(technicians.orgId, this.orgId), eq(technicians.id, appointment.assignedTechnicianId)));
+      technicianLabel = technician?.displayName ?? null;
+    }
+    if (!technicianLabel) {
+      technicianLabel = records.find((record) => record.technicianName)?.technicianName ?? null;
+    }
+
+    const customerName = customer ? `${customer.firstName} ${customer.lastName}`.trim() : "";
+
+    return {
+      invoice,
+      lines: lines.map((line) => {
+        const record = line.serviceRecordId ? recordById.get(line.serviceRecordId) : undefined;
+        const serviceTypeId = serviceTypeIdForLine(line);
+        return {
+          ...line,
+          serviceTypeName: serviceTypeId ? serviceTypeNameById.get(serviceTypeId) ?? null : null,
+          serviceDate: record?.serviceDate ?? null,
+          ticketStatus: record?.ticketStatus ?? null,
+        };
+      }),
+      customer: { id: invoice.customerId, label: customerName || customer?.companyName || "Customer" },
+      location: location
+        ? { id: location.id, name: location.name, address: location.address, city: location.city, state: location.state, zip: location.zip }
+        : null,
+      appointment: appointment
+        ? { id: appointment.id, scheduledDate: appointment.scheduledDate, status: appointment.status, technicianLabel }
+        : null,
+    };
   }
 
   // Eligibility is per visit as of D1, not per ticket: a record is ready when

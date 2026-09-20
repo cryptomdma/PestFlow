@@ -2066,6 +2066,18 @@ export async function registerRoutes(
     applyToInvoiceId: z.string().nullable().optional(),
   });
 
+  // The invoice modal's read (PLAN_ROADMAP_V2.md Part D, Pass 11a): the row,
+  // its lines, and the customer / location / visit, in one response. Kept
+  // BELOW the fixed-path GETs under /api/invoices (ready-for-billing,
+  // batch-preview): Express matches in registration order, and a bare :id
+  // registered above them would swallow both. Open read like every other
+  // invoice read here; an id outside the org is a 404, like the ledger.
+  app.get("/api/invoices/:id", async (req, res) => {
+    const data = await req.storage.getInvoiceDetail(req.params.id);
+    if (!data) return res.status(404).json({ message: "Invoice not found" });
+    res.json(data);
+  });
+
   app.get("/api/invoices/:id/ledger", async (req, res) => {
     const data = await req.storage.getInvoiceLedger(req.params.id);
     if (!data) return res.status(404).json({ message: "Invoice not found" });

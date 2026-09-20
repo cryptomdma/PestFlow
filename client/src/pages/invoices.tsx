@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
+import { Link, useLocation, useSearch } from "wouter";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -21,54 +22,25 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
-import { useAuth } from "@/hooks/use-auth";
-import { ApiError, apiRequest, getApiErrorCode, getApiErrorMessage, queryClient } from "@/lib/queryClient";
+import { apiRequest, getApiErrorMessage, queryClient } from "@/lib/queryClient";
 import { dollarsToCents, formatCents } from "@shared/money";
-import { can, PERMISSIONS } from "@shared/permissions";
 import { isInvoiceIssued } from "@shared/invoice-status";
-import { RecordPaymentDialog } from "@/components/record-payment-dialog";
-import { InvoiceDocumentActions, InvoiceSentStamp } from "@/components/invoice-document-actions";
+import { InvoiceDetailDialog } from "@/components/invoice-detail-dialog";
+import { InvoiceStatusBadge, InvoiceStatusIcon, isInvoiceOverdue } from "@/components/invoice-status-badge";
 import {
   Plus,
   Search,
   FileText,
-  FileCheck,
-  DollarSign,
   CheckCircle,
   Clock,
   AlertCircle,
-  Ban,
   ReceiptText,
 } from "lucide-react";
 import type { Customer, Invoice, Location, ServiceRecord, ServiceType } from "@shared/schema";
 
-function isOverdue(invoice: Invoice) {
-  return invoice.status === "OPEN" && !!invoice.dueDate && new Date(invoice.dueDate).getTime() < Date.now();
-}
-
 function getLocationLabel(location: Location) {
   return [location.name, location.address].filter(Boolean).join(" - ");
-}
-
-// Mirrors the server's UnfinalizedTicketRef (server/storage.ts) - what a
-// pre-finalization issue attempt reports back so the office can see exactly
-// which tickets the override would flag.
-interface UnfinalizedTicketRef {
-  serviceId: string;
-  serviceRecordId: string | null;
-  ticketStatus: string | null;
-  description: string;
 }
 
 function InvoiceForm({ onClose }: { onClose: () => void }) {
@@ -251,15 +223,20 @@ function ReadyToBillSection({ invoices }: { invoices?: Invoice[] }) {
   );
 }
 
+// The Invoices screen (Pass 11a): a list. Each row is data plus "open" - the
+// whole row opens the invoice modal, and the customer and location on it are
+// links. Every act (document, issue, payment, void, credit memo, notes) lives
+// in the modal; there is deliberately no quick action on the row (owner,
+// PLAN_ROADMAP_V2.md Part E, decision 1). The open invoice is the URL:
+// /invoices?invoiceId=<id> deep-links straight into the modal, and closing it
+// clears the parameter.
 export default function Invoices() {
   const [search, setSearch] = useState("");
   const [filterStatus, setFilterStatus] = useState("all");
   const [dialogOpen, setDialogOpen] = useState(false);
-  const { toast } = useToast();
-  const { user } = useAuth();
-  const canIssue = can(user?.role ?? "", PERMISSIONS.GENERATE_INVOICE);
-
-  const canRecordPayment = can(user?.role ?? "", PERMISSIONS.TAKE_PAYMENT_FIELD);
+  const searchString = useSearch();
+  const [, navigate] = useLocation();
+  const openInvoiceId = useMemo(() => new URLSearchParams(searchString).get("invoiceId"), [searchString]);
 
   const { data: invoices, isLoading } = useQuery<Invoice[]>({ queryKey: ["/api/invoices"] });
   const { data: customers } = useQuery<Customer[]>({ queryKey: ["/api/customers"] });
@@ -269,56 +246,15 @@ export default function Invoices() {
   const { data: allLocations } = useQuery<Location[]>({ queryKey: ["/api/all-locations"] });
   const locationById = new Map((allLocations ?? []).map((location) => [location.id, location]));
 
-  // D5: "Mark Paid" is gone. Paid and balance due are derived from recorded
-  // payments, so the action here is to record one against the invoice; the
-  // dialog applies it and the rollup does the rest.
-  const [paymentInvoice, setPaymentInvoice] = useState<Invoice | null>(null);
-
-  const voidMutation = useMutation({
-    mutationFn: (id: string) => apiRequest("POST", `/api/invoices/${id}/void`),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/invoices"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/invoices/ready-for-billing"] });
-      toast({ title: "Invoice voided" });
-    },
-    onError: (err: Error) => toast({ title: "Unable to void invoice", description: getApiErrorMessage(err), variant: "destructive" }),
-  });
-
-  // D3: DRAFT -> issued. First attempt sends no confirmation; if any ticket
-  // on the visit is unfinalized the server answers 409 (manager+) with the
-  // tickets listed and the dialog below asks before retrying with
-  // confirmPrefinalization, or 403 (support) which just toasts - the office
-  // needs a manager for that one.
-  const [issuePrompt, setIssuePrompt] = useState<{ id: string; invoiceNumber: string; tickets: UnfinalizedTicketRef[] } | null>(null);
-  const issueMutation = useMutation({
-    mutationFn: async ({ id, confirmPrefinalization }: { id: string; confirmPrefinalization?: boolean }) => {
-      const response = await apiRequest("POST", `/api/invoices/${id}/issue`, { confirmPrefinalization });
-      return response.json() as Promise<Invoice>;
-    },
-    onSuccess: (invoice) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/invoices"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/invoices/ready-for-billing"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/service-records"] });
-      setIssuePrompt(null);
-      toast({ title: `Invoice ${invoice.invoiceNumber} issued` });
-    },
-    onError: (err: Error, variables) => {
-      if (err instanceof ApiError && getApiErrorCode(err) === "PREFINALIZATION_ISSUE_REQUIRED") {
-        const body = err.body as { unfinalizedTickets?: UnfinalizedTicketRef[] };
-        const invoice = invoices?.find((candidate) => candidate.id === variables.id);
-        setIssuePrompt({ id: variables.id, invoiceNumber: invoice?.invoiceNumber ?? "", tickets: body.unfinalizedTickets ?? [] });
-        return;
-      }
-      toast({ title: "Unable to issue invoice", description: getApiErrorMessage(err), variant: "destructive" });
-    },
-  });
+  const openInvoice = (id: string) => navigate(`/invoices?invoiceId=${encodeURIComponent(id)}`);
+  const closeInvoice = () => navigate("/invoices", { replace: true });
 
   const filtered = (invoices ?? []).filter((i) => {
     const cust = customers?.find((c) => c.id === i.customerId);
     const location = i.locationId ? locationById.get(i.locationId) : undefined;
     const text = `${cust?.firstName || ""} ${cust?.lastName || ""} ${i.invoiceNumber} ${location?.name || ""} ${location?.address || ""}`.toLowerCase();
     const matchesSearch = text.includes(search.toLowerCase());
-    const status = isOverdue(i) ? "OVERDUE" : i.status;
+    const status = isInvoiceOverdue(i) ? "OVERDUE" : i.status;
     const matchesStatus = filterStatus === "all" || status === filterStatus;
     return matchesSearch && matchesStatus;
   });
@@ -327,35 +263,10 @@ export default function Invoices() {
   // and counted, and how much of what is owed is past due.
   const totalOpenCents = filtered.filter((i) => isInvoiceIssued(i.status)).reduce((s, i) => s + i.balanceDueCents, 0);
   const totalPaidCents = filtered.filter((i) => isInvoiceIssued(i.status)).reduce((s, i) => s + i.amountPaidCents, 0);
-  const totalOverdueCents = filtered.filter(isOverdue).reduce((s, i) => s + i.balanceDueCents, 0);
+  const totalOverdueCents = filtered.filter(isInvoiceOverdue).reduce((s, i) => s + i.balanceDueCents, 0);
   // Applied but not yet counted (D5: pending shows, confirmed counts). Part
   // of the Open figure until the payments behind it are confirmed.
   const totalPendingAppliedCents = filtered.filter((i) => isInvoiceIssued(i.status)).reduce((s, i) => s + i.pendingAppliedCents, 0);
-
-  const statusIcon = (invoice: Invoice) => {
-    if (invoice.status === "VOID") return <Ban className="h-4 w-4 text-muted-foreground" />;
-    if (isOverdue(invoice)) return <AlertCircle className="h-4 w-4 text-destructive" />;
-    switch (invoice.status) {
-      case "PAID": return <CheckCircle className="h-4 w-4 text-primary" />;
-      case "OPEN":
-      case "PARTIALLY_PAID": return <Clock className="h-4 w-4 text-chart-3" />;
-      default: return <FileText className="h-4 w-4" />;
-    }
-  };
-
-  const statusLabel = (invoice: Invoice) => (isOverdue(invoice) ? "overdue" : invoice.status.toLowerCase().replace(/_/g, " "));
-
-  const statusClass = (invoice: Invoice) => {
-    if (invoice.status === "VOID") return "bg-muted text-muted-foreground";
-    if (invoice.status === "DRAFT") return "border border-dashed bg-background text-foreground";
-    if (isOverdue(invoice)) return "bg-destructive/10 text-destructive";
-    switch (invoice.status) {
-      case "PAID": return "bg-primary/10 text-primary";
-      case "OPEN":
-      case "PARTIALLY_PAID": return "bg-chart-3/10 text-chart-3";
-      default: return "";
-    }
-  };
 
   return (
     <div className="p-6 space-y-6 max-w-7xl mx-auto">
@@ -442,27 +353,55 @@ export default function Invoices() {
               const cust = customers?.find((c) => c.id === inv.customerId);
               const location = inv.locationId ? locationById.get(inv.locationId) : undefined;
               return (
-                <Card key={inv.id} data-testid={`card-invoice-${inv.id}`}>
+                <Card
+                  key={inv.id}
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`Open invoice ${inv.invoiceNumber}`}
+                  onClick={() => openInvoice(inv.id)}
+                  onKeyDown={(e) => {
+                    // Only the row itself: Enter on a link inside it is the link's.
+                    if (e.target !== e.currentTarget) return;
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      openInvoice(inv.id);
+                    }
+                  }}
+                  className="cursor-pointer transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  data-testid={`card-invoice-${inv.id}`}
+                >
                   <CardContent className="p-4 flex items-center gap-4">
                     <div className="h-9 w-9 rounded-md bg-muted flex items-center justify-center shrink-0">
-                      {statusIcon(inv)}
+                      <InvoiceStatusIcon invoice={inv} />
                     </div>
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 flex-wrap">
                         <span className="font-semibold text-sm">{inv.invoiceNumber}</span>
-                        <Badge variant="secondary" className={`text-xs capitalize ${statusClass(inv)}`}>{statusLabel(inv)}</Badge>
+                        <InvoiceStatusBadge invoice={inv} />
                       </div>
                       <div className="text-xs text-muted-foreground mt-0.5 flex items-center gap-3 flex-wrap">
-                        <span>{cust ? `${cust.firstName} ${cust.lastName}` : "Unknown"}</span>
+                        <Link
+                          href={`/customers/${inv.customerId}`}
+                          onClick={(e) => e.stopPropagation()}
+                          className="text-foreground hover:underline"
+                          data-testid={`link-invoice-customer-${inv.id}`}
+                        >
+                          {cust ? `${cust.firstName} ${cust.lastName}` : "Unknown"}
+                        </Link>
                         {inv.locationId ? (
-                          <span data-testid={`text-invoice-location-${inv.id}`}>{location ? getLocationLabel(location) : "Location"}</span>
+                          <Link
+                            href={`/customers/${inv.customerId}?locationId=${inv.locationId}`}
+                            onClick={(e) => e.stopPropagation()}
+                            className="hover:underline"
+                            data-testid={`link-invoice-location-${inv.id}`}
+                          >
+                            {location ? getLocationLabel(location) : "Location"}
+                          </Link>
                         ) : (
                           <span className="text-destructive" title="Created before a location was required. It is on no location's Invoices tab and in no location balance." data-testid={`text-invoice-no-location-${inv.id}`}>No location</span>
                         )}
                         <span>{new Date(inv.issuedAt ?? inv.createdAt).toLocaleDateString()}</span>
-                        {inv.status === "DRAFT" ? <span>Draft - not issued; amounts are re-priced at issue</span> : null}
                         {inv.dueDate && <span>Due: {new Date(inv.dueDate).toLocaleDateString()}</span>}
-                        <InvoiceSentStamp invoice={inv} />
                         {isInvoiceIssued(inv.status) && (inv.amountPaidCents > 0 || inv.pendingAppliedCents > 0) ? (
                           <span data-testid={`text-invoice-paid-${inv.id}`}>Paid {formatCents(inv.amountPaidCents)} - Balance {formatCents(inv.balanceDueCents)}</span>
                         ) : null}
@@ -471,43 +410,7 @@ export default function Invoices() {
                         ) : null}
                       </div>
                     </div>
-                    <div className="flex items-center gap-3 shrink-0 flex-wrap justify-end">
-                      <span className="text-lg font-bold">{formatCents(inv.totalAmountCents)}</span>
-                      <InvoiceDocumentActions invoice={inv} />
-                      {inv.status === "DRAFT" && canIssue && (
-                        <Button
-                          size="sm"
-                          onClick={() => issueMutation.mutate({ id: inv.id })}
-                          disabled={issueMutation.isPending}
-                          data-testid={`button-issue-${inv.id}`}
-                        >
-                          <FileCheck className="h-3 w-3 mr-1" /> Issue
-                        </Button>
-                      )}
-                      {(inv.status === "OPEN" || inv.status === "PARTIALLY_PAID") && canRecordPayment && (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => setPaymentInvoice(inv)}
-                          disabled={!inv.locationId}
-                          title={inv.locationId ? undefined : "This invoice has no location, so a payment cannot be recorded against it"}
-                          data-testid={`button-record-payment-${inv.id}`}
-                        >
-                          <DollarSign className="h-3 w-3 mr-1" /> Record Payment
-                        </Button>
-                      )}
-                      {inv.status !== "VOID" && inv.status !== "PAID" && (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => voidMutation.mutate(inv.id)}
-                          disabled={voidMutation.isPending}
-                          data-testid={`button-void-${inv.id}`}
-                        >
-                          <Ban className="h-3 w-3 mr-1" /> Void
-                        </Button>
-                      )}
-                    </div>
+                    <span className="text-lg font-bold shrink-0">{formatCents(inv.totalAmountCents)}</span>
                   </CardContent>
                 </Card>
               );
@@ -515,46 +418,13 @@ export default function Invoices() {
         </div>
       )}
 
-      {paymentInvoice?.locationId ? (
-        <RecordPaymentDialog
-          open={!!paymentInvoice}
-          onOpenChange={(open) => !open && setPaymentInvoice(null)}
-          locationId={paymentInvoice.locationId}
-          invoice={paymentInvoice}
-        />
-      ) : null}
-
-      <AlertDialog open={!!issuePrompt} onOpenChange={(open) => !open && setIssuePrompt(null)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Issue {issuePrompt?.invoiceNumber} before the visit is finalized?</AlertDialogTitle>
-            <AlertDialogDescription asChild>
-              <div className="space-y-2">
-                <p>
-                  {issuePrompt?.tickets.length === 1
-                    ? "One service on this visit is not finalized."
-                    : `${issuePrompt?.tickets.length ?? 0} services on this visit are not finalized.`}{" "}
-                  Issuing now bills the customer from the tickets as they stand and flags those tickets for review, so the office finalizes them knowing the invoice is already out.
-                </p>
-                <ul className="list-disc pl-5 text-sm">
-                  {(issuePrompt?.tickets ?? []).map((ticket) => (
-                    <li key={ticket.serviceId}>{ticket.description}</li>
-                  ))}
-                </ul>
-              </div>
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Back</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => issuePrompt && issueMutation.mutate({ id: issuePrompt.id, confirmPrefinalization: true })}
-              disabled={issueMutation.isPending}
-            >
-              Issue and flag tickets
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <InvoiceDetailDialog
+        invoiceId={openInvoiceId}
+        open={!!openInvoiceId}
+        onOpenChange={(next) => {
+          if (!next) closeInvoice();
+        }}
+      />
     </div>
   );
 }

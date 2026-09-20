@@ -6,9 +6,10 @@ appointment-anchored invoicing wired to finalization, payments-lite ledger (cash
 balances, application/release), COA as payment application, and `audit_logs` as the system-wide
 immutable financial history.
 
-Now active: **Phase 2 — Invoices you can work from**, per `PLAN_ROADMAP_V2.md`. **Next pass: 11a, the
-Invoice modal (core)** — spec in that document's Part D. The roadmap sequences every remaining item
-below; this file keeps only the status pointer.
+Now active: **Phase 2 — Invoices you can work from**, per `PLAN_ROADMAP_V2.md`. Pass 11a (the Invoice
+modal, core) is built and pushed; **next pass: 11b, the Invoice modal's reach** — the C2.1b row of
+that document's Phase 2 table, building on "Shipped in Pass 11a" at the end of its Part D. The
+roadmap sequences every remaining item below; this file keeps only the status pointer.
 
 ## Status
 Pass 1 (`feature/phase-1-appointment-status-enum`, D1a) merged as PR #56.
@@ -299,8 +300,32 @@ PATCH has no gate and a re-post un-finalizes a FINALIZED ticket) → 13 (Batch I
 (aging) → 25 (opportunity taxonomy) → 27 (cancel / reschedule)**. Each unscheduled item below now
 carries a `[Roadmap: …]` pointer to the unit that owns it.
 
-Next up: **Pass 11a** — the Invoice modal, core (`PLAN_ROADMAP_V2.md` Part D). Branch from
-`origin/main` after confirming it contains `be4389d`.
+Pass 11a (`feature/phase-2-invoice-modal-core`, 2026-09-19, C2.1a) pushed, awaiting merge. **The
+Invoices screen is a list again and the invoice has a modal.** One new read, `GET /api/invoices/:id`
+(the row, its lines with the ticket's status / service type / service date behind each, the
+customer, the location and the visit - composed from `getInvoiceLineItems` and
+`storage.getAppointment`, no new appointment route), feeds `InvoiceDetailDialog`
+(`client/src/components/invoice-detail-dialog.tsx`): header with the derived status badge, sent
+stamp and customer / location links; a visit block with "Open on schedule", or a line saying why
+there is no visit (manual, schedule-driven, initial charge, one-off ticket); the lines table (type
+badge - AGREEMENT_COVERED reads "Covered"); totals with paid / pending / balance; terms (billing
+profile snapshot, tax reason, editable due date); applications with Release and Confirm gated as
+the ledger panel; editable notes; the invoice's audit history through the History tab's renderer
+(extracted to `audit-log-entry-card.tsx`). The footer follows the state: DRAFT has Preview / Issue
+(409 → the prefinalization confirm) / Void; issued has Open PDF / Download / Mark Sent, Record
+Payment, Apply location balance (only when the server suggests an amount), Issue credit memo
+(`IssueCreditMemoDialog` is now exported and preselects the invoice), Void; VOID is read-only with
+the void row shown. **Void follows the server**: offered on PAID too, behind a confirm that names
+the applications it releases. The Invoices screen row is data plus open - customer and location are
+links, no button, no quick action (owner) - and `/invoices?invoiceId=` deep-links into the modal.
+No migration. Not built (11b): the per-line "Open ticket", the location tab's rows opening the
+modal, `GET /api/invoices/by-appointment/:id`, `assign-location`. **Restart `npm run dev:full`
+before manually testing - this pass adds a route, and the modal's layout has not been rendered by
+anyone yet.** Signatures and behavior are under "Shipped in Pass 11a" at the end of
+`PLAN_ROADMAP_V2.md` Part D.
+
+Next up: **Pass 11b** — the Invoice modal's reach (`PLAN_ROADMAP_V2.md` Phase 2 table, C2.1b).
+Branch from `origin/main` after confirming it contains Pass 11a's merge.
 
 Phase 1's ordered plan, impact analysis, conflict resolutions, and per-pass verification steps live in
 `PLAN_BILLING_V1_1_EXECUTION.md` — read it when a pass builds on a Phase 1 helper (its "Shipped in

@@ -47,7 +47,7 @@ import {
 import { useAuth } from "@/hooks/use-auth";
 import { can, PERMISSIONS } from "@shared/permissions";
 import { formatPhoneDisplay } from "@shared/phone";
-import { describeAuditAction, describeAuditEntityType, diffAuditSnapshots } from "@shared/audit";
+import { AuditLogEntryCard } from "@/components/audit-log-entry-card";
 import { dollarsToCents, centsToDollars, centsToDollarString, formatCents } from "@shared/money";
 import { describeBillingPlanBehavior } from "@shared/billing-plan";
 import { describeInitialCharge, initialChargeFromTemplate } from "@shared/initial-charge";
@@ -491,29 +491,6 @@ function NoteHistorySheet({
   );
 }
 
-function formatAuditFieldName(field: string) {
-  return field
-    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
-    .replace(/_/g, " ")
-    .replace(/^./, (character) => character.toUpperCase());
-}
-
-function formatAuditValue(value: unknown) {
-  if (value === null || value === undefined || value === "") {
-    return "—";
-  }
-
-  if (typeof value === "boolean") {
-    return value ? "Yes" : "No";
-  }
-
-  if (typeof value === "string" || typeof value === "number") {
-    return String(value);
-  }
-
-  return JSON.stringify(value);
-}
-
 // The location's slice of the system-wide audit history (PLAN_BILLING_V1_1 D7).
 // Today the only writer is the location/customer profile edit; as the billing
 // passes land, invoice, payment, and credit-memo events appear here through the
@@ -556,46 +533,13 @@ function LocationHistoryTab({ locationId }: { locationId: string }) {
     );
   }
 
+  // One renderer per row, shared with the invoice modal's History section
+  // (Pass 11a) so an audit row reads the same wherever it is shown.
   return (
     <>
-      {entries.map((entry) => {
-        const changes = diffAuditSnapshots(entry.beforeJson, entry.afterJson);
-
-        return (
-          <Card key={entry.id} data-testid={`card-audit-log-${entry.id}`}>
-            <CardContent className="p-4">
-              <div className="flex items-center gap-2 flex-wrap">
-                <Badge variant="outline" className="text-xs">{describeAuditEntityType(entry.entityType)}</Badge>
-                <Badge variant="secondary" className="text-xs">{describeAuditAction(entry.action)}</Badge>
-                <span className="text-xs text-muted-foreground">{formatRevisionTimestamp(entry.createdAt)}</span>
-              </div>
-              <p className="text-xs text-muted-foreground mt-1">
-                By: {entry.actorLabel?.trim() || "System"}
-              </p>
-              {changes.length > 0 ? (
-                <div className="mt-3 rounded-md border bg-muted/20 p-3 space-y-1.5">
-                  {changes.map((change) => (
-                    <div key={change.field} className="text-xs flex flex-wrap gap-x-2">
-                      <span className="font-medium text-foreground">{formatAuditFieldName(change.field)}</span>
-                      <span className="text-muted-foreground line-through break-all [overflow-wrap:anywhere]">
-                        {formatAuditValue(change.before)}
-                      </span>
-                      <span className="text-muted-foreground">→</span>
-                      <span className="text-foreground break-all [overflow-wrap:anywhere]">
-                        {formatAuditValue(change.after)}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <p className="mt-3 text-xs italic text-muted-foreground">
-                  Recorded with no field-level differences.
-                </p>
-              )}
-            </CardContent>
-          </Card>
-        );
-      })}
+      {entries.map((entry) => (
+        <AuditLogEntryCard key={entry.id} entry={entry} />
+      ))}
     </>
   );
 }
