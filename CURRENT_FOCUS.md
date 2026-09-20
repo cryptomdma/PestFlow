@@ -358,10 +358,10 @@ finishes. This file only tracks the one-line "where are we" pointer.
     and plan-attachment-on-update all exist now, so what remains is the backfill and the constraint.
     Until then a plan-less agreement bills COD per visit. D9's column drop (Pass 9, 2026-09-16)
     reported the same 11 rows without assigning anything: the 9 `Quarterly Control` agreements
-    carry their old free-text `"Monthly"` in `notes` (a marked line - read it before choosing, since
-    "Monthly" on a quarterly agreement is a question for the owner, not a mapping, and delete the
-    line once the plan is attached); the 2 `Wildlife Trapping Program` agreements never had any
-    billing data. **Carry sale attribution with it** — a sold-by reference on the agreement,
+    carry their old free-text `"Monthly"` in `notes` (a marked line; **the owner answered
+    2026-09-19: attach the Monthly Recurring billing plan to all 11**, the 2 Wildlife rows included —
+    delete the line once the plan is attached); the 2 `Wildlife Trapping Program` agreements never
+    had any billing data and sit past their term end, so the attach rule starts no schedule for them. **Carry sale attribution with it** — a sold-by reference on the agreement,
     assignable to any user and role-gated — per the compensation entry below: same form, same zod,
     same propagation path, and it is basis that cannot be reconstructed later.
   - **Service designation + callback attribution** `[Roadmap: Pass 24, C3.7]` — `ServiceType.category`
