@@ -31,7 +31,11 @@ grounded in what the code and data actually do, not what the decision record ass
 | 8 | `feature/phase-1-audit-log-backfill` | D7 (remainder) | Done (PR #68) |
 | 9 | `feature/phase-1-legacy-billing-frequency-removal` | D9 (column drop) | Done (PR #69) |
 | V | `verify/phase-1-acceptance` | Phase 1 verification: the acceptance targets + the three guards, end to end (docs only) | Done (PR #70) |
-| 10 | `feature/phase-1-invoice-document-and-location` | — (the two Invoices-screen gaps from `CURRENT_FOCUS.md`: the invoice document affordance and the manual-invoice location; plus the verification run's void-rollup defect) | Pushed, awaiting merge |
+| 10 | `feature/phase-1-invoice-document-and-location` | — (the two Invoices-screen gaps from `CURRENT_FOCUS.md`: the invoice document affordance and the manual-invoice location; plus the verification run's void-rollup defect) | Done (PR #71) |
+
+With Pass 10 merged, Phase 1 is complete. Everything after it is sequenced in `PLAN_ROADMAP_V2.md`
+(Phases 2-9, pass by pass); this document stays the record of D1-D9 and is read when a roadmap pass
+builds on a Phase 1 helper.
 
 Pass 3.5 is inserted, not renumbered in: it was not in the original D1-D9 sequence at all, but Pass 3's
 live testing found that `billingPlanId` had no writer anywhere in the client, so every agreement was
