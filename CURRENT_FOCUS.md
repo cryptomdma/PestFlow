@@ -1,9 +1,14 @@
 # Current Focus
 
 ## Active goal
-Phase 1 — Billing core: appointment-anchored invoicing wired to finalization, payments-lite ledger
-(cash/check, unapplied balances, application/release), COA as payment application, and the promotion of
-`audit_logs` to the system-wide immutable financial history.
+Phase 1 — Billing core — is **complete** (D1-D9, verified in PR #70, closed by Pass 10 in PR #71):
+appointment-anchored invoicing wired to finalization, payments-lite ledger (cash/check, unapplied
+balances, application/release), COA as payment application, and `audit_logs` as the system-wide
+immutable financial history.
+
+Now active: **Phase 2 — Invoices you can work from**, per `PLAN_ROADMAP_V2.md`. **Next pass: 11a, the
+Invoice modal (core)** — spec in that document's Part D. The roadmap sequences every remaining item
+below; this file keeps only the status pointer.
 
 ## Status
 Pass 1 (`feature/phase-1-appointment-status-enum`, D1a) merged as PR #56.
@@ -261,8 +266,8 @@ shell with a 200 rather than a 404, because no such route exists - nothing is wr
 client cannot tell "no route" from "page". Per-target evidence is under "Verification" at the end
 of `PLAN_BILLING_V1_1_EXECUTION.md`.
 
-Pass 10 (`feature/phase-1-invoice-document-and-location`, 2026-09-17) is pushed and awaiting
-merge. The owner's pick from the unscheduled items: the two Invoices-screen gaps that gated real
+Pass 10 (`feature/phase-1-invoice-document-and-location`, 2026-09-17) merged as PR #71. The
+owner's pick from the unscheduled items: the two Invoices-screen gaps that gated real
 use of the billing engine, with the void rollup defect riding along. **The invoice document has
 an affordance**: every invoice row on the Invoices screen and on the location's Invoices tab now
 carries Open PDF (a new tab), Download (the same route with `?download=1`, answered as an
@@ -286,23 +291,29 @@ location-less rows. **Restart `npm run dev:full` before manually testing - this 
 server code and a route.** Signatures and behavior are under "Shipped in Pass 10" in
 `PLAN_BILLING_V1_1_EXECUTION.md`.
 
-Next up: whichever unscheduled item below the owner picks. With Pass 10 the two Invoices-screen
-gaps are closed; the one that still gates real use of the billing engine is **Billing Plan
-required on every Agreement** (with sale attribution), which resolves the 11 plan-less rows Pass 9
-reported; the technician ticket modal entry below is owner-specified scope for a technician-view
-pass and is unblocked.
+Roadmap (`docs/roadmap-v2`, 2026-09-19): `PLAN_ROADMAP_V2.md` classifies every owner note as done /
+partial / absent against the code, records the notes that contradict D1-D9 with the owner's answers,
+and sequences Phases 2-9 as passes 11a-38. Its recommended immediate order: **11a → 11b (Invoice
+modal) → 12 (Billing Plan required + sold-by) → 16 (ticket lockdown — a defect: the service-record
+PATCH has no gate and a re-post un-finalizes a FINALIZED ticket) → 13 (Batch Invoice + Draft) → 14
+(aging) → 25 (opportunity taxonomy) → 27 (cancel / reschedule)**. Each unscheduled item below now
+carries a `[Roadmap: …]` pointer to the unit that owns it.
 
-Full ordered plan, impact analysis, conflict resolutions, and per-pass verification steps live in
-`PLAN_BILLING_V1_1_EXECUTION.md` — read it before starting a pass, and update its "Pass status" table
-when a pass finishes. This file only tracks the one-line "where are we" pointer; the execution doc is
-the source of truth for what each pass actually does.
+Next up: **Pass 11a** — the Invoice modal, core (`PLAN_ROADMAP_V2.md` Part D). Branch from
+`origin/main` after confirming it contains `be4389d`.
+
+Phase 1's ordered plan, impact analysis, conflict resolutions, and per-pass verification steps live in
+`PLAN_BILLING_V1_1_EXECUTION.md` — read it when a pass builds on a Phase 1 helper (its "Shipped in
+Pass N" sections are the signatures). Update the roadmap's pass table and this file when a pass
+finishes. This file only tracks the one-line "where are we" pointer.
 
 ## Reference documents, in reading order
 1. `AGENT_WORKING_AGREEMENT.md` — how a session works here (one pass, one branch, when to stop)
 2. `CANONICAL_DOMAIN_RULES_V1.md` — canonical domain model; measure any change against this
 3. `PLAN_BILLING_V1_1.md` — the settled decision record (D1-D9); governs over any older billing doc
 4. `PLAN_BILLING_V1_1_EXECUTION.md` — the ordered, impact-analyzed execution plan for D1-D9
-5. This file — current status pointer only
+5. `PLAN_ROADMAP_V2.md` — Phases 2-9 pass by pass, the owner's recorded decisions, the next pass's spec
+6. This file — current status pointer only
 
 ## Constraints (apply to every pass below)
 - Finalization remains the authoritative completion event. Pre-finalization invoices are DRAFT-only;
@@ -316,10 +327,12 @@ the source of truth for what each pass actually does.
 - Payments, applications, credit memos, and audit logs are append-only. Corrections are new records
   (void + re-entry, credit memo, forward revert), never edits or deletions.
 - All money integer cents; all tables org-scoped; no route trusts a client-supplied actor.
-- Not in this phase: Stripe/card processing (Phase 2), QBO sync, unschedule action, preferred-tech
-  behavior, opportunity taxonomy migration, proposal generator, Services-tab
-  PENDING_SCHEDULING-vs-SCHEDULED display clarity (a real, separately-noted UI gap — not a billing
-  concern). The tech payment-collection UI relabel that used to sit in this list shipped as Pass 7.5.
+- Not in this phase, each now owned by a roadmap unit (`PLAN_ROADMAP_V2.md`): Stripe/card
+  processing (roadmap Phase 6 — "Phase 2" in older notes), QBO sync (Phase 9), the reschedule-to-queue
+  action (Pass 27, C4.2), preferred / excluded technician (Pass 30, C4.4), opportunity taxonomy
+  migration (Pass 25, C4.1), proposal generator (Phase 9), Services-tab
+  PENDING_SCHEDULING-vs-SCHEDULED display clarity (Pass 27, C4.2). The tech payment-collection UI
+  relabel that used to sit in this list shipped as Pass 7.5.
 - Also not in this phase, each documented where it belongs rather than scheduled here. The first two
   are the ones that gate real use of the billing engine:
   - ~~**Attach a Billing Plan to an Agreement (UI).**~~ **Done — Pass 3.5**, pushed as
@@ -340,31 +353,31 @@ the source of truth for what each pass actually does.
     said) each belong to a two-location customer, so a backfill would be a guess. They show "No
     location" on the Invoices screen with Record Payment disabled; void them, or leave them until a
     location-assignment repair exists (not scheduled).
-  - **Billing Plan required on every Agreement** — backfill the 11 plan-less agreements, then
+  - **Billing Plan required on every Agreement** `[Roadmap: Pass 12, C2.2]` — backfill the 11 plan-less agreements, then
     `billingPlanId NOT NULL` + zod. **Unblocked by Pass 3.5**: the creation UI, template propagation,
     and plan-attachment-on-update all exist now, so what remains is the backfill and the constraint.
     Until then a plan-less agreement bills COD per visit. D9's column drop (Pass 9, 2026-09-16)
     reported the same 11 rows without assigning anything: the 9 `Quarterly Control` agreements
-    carry their old free-text `"Monthly"` in `notes` (a marked line - read it before choosing, since
-    "Monthly" on a quarterly agreement is a question for the owner, not a mapping, and delete the
-    line once the plan is attached); the 2 `Wildlife Trapping Program` agreements never had any
-    billing data. **Carry sale attribution with it** — a sold-by reference on the agreement,
+    carry their old free-text `"Monthly"` in `notes` (a marked line; **the owner answered
+    2026-09-19: attach the Monthly Recurring billing plan to all 11**, the 2 Wildlife rows included —
+    delete the line once the plan is attached); the 2 `Wildlife Trapping Program` agreements never
+    had any billing data and sit past their term end, so the attach rule starts no schedule for them. **Carry sale attribution with it** — a sold-by reference on the agreement,
     assignable to any user and role-gated — per the compensation entry below: same form, same zod,
     same propagation path, and it is basis that cannot be reconstructed later.
-  - **Service designation + callback attribution** — `ServiceType.category`
+  - **Service designation + callback attribution** `[Roadmap: Pass 24, C3.7]` — `ServiceType.category`
     (`CALLBACK | PRODUCTION | SERVICE`) in Settings, instance designation on Service, and a required
     link from a callback to the Service it answers. See `CANONICAL_DOMAIN_RULES_V1.md` §10. More
     urgent than it first looked: because every agreement is currently plan-less (above), the
     slot-counter proxy can charge a customer for a warranty callback performed inside the service
     interval.
-  - **Service-level cancel / return-to-queue** — cancelling or rescheduling ONE service on a
+  - **Service-level cancel / return-to-queue** `[Roadmap: Pass 28, C4.3a]` — cancelling or rescheduling ONE service on a
     multi-service appointment. Only the appointment-wide path exists, and the schedule screen's
     "Cancel Service" button actually cancels the whole appointment (dev behavior rule 6). Confirmed in
     live testing: the wording still speaks of cancelling the appointment. Note that once a ticket is
     posted, remaining services on that appointment can be cancelled without disturbing the invoice.
-  - **Move Batch Invoice from Service Ticket Review to the Invoices screen** — it is an invoicing
+  - **Move Batch Invoice from Service Ticket Review to the Invoices screen** `[Roadmap: Pass 13, C2.3]` — it is an invoicing
     action sitting on a review queue.
-  - **Field surcharge line.** Owner-specified 2026-09-13 in the Pass 5.5 review. A cleanout surcharge
+  - **Field surcharge line.** `[Roadmap: Pass 23, C3.6]` Owner-specified 2026-09-13 in the Pass 5.5 review. A cleanout surcharge
     is not a term of the sale: the technician charges it at the initial service for what could not be
     seen at scheduling (larger home, conducive conditions), and it is *in addition to* the contract
     price, unlike a down payment. Build: (1) a SURCHARGE line the technician adds on the ticket, with
@@ -378,7 +391,7 @@ the source of truth for what each pass actually does.
     migrated or dropped. Sequence after Pass 6, since the line is an invoice line and the credit wants
     the payments ledger's collection record. Whether the *comp* for that line is production or
     commission is a comp-plan question (§1.6.2), not this unit's.
-  - **Technician ticket modal — owner notes (2026-09-16, after Pass 8).** Six items on the field
+  - **Technician ticket modal — owner notes (2026-09-16, after Pass 8).** `[Roadmap: items 1-4 Pass 19, C3.3; item 5 Pass 29, C4.3b; item 6 Phase 9, with sale attribution in Pass 12]` Six items on the field
     ticket. None was built by Pass 8 (which only *logged* the price override) and none is
     scheduled; together they are one technician-view pass, to be planned after Pass 9. What
     exists today, and the gap:
@@ -417,7 +430,7 @@ the source of truth for what each pass actually does.
        compensation entry below wants **sale attribution** recorded on the agreement before
        field selling is real: a technician who sells an annual program on site is exactly the
        "same person earns production and commission" case.
-  - **Compensation & attribution — crew splits, sales commission, non-technician payees.**
+  - **Compensation & attribution — crew splits, sales commission, non-technician payees.** `[Roadmap: sale attribution Pass 12, C2.2; crew Pass 30, C4.4; split allocation and the engine Phase 7]`
     Owner-specified 2026-09-10. **Read `PLAN_BILLING_V1.md` §1.6.2 first.** An earlier version of this
     entry said the comp model was nowhere in the plan. That was wrong: §1.6.2 ("Compensation — build
     the basis, defer the engine") already designs it, and it is still the intended direction —
@@ -491,7 +504,7 @@ the source of truth for what each pass actually does.
     it is a **historical reference only: do not cite it in new work**, and it stays off `CLAUDE.md`'s
     reading list — a stale plan sitting beside the current one is how a fresh session picks up the
     wrong instructions, which is why it was removed in the first place.
-  - **`CUSTOM` recurrence silently means "days"** — small, mechanical, worth doing before it spreads.
+  - **`CUSTOM` recurrence silently means "days"** `[Roadmap: Pass 35, C5.3]` — small, mechanical, worth doing before it spreads.
     `billingPlans.intervalUnit` offers `DAY | WEEK | MONTH | QUARTER | YEAR` and (since Pass 3.5) all
     of them step correctly with any interval count. But the **service recurrence** and **agreement
     term** dropdowns — on both the agreement form and the agreement-template form — offer only
