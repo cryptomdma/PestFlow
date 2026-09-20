@@ -1,6 +1,6 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { useLocation } from "wouter";
+import { useLocation, useSearch } from "wouter";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -21,12 +21,16 @@ import {
 } from "@/components/invoice-on-finalize-prompt";
 import { apiRequest, getApiErrorMessage, queryClient } from "@/lib/queryClient";
 import { VisitBillingTable, useVisitBillingSummary } from "@/components/visit-billing-summary";
+import { InvoiceDetailDialog } from "@/components/invoice-detail-dialog";
+import { InvoiceStatusBadge } from "@/components/invoice-status-badge";
+import { ApplyLocationBalancePrompt } from "@/components/apply-location-balance-prompt";
 import { resolveReviewNav, type ReviewNavStep } from "@/lib/review-queue-nav";
 import { formatCents } from "@shared/money";
 import { can, PERMISSIONS } from "@shared/permissions";
 import { CASH_CONFIRM_NOTE, formatPaymentMethod, formatPaymentStatus, mayConfirmPayment, needsCashAuthority, paymentHoldsValue, type LocationLedgerSummary } from "@shared/payments";
-import { CheckCircle2, ChevronLeft, ChevronRight, ClipboardCheck, FileStack, MapPin, RotateCcw, Send } from "lucide-react";
-import type { Appointment, Customer, Location, Payment, ProductApplication, Service, ServiceRecord, ServiceType, Technician } from "@shared/schema";
+import type { AppointmentInvoiceStatus } from "@shared/invoice-detail";
+import { CheckCircle2, ChevronLeft, ChevronRight, ClipboardCheck, FileStack, FileText, MapPin, RotateCcw, Send } from "lucide-react";
+import type { Appointment, Customer, Invoice, Location, Payment, ProductApplication, Service, ServiceRecord, ServiceType, Technician } from "@shared/schema";
 
 interface BatchInvoicePreviewRow extends ServiceRecord {
   billingLineType: "SERVICE" | "AGREEMENT_COVERED" | null;
@@ -197,10 +201,93 @@ function VisitCollectionsBlock({ appointmentId, locationId }: { appointmentId: s
   );
 }
 
+// Pass 11b (PLAN_ROADMAP_V2.md C2.1b): where the visit under review stands
+// with invoicing, from GET /api/invoices/by-appointment/:id - composed on the
+// server from the helpers Generate itself reads, so the badge and the button
+// never disagree. An invoice (a DRAFT included) is a badge that opens the
+// invoice modal. A finalized visit with none is the finalize prompt's "Later"
+// case, so Generate is offered here through the same generate route the
+// prompt uses (it adopts a DRAFT rather than issuing a second invoice),
+// followed by D4's "apply the location balance?" exactly as the prompt asks
+// it. Anything else says why there is no invoice yet.
+function VisitInvoiceBlock({ appointmentId, serviceRecordId, onOpenInvoice }: { appointmentId: string | null; serviceRecordId: string; onOpenInvoice: (invoiceId: string) => void }) {
+  const { toast } = useToast();
+  const { user } = useAuth();
+  const canGenerate = can(user?.role ?? "", PERMISSIONS.GENERATE_INVOICE);
+  const { data: status, isLoading, isError } = useQuery<AppointmentInvoiceStatus>({
+    queryKey: ["/api/invoices/by-appointment", appointmentId ?? ""],
+    enabled: !!appointmentId,
+  });
+  const [balanceInvoice, setBalanceInvoice] = useState<Invoice | null>(null);
+
+  const generateMutation = useMutation({
+    mutationFn: async () => {
+      const response = await apiRequest("POST", `/api/invoices/generate-from-service-record/${serviceRecordId}`, {});
+      return (await response.json()) as Invoice;
+    },
+    onSuccess: (invoice) => {
+      invalidateInvoiceViews();
+      toast({ title: `Invoice ${invoice.invoiceNumber} issued`, description: `${formatCents(invoice.totalAmountCents)} for the whole visit.` });
+      if (invoice.locationId && invoice.balanceDueCents > 0) {
+        setBalanceInvoice(invoice);
+      }
+    },
+    onError: (error: Error) => toast({ title: "Unable to generate the invoice", description: getApiErrorMessage(error), variant: "destructive" }),
+  });
+
+  if (!appointmentId) return null;
+  const invoice = status?.invoice ?? null;
+  const offerGenerate = !!status && status.finalized && canGenerate && (!invoice || invoice.status === "DRAFT");
+
+  return (
+    <div className="flex flex-col items-start gap-1.5 sm:items-end" data-testid="block-visit-invoice">
+      {isLoading ? (
+        <span className="text-xs text-muted-foreground">Checking the visit's invoice...</span>
+      ) : isError || !status ? (
+        <span className="text-xs text-destructive" data-testid="text-visit-invoice-error">The visit's invoice status could not be loaded.</span>
+      ) : invoice ? (
+        <button
+          type="button"
+          onClick={() => onOpenInvoice(invoice.id)}
+          className="inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs transition-colors hover:bg-muted/40"
+          title="Open the invoice"
+          data-testid="button-visit-invoice"
+        >
+          <FileText className="h-3.5 w-3.5 text-muted-foreground" />
+          <span className="font-medium">{invoice.invoiceNumber}</span>
+          <InvoiceStatusBadge invoice={invoice} />
+        </button>
+      ) : status.finalized ? (
+        <span className="text-xs text-muted-foreground" data-testid="text-visit-uninvoiced">Not invoiced - the visit is ready to bill.</span>
+      ) : (
+        <span
+          className="text-xs text-muted-foreground"
+          title={status.unfinalizedTickets.map((ticket) => ticket.description).join("; ")}
+          data-testid="text-visit-not-ready"
+        >
+          Not invoiced - the visit is invoiced once every ticket on it is finalized.
+        </span>
+      )}
+      {offerGenerate ? (
+        <Button type="button" size="sm" variant="outline" className="h-7 text-xs" onClick={() => generateMutation.mutate()} disabled={generateMutation.isPending} data-testid="button-visit-generate-invoice">
+          {generateMutation.isPending ? "Generating..." : invoice ? "Issue draft" : "Generate invoice"}
+        </Button>
+      ) : null}
+      <ApplyLocationBalancePrompt invoice={balanceInvoice} onClose={() => setBalanceInvoice(null)} />
+    </div>
+  );
+}
+
 export default function ServiceTicketReview() {
   const { toast } = useToast();
   const { user } = useAuth();
   const [, setLocation] = useLocation();
+  const searchString = useSearch();
+  // Pass 11b: /service-ticket-review?recordId=<id> opens that ticket - where
+  // the invoice modal's per-line "Open ticket" lands.
+  const requestedRecordId = useMemo(() => new URLSearchParams(searchString).get("recordId"), [searchString]);
+  const handledRecordIdRef = useRef<string | null>(null);
+  const [openInvoiceId, setOpenInvoiceId] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState("PENDING_REVIEW");
   const [technicianFilter, setTechnicianFilter] = useState("ALL");
   const [serviceTypeFilter, setServiceTypeFilter] = useState("ALL");
@@ -286,7 +373,35 @@ export default function ServiceTicketReview() {
     setSelectedRecordId(null);
     setNavRecordIds([]);
     setReopenReason("");
+    // A deep-linked ticket leaves the URL with it, so a reload does not
+    // reopen a ticket the reviewer just closed.
+    if (requestedRecordId) {
+      handledRecordIdRef.current = null;
+      setLocation("/service-ticket-review", { replace: true });
+    }
   };
+
+  // The deep link, handled once per id: the records list refetches on every
+  // finalize, and re-running would re-snapshot the run out from under Next /
+  // Back. The queue's filters are left alone - a finalized ticket opened
+  // from an invoice is not in the default Pending Review list, so the run
+  // does not contain it and Next / Back stay hidden, as for any ticket not
+  // opened from the queue. An id that does not resolve says so and clears.
+  useEffect(() => {
+    if (!requestedRecordId) {
+      handledRecordIdRef.current = null;
+      return;
+    }
+    if (!serviceRecords || handledRecordIdRef.current === requestedRecordId) return;
+    handledRecordIdRef.current = requestedRecordId;
+    setOpenInvoiceId(null);
+    if (serviceRecords.some((record) => record.id === requestedRecordId)) {
+      openRecordFromQueue(requestedRecordId);
+    } else {
+      toast({ title: "Service ticket not found", description: "The link points at a ticket that does not exist here.", variant: "destructive" });
+      setLocation("/service-ticket-review", { replace: true });
+    }
+  }, [requestedRecordId, serviceRecords]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Stepping rules live in lib/review-queue-nav.ts (pure, so they can be
   // exercised without rendering this modal). "Live" is every record that
@@ -306,6 +421,9 @@ export default function ServiceTicketReview() {
     queryClient.invalidateQueries({ queryKey: ["/api/appointments"] });
     queryClient.invalidateQueries({ queryKey: ["/api/opportunities"] });
     queryClient.invalidateQueries({ queryKey: ["/api/opportunities/by-location"] });
+    // The visit's finalized / invoiced state moves with every finalize and
+    // reopen, whether or not the finalize completed the visit.
+    queryClient.invalidateQueries({ queryKey: ["/api/invoices/by-appointment"] });
   };
 
   const finalizeMutation = useMutation({
@@ -553,7 +671,10 @@ export default function ServiceTicketReview() {
                       <p className="text-muted-foreground">Location unavailable</p>
                     )}
                   </div>
-                  <Badge variant={statusBadgeVariant(selectedRecord)} className="order-first w-fit sm:order-none sm:justify-self-end">{statusLabel(selectedRecord)}</Badge>
+                  <div className="order-first flex flex-col items-start gap-1.5 sm:order-none sm:items-end sm:justify-self-end">
+                    <Badge variant={statusBadgeVariant(selectedRecord)} className="w-fit">{statusLabel(selectedRecord)}</Badge>
+                    <VisitInvoiceBlock appointmentId={selectedAppointment?.id ?? null} serviceRecordId={selectedRecord.id} onOpenInvoice={setOpenInvoiceId} />
+                  </div>
                 </div>
               </div>
               {selectedRecord.flaggedAt ? (
@@ -662,6 +783,18 @@ export default function ServiceTicketReview() {
       </Dialog>
 
       <InvoiceOnFinalizePrompt prompt={invoicePrompt} onClose={() => setInvoicePrompt(null)} />
+
+      {/* Pass 11b: the visit's invoice, opened from the badge in the review
+          modal. Page state rather than the URL: the page's one deep link is
+          the ticket (?recordId=), and the modal's own "Open ticket" navigates
+          to it, which closes this. */}
+      <InvoiceDetailDialog
+        invoiceId={openInvoiceId}
+        open={!!openInvoiceId}
+        onOpenChange={(next) => {
+          if (!next) setOpenInvoiceId(null);
+        }}
+      />
 
       <Dialog open={batchDialogOpen} onOpenChange={closeBatchDialog}>
         <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-2xl">

@@ -338,7 +338,7 @@ by name; `CURRENT_FOCUS.md`'s unscheduled list points at them.
 | # | Unit | Notes covered | Depends on | Open decision |
 |---|---|---|---|---|
 | C2.1a (**Pass 11a**) — **done** (`feature/phase-2-invoice-modal-core`, 2026-09-19; see "Shipped in Pass 11a" at the end of Part D) | **Invoice modal, core** — new `GET /api/invoices/:id`; `InvoiceDetailDialog` with every section and every action; the Invoices screen rows slimmed to data + open, **no quick action** (owner), customer and location on the row become links; `/invoices?invoiceId=`. Spec in Part D. | Invoices: modal, Void in modal, cash/check collection, mark sent / print; hyperlinks on invoice rows | — | — |
-| C2.1b (**Pass 11b**) | **Invoice modal, reach** — `InvoiceRowLedger` rows open the same modal; `/customers/:id?locationId=&tab=invoices&invoiceId=`; Ticket Review reads `?recordId=` (entry point `openRecordFromQueue`, `service-ticket-review.tsx:280`) so the modal's per-line "Open ticket" lands; new `GET /api/invoices/by-appointment/:id` feeding an **invoice badge** on the review modal, or **Generate** when the visit is finalized and un-invoiced (the "Later" case); the Services tab Invoice column and `ServiceDetailModal` open the modal; `POST /api/invoices/:id/assign-location` (manager+, audit `update`) for the two location-less rows. | Links to the ticket system-wide; Generate Invoice on the review modal | C2.1a | — |
+| C2.1b (**Pass 11b**) — **done** (`feature/phase-2-invoice-modal-reach`, 2026-09-20; see "Shipped in Pass 11b" at the end of Part D) | **Invoice modal, reach** — `InvoiceRowLedger` rows open the same modal; `/customers/:id?locationId=&tab=invoices&invoiceId=`; Ticket Review reads `?recordId=` (entry point `openRecordFromQueue`, `service-ticket-review.tsx:280`) so the modal's per-line "Open ticket" lands; new `GET /api/invoices/by-appointment/:id` feeding an **invoice badge** on the review modal, or **Generate** when the visit is finalized and un-invoiced (the "Later" case); the Services tab Invoice column and `ServiceDetailModal` open the modal; `POST /api/invoices/:id/assign-location` (manager+, audit `update`) for the two location-less rows. | Links to the ticket system-wide; Generate Invoice on the review modal | C2.1a | — |
 | C2.2 (**Pass 12**) | **Billing Plan required on every Agreement + sale attribution.** Backfill the 11, `billingPlanId NOT NULL` + zod; `agreements.soldByUserId` — a `users` FK (owner: one identity table for techs and office), defaulting to the session user at creation, changed only under a new `ASSIGN_SALE_CREDIT` (manager+), audit `update`; template propagation untouched. `technicians` has no link to `users` today (`schema.ts:160-172`), so the same pass adds a nullable `technicians.userId` bridge; the full merge is C5.7. | Compensation basis (CURRENT_FOCUS) | — | Answered 2026-09-19: attach the billing plan named **Monthly Recurring** to all 11 — the 9 `Quarterly Control` rows (monthly billing for a quarterly program, the industry norm; the marked "Monthly" line in `notes` is deleted once attached) and the 2 Wildlife rows, whose term is already past its end, so Pass 3.5's attach rule starts no schedule and bills nothing. The 4 CANCELLED rows attach for the constraint only. The pass prints the per-row effect (`nextBillingDate` or the refusal) before committing. |
 | C2.3 (**Pass 13**) | **Batch Invoice moves to the Invoices screen**; range labelled "posted between"; group by technician then service date (a "route" is technician × day — `appointments` carry no route columns); technician filter passed to preview; Send All stays; Ticket Review loses the button. **New Invoice is removed** (owner); the screen gains **"Draft invoice for a visit"** (customer → location → un-invoiced appointment → `createDraftInvoiceForAppointment`, `storage.ts:5618`); the manual path survives only as **"Add fee / adjustment"** on the location ledger panel (owner, B6); `createManualInvoice` keeps requiring a location. | Move Batch Invoice (×2), batch by route/tech, sort by date, New Invoice → Draft | C2.1a (result rows open the modal) | — |
 | C2.4 (**Pass 14**) | **Aging and balances on the customer screen.** Derived reads: `GET /api/customers/:id/aging` (per location + rollup) and `GET /api/reports/aging` (org-wide); buckets **Current (0-30) / 31-60 / 61-90 / Over 90 days since invoiced** (`issuedAt`, B20) over issued open balances, pending-applied and on-account shown beside, never netted. Header card: the customer-wide open balance, on-account figure and oldest bucket sit beside the primary-location chip (`customer-detail.tsx:3538-3593`); location profile card: the location's strip below `LocationNotesPanel`; Reports: an Aging tab. Nothing stored; UTC days like every other date-only value. | Aging report, customer balance at top with primary location info, location balance below notes | C2.1a (bucket rows open the modal) | — |
@@ -560,6 +560,88 @@ Behavior worth knowing before Pass 11b touches it:
   support void 403, manager void with a pending application released and the 2000 back in the
   location's pending pool, void on PAID. The modal itself was not rendered here - the repo has no
   browser automation - so its layout reaches the owner first.
+
+**Shipped in Pass 11b** (`feature/phase-2-invoice-modal-reach`, 2026-09-20) — the C2.1b row as
+built, plus what it found.
+
+```ts
+// shared/invoice-detail.ts
+export interface UnfinalizedTicketView { serviceId; serviceRecordId: string | null; ticketStatus: string | null; description }
+                                        // the issue route's 409 list, shared now (the modal's local mirror is gone)
+export interface AppointmentInvoiceStatus {
+  appointmentId: string;
+  invoice: Invoice | null;              // the visit's one non-void invoice through EITHER anchor (appointment, or a pre-D1 row anchored on
+                                        // one of its tickets); a DRAFT counts (it holds the anchor, Generate adopts it), a VOID one does not
+  finalized: boolean;                   // every non-cancelled service on the visit has a billing-ready ticket - the issue path's own test
+  unfinalizedTickets: UnfinalizedTicketView[];   // empty when finalized
+}
+
+// shared/permissions.ts
+ASSIGN_INVOICE_LOCATION = "assign_invoice_location"   // manager, admin
+
+// server/storage.ts - IStorage. Both composed from helpers that already existed; no migration.
+getAppointmentInvoiceStatus(appointmentId): Promise<AppointmentInvoiceStatus | undefined>
+                                        // getAppointmentBillingGroupTx + findInvoiceForVisitTx + describeUnfinalizedTicketsTx; undefined outside the org
+assignInvoiceLocation(id, locationId, actor?): Promise<Invoice | undefined>
+                                        // refuses VOID, an invoice that already HAS a location (a repair, never a transfer), an unknown location,
+                                        // another customer's location (createManualInvoice's rule); sets locationId only - snapshots and rollups
+                                        // untouched; audit `update` with the before / after rows, like the notes / due-date PATCH
+
+// Routes.
+GET  /api/invoices/by-appointment/:appointmentId    open read; 404 outside the org; a fixed path, registered with the others above the bare :id reads
+POST /api/invoices/:id/assign-location { locationId } ASSIGN_INVOICE_LOCATION; 404 unknown invoice, 400 for zod and every storage refusal
+
+// client
+components/invoice-detail-dialog.tsx   every line with a serviceRecordId carries "Open ticket" -> /service-ticket-review?recordId=; "No location"
+                                       gains Assign location (AssignInvoiceLocationDialog, module-local: the customer's locations from
+                                       /api/locations/:customerId, primary preselected) for ASSIGN_INVOICE_LOCATION on a non-void invoice
+components/location-ledger-panel.tsx   InvoiceRowLedger({ invoice, onOpen }) - the whole row is data + open (status icon, number,
+                                       InvoiceStatusBadge, issued / due, Paid - Balance - pending, total). Record Payment, Apply location
+                                       balance, Applications and the document actions left the row for the modal; the panel header keeps its
+                                       location-level Record Payment / Issue Credit Memo. The `locationId`, `agreements`, `unappliedCents` props are gone.
+pages/customer-detail.tsx              /customers/:id?locationId=&tab=&invoiceId= opens the modal, hosted once at page level. openInvoice() adds
+                                       invoiceId to the URL AS IT STANDS and pushes (Back closes), closeInvoice() drops it and replaces - every
+                                       other parameter kept, because the compat read keys on locationId and changing it reloads the page around
+                                       the modal. The Invoices tab maps rows to InvoiceRowLedger (its ledger-summary read is gone - the modal
+                                       reads its own). ServicesTab's onOpenInvoices() -> onOpenInvoice(invoiceId): the Invoice column and
+                                       ServiceDetailModal's invoice number open the modal (that badge is InvoiceStatusBadge now).
+pages/service-ticket-review.tsx        ?recordId= opens that ticket through openRecordFromQueue, once per id (a ref: the records list refetches
+                                       on every finalize, and re-running would re-snapshot the run under Next / Back); the parameter is cleared
+                                       on close and on an id that does not resolve (toast). VisitInvoiceBlock in the header beside the ticket
+                                       badge, from the by-appointment read: the invoice as a badge-button opening InvoiceDetailDialog (page
+                                       state); "Generate invoice" (finalized, none) or "Issue draft" (finalized, DRAFT) under GENERATE_INVOICE,
+                                       through generate-from-service-record - the prompt's own route - then D4's ApplyLocationBalancePrompt as
+                                       the prompt asks it; otherwise one line saying why there is none. invalidateReviewData() also invalidates
+                                       ["/api/invoices/by-appointment"], so the badge moves on a finalize that does not complete the visit.
+```
+
+Behavior worth knowing before the next pass touches it:
+- **The two location-less rows were not assigned.** INV-000001 (Sarah Chen) and INV-000072 (Alex Jones)
+  each sit on a two-location customer; the repair now exists as Assign location in the modal's header,
+  manager+, and the owner picks. Once assigned, a row cannot be moved again from the UI (the route
+  refuses an invoice that already has a location) - a transfer would be a separate, ledger-aware unit.
+- **A deep-linked ticket leaves the queue's filters alone.** A finalized ticket opened from an invoice is
+  not in the default Pending Review list, so the run is empty and Next / Back stay hidden, exactly as for
+  any ticket not opened from the queue; closing it clears `?recordId=`.
+- **The invoice modal on the review page is page state, not the URL**: the page's one deep link is the
+  ticket, and the modal's own "Open ticket" navigates to `?recordId=`, which closes it and opens that ticket.
+- **Generate on the review modal is the finalize prompt's Generate** - no Generate & Send there; Mark Sent
+  lives in the modal, one click away on the badge. A visit whose services were all detached (an orphaned
+  appointment) reports `finalized: true` vacuously, as generation already treats it.
+- **Verified 2026-09-20** (PORT=5001, two boots printing only "serving on port 5001", 38 API assertions
+  with every table count back at baseline, a Vite 200 on the five touched client modules): assign-location
+  as support and technician 403, no body 400, unknown location 400, another customer's location 400, random
+  invoice 404, none of which wrote an audit row; the manager's assign set the location, kept status and
+  totals, wrote one `update` row (before `locationId` null, after set, actor the manager), put the invoice
+  on the location's list, and a second assign refused "already has a location"; assign on VOID refused. The
+  by-appointment read for a two-service visit through its whole life: no tickets (two "no ticket posted"
+  refs), both posted (two OFFICE_REVIEW_PENDING refs naming the records), one finalized (`finalized`
+  false, exactly the other service outstanding, the finalize response's `invoicing` null), both finalized
+  under PROMPT (`finalized` true, `invoice` null - the Later case), generated (OPEN, both lines naming
+  their FINALIZED tickets - the Open ticket targets), voided (`invoice` null, still finalized), drafted
+  (DRAFT reported); random appointment 404; ready-for-billing, batch-preview and :id/ledger still answer.
+  Nothing rendered here - the badge column in the review modal's header, the slim location-tab rows and the
+  assign dialog reach the owner first.
 
 ---
 

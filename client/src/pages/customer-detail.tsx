@@ -53,7 +53,8 @@ import { describeBillingPlanBehavior } from "@shared/billing-plan";
 import { describeInitialCharge, initialChargeFromTemplate } from "@shared/initial-charge";
 import { InitialChargeFormFields, initialChargeFieldsFrom, initialChargeFormStateFrom, validateInitialChargeFormState } from "@/components/initial-charge-fields";
 import { InvoiceRowLedger, LocationLedgerPanel } from "@/components/location-ledger-panel";
-import type { LocationLedgerSummary } from "@shared/payments";
+import { InvoiceDetailDialog } from "@/components/invoice-detail-dialog";
+import { InvoiceStatusBadge } from "@/components/invoice-status-badge";
 import {
   ArrowLeft, Mail, Phone, MapPin, Plus, Calendar, FileText, MessageSquare,
   ClipboardList, Building2, User, ChevronDown, ArrowUpRight, StickyNote,
@@ -2656,6 +2657,7 @@ function ServiceDetailModal({
   onCompleteService,
   onFinalizeTicket,
   onReopenTicket,
+  onOpenInvoice,
 }: {
   service: Service;
   serviceTypeName: string;
@@ -2669,6 +2671,8 @@ function ServiceDetailModal({
   onCompleteService?: (service: Service) => void;
   onFinalizeTicket?: (serviceRecord: ServiceRecord) => void;
   onReopenTicket?: (serviceRecord: ServiceRecord) => void;
+  /** Pass 11b: the invoice number opens the invoice modal. */
+  onOpenInvoice?: (invoiceId: string) => void;
 }) {
   const displayDate = getServiceDisplayDate(service, appointment, serviceRecord);
   const siblingCount = Math.max((siblingServices?.length ?? 1) - 1, 0);
@@ -2695,8 +2699,10 @@ function ServiceDetailModal({
         <div className="rounded-md border bg-muted/20 p-3">
           <p className="text-xs uppercase tracking-wide text-muted-foreground">Invoice</p>
           <p className="mt-1 flex items-center gap-2 font-medium">
-            {invoice.invoiceNumber}
-            <Badge variant={invoice.status === "DRAFT" ? "outline" : "secondary"} className="text-[10px] uppercase tracking-wide">{invoice.status.replaceAll("_", " ")}</Badge>
+            <button type="button" className="text-primary underline" onClick={() => onOpenInvoice?.(invoice.id)} data-testid={`button-service-invoice-${invoice.id}`}>
+              {invoice.invoiceNumber}
+            </button>
+            <InvoiceStatusBadge invoice={invoice} />
           </p>
           {invoice.status === "DRAFT" ? <p className="mt-1 text-xs text-muted-foreground">Draft - not issued to the customer yet. It is re-priced from the finalized tickets when issued.</p> : null}
         </div>
@@ -2786,14 +2792,15 @@ function ServicesTab({
   appointments,
   serviceRecords,
   invoices,
-  onOpenInvoices,
+  onOpenInvoice,
 }: {
   customerId: string;
   locationId: string;
   appointments?: Appointment[];
   serviceRecords?: ServiceRecord[];
   invoices?: Invoice[];
-  onOpenInvoices: () => void;
+  /** Pass 11b: the Invoice column and the Service Details dialog open the invoice modal, not the Invoices tab. */
+  onOpenInvoice: (invoiceId: string) => void;
 }) {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingService, setEditingService] = useState<Service | null>(null);
@@ -3057,8 +3064,9 @@ function ServicesTab({
                         className="text-primary underline"
                         onClick={(event) => {
                           event.stopPropagation();
-                          onOpenInvoices();
+                          onOpenInvoice(invoice.id);
                         }}
+                        data-testid={`button-service-row-invoice-${invoice.id}`}
                       >
                         {invoice.invoiceNumber}
                       </button>
@@ -3108,6 +3116,7 @@ function ServicesTab({
               onCompleteService={(service) => setCompletionService(service)}
               onFinalizeTicket={(serviceRecord) => finalizeTicketMutation.mutate(serviceRecord)}
               onReopenTicket={(serviceRecord) => reopenTicketMutation.mutate(serviceRecord)}
+              onOpenInvoice={onOpenInvoice}
             />
           )}
         </DialogContent>
@@ -3265,6 +3274,9 @@ export default function CustomerDetail() {
   const [, setLocation] = useLocation();
   const searchParams = new URLSearchParams(searchString);
   const urlLocationId = searchParams.get("locationId");
+  // Pass 11b: the open invoice is the URL, as on the Invoices screen -
+  // /customers/:id?locationId=&tab=&invoiceId= deep-links into the modal.
+  const openInvoiceId = searchParams.get("invoiceId");
 
   const [locDialogOpen, setLocDialogOpen] = useState(false);
   const [editLocDialogOpen, setEditLocDialogOpen] = useState(false);
@@ -3303,9 +3315,10 @@ export default function CustomerDetail() {
   const { data: locationServices } = useQuery<ServiceRecord[]>({ queryKey: ["/api/service-records/by-location", activeLocationId], enabled: !!activeLocationId });
   const { data: locationInvoices } = useQuery<Invoice[]>({ queryKey: ["/api/invoices/by-location", activeLocationId], enabled: !!activeLocationId });
   const { data: locationComms } = useQuery<Communication[]>({ queryKey: ["/api/communications/by-location", activeLocationId], enabled: !!activeLocationId });
-  // D5: the location's ledger summary and its agreements, for the Invoices
-  // tab's balance panel, the Apply-balance affordance and payment designation.
-  const { data: locationLedgerSummary } = useQuery<LocationLedgerSummary>({ queryKey: ["/api/locations", activeLocationId, "ledger-summary"], enabled: !!activeLocationId });
+  // D5: the location's agreements, for the Invoices tab's balance panel
+  // (payment designation) and the agreement cards. The ledger summary the
+  // tab's rows used to read for Apply location balance left with Pass 11b:
+  // the invoice modal reads its own.
   const { data: locationAgreements } = useQuery<Agreement[]>({ queryKey: ["/api/agreements/location", activeLocationId], enabled: !!activeLocationId });
   // D6: the location screen shows each active agreement's billing-plan pill,
   // named per agreement - a location is never "monthly" or "COD" as a whole.
@@ -3429,6 +3442,22 @@ export default function CustomerDetail() {
 
   function selectLocation(locId: string) {
     setLocation(`/customers/${customerId}?locationId=${locId}`);
+  }
+
+  // Pass 11b: opening an invoice adds invoiceId to the URL as it stands and
+  // pushes, so Back closes the modal; closing removes it and replaces. Every
+  // other parameter is kept exactly - the compat read keys on locationId, so
+  // adding or dropping it would reload the whole page around the modal.
+  function openInvoice(invoiceId: string) {
+    const next = new URLSearchParams(searchString);
+    next.set("invoiceId", invoiceId);
+    setLocation(`/customers/${customerId}?${next.toString()}`);
+  }
+  function closeInvoice() {
+    const next = new URLSearchParams(searchString);
+    next.delete("invoiceId");
+    const query = next.toString();
+    setLocation(`/customers/${customerId}${query ? `?${query}` : ""}`, { replace: true });
   }
 
   function openCreateContactDialog() {
@@ -3793,7 +3822,7 @@ export default function CustomerDetail() {
               appointments={locationAppts}
               serviceRecords={locationServices}
               invoices={locationInvoices}
-              onOpenInvoices={() => setActiveTab("invoices")}
+              onOpenInvoice={openInvoice}
             />
           </TabsContent>
 
@@ -3806,20 +3835,7 @@ export default function CustomerDetail() {
             {!locationInvoices || locationInvoices.length === 0 ? (
               <Card><CardContent className="text-center py-8"><FileText className="h-8 w-8 mx-auto text-muted-foreground/30 mb-2" /><p className="text-sm text-muted-foreground">No invoices for this location</p></CardContent></Card>
             ) : [...locationInvoices].sort((a, b) => new Date(b.issuedAt ?? b.createdAt).getTime() - new Date(a.issuedAt ?? a.createdAt).getTime()).map((inv) => (
-              <Card key={inv.id} data-testid={`card-invoice-${inv.id}`}>
-                <CardContent className="p-4 space-y-2">
-                  <div className="flex items-center justify-between gap-3">
-                    <div><p className="text-sm font-medium">{inv.invoiceNumber}</p><p className="text-xs text-muted-foreground">{new Date(inv.issuedAt ?? inv.createdAt).toLocaleDateString()}{inv.dueDate ? ` - due ${new Date(inv.dueDate).toLocaleDateString()}` : ""}</p></div>
-                    <div className="flex items-center gap-2 shrink-0"><span className="text-sm font-semibold">{formatCurrency(centsToDollars(inv.totalAmountCents))}</span><Badge variant="secondary" className={`text-xs capitalize ${inv.status === "PAID" ? "bg-primary/10 text-primary" : inv.status === "VOID" ? "bg-muted text-muted-foreground" : inv.status === "DRAFT" ? "border border-dashed bg-background text-foreground" : inv.status === "OPEN" && inv.dueDate && new Date(inv.dueDate).getTime() < Date.now() ? "bg-destructive/10 text-destructive" : "bg-chart-3/10 text-chart-3"}`}>{inv.status === "OPEN" && inv.dueDate && new Date(inv.dueDate).getTime() < Date.now() ? "overdue" : inv.status.toLowerCase().replace(/_/g, " ")}</Badge></div>
-                  </div>
-                  <InvoiceRowLedger
-                    invoice={inv}
-                    locationId={activeLocationId}
-                    agreements={locationAgreements}
-                    unappliedCents={(locationLedgerSummary?.unappliedConfirmedCents ?? 0) + (locationLedgerSummary?.unappliedPendingCents ?? 0)}
-                  />
-                </CardContent>
-              </Card>
+              <InvoiceRowLedger key={inv.id} invoice={inv} onOpen={() => openInvoice(inv.id)} />
             ))}
           </TabsContent>
 
@@ -3843,6 +3859,14 @@ export default function CustomerDetail() {
             <LocationHistoryTab locationId={activeLocationId} />
           </TabsContent>
         </Tabs>
+
+        <InvoiceDetailDialog
+          invoiceId={openInvoiceId}
+          open={!!openInvoiceId}
+          onOpenChange={(next) => {
+            if (!next) closeInvoice();
+          }}
+        />
       </div>
     </div>
   );
