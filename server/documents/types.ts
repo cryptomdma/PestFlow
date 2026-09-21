@@ -27,8 +27,13 @@ export interface InvoiceDocumentContext {
   issueDate: string; // YYYY-MM-DD, derived from invoice.createdAt - immutable once issued
   dueDate: string | null;
   status: string;
+  /** The party billed, frozen at issue (Pass 11c: `billingProfileSnapshot.billTo`) - the billing
+   *  profile's address, else a location override's own, else the customer's primary location's. */
   billToName: string;
   billToAddress: string | null;
+  /** Where the work was done - the invoice's location as frozen at issue. Null only for the
+   *  location-less rows from before Pass 10; renderers omit the block then. */
+  serviceLocation: { name: string; address: string | null } | null;
   lineItems: InvoiceDocumentLineItem[];
   subtotalCents: number;
   taxCents: number;

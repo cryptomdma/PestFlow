@@ -28,6 +28,7 @@ import { can, PERMISSIONS } from "@shared/permissions";
 import { formatCents } from "@shared/money";
 import { isFullyAgreementCovered, isInvoiceIssued, NO_CHARGE_LABEL } from "@shared/invoice-status";
 import {
+  describeBillToSource,
   describeInvoiceLineType,
   describeInvoiceOrigin,
   describeInvoiceTerms,
@@ -499,9 +500,27 @@ export function InvoiceDetailDialog({
                     <p className="text-xs text-muted-foreground">Billing profile</p>
                     {billingSnapshot ? (
                       <>
-                        <p>{billingSnapshot.label ?? "Billing profile"}{billingSnapshot.billingType ? ` - ${humanizeToken(billingSnapshot.billingType)}` : ""}</p>
+                        {billingSnapshot.profileId || billingSnapshot.label ? (
+                          <p>{billingSnapshot.label ?? "Billing profile"}{billingSnapshot.billingType ? ` - ${humanizeToken(billingSnapshot.billingType)}` : ""}</p>
+                        ) : (
+                          // Pass 11c: the snapshot is written with or without a profile. No profile means default terms; the parties below still say who is billed.
+                          <p>No billing profile - default terms</p>
+                        )}
                         {describeInvoiceTerms(billingSnapshot.invoiceTerms) ? <p className="text-muted-foreground">{describeInvoiceTerms(billingSnapshot.invoiceTerms)}</p> : null}
-                        {billingSnapshot.billingName ? <p className="text-muted-foreground">Bill to {billingSnapshot.billingName}{billingSnapshot.billingAddress ? `, ${billingSnapshot.billingAddress}` : ""}</p> : null}
+                        {billingSnapshot.billTo ? (
+                          <p className="text-muted-foreground" data-testid="text-invoice-bill-to">
+                            Bill to {billingSnapshot.billTo.name}{billingSnapshot.billTo.address ? `, ${billingSnapshot.billTo.address}` : ""}
+                            {" "}<span className="whitespace-nowrap">({describeBillToSource(billingSnapshot.billTo.source)})</span>
+                          </p>
+                        ) : billingSnapshot.billingName ? (
+                          // A pre-Pass-11c snapshot: the profile's name was frozen, the parties were not.
+                          <p className="text-muted-foreground">Bill to {billingSnapshot.billingName}{billingSnapshot.billingAddress ? `, ${billingSnapshot.billingAddress}` : ""}</p>
+                        ) : null}
+                        {billingSnapshot.serviceLocation ? (
+                          <p className="text-muted-foreground" data-testid="text-invoice-service-location">
+                            Service location: {billingSnapshot.serviceLocation.name}{billingSnapshot.serviceLocation.address ? `, ${billingSnapshot.serviceLocation.address}` : ""}
+                          </p>
+                        ) : null}
                       </>
                     ) : (
                       <p className="text-muted-foreground">{isDraft ? "Resolved from the location's billing profile at issue." : "No billing profile was snapshotted."}</p>

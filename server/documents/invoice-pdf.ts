@@ -43,19 +43,36 @@ export function renderInvoicePdf(context: InvoiceDocumentContext): Promise<Buffe
 
     doc.moveDown(1.5);
     const partiesY = doc.y;
-    doc.fontSize(9).fillColor("#6b7280").text("REMIT TO", 50, partiesY);
-    doc.fillColor("#111827").fontSize(10);
+    // Three party blocks on one row (Pass 11c added Service Location): each
+    // is positioned absolutely, so the table below starts under the tallest
+    // of them rather than under whichever was written last.
+    const partyColumns = { remit: 50, billTo: 220, serviceLocation: 390 };
+    const partyWidth = 155;
+    let partiesBottom = partiesY;
+    const partyBlock = (heading: string, lines: string[], x: number) => {
+      doc.fontSize(9).fillColor("#6b7280").text(heading, x, partiesY);
+      doc.fillColor("#111827").fontSize(10);
+      doc.text(lines.join("\n") || "-", x, partiesY + 12, { width: partyWidth });
+      partiesBottom = Math.max(partiesBottom, doc.y);
+    };
+
     const remitLines = [context.branding.remitToName, context.branding.remitToAddress, context.branding.remitToEmail, context.branding.remitToPhone].filter(
       (line): line is string => !!line,
     );
-    doc.text(remitLines.join("\n") || "-", 50, partiesY + 12, { width: 220 });
+    partyBlock("REMIT TO", remitLines, partyColumns.remit);
 
-    doc.fontSize(9).fillColor("#6b7280").text("BILL TO", 320, partiesY);
-    doc.fillColor("#111827").fontSize(10);
     const billLines = [context.billToName, context.billToAddress].filter((line): line is string => !!line);
-    doc.text(billLines.join("\n"), 320, partiesY + 12, { width: 220 });
+    partyBlock("BILL TO", billLines, partyColumns.billTo);
 
-    doc.moveDown(4);
+    // Omitted, not dashed, for the location-less rows from before Pass 10:
+    // a customer-facing "Service Location: -" says nothing useful.
+    if (context.serviceLocation) {
+      const serviceLines = [context.serviceLocation.name, context.serviceLocation.address].filter((line): line is string => !!line);
+      partyBlock("SERVICE LOCATION", serviceLines, partyColumns.serviceLocation);
+    }
+
+    doc.y = partiesBottom;
+    doc.moveDown(2);
     const tableTop = doc.y + 10;
     const columns = { description: 50, qty: 320, unitPrice: 380, amount: 460 };
     doc.fontSize(9).fillColor("#6b7280");

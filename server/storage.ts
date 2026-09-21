@@ -77,7 +77,7 @@ import { addDays, advanceAgreementDate, computeExpectedServiceCount } from "@sha
 // and server/production-value-backfill.ts still import it from here.
 export { advanceAgreementDate, computeExpectedServiceCount };
 import type { VisitBillingSummary, VisitServiceBilling } from "@shared/visit-billing";
-import type { AppointmentInvoiceStatus, InvoiceDetail } from "@shared/invoice-detail";
+import type { AppointmentInvoiceStatus, InvoiceBillToSnapshot, InvoiceDetail, InvoiceServiceLocationSnapshot } from "@shared/invoice-detail";
 import {
   formatInitialChargeType,
   initialChargeFromTemplate,
@@ -119,6 +119,27 @@ import {
 } from "@shared/invoice-on-finalize";
 
 type DbTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
+// A helper that only reads can run inside a transaction or straight off the
+// pool (the document render, which is outside any transaction).
+type DbReader = DbTransaction | typeof db;
+
+// One line, the way every customer-facing document prints a location:
+// "1100 W Pipeline Rd, Hurst, TX, 76053". Null when the row has no address
+// text at all rather than an empty string, so renderers can skip the line.
+function formatLocationAddress(location: Pick<Location, "address" | "city" | "state" | "zip">): string | null {
+  const line = [location.address, location.city, location.state, location.zip]
+    .map((part) => (part ?? "").trim())
+    .filter(Boolean)
+    .join(", ");
+  return line || null;
+}
+
+// The Service Location party as a document prints it: the location's name
+// and its one-line address, both trimmed (one dev-DB row carries trailing
+// spaces in its name and city, and a frozen snapshot should not).
+function describeServiceLocation(location: Pick<Location, "name" | "address" | "city" | "state" | "zip">): InvoiceServiceLocationSnapshot {
+  return { name: location.name.trim(), address: formatLocationAddress(location) };
+}
 
 export interface CustomerDetailCompatProjection {
   legacyCustomer: Customer;
@@ -5033,6 +5054,10 @@ export class DatabaseStorage implements IStorage {
       const taxCents = input.taxCents ?? 0;
       const totalAmountCents = input.amountCents + taxCents;
       const invoiceNumber = await this.getNextInvoiceNumber(tx);
+      // The parties and profile terms are frozen here like on every other
+      // issuing path (Pass 11c); the manual path keeps its own due date (the
+      // office types it, or leaves it blank) and its own tax entry below.
+      const terms = await this.resolveInvoiceTermsForLocationTx(tx, location.id);
 
       const [invoice] = await tx
         .insert(invoices)
@@ -5042,7 +5067,7 @@ export class DatabaseStorage implements IStorage {
           locationId: location.id,
           serviceRecordId: null,
           invoiceNumber,
-          billingProfileSnapshot: null,
+          billingProfileSnapshot: terms.billingProfileSnapshot,
           // The manual/ad-hoc path keeps its direct tax entry rather than
           // running the tax engine: it has a location now, but no service
           // type for a tax rule to key off, and the office types the tax it
@@ -5455,11 +5480,72 @@ export class DatabaseStorage implements IStorage {
     return byServiceRecord;
   }
 
+  // The customer identity for a location (canon rule 3: the primary location
+  // is the customer identity), the way the customer-detail compat read finds
+  // it: the account's primaryLocationId, else the account's isPrimary row,
+  // else - for a location still without an account (transitional nullable
+  // accountId) - the customer's isPrimary row. Falls back to the location
+  // itself when no primary exists, so a caller always has a party to bill;
+  // ensurePrimaryLocationInvariant keeps that fallback from being reached
+  // for any account that has locations.
+  private async getPrimaryLocationTx(reader: DbReader, location: Location): Promise<Location> {
+    if (location.accountId) {
+      const [account] = await reader.select().from(accounts).where(and(eq(accounts.orgId, this.orgId), eq(accounts.id, location.accountId)));
+      const accountLocations = await reader.select().from(locations).where(and(eq(locations.orgId, this.orgId), eq(locations.accountId, location.accountId)));
+      const primary =
+        (account?.primaryLocationId && accountLocations.find((candidate) => candidate.id === account.primaryLocationId)) ||
+        accountLocations.find((candidate) => candidate.isPrimary);
+      if (primary) {
+        return primary;
+      }
+    }
+    const customerLocations = await reader.select().from(locations).where(and(eq(locations.orgId, this.orgId), eq(locations.customerId, location.customerId)));
+    return customerLocations.find((candidate) => candidate.isPrimary) ?? location;
+  }
+
+  // The invoice's parties at issue (Pass 11c, owner review 2026-09-21 item 1).
+  // Bill To: the profile's own billingAddress when it has one; else, for a
+  // location-level override profile, that location's own address (the
+  // override says "bill this location"); else the customer's primary
+  // location's address (canon §4 / §5: billing defaults come from the
+  // primary location / account context). The name is the profile's
+  // billingName, else the customer's name, else their company - the order
+  // the document always used. Service Location is the invoice's location as
+  // it stands now. Both are frozen into the snapshot so a later move or
+  // profile edit never changes an issued invoice.
+  private async resolveInvoicePartiesTx(
+    reader: DbReader,
+    location: Location,
+    profile: BillingProfile | null,
+  ): Promise<{ billTo: InvoiceBillToSnapshot; serviceLocation: InvoiceServiceLocationSnapshot }> {
+    const [customer] = await reader.select().from(customers).where(and(eq(customers.orgId, this.orgId), eq(customers.id, location.customerId)));
+    const customerName = customer ? `${customer.firstName} ${customer.lastName}`.trim() : "";
+    const name = profile?.billingName?.trim() || customerName || customer?.companyName?.trim() || "Customer";
+
+    let billTo: InvoiceBillToSnapshot;
+    if (profile?.billingAddress?.trim()) {
+      billTo = { name, address: profile.billingAddress.trim(), source: "PROFILE" };
+    } else if (profile && profile.locationId === location.id) {
+      billTo = { name, address: formatLocationAddress(location), source: "LOCATION_OVERRIDE" };
+    } else {
+      const primary = await this.getPrimaryLocationTx(reader, location);
+      billTo = { name, address: formatLocationAddress(primary), source: "PRIMARY_LOCATION" };
+    }
+
+    return { billTo, serviceLocation: describeServiceLocation(location) };
+  }
+
   // Billing terms for an invoice at the moment it is created or issued: the
   // location's account (tax resolution keys off it), the resolved billing
-  // profile frozen as a snapshot, and the due date those terms imply. A DRAFT
-  // resolves these for its preview and again at issue, because terms run from
-  // the issue date, not the drafting date.
+  // profile frozen as a snapshot together with the invoice's parties (Bill To
+  // and Service Location - resolveInvoicePartiesTx), and the due date those
+  // terms imply. A DRAFT resolves these for its preview and again at issue,
+  // because terms run from the issue date, not the drafting date. Since Pass
+  // 11c the snapshot is written whenever there is a location, profile or
+  // not: `profileId` and the profile keys are null when none resolved, and
+  // the parties are always there. Null only when the invoice has no
+  // location, which no current path allows (Pass 10) - it survives for the
+  // pre-Pass-10 rows the render fallback covers.
   private async resolveInvoiceTermsForLocationTx(
     tx: DbTransaction,
     locationId: string | null | undefined,
@@ -5469,23 +5555,26 @@ export class DatabaseStorage implements IStorage {
     }
 
     const [location] = await tx.select().from(locations).where(and(eq(locations.orgId, this.orgId), eq(locations.id, locationId)));
-    const resolvedProfile = await this.resolveBillingProfileForLocation(locationId);
-    if (!resolvedProfile) {
-      return { accountId: location?.accountId ?? null, billingProfileSnapshot: null, dueDate: null };
+    if (!location) {
+      return { accountId: null, billingProfileSnapshot: null, dueDate: null };
     }
+    const resolvedProfile = (await this.resolveBillingProfileForLocation(locationId)) ?? null;
+    const parties = await this.resolveInvoicePartiesTx(tx, location, resolvedProfile);
 
     return {
-      accountId: location?.accountId ?? null,
+      accountId: location.accountId ?? null,
       billingProfileSnapshot: {
-        profileId: resolvedProfile.id,
-        label: resolvedProfile.label,
-        billingType: resolvedProfile.billingType,
-        invoiceTerms: resolvedProfile.invoiceTerms,
-        billingName: resolvedProfile.billingName,
-        billingAddress: resolvedProfile.billingAddress,
+        profileId: resolvedProfile?.id ?? null,
+        label: resolvedProfile?.label ?? null,
+        billingType: resolvedProfile?.billingType ?? null,
+        invoiceTerms: resolvedProfile?.invoiceTerms ?? null,
+        billingName: resolvedProfile?.billingName ?? null,
+        billingAddress: resolvedProfile?.billingAddress ?? null,
+        billTo: parties.billTo,
+        serviceLocation: parties.serviceLocation,
         snapshottedAt: new Date().toISOString(),
       },
-      dueDate: computeDueDateFromInvoiceTerms(resolvedProfile.invoiceTerms),
+      dueDate: resolvedProfile ? computeDueDateFromInvoiceTerms(resolvedProfile.invoiceTerms) : null,
     };
   }
 
@@ -6138,27 +6227,9 @@ export class DatabaseStorage implements IStorage {
         }
       }
 
-      let billingProfileSnapshot: Record<string, unknown> | null = null;
-      let dueDate: Date | null = null;
-      let accountId: string | null = null;
-      if (agreement.locationId) {
-        const [location] = await tx.select().from(locations).where(and(eq(locations.orgId, this.orgId), eq(locations.id, agreement.locationId)));
-        accountId = location?.accountId ?? null;
-
-        const resolvedProfile = await this.resolveBillingProfileForLocation(agreement.locationId);
-        if (resolvedProfile) {
-          billingProfileSnapshot = {
-            profileId: resolvedProfile.id,
-            label: resolvedProfile.label,
-            billingType: resolvedProfile.billingType,
-            invoiceTerms: resolvedProfile.invoiceTerms,
-            billingName: resolvedProfile.billingName,
-            billingAddress: resolvedProfile.billingAddress,
-            snapshottedAt: new Date().toISOString(),
-          };
-          dueDate = computeDueDateFromInvoiceTerms(resolvedProfile.invoiceTerms);
-        }
-      }
+      // The same resolver every other issuing path uses (Pass 11c replaced an
+      // inline copy of the snapshot here, which would have missed the parties).
+      const { accountId, billingProfileSnapshot, dueDate } = await this.resolveInvoiceTermsForLocationTx(tx, agreement.locationId);
 
       const taxDecision = await this.resolveTaxDecision(tx, {
         accountId,
@@ -7750,6 +7821,17 @@ export class DatabaseStorage implements IStorage {
   // customer moved or the org's branding changed since. issueDate comes
   // from invoice.createdAt, not the current time, which is what makes
   // renderInvoicePdf's output reproducible byte-for-byte on a later call.
+  //
+  // The parties (Bill To, Service Location) are the snapshot's `billTo` /
+  // `serviceLocation` keys, frozen at issue by resolveInvoicePartiesTx
+  // (Pass 11c). TRANSITIONAL: a row from before that pass has no such keys -
+  // 45 with no snapshot at all and 19 with the profile-only shape on the dev
+  // DB - and for those, and only those, the parties are resolved at render
+  // time by the same rule: the snapshotted profile address if there is one,
+  // else the customer's primary location for Bill To (never the service
+  // location's address, which is what printed before), and the invoice's
+  // location for Service Location. A document is stored on first render, so
+  // a legacy row rendered before this pass keeps the document it has.
   async getInvoiceDocumentContext(invoiceId: string): Promise<InvoiceDocumentContext | undefined> {
     const [invoice] = await db.select().from(invoices).where(and(eq(invoices.orgId, this.orgId), eq(invoices.id, invoiceId)));
     if (!invoice) {
@@ -7764,17 +7846,42 @@ export class DatabaseStorage implements IStorage {
       .where(and(eq(invoiceLineItems.orgId, this.orgId), eq(invoiceLineItems.invoiceId, invoiceId)))
       .orderBy(asc(invoiceLineItems.sortOrder));
 
-    const snapshot = invoice.billingProfileSnapshot as { billingName?: string | null; billingAddress?: string | null } | null;
-    let billToAddress = snapshot?.billingAddress || null;
-    if (!billToAddress && invoice.locationId) {
-      const [location] = await db.select().from(locations).where(and(eq(locations.orgId, this.orgId), eq(locations.id, invoice.locationId)));
+    const snapshot = invoice.billingProfileSnapshot as {
+      billingName?: string | null;
+      billingAddress?: string | null;
+      billTo?: InvoiceBillToSnapshot | null;
+      serviceLocation?: InvoiceServiceLocationSnapshot | null;
+    } | null;
+
+    let billToName: string;
+    let billToAddress: string | null;
+    let serviceLocation: InvoiceServiceLocationSnapshot | null;
+    if (snapshot?.billTo) {
+      billToName = snapshot.billTo.name;
+      billToAddress = snapshot.billTo.address ?? null;
+      serviceLocation = snapshot.serviceLocation ?? null;
+    } else {
+      // TRANSITIONAL render-time fallback for pre-Pass-11c rows (see above).
+      const customerName = customer ? `${customer.firstName} ${customer.lastName}`.trim() : "";
+      billToName = snapshot?.billingName || customerName || customer?.companyName || "Customer";
+      billToAddress = snapshot?.billingAddress || null;
+      serviceLocation = null;
+      const [location] = invoice.locationId
+        ? await db.select().from(locations).where(and(eq(locations.orgId, this.orgId), eq(locations.id, invoice.locationId)))
+        : [];
       if (location) {
-        billToAddress = [location.address, location.city, location.state, location.zip].filter(Boolean).join(", ");
+        serviceLocation = describeServiceLocation(location);
+        if (!billToAddress) {
+          billToAddress = formatLocationAddress(await this.getPrimaryLocationTx(db, location));
+        }
+      } else if (!billToAddress) {
+        // The two pre-Pass-10 location-less rows: the customer's primary
+        // location is still the party, found through their locations.
+        const customerLocations = await db.select().from(locations).where(and(eq(locations.orgId, this.orgId), eq(locations.customerId, invoice.customerId)));
+        const primary = customerLocations.find((candidate) => candidate.isPrimary);
+        billToAddress = primary ? formatLocationAddress(primary) : null;
       }
     }
-
-    const customerName = customer ? `${customer.firstName} ${customer.lastName}`.trim() : "";
-    const billToName = snapshot?.billingName || customerName || customer?.companyName || "Customer";
 
     return {
       invoiceNumber: invoice.invoiceNumber,
@@ -7786,6 +7893,7 @@ export class DatabaseStorage implements IStorage {
       status: invoice.status,
       billToName,
       billToAddress,
+      serviceLocation,
       lineItems: lineItems.map((item) => ({
         description: item.description,
         quantity: item.quantity,
