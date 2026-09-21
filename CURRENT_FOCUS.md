@@ -7,10 +7,11 @@ balances, application/release), COA as payment application, and `audit_logs` as 
 immutable financial history.
 
 Now active: **Phase 2 — Invoices you can work from**, per `PLAN_ROADMAP_V2.md`. Passes 11a and 11b
-(the Invoice modal, core and reach) are built - 11a merged as PR #73, 11b pushed; **next pass: 12,
-Billing Plan required on every Agreement + sale attribution** — the C2.2 row of that document's
-Phase 2 table, with the owner's answer recorded in its "Open decision" column. The roadmap sequences
-every remaining item below; this file keeps only the status pointer.
+(the Invoice modal, core and reach) are merged (PRs #73, #74); **next pass: 11c, the invoice
+document's parties** — the C2.1c row of that document's Phase 2 table, inserted with 11d ahead of
+Pass 12 by the owner's review of 2026-09-21 (recorded under D4 in `PLAN_BILLING_V1_1.md` and in the
+roadmap's Part E). The roadmap sequences every remaining item below; this file keeps only the status
+pointer.
 
 ## Status
 Pass 1 (`feature/phase-1-appointment-status-enum`, D1a) merged as PR #56.
@@ -101,7 +102,10 @@ invoice" on the agreement card for that case and for the 4 pre-Pass-6 agreements
 review, **a down payment counts toward the contract price by default**: `initialChargeInAdditionToPrice`
 is the explicit exception, and `resolveRemainingContractPriceCents()` is what the per-visit line, a
 PREPAID_TERM charge and a recurring plan's per-period share now bill from. Signatures and behavior
-are under "Shipped in Pass 6" in `PLAN_BILLING_V1_1_EXECUTION.md`.
+are under "Shipped in Pass 6" in `PLAN_BILLING_V1_1_EXECUTION.md`. **The receivable-at-creation
+half is reversed by the owner's 2026-09-21 review** `[Roadmap: Pass 11d, C2.1d]`: a down payment
+bills on the first visit's invoice, the automatic standalone invoice stops, and the explicit "Issue
+initial charge invoice" stays as the up-front path. Everything else in this paragraph stands.
 
 Pass 7 (`feature/phase-1-coa-and-field-display`, D6) merged as PR #64. The field now sees
 money the way the invoice will: one read, `GET /api/appointments/:id/billing-summary`, prices every
@@ -295,8 +299,10 @@ server code and a route.** Signatures and behavior are under "Shipped in Pass 10
 
 Roadmap (`docs/roadmap-v2`, 2026-09-19): `PLAN_ROADMAP_V2.md` classifies every owner note as done /
 partial / absent against the code, records the notes that contradict D1-D9 with the owner's answers,
-and sequences Phases 2-9 as passes 11a-38. Its recommended immediate order: **11a → 11b (Invoice
-modal) → 12 (Billing Plan required + sold-by) → 16 (ticket lockdown — a defect: the service-record
+and sequences Phases 2-9 as passes 11a-38. Its recommended immediate order, as amended by the
+owner's review of 2026-09-21: **11a → 11b (Invoice modal) → 11c (invoice document parties: Bill To
+from the primary location, a Service Location block) → 11d (down payment on the first visit's
+invoice) → 12 (Billing Plan required + sold-by) → 16 (ticket lockdown — a defect: the service-record
 PATCH has no gate and a re-post un-finalizes a FINALIZED ticket) → 13 (Batch Invoice + Draft) → 14
 (aging) → 25 (opportunity taxonomy) → 27 (cancel / reschedule)**. Each unscheduled item below now
 carries a `[Roadmap: …]` pointer to the unit that owns it.
@@ -347,9 +353,22 @@ and none of the new UI (the badge column, the slim rows, the assign dialog) has 
 anyone yet.** Signatures and behavior are under "Shipped in Pass 11b" at the end of
 `PLAN_ROADMAP_V2.md` Part D.
 
-Next up: **Pass 12** — Billing Plan required on every Agreement + sale attribution
-(`PLAN_ROADMAP_V2.md` Phase 2 table, C2.2; the owner's 2026-09-19 answer is in its "Open decision"
-column). Branch from `origin/main` after confirming it contains Pass 11b's merge.
+Owner review of 2026-09-21 (`docs/owner-review-2026-09-21`, docs only, no code): two items from the
+owner's live test on James Peterson (Home). **The invoice's Bill To prints the service location** -
+`getInvoiceDocumentContext` falls back to the service location's live address when no billing
+profile address was snapshotted, which is every invoice on the dev DB; canon says the primary
+location / account, with a location override. And **a down payment set for technician collection is
+its own invoice at agreement creation while the technician is shown $0.00 due** - D4's recorded
+design, which the owner reversed: a down payment bills on the first visit's invoice, whoever
+collects it, with the agreement card's explicit up-front button kept. The assessment (1a-1c, 2a-2c),
+the answers and the one open flag (the three unissued `Daily Rodent Trapping` down payments) are
+recorded under D4 in `PLAN_BILLING_V1_1.md` and in `PLAN_ROADMAP_V2.md` Part E; the work is two
+passes inserted ahead of Pass 12, C2.1c (**11c**) and C2.1d (**11d**), specified in the Phase 2
+table. Canon §13 is corrected in 11d's PR, with the code.
+
+Next up: **Pass 11c** — the invoice document's parties (`PLAN_ROADMAP_V2.md` Phase 2 table,
+C2.1c). Branch `feature/phase-2-invoice-document-parties` from `origin/main` after confirming it
+contains this docs branch's merge and Pass 11b's.
 
 Phase 1's ordered plan, impact analysis, conflict resolutions, and per-pass verification steps live in
 `PLAN_BILLING_V1_1_EXECUTION.md` — read it when a pass builds on a Phase 1 helper (its "Shipped in
