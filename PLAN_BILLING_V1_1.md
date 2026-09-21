@@ -143,6 +143,68 @@ a real issued invoice at agreement start. Three tools, three jobs:
 > Related: paid-in-full is a **billing-plan** arrangement (`PREPAID_TERM` bills the whole contract
 > price once at start, any term length, visits at $0), so the `PREPAY_FULL` initial-charge type
 > overlaps it and should be folded when item 2 trims the vocabulary.
+>
+> **Owner review of 2026-09-21** (live test on James Peterson (Home), after Pass 11b) — two items,
+> each assessed against the code and answered the same day. Scheduled as Passes 11c and 11d in
+> `PLAN_ROADMAP_V2.md` (C2.1c, C2.1d), ahead of Pass 12.
+>
+> **Item 1 — the invoice's Bill To prints the service location.**
+> - **1a. Defect, unscheduled until now.** `getInvoiceDocumentContext` (`server/storage.ts:7767-7777`)
+>   prints the snapshotted billing profile's address when one exists and otherwise the **service
+>   location's** current address; the primary location is consulted nowhere in the path. Canon
+>   (`CANONICAL_DOMAIN_RULES_V1.md` §5 shared defaults / §4 BillingProfile / §3 default inheritance)
+>   says billing defaults come from the primary location / account context with a location override.
+>   In practice the fallback hits every invoice: the dev DB holds two `billing_profiles` rows (both
+>   Sarah Chen's account, neither with an address) and 45 of 64 invoices carry no snapshot at all.
+>   → **Pass 11c**: the Bill To is decided at issue and frozen in the snapshot — the profile's
+>   address, else a location override's own address, else the **primary location's**; the render
+>   keeps a fallback for the legacy rows only.
+> - **1b. Design gap.** The document prints Remit To and Bill To only (`server/documents/invoice-pdf.ts:44-56`,
+>   `invoice-html.ts:66-79`); the service location appears nowhere unless it leaks in through 1a.
+>   → **Pass 11c** adds a Service Location block. The wider document redesign stays unscheduled
+>   (owner: "address this later if appropriate").
+> - **1c. Already scheduled.** The "unless another billing profile exists for the service location"
+>   half is C5.2 (Pass 34): no screen can create a billing profile or give one an address today, so
+>   the override branch — which the resolver already honours — cannot be exercised by the office until
+>   then.
+>
+> **Item 2 — a down payment set for technician collection is its own invoice at agreement creation,
+> and the technician is shown $0.00 due today.**
+> - **2a. Not a code defect: it is this section's decision, and the owner reverses it.** "A real
+>   issued invoice at agreement start" above is what Pass 6 built (`createAgreement` →
+>   `issueInitialChargeInvoiceTx`, `server/storage.ts:3252`) and what canon §13 records. The owner's
+>   correction: **a down payment is a charge of the initial service and bills on the first visit's
+>   invoice**, whoever collects it — the office at scheduling (as D4's designated deposit, step 1
+>   above, which then auto-applies at finalization, step 2) or the technician at the visit. Answered
+>   2026-09-21 as **"first-visit line, button kept"**: `DOWN_PAYMENT` becomes an `INITIAL_CHARGE` line
+>   on the agreement's first visit invoice; the automatic standalone invoice at creation stops; the
+>   agreement card's "Issue initial charge invoice" stays as the explicit up-front path. → **Pass 11d**.
+>   The "three tools, three jobs" list above stands with one edit: the agreement initial charge is a
+>   contractual deposit that is billed **with the first visit** by default and up front on request.
+> - **2b. A real defect inside the current design.** `initialChargeCollectedBy = TECH_AT_FIRST_SERVICE`
+>   has no reader that touches the field: `getVisitBillingSummary` prices only the visit's own lines
+>   and finds the standalone invoice through neither anchor, so the ticket, appointment details and
+>   collect step say $0.00 due and never mention the deposit — a misleading control (dev behavior rule
+>   6) under either model. → **Pass 11d** prices the pending down-payment line into the visit's
+>   Price / COA / Due today, and the collector field gets its reader: it decides which prompt fires
+>   (office at scheduling unless technician-only; technician's collect step unless office-only; both
+>   when null). It stays "who may collect, never who did".
+> - **2c. Pushback recorded, answered.** Two use cases argued for keeping an up-front path: a
+>   commercial customer who wants a deposit invoice to pay against before the visit, and a deal whose
+>   first visit never happens while the deposit is owed. The owner kept the explicit button for both
+>   and removed only the automatic issue. Office collection at scheduling already exists as the
+>   designated deposit; the new part is the prompt when the appointment is created.
+>
+> **Still open (default stated, owner may overrule):** the three `Daily Rodent Trapping` agreements
+> carry a $99.95 `DOWN_PAYMENT` that was never issued (Pass 6: "assumed collected outside the
+> ledger"). Under 2a their next visit invoice would carry $99.95. **Default: Pass 11d's migration
+> marks them settled outside the ledger** (an `INITIAL_CHARGE` billing event with no invoice) and
+> prints the per-row effect before committing, Pass 12 style. Say "bill them" to have the line ride
+> their next visit instead.
+>
+> `CANONICAL_DOMAIN_RULES_V1.md` §13 ("real issued receivable at agreement creation", lines ~1046-1048)
+> and the initial-charge canon (~961-987) are corrected **in Pass 11d's PR**, with the code, per the
+> working agreement — not here.
 
 ## D5. Payments-lite ships in Phase 1
 
