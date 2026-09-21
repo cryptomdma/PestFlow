@@ -77,7 +77,7 @@ import { addDays, advanceAgreementDate, computeExpectedServiceCount } from "@sha
 // and server/production-value-backfill.ts still import it from here.
 export { advanceAgreementDate, computeExpectedServiceCount };
 import type { VisitBillingSummary, VisitServiceBilling } from "@shared/visit-billing";
-import type { InvoiceDetail } from "@shared/invoice-detail";
+import type { AppointmentInvoiceStatus, InvoiceDetail } from "@shared/invoice-detail";
 import {
   formatInitialChargeType,
   initialChargeFromTemplate,
@@ -710,6 +710,8 @@ export interface IStorage {
   getInvoiceLineItems(invoiceId: string): Promise<InvoiceLineItem[]>;
   /** The invoice modal's read (Pass 11a): row + lines + customer / location / visit. Undefined outside the org. */
   getInvoiceDetail(id: string): Promise<InvoiceDetail | undefined>;
+  /** Where one visit stands with invoicing (Pass 11b): its non-void invoice through either anchor, and whether every ticket is finalized. Undefined outside the org. */
+  getAppointmentInvoiceStatus(appointmentId: string): Promise<AppointmentInvoiceStatus | undefined>;
   getServiceRecordsReadyForBilling(): Promise<ServiceRecord[]>;
   getServiceRecordsReadyForBillingInRange(dateFrom: string, dateTo: string): Promise<ServiceRecord[]>;
   getBatchInvoicePreviewForDateRange(dateFrom: string, dateTo: string): Promise<BatchInvoicePreviewRow[]>;
@@ -721,6 +723,8 @@ export interface IStorage {
   batchGenerateInvoicesForDateRange(dateFrom: string, dateTo: string, actor?: AuditActor | null): Promise<BatchGenerateResult>;
   batchSendInvoices(invoiceIds: string[]): Promise<Invoice[]>;
   updateInvoice(id: string, data: Partial<InsertInvoice>, actor?: AuditActor | null): Promise<Invoice | undefined>;
+  /** Pass 11b: put a location on an invoice that has none. Refuses a VOID invoice, one that already has a location, and another customer's location. Audit `update`. */
+  assignInvoiceLocation(id: string, locationId: string, actor?: AuditActor | null): Promise<Invoice | undefined>;
   voidInvoice(id: string, actor?: AuditActor | null): Promise<Invoice | undefined>;
 
   // D5 payments ledger. Append-only: payments, applications and credit memos
@@ -4552,6 +4556,37 @@ export class DatabaseStorage implements IStorage {
     };
   }
 
+  // Where one visit stands with invoicing (PLAN_ROADMAP_V2.md C2.1b, Pass
+  // 11b): the Service Ticket Review modal's invoice badge, and its Generate
+  // for the visit the finalize prompt's Later left un-invoiced. Composed from
+  // the helpers generation and issue already read, so the badge can never
+  // disagree with what Generate would do: getAppointmentBillingGroupTx for
+  // the visit's active services and their tickets, findInvoiceForVisitTx for
+  // the invoice through either anchor (a DRAFT counts - it holds the anchor
+  // and Generate adopts it - a VOID one does not), and the issue path's own
+  // finalized test (every active service has a billing-ready ticket).
+  // Reads only; Generate keeps its route.
+  async getAppointmentInvoiceStatus(appointmentId: string): Promise<AppointmentInvoiceStatus | undefined> {
+    const group = await this.getAppointmentBillingGroupTx(db as any, appointmentId);
+    if (!group) {
+      return undefined;
+    }
+
+    const recordByServiceId = new Map(group.records.filter((record) => record.serviceId).map((record) => [record.serviceId!, record]));
+    const unfinalizedServices = group.services.filter((service) => !recordByServiceId.get(service.id)?.readyForBilling);
+    const [invoice, unfinalizedTickets] = await Promise.all([
+      this.findInvoiceForVisitTx(db as any, appointmentId, group.records.map((record) => record.id)),
+      this.describeUnfinalizedTicketsTx(db as any, unfinalizedServices, recordByServiceId),
+    ]);
+
+    return {
+      appointmentId,
+      invoice: invoice ?? null,
+      finalized: unfinalizedServices.length === 0,
+      unfinalizedTickets,
+    };
+  }
+
   // Eligibility is per visit as of D1, not per ticket: a record is ready when
   // its appointment has no non-void invoice yet AND every non-cancelled service
   // on that appointment is finalized. Partial finalization does not invoice
@@ -6244,6 +6279,56 @@ export class DatabaseStorage implements IStorage {
         });
       }
       return inv;
+    });
+  }
+
+  // Pass 11b (PLAN_ROADMAP_V2.md C2.1b): the repair for an invoice created
+  // before a manual invoice required a location - INV-000001 and INV-000072
+  // on the dev DB, each on a two-location customer, which is why Pass 10
+  // reported them instead of guessing. The office picks the location, under
+  // the rule createManualInvoice applies: one of THIS customer's locations
+  // (canon rule 1), never another customer's, never none. Not a transfer: an
+  // invoice that already has a location is refused, since moving one would
+  // move it between two location balances and nothing here re-resolves the
+  // terms it was issued under - the snapshots stay frozen. The rollups do not
+  // depend on the location, so nothing is recomputed. Recorded as an
+  // `update` on the invoice with the before / after rows, like the notes /
+  // due-date PATCH (Pass 8).
+  async assignInvoiceLocation(id: string, locationId: string, actor?: AuditActor | null): Promise<Invoice | undefined> {
+    return db.transaction(async (tx) => {
+      const [existing] = await tx.select().from(invoices).where(and(eq(invoices.orgId, this.orgId), eq(invoices.id, id)));
+      if (!existing) {
+        return undefined;
+      }
+      if (existing.status === "VOID") {
+        throw new Error("Voided invoices cannot be changed");
+      }
+      if (existing.locationId) {
+        throw new Error(`Invoice ${existing.invoiceNumber} already has a location; assigning one is only for invoices that have none`);
+      }
+
+      const [location] = await tx.select().from(locations).where(and(eq(locations.orgId, this.orgId), eq(locations.id, locationId)));
+      if (!location) {
+        throw new Error("Location not found");
+      }
+      if (location.customerId !== existing.customerId) {
+        throw new Error("The location belongs to a different customer");
+      }
+
+      const [updated] = await tx
+        .update(invoices)
+        .set({ locationId: location.id })
+        .where(and(eq(invoices.orgId, this.orgId), eq(invoices.id, id)))
+        .returning();
+      await this.recordAuditLogTx(tx, {
+        entityType: "invoice",
+        entityId: updated.id,
+        action: "update",
+        actor,
+        before: existing,
+        after: updated,
+      });
+      return updated;
     });
   }
 

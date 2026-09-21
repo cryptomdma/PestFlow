@@ -28,15 +28,15 @@ import {
 } from "@shared/payments";
 import type { Agreement, CreditApplication, CreditMemo, Invoice, Payment, PaymentApplication } from "@shared/schema";
 import { RecordPaymentDialog } from "@/components/record-payment-dialog";
-import { ApplyLocationBalancePrompt } from "@/components/apply-location-balance-prompt";
-import { InvoiceDocumentActions, InvoiceSentStamp } from "@/components/invoice-document-actions";
+import { InvoiceStatusBadge, InvoiceStatusIcon } from "@/components/invoice-status-badge";
 import { DollarSign, ReceiptText } from "lucide-react";
 
 // PLAN_BILLING_V1_1.md D5 / D4: the location's ledger, on its Invoices tab.
 // Balances at the top (open, on account, pending), then every payment and
 // credit memo at the location with the lifecycle acts each role may take
-// (confirm / apply / void / refund), then the invoice list the tab already
-// had, each row with its paid / due figures and its applications.
+// (confirm / apply / void / refund), then the invoice list - since Pass 11b
+// each row is data plus open, and the invoice modal carries the figures and
+// every act (PLAN_ROADMAP_V2.md C2.1b).
 
 /** Mirrors InvoiceLedger (server/storage.ts). */
 export interface InvoiceLedgerResponse {
@@ -391,61 +391,58 @@ export function InvoiceApplications({ invoice, confirmPending = false }: { invoi
   );
 }
 
-export function InvoiceRowLedger({
-  invoice,
-  locationId,
-  agreements,
-  unappliedCents,
-}: {
-  invoice: Invoice;
-  locationId: string;
-  agreements?: Agreement[];
-  /** The location's unapplied balance (confirmed + pending), for the Apply balance affordance. */
-  unappliedCents: number;
-}) {
-  const { user } = useAuth();
-  const canRecord = can(user?.role ?? "", PERMISSIONS.TAKE_PAYMENT_FIELD);
-  const canApply = can(user?.role ?? "", PERMISSIONS.APPLY_PAYMENT);
-  const [recordOpen, setRecordOpen] = useState(false);
-  const [applyInvoice, setApplyInvoice] = useState<Invoice | null>(null);
-  const [showApplications, setShowApplications] = useState(false);
+// The location Invoices tab's row (Pass 11b): data plus open, as the Invoices
+// screen's row has been since Pass 11a. Number, the derived status, the
+// issued and due dates, the paid / balance / pending line and the total; the
+// whole row opens the invoice modal, where every act that used to sit here
+// (document, applications, Record Payment, Apply location balance) now
+// lives. No customer or location on it - the tab is already the location.
+export function InvoiceRowLedger({ invoice, onOpen }: { invoice: Invoice; onOpen: () => void }) {
   const issued = isInvoiceIssued(invoice.status);
 
   return (
-    <div className="space-y-2">
-      <div className="flex items-center gap-2 flex-wrap text-xs text-muted-foreground">
-        {issued ? (
-          <span data-testid={`text-invoice-balance-${invoice.id}`}>
-            Paid {formatCents(invoice.amountPaidCents)} - Due {formatCents(invoice.balanceDueCents)}
-            {invoice.pendingAppliedCents > 0 ? (
-              <span className="text-chart-3" data-testid={`text-invoice-pending-${invoice.id}`}> - {formatCents(invoice.pendingAppliedCents)} pending confirmation</span>
+    <Card
+      role="button"
+      tabIndex={0}
+      aria-label={`Open invoice ${invoice.invoiceNumber}`}
+      onClick={onOpen}
+      onKeyDown={(e) => {
+        if (e.target !== e.currentTarget) return;
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onOpen();
+        }
+      }}
+      className="cursor-pointer transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      data-testid={`card-invoice-${invoice.id}`}
+    >
+      <CardContent className="p-4 flex items-center gap-4">
+        <div className="h-9 w-9 rounded-md bg-muted flex items-center justify-center shrink-0">
+          <InvoiceStatusIcon invoice={invoice} />
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="font-semibold text-sm">{invoice.invoiceNumber}</span>
+            <InvoiceStatusBadge invoice={invoice} />
+          </div>
+          <div className="text-xs text-muted-foreground mt-0.5 flex items-center gap-3 flex-wrap">
+            <span>{invoice.status === "DRAFT" ? `Drafted ${formatDate(invoice.createdAt)}` : `Issued ${formatDate(invoice.issuedAt ?? invoice.createdAt)}`}</span>
+            {invoice.dueDate ? <span>Due {formatDate(invoice.dueDate)}</span> : null}
+            {issued ? (
+              <span data-testid={`text-invoice-balance-${invoice.id}`}>
+                Paid {formatCents(invoice.amountPaidCents)} - Balance {formatCents(invoice.balanceDueCents)}
+              </span>
+            ) : (
+              <span>{invoice.status === "DRAFT" ? "Draft - not a receivable until issued" : "Voided - nothing owed"}</span>
+            )}
+            {issued && invoice.pendingAppliedCents > 0 ? (
+              <span className="text-chart-3" data-testid={`text-invoice-pending-${invoice.id}`}>{formatCents(invoice.pendingAppliedCents)} pending confirmation</span>
             ) : null}
-          </span>
-        ) : (
-          <span>{invoice.status === "DRAFT" ? "Draft - not a receivable until issued" : "Voided - nothing owed"}</span>
-        )}
-        <InvoiceSentStamp invoice={invoice} />
-        <InvoiceDocumentActions invoice={invoice} compact />
-        {issued ? (
-          <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={() => setShowApplications((prev) => !prev)} data-testid={`button-toggle-applications-${invoice.id}`}>
-            {showApplications ? "Hide applications" : "Applications"}
-          </Button>
-        ) : null}
-        {issued && invoice.balanceDueCents > 0 && canRecord ? (
-          <Button variant="outline" size="sm" className="h-6 px-2 text-xs" onClick={() => setRecordOpen(true)} data-testid={`button-record-payment-${invoice.id}`}>
-            <DollarSign className="h-3 w-3 mr-1" /> Record Payment
-          </Button>
-        ) : null}
-        {issued && invoice.balanceDueCents > 0 && canApply && unappliedCents > 0 ? (
-          <Button variant="outline" size="sm" className="h-6 px-2 text-xs" onClick={() => setApplyInvoice(invoice)} data-testid={`button-apply-balance-${invoice.id}`}>
-            Apply location balance
-          </Button>
-        ) : null}
-      </div>
-      {showApplications ? <InvoiceApplications invoice={invoice} /> : null}
-      <RecordPaymentDialog open={recordOpen} onOpenChange={setRecordOpen} locationId={locationId} invoice={invoice} agreements={agreements} />
-      <ApplyLocationBalancePrompt invoice={applyInvoice} onClose={() => setApplyInvoice(null)} />
-    </div>
+          </div>
+        </div>
+        <span className="text-lg font-bold shrink-0">{formatCents(invoice.totalAmountCents)}</span>
+      </CardContent>
+    </Card>
   );
 }
 

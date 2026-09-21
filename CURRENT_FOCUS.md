@@ -6,10 +6,11 @@ appointment-anchored invoicing wired to finalization, payments-lite ledger (cash
 balances, application/release), COA as payment application, and `audit_logs` as the system-wide
 immutable financial history.
 
-Now active: **Phase 2 — Invoices you can work from**, per `PLAN_ROADMAP_V2.md`. Pass 11a (the Invoice
-modal, core) is built and pushed; **next pass: 11b, the Invoice modal's reach** — the C2.1b row of
-that document's Phase 2 table, building on "Shipped in Pass 11a" at the end of its Part D. The
-roadmap sequences every remaining item below; this file keeps only the status pointer.
+Now active: **Phase 2 — Invoices you can work from**, per `PLAN_ROADMAP_V2.md`. Passes 11a and 11b
+(the Invoice modal, core and reach) are built - 11a merged as PR #73, 11b pushed; **next pass: 12,
+Billing Plan required on every Agreement + sale attribution** — the C2.2 row of that document's
+Phase 2 table, with the owner's answer recorded in its "Open decision" column. The roadmap sequences
+every remaining item below; this file keeps only the status pointer.
 
 ## Status
 Pass 1 (`feature/phase-1-appointment-status-enum`, D1a) merged as PR #56.
@@ -300,7 +301,7 @@ PATCH has no gate and a re-post un-finalizes a FINALIZED ticket) → 13 (Batch I
 (aging) → 25 (opportunity taxonomy) → 27 (cancel / reschedule)**. Each unscheduled item below now
 carries a `[Roadmap: …]` pointer to the unit that owns it.
 
-Pass 11a (`feature/phase-2-invoice-modal-core`, 2026-09-19, C2.1a) pushed, awaiting merge. **The
+Pass 11a (`feature/phase-2-invoice-modal-core`, 2026-09-19, C2.1a) merged as PR #73. **The
 Invoices screen is a list again and the invoice has a modal.** One new read, `GET /api/invoices/:id`
 (the row, its lines with the ticket's status / service type / service date behind each, the
 customer, the location and the visit - composed from `getInvoiceLineItems` and
@@ -324,8 +325,31 @@ before manually testing - this pass adds a route, and the modal's layout has not
 anyone yet.** Signatures and behavior are under "Shipped in Pass 11a" at the end of
 `PLAN_ROADMAP_V2.md` Part D.
 
-Next up: **Pass 11b** — the Invoice modal's reach (`PLAN_ROADMAP_V2.md` Phase 2 table, C2.1b).
-Branch from `origin/main` after confirming it contains Pass 11a's merge.
+Pass 11b (`feature/phase-2-invoice-modal-reach`, 2026-09-20, C2.1b) pushed, awaiting merge. **The
+invoice modal reaches everywhere an invoice is named, and the ticket is one click from its line.**
+The location's Invoices tab rows are data plus open (the same slim row as the Invoices screen; Record
+Payment, Apply balance, Applications and the document buttons left the row for the modal) and
+`/customers/:id?locationId=&tab=invoices&invoiceId=` deep-links into it, as does the Services tab's
+Invoice column and the Service Details dialog. Every invoice line with a ticket behind it carries
+"Open ticket", and Service Ticket Review reads `?recordId=` to open that ticket (once per id, the
+queue's filters untouched, the parameter cleared on close). One new read,
+`GET /api/invoices/by-appointment/:id` (`shared/invoice-detail.ts` `AppointmentInvoiceStatus`:
+the visit's non-void invoice through either anchor, DRAFT included, plus `finalized` and the
+unfinalized tickets - composed from the helpers Generate itself reads), feeds an **invoice badge**
+in the review modal's header that opens the modal, or **Generate invoice** when the visit is
+finalized and un-invoiced - the finalize prompt's "Later" case - through the prompt's own generate
+route, then D4's apply-balance question. `POST /api/invoices/:id/assign-location` (new
+`ASSIGN_INVOICE_LOCATION`, manager+, audit `update`) is the repair for the two location-less rows:
+"Assign location" in the modal's header, the customer's locations only, refused once a location
+exists (a repair, never a transfer). **Neither row was assigned - the owner picks.** No migration.
+**Restart `npm run dev:full` before manually testing - this pass adds two routes and a permission,
+and none of the new UI (the badge column, the slim rows, the assign dialog) has been rendered by
+anyone yet.** Signatures and behavior are under "Shipped in Pass 11b" at the end of
+`PLAN_ROADMAP_V2.md` Part D.
+
+Next up: **Pass 12** — Billing Plan required on every Agreement + sale attribution
+(`PLAN_ROADMAP_V2.md` Phase 2 table, C2.2; the owner's 2026-09-19 answer is in its "Open decision"
+column). Branch from `origin/main` after confirming it contains Pass 11b's merge.
 
 Phase 1's ordered plan, impact analysis, conflict resolutions, and per-pass verification steps live in
 `PLAN_BILLING_V1_1_EXECUTION.md` — read it when a pass builds on a Phase 1 helper (its "Shipped in
@@ -376,8 +400,9 @@ finishes. This file only tracks the one-line "where are we" pointer.
     `invoice_issued` now. The two pre-existing location-less rows were **not** backfilled:
     INV-000001 (Sarah Chen) and INV-000072 (Alex Jones - still OPEN, not voided as this entry once
     said) each belong to a two-location customer, so a backfill would be a guess. They show "No
-    location" on the Invoices screen with Record Payment disabled; void them, or leave them until a
-    location-assignment repair exists (not scheduled).
+    location" on the Invoices screen with Record Payment disabled. **The repair exists since Pass
+    11b**: open either in the invoice modal as a manager and use "Assign location"; the pass
+    assigned neither, since which location is the owner's call.
   - **Billing Plan required on every Agreement** `[Roadmap: Pass 12, C2.2]` — backfill the 11 plan-less agreements, then
     `billingPlanId NOT NULL` + zod. **Unblocked by Pass 3.5**: the creation UI, template propagation,
     and plan-attachment-on-update all exist now, so what remains is the backfill and the constraint.

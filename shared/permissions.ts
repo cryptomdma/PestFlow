@@ -15,6 +15,11 @@ export const PERMISSIONS = {
   SEND_INVOICE: "send_invoice",
   VOID_INVOICE: "void_invoice",
   ISSUE_CREDIT_MEMO: "issue_credit_memo",
+  // PLAN_ROADMAP_V2.md C2.1b (Pass 11b): put a location on an invoice that
+  // has none - the repair for the rows created before a manual invoice
+  // required one. Manager+. Never a transfer: the route refuses an invoice
+  // that already has a location.
+  ASSIGN_INVOICE_LOCATION: "assign_invoice_location",
   // PLAN_BILLING_V1_1.md D5, the payments ledger. TAKE_PAYMENT_FIELD records
   // a payment (it posts PENDING); the rest are office actions on the ledger.
   TAKE_PAYMENT_FIELD: "take_payment_field",
@@ -72,6 +77,7 @@ const ROLE_PERMISSIONS: Record<UserRole, ReadonlySet<Permission>> = {
     PERMISSIONS.SEND_INVOICE,
     PERMISSIONS.VOID_INVOICE,
     PERMISSIONS.ISSUE_CREDIT_MEMO,
+    PERMISSIONS.ASSIGN_INVOICE_LOCATION,
     PERMISSIONS.TAKE_PAYMENT_FIELD,
     PERMISSIONS.APPLY_PAYMENT,
     PERMISSIONS.CONFIRM_PAYMENT,

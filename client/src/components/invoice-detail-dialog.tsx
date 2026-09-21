@@ -16,6 +16,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
@@ -34,9 +35,10 @@ import {
   describeTicketStatus,
   readBillingProfileSnapshot,
   type InvoiceDetail,
+  type UnfinalizedTicketView,
 } from "@shared/invoice-detail";
 import { formatCreditMemoReason, formatPaymentMethod, type InvoiceLocationBalance } from "@shared/payments";
-import type { AuditLog, Invoice } from "@shared/schema";
+import type { AuditLog, Invoice, Location } from "@shared/schema";
 import { InvoiceDocumentActions, InvoiceSentStamp } from "@/components/invoice-document-actions";
 import { InvoiceStatusBadge, isInvoiceOverdue } from "@/components/invoice-status-badge";
 import { RecordPaymentDialog } from "@/components/record-payment-dialog";
@@ -58,14 +60,11 @@ import { Ban, CalendarDays, DollarSign, FileCheck, MapPin, User } from "lucide-r
 // void-and-re-enter correction path), so Void is offered on every non-void
 // invoice behind a confirm that names what it will release. There is no Email
 // button: "send" is still the sentAt stamp and the pinned PDF (Pass 10).
-
-/** Mirrors the server's UnfinalizedTicketRef (server/storage.ts) - the 409's list. */
-interface UnfinalizedTicketRef {
-  serviceId: string;
-  serviceRecordId: string | null;
-  ticketStatus: string | null;
-  description: string;
-}
+//
+// Pass 11b (C2.1b) added its reach: every line with a ticket behind it links
+// to that ticket on Service Ticket Review (?recordId=), and an invoice with
+// no location - the two rows from before one was required - offers Assign
+// location to a manager, through the server's own customer-location rule.
 
 function formatDate(value: string | Date | null | undefined) {
   return value ? new Date(value).toLocaleDateString() : "";
@@ -88,6 +87,79 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
   return <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{children}</h3>;
 }
 
+// Pass 11b: the repair for an invoice with no location. The office picks one
+// of the customer's locations (defaulting to the primary, as the New Invoice
+// dialog does) and POST /api/invoices/:id/assign-location applies the same
+// rule createManualInvoice does - this customer's location, or a refusal.
+// Offered only while the invoice has none: it is a repair, not a transfer.
+function AssignInvoiceLocationDialog({ invoice, open, onOpenChange }: { invoice: Invoice; open: boolean; onOpenChange: (open: boolean) => void }) {
+  const { toast } = useToast();
+  const { data: customerLocations, isLoading } = useQuery<Location[]>({
+    queryKey: ["/api/locations", invoice.customerId],
+    enabled: open,
+  });
+  const [locationId, setLocationId] = useState("");
+  useEffect(() => {
+    if (!open || !customerLocations) return;
+    setLocationId((prev) => {
+      if (prev && customerLocations.some((location) => location.id === prev)) return prev;
+      const primary = customerLocations.find((location) => location.isPrimary) ?? customerLocations[0];
+      return primary?.id ?? "";
+    });
+  }, [open, customerLocations]);
+
+  const mutation = useMutation({
+    mutationFn: async () => {
+      const response = await apiRequest("POST", `/api/invoices/${invoice.id}/assign-location`, { locationId });
+      return (await response.json()) as Invoice;
+    },
+    onSuccess: (updated) => {
+      invalidateInvoiceViews();
+      onOpenChange(false);
+      toast({ title: `Invoice ${updated.invoiceNumber} assigned to a location`, description: "It is now on that location's Invoices tab, in its balance and on its History." });
+    },
+    onError: (err: Error) => toast({ title: "Unable to assign the location", description: getApiErrorMessage(err), variant: "destructive" }),
+  });
+
+  return (
+    <Dialog open={open} onOpenChange={(next) => !mutation.isPending && onOpenChange(next)}>
+      <DialogContent className="sm:max-w-md" data-testid="dialog-assign-invoice-location">
+        <DialogHeader>
+          <DialogTitle>Assign {invoice.invoiceNumber} to a location</DialogTitle>
+          <DialogDescription>
+            This invoice was created before a location was required. Pick which of the customer's locations it belongs to. Its terms and figures stay as issued, and it cannot be moved again from here.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-1.5">
+          <Label htmlFor="assign-invoice-location">Location</Label>
+          {isLoading ? (
+            <Skeleton className="h-9 w-full" />
+          ) : (
+            <Select value={locationId} onValueChange={setLocationId}>
+              <SelectTrigger id="assign-invoice-location" data-testid="select-assign-invoice-location">
+                <SelectValue placeholder="Choose a location" />
+              </SelectTrigger>
+              <SelectContent>
+                {(customerLocations ?? []).map((location) => (
+                  <SelectItem key={location.id} value={location.id}>
+                    {[location.name, location.address].filter(Boolean).join(" - ")}{location.isPrimary ? " (primary)" : ""}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
+        </div>
+        <div className="flex justify-end gap-2">
+          <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={mutation.isPending}>Cancel</Button>
+          <Button type="button" onClick={() => mutation.mutate()} disabled={!locationId || mutation.isPending} data-testid="button-assign-invoice-location-confirm">
+            {mutation.isPending ? "Assigning..." : "Assign location"}
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export function InvoiceDetailDialog({
   invoiceId,
   open,
@@ -106,6 +178,7 @@ export function InvoiceDetailDialog({
   const canRecord = can(role, PERMISSIONS.TAKE_PAYMENT_FIELD);
   const canApply = can(role, PERMISSIONS.APPLY_PAYMENT);
   const canCredit = can(role, PERMISSIONS.ISSUE_CREDIT_MEMO);
+  const canAssignLocation = can(role, PERMISSIONS.ASSIGN_INVOICE_LOCATION);
 
   const enabled = open && !!invoiceId;
   const { data: detail, isLoading, isError, error } = useQuery<InvoiceDetail>({
@@ -148,8 +221,9 @@ export function InvoiceDetailDialog({
   const [recordOpen, setRecordOpen] = useState(false);
   const [applyInvoice, setApplyInvoice] = useState<Invoice | null>(null);
   const [creditOpen, setCreditOpen] = useState(false);
+  const [assignOpen, setAssignOpen] = useState(false);
   const [voidOpen, setVoidOpen] = useState(false);
-  const [issuePrompt, setIssuePrompt] = useState<UnfinalizedTicketRef[] | null>(null);
+  const [issuePrompt, setIssuePrompt] = useState<UnfinalizedTicketView[] | null>(null);
 
   const notesChanged = !!invoice && notesDraft !== (invoice.notes ?? "");
   const dueDateChanged = !!invoice && dueDateDraft !== localDateKey(invoice.dueDate);
@@ -187,7 +261,7 @@ export function InvoiceDetailDialog({
     },
     onError: (err: Error) => {
       if (err instanceof ApiError && getApiErrorCode(err) === "PREFINALIZATION_ISSUE_REQUIRED") {
-        const body = err.body as { unfinalizedTickets?: UnfinalizedTicketRef[] };
+        const body = err.body as { unfinalizedTickets?: UnfinalizedTicketView[] };
         setIssuePrompt(body.unfinalizedTickets ?? []);
         return;
       }
@@ -265,7 +339,14 @@ export function InvoiceDetailDialog({
                         {[detail.location.name, detail.location.address].filter(Boolean).join(" - ")}, {detail.location.city}
                       </Link>
                     ) : (
-                      <span className="text-destructive" title="Created before a location was required. It is on no location's Invoices tab and in no location balance." data-testid="text-invoice-no-location">No location</span>
+                      <span className="inline-flex items-center gap-2">
+                        <span className="text-destructive" title="Created before a location was required. It is on no location's Invoices tab and in no location balance." data-testid="text-invoice-no-location">No location</span>
+                        {canAssignLocation && !isVoid ? (
+                          <Button type="button" variant="outline" size="sm" className="h-6 px-2 text-xs" onClick={() => setAssignOpen(true)} data-testid="button-assign-invoice-location">
+                            Assign location
+                          </Button>
+                        ) : null}
+                      </span>
                     )}
                     <span>{isDraft ? `Drafted ${formatDate(detail.invoice.createdAt)}` : `Issued ${formatDate(detail.invoice.issuedAt ?? detail.invoice.createdAt)}`}</span>
                     {detail.invoice.dueDate ? <span>Due {formatDate(detail.invoice.dueDate)}</span> : null}
@@ -351,7 +432,7 @@ export function InvoiceDetailDialog({
                           <TableRow key={line.id} data-testid={`row-invoice-line-${line.id}`}>
                             <TableCell className="py-2">
                               <div className="text-sm">{line.description}</div>
-                              {line.serviceTypeName || line.serviceDate || line.ticketStatus ? (
+                              {line.serviceTypeName || line.serviceDate || line.ticketStatus || line.serviceRecordId ? (
                                 <div className="mt-0.5 flex items-center gap-2 flex-wrap text-xs text-muted-foreground">
                                   {line.serviceTypeName ? <span>{line.serviceTypeName}</span> : null}
                                   {line.serviceDate ? <span>Serviced {formatDate(line.serviceDate)}</span> : null}
@@ -359,6 +440,15 @@ export function InvoiceDetailDialog({
                                     <Badge variant="outline" className={`text-[10px] ${line.ticketStatus === "FLAGGED_FOR_REVIEW" ? "border-destructive/50 text-destructive" : ""}`}>
                                       Ticket {describeTicketStatus(line.ticketStatus).toLowerCase()}
                                     </Badge>
+                                  ) : null}
+                                  {line.serviceRecordId ? (
+                                    <Link
+                                      href={`/service-ticket-review?recordId=${encodeURIComponent(line.serviceRecordId)}`}
+                                      className="text-primary hover:underline"
+                                      data-testid={`link-invoice-line-ticket-${line.id}`}
+                                    >
+                                      Open ticket
+                                    </Link>
                                   ) : null}
                                 </div>
                               ) : null}
@@ -549,6 +639,9 @@ export function InvoiceDetailDialog({
       <ApplyLocationBalancePrompt invoice={applyInvoice} onClose={() => setApplyInvoice(null)} />
       {invoice?.locationId ? (
         <IssueCreditMemoDialog open={creditOpen} onOpenChange={setCreditOpen} locationId={invoice.locationId} invoices={[invoice]} defaultInvoiceId={invoice.id} />
+      ) : null}
+      {invoice && !invoice.locationId ? (
+        <AssignInvoiceLocationDialog invoice={invoice} open={assignOpen} onOpenChange={setAssignOpen} />
       ) : null}
 
       <AlertDialog open={voidOpen} onOpenChange={(next) => !next && !voidMutation.isPending && setVoidOpen(false)}>

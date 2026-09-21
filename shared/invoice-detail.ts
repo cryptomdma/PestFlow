@@ -26,6 +26,34 @@ export interface InvoiceDetail {
   appointment: { id: string; scheduledDate: Date | string; status: string; technicianLabel: string | null } | null;
 }
 
+/** A service on a visit whose ticket is not finalized. Mirrors UnfinalizedTicketRef (server/storage.ts) - the issue route's 409 list and the by-appointment read share it. */
+export interface UnfinalizedTicketView {
+  serviceId: string;
+  serviceRecordId: string | null;
+  /** OFFICE_REVIEW_PENDING | FLAGGED_FOR_REVIEW | REOPENED; null when no ticket has been posted for the service. */
+  ticketStatus: string | null;
+  description: string;
+}
+
+/**
+ * GET /api/invoices/by-appointment/:id (Pass 11b): where one visit stands
+ * with invoicing - the Service Ticket Review modal's invoice badge and its
+ * Generate. The invoice is found through either anchor (D1): the appointment,
+ * or a pre-D1 row anchored on one of the visit's tickets. A DRAFT is reported
+ * (it holds the anchor, and Generate adopts it); a VOID one is not (the visit
+ * is free to be invoiced again). `finalized` is generation's own condition -
+ * every non-cancelled service on the visit has a billing-ready ticket - so
+ * "finalized, no invoice" is exactly the visit the finalize prompt's Later
+ * left on the ready-to-bill list.
+ */
+export interface AppointmentInvoiceStatus {
+  appointmentId: string;
+  invoice: Invoice | null;
+  finalized: boolean;
+  /** Empty when `finalized`. */
+  unfinalizedTickets: UnfinalizedTicketView[];
+}
+
 const LINE_TYPE_LABELS: Record<string, string> = {
   SERVICE: "Service",
   // Visible-but-not-chargeable: the agreement's plan bills the work

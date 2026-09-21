@@ -1870,6 +1870,17 @@ export async function registerRoutes(
     res.json(data);
   });
 
+  // Pass 11b (PLAN_ROADMAP_V2.md C2.1b): where one visit stands with
+  // invoicing - the Service Ticket Review modal's invoice badge, and its
+  // Generate for a finalized, un-invoiced visit (the finalize prompt's
+  // "Later"). Open read like every invoice read here; 404 outside the org.
+  // A fixed path, kept with the other fixed paths above the bare :id reads.
+  app.get("/api/invoices/by-appointment/:appointmentId", async (req, res) => {
+    const data = await req.storage.getAppointmentInvoiceStatus(req.params.appointmentId);
+    if (!data) return res.status(404).json({ message: "Appointment not found" });
+    res.json(data);
+  });
+
   app.get("/api/invoices/:id/line-items", async (req, res) => {
     const data = await req.storage.getInvoiceLineItems(req.params.id);
     res.json(data);
@@ -2022,6 +2033,28 @@ export async function registerRoutes(
       if (!data) return res.status(404).json({ message: "Invoice not found" });
       res.json(data);
     } catch (e: any) {
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  // Pass 11b (PLAN_ROADMAP_V2.md C2.1b): put a location on an invoice that
+  // has none - the repair for the rows created before a manual invoice
+  // required one (INV-000001, INV-000072). Manager+ through
+  // ASSIGN_INVOICE_LOCATION; storage refuses a VOID invoice, one that already
+  // has a location (this is not a transfer) and another customer's location,
+  // and records an `update` on the invoice. The actor is the session's.
+  const assignInvoiceLocationSchema = z.object({
+    locationId: z.string().min(1),
+  }).strict();
+
+  app.post("/api/invoices/:id/assign-location", requirePermission(PERMISSIONS.ASSIGN_INVOICE_LOCATION), async (req, res) => {
+    try {
+      const { locationId } = assignInvoiceLocationSchema.parse(req.body ?? {});
+      const data = await req.storage.assignInvoiceLocation(req.params.id, locationId, getAuditActor(req));
+      if (!data) return res.status(404).json({ message: "Invoice not found" });
+      res.json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
       res.status(400).json({ message: e.message });
     }
   });
