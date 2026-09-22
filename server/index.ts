@@ -82,6 +82,10 @@ app.use((req, res, next) => {
 
 (async () => {
   await bootstrapOrganizations().catch((e) => console.error("Organization bootstrap error:", e));
+  // Early tenancy pass: on a `db:push`-created database every table already
+  // exists with org_id NOT NULL, and the org-unaware seed inserts below need
+  // its Heritage default before they run. No-op on an established database.
+  await bootstrapTenancy().catch((e) => console.error("Tenancy bootstrap (early) error:", e));
   await bootstrapAuth().catch((e) => console.error("Auth bootstrap error:", e));
   setupAuth(app);
   registerAuthRoutes(app);
@@ -138,16 +142,14 @@ app.use((req, res, next) => {
     await setupVite(httpServer, app);
   }
 
-  // ALWAYS serve the app on the port specified in the environment variable PORT
-  // Other ports are firewalled. Default to 5000 if not specified.
-  // this serves both the API and the client.
-  // It is the only port that is not firewalled.
+  // Serve the API and the client on PORT (default 5000). No `reusePort`: it was a
+  // Replit leftover, Windows has no SO_REUSEPORT, and Node 22.12+ throws ENOTSUP
+  // for it there instead of ignoring it as Node 20 did.
   const port = parseInt(process.env.PORT || "5000", 10);
   httpServer.listen(
     {
       port,
       host: "0.0.0.0",
-      reusePort: true,
     },
     () => {
       log(`serving on port ${port}`);
