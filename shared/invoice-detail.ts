@@ -115,24 +115,90 @@ export function describeInvoiceOrigin(
   return { kind: "UNKNOWN", label: "Not tied to a visit; this invoice predates line items" };
 }
 
-/** The frozen billing terms an invoice was issued under (resolveInvoiceTermsForLocationTx). Null when none were resolved. */
+/**
+ * Where the invoice's Bill To came from, decided at issue and frozen in the
+ * snapshot (Pass 11c, canon §4 / §5: billing defaults flow from the primary
+ * location / account context, with a location override):
+ * - PROFILE: the resolved billing profile carried its own billingAddress.
+ * - LOCATION_OVERRIDE: a location-level profile with no address of its own -
+ *   the override says "bill this location", so its own address is the Bill To.
+ * - PRIMARY_LOCATION: no profile, or an account-level profile with no address -
+ *   the customer's primary location is the customer identity, and is billed.
+ */
+export type InvoiceBillToSource = "PROFILE" | "LOCATION_OVERRIDE" | "PRIMARY_LOCATION";
+
+export const INVOICE_BILL_TO_SOURCES: readonly InvoiceBillToSource[] = ["PROFILE", "LOCATION_OVERRIDE", "PRIMARY_LOCATION"];
+
+/** The `billTo` key of `invoices.billingProfileSnapshot` since Pass 11c. */
+export interface InvoiceBillToSnapshot {
+  name: string;
+  address: string | null;
+  source: InvoiceBillToSource;
+}
+
+/** The `serviceLocation` key of `invoices.billingProfileSnapshot` since Pass 11c: the invoice's location as it stood at issue. */
+export interface InvoiceServiceLocationSnapshot {
+  name: string;
+  address: string | null;
+}
+
+/**
+ * The frozen billing terms an invoice was issued under
+ * (resolveInvoiceTermsForLocationTx). Null when none were snapshotted, which
+ * since Pass 11c means a row from before the resolver always wrote one.
+ * `billTo` / `serviceLocation` are null on a pre-11c snapshot (a profile
+ * resolved, but the parties were not frozen); `profileId` is null when the
+ * snapshot was written with no billing profile resolved.
+ */
 export interface BillingProfileSnapshotView {
+  profileId: string | null;
   label: string | null;
   billingType: string | null;
   invoiceTerms: string | null;
   billingName: string | null;
   billingAddress: string | null;
+  billTo: InvoiceBillToSnapshot | null;
+  serviceLocation: InvoiceServiceLocationSnapshot | null;
 }
 
 export function readBillingProfileSnapshot(value: unknown): BillingProfileSnapshotView | null {
   if (!isRecord(value)) return null;
   return {
+    profileId: asString(value.profileId),
     label: asString(value.label),
     billingType: asString(value.billingType),
     invoiceTerms: asString(value.invoiceTerms),
     billingName: asString(value.billingName),
     billingAddress: asString(value.billingAddress),
+    billTo: readBillTo(value.billTo),
+    serviceLocation: readServiceLocation(value.serviceLocation),
   };
+}
+
+function readBillTo(value: unknown): InvoiceBillToSnapshot | null {
+  if (!isRecord(value)) return null;
+  const name = asString(value.name);
+  const source = asString(value.source);
+  if (!name || !source || !INVOICE_BILL_TO_SOURCES.includes(source as InvoiceBillToSource)) return null;
+  return { name, address: asString(value.address), source: source as InvoiceBillToSource };
+}
+
+function readServiceLocation(value: unknown): InvoiceServiceLocationSnapshot | null {
+  if (!isRecord(value)) return null;
+  const name = asString(value.name);
+  if (!name) return null;
+  return { name, address: asString(value.address) };
+}
+
+const BILL_TO_SOURCE_LABELS: Record<InvoiceBillToSource, string> = {
+  PROFILE: "billing profile address",
+  LOCATION_OVERRIDE: "this location's billing profile",
+  PRIMARY_LOCATION: "primary location",
+};
+
+/** The parenthetical the modal prints after the Bill To: "(primary location)". */
+export function describeBillToSource(source: InvoiceBillToSource): string {
+  return BILL_TO_SOURCE_LABELS[source];
 }
 
 const INVOICE_TERMS_LABELS: Record<string, string> = {

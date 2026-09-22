@@ -39,8 +39,8 @@ export function renderInvoiceHtml(context: InvoiceDocumentContext): string {
   .header { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 3px solid ${accentColor}; padding-bottom: 16px; }
   .header h1 { margin: 0; color: ${accentColor}; font-size: 22px; }
   .meta { text-align: right; font-size: 12px; color: #4b5563; }
-  .parties { display: flex; justify-content: space-between; margin-top: 24px; font-size: 13px; }
-  .parties .block { max-width: 45%; white-space: pre-line; }
+  .parties { display: flex; justify-content: space-between; gap: 16px; margin-top: 24px; font-size: 13px; }
+  .parties .block { flex: 1 1 0; min-width: 0; white-space: pre-line; }
   .parties h3 { font-size: 11px; text-transform: uppercase; color: #6b7280; margin: 0 0 4px; }
   table { width: 100%; border-collapse: collapse; margin-top: 24px; font-size: 13px; }
   th { text-align: left; border-bottom: 1px solid #d1d5db; padding: 6px 4px; font-size: 11px; text-transform: uppercase; color: #6b7280; }
@@ -76,6 +76,15 @@ export function renderInvoiceHtml(context: InvoiceDocumentContext): string {
       ${escapeHtml(context.billToName)}<br>
       ${context.billToAddress ? escapeHtml(context.billToAddress) : ""}
     </div>
+    ${
+      context.serviceLocation
+        ? `<div class="block">
+      <h3>Service Location</h3>
+      ${escapeHtml(context.serviceLocation.name)}<br>
+      ${context.serviceLocation.address ? escapeHtml(context.serviceLocation.address) : ""}
+    </div>`
+        : ""
+    }
   </div>
   <table>
     <thead><tr><th>Description</th><th class="num">Qty</th><th class="num">Unit Price</th><th class="num">Amount</th></tr></thead>

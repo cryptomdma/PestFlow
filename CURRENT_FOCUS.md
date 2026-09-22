@@ -7,11 +7,12 @@ balances, application/release), COA as payment application, and `audit_logs` as 
 immutable financial history.
 
 Now active: **Phase 2 — Invoices you can work from**, per `PLAN_ROADMAP_V2.md`. Passes 11a and 11b
-(the Invoice modal, core and reach) are merged (PRs #73, #74); **next pass: 11c, the invoice
-document's parties** — the C2.1c row of that document's Phase 2 table, inserted with 11d ahead of
-Pass 12 by the owner's review of 2026-09-21 (recorded under D4 in `PLAN_BILLING_V1_1.md` and in the
-roadmap's Part E). The roadmap sequences every remaining item below; this file keeps only the status
-pointer.
+(the Invoice modal, core and reach) are merged (PRs #73, #74), the owner review of 2026-09-21 is
+merged (PR #75), and Pass 11c (the invoice document's parties) is pushed, awaiting merge; **next
+pass: 11d, the down payment on the first visit's invoice** — the C2.1d row of that document's Phase
+2 table, inserted with 11c ahead of Pass 12 by the owner's review of 2026-09-21 (recorded under D4
+in `PLAN_BILLING_V1_1.md` and in the roadmap's Part E). The roadmap sequences every remaining item
+below; this file keeps only the status pointer.
 
 ## Status
 Pass 1 (`feature/phase-1-appointment-status-enum`, D1a) merged as PR #56.
@@ -331,7 +332,7 @@ before manually testing - this pass adds a route, and the modal's layout has not
 anyone yet.** Signatures and behavior are under "Shipped in Pass 11a" at the end of
 `PLAN_ROADMAP_V2.md` Part D.
 
-Pass 11b (`feature/phase-2-invoice-modal-reach`, 2026-09-20, C2.1b) pushed, awaiting merge. **The
+Pass 11b (`feature/phase-2-invoice-modal-reach`, 2026-09-20, C2.1b) merged as PR #74. **The
 invoice modal reaches everywhere an invoice is named, and the ticket is one click from its line.**
 The location's Invoices tab rows are data plus open (the same slim row as the Invoices screen; Record
 Payment, Apply balance, Applications and the document buttons left the row for the modal) and
@@ -353,8 +354,8 @@ and none of the new UI (the badge column, the slim rows, the assign dialog) has 
 anyone yet.** Signatures and behavior are under "Shipped in Pass 11b" at the end of
 `PLAN_ROADMAP_V2.md` Part D.
 
-Owner review of 2026-09-21 (`docs/owner-review-2026-09-21`, docs only, no code): two items from the
-owner's live test on James Peterson (Home). **The invoice's Bill To prints the service location** -
+Owner review of 2026-09-21 (`docs/owner-review-2026-09-21`, docs only, no code, merged as PR #75): two
+items from the owner's live test on James Peterson (Home). **The invoice's Bill To prints the service location** -
 `getInvoiceDocumentContext` falls back to the service location's live address when no billing
 profile address was snapshotted, which is every invoice on the dev DB; canon says the primary
 location / account, with a location override. And **a down payment set for technician collection is
@@ -366,9 +367,35 @@ recorded under D4 in `PLAN_BILLING_V1_1.md` and in `PLAN_ROADMAP_V2.md` Part E; 
 passes inserted ahead of Pass 12, C2.1c (**11c**) and C2.1d (**11d**), specified in the Phase 2
 table. Canon §13 is corrected in 11d's PR, with the code.
 
-Next up: **Pass 11c** — the invoice document's parties (`PLAN_ROADMAP_V2.md` Phase 2 table,
-C2.1c). Branch `feature/phase-2-invoice-document-parties` from `origin/main` after confirming it
-contains this docs branch's merge and Pass 11b's.
+Pass 11c (`feature/phase-2-invoice-document-parties`, 2026-09-21, C2.1c) pushed, awaiting merge.
+**The invoice's parties are decided at issue and frozen.** `resolveInvoiceTermsForLocationTx` now
+always writes `billingProfileSnapshot` when the invoice has a location - profile or not - and grows
+it with `billTo { name, address, source }` and `serviceLocation { name, address }`; the source is
+`PROFILE` (the profile's own `billingAddress`), `LOCATION_OVERRIDE` (a location-level profile with no
+address bills that location's own address) or `PRIMARY_LOCATION` (no profile, or an account-level
+profile with no address - the customer's primary location per canon §4 / §5, found by the small
+`getPrimaryLocationTx` helper the pass added). The manual path (snapshot was hardcoded null) and the
+schedule-driven path (an inline copy of the snapshot) both call the resolver now, so every issuing
+path freezes the same thing. The document (`getInvoiceDocumentContext`) reads the keys and prints a
+third block, **Service Location**, beside Remit To and Bill To in both the PDF and the HTML; the 64
+pre-11c rows (45 with no snapshot, 19 with the profile-only shape) resolve at render by the same
+rule - the snapshotted profile address if any, else the **primary** location's, never the service
+location's - marked transitional. The invoice modal's Terms shows "Bill to <name>, <address>
+(primary location)" and "Service location: …" from the shared reader. No migration; documents
+already stored keep their bytes (§1.7), so the eight PDFs rendered before this pass still print the
+service location as Bill To until the owner decides to re-render them. Not built: the wider document
+redesign (owner: later), a screen that creates a billing profile or gives one an address (C5.2, Pass
+34 - until then every new invoice on the dev DB bills the primary location), profile terms as the
+manual invoice's default due date (left for C2.3). **Restart `npm run dev:full` before manually
+testing - this pass changes server code and the document renderer, and the third block's layout has
+not been rendered by anyone yet.** Signatures and behavior are under "Shipped in Pass 11c" at the end
+of `PLAN_ROADMAP_V2.md` Part D.
+
+Next up: **Pass 11d** — the down payment on the first visit's invoice (`PLAN_ROADMAP_V2.md` Phase 2
+table, C2.1d). Branch `feature/phase-2-down-payment-first-visit` from `origin/main` after confirming
+it contains Pass 11c's merge. Pass 11d asks the owner at its start about the three unissued `Daily
+Rodent Trapping` down payments (the open flag in the roadmap's Part E; default: settled outside the
+ledger).
 
 Phase 1's ordered plan, impact analysis, conflict resolutions, and per-pass verification steps live in
 `PLAN_BILLING_V1_1_EXECUTION.md` — read it when a pass builds on a Phase 1 helper (its "Shipped in
