@@ -403,10 +403,15 @@ swap on `app_settings` assumed the constraint name `app_settings_pkey` (push nam
 inspects the PK's columns rather than its name, and is called once right after
 `bootstrapOrganizations()` as well as in its old slot; all no-ops on the established DB. Verified:
 `db:reset` → `db:push` → boot (zero bootstrap errors, seed ran, admin login and the main reads
-answered) → boot again (no errors, every table's row count unchanged). **The new machine's dev DB
-is that seeded fresh DB, not the shared one this file's history describes** (no INV-000001 /
-INV-000072, no pre-Pass-6 agreements, no `Daily Rodent Trapping` down payments); restore a dump
-from the previous machine if a pass needs that history.
+answered) → boot again (no errors, every table's row count unchanged). The machine's dev DB is then
+**the previous machine's, restored from a `pg_dump`** - 10 customers, 14 locations, 24 agreements,
+66 invoices, 18 payments, 137 audit rows - so this file's history applies to it. Booting the pass's
+code on the restored DB logged no bootstrap error and left all 43 tables' row counts unchanged
+across a reboot, so the tenancy change is a no-op on an established database as well as a fresh one.
+The dump / restore procedure, and the PowerShell UTF-16 trap that silently corrupts a dump taken
+with `>`, are in `DEV_NOTES.md`. One correction to the Pass 10 note above: **INV-000001 and
+INV-000072 are both VOID, and INV-000001 carries a location** - that note describes them as still
+OPEN and location-less, which was true when Pass 10 shipped and is not true of this DB.
 
 Next up: **Pass 11d** — the down payment on the first visit's invoice (`PLAN_ROADMAP_V2.md` Phase 2
 table, C2.1d). Branch `feature/phase-2-down-payment-first-visit` from `origin/main` after confirming
