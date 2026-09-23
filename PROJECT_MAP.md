@@ -8,7 +8,7 @@ Mechanical reference only — stack, entry points, directories, environment. For
 - Backend: Express + TypeScript
 - ORM: Drizzle
 - Database: Postgres
-- Runtime: Node 20
+- Runtime: Node 22.12+ (`.nvmrc` pins 24; `engines` in `package.json` enforces the floor)
 - Local DB: Docker Compose
 
 ## Entry points

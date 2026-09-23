@@ -21,14 +21,20 @@ they need to be read.
 ## Local development
 
 ### Requirements
-- Node 20.x
+- Node 22.x or 24.x (LTS; `.nvmrc` says 24, `engines` allows >=22.12 - Node 20 is end-of-life)
 - Docker Desktop
 
 ### First-time setup
-1. Create `.env` (see `PROJECT_MAP.md` for the required variables)
-2. Start the database: `docker compose up -d`
-3. Install dependencies: `npm install`
-4. Start the app: `npm run dev` (this also runs the bootstrap scripts that create/update schema)
+1. Copy `.env.example` to `.env` (see `PROJECT_MAP.md` for what each variable is)
+2. Install dependencies: `npm install`
+3. Start the database: `docker compose up -d`
+4. Create the schema: `npm run db:push` (the bootstrap scripts only *evolve* tables - they do not
+   create the base schema, so a fresh database needs this once before the first boot)
+5. Start the app: `npm run dev` (runs the bootstrap scripts, then seeds demo data and the default
+   admin login, printed to the console on first boot)
+
+If you ran `npm run dev` before `npm run db:push`, the database is half-built: `npm run db:reset`
+wipes it, then repeat steps 4-5.
 
 ### Daily startup
 1. `docker compose up -d`
@@ -73,5 +79,7 @@ Payments/credit-memos/unapplied-balance infrastructure does not exist yet - see 
 
 - `npm run dev` - starts both frontend (Vite) and backend (Express) on port 5000
 - `npm run check` - TypeScript typecheck (also the completion gate for every pass)
-- `npm run db:push` - Drizzle schema diff/push (rarely needed directly; bootstrap scripts handle most
-  schema evolution on boot)
+- `npm run db:push` - Drizzle schema diff/push. Required once on a fresh database; after that the
+  bootstrap scripts handle schema evolution on boot
+- `npm run db:reset` - drop the local database volume and start an empty one (then `db:push` again)
+- `npm run dev:full` - `docker compose up -d` followed by `npm run dev`

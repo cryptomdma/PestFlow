@@ -391,6 +391,28 @@ testing - this pass changes server code and the document renderer, and the third
 not been rendered by anyone yet.** Signatures and behavior are under "Shipped in Pass 11c" at the end
 of `PLAN_ROADMAP_V2.md` Part D.
 
+Dev-setup chore (`chore/windows-node-lts-dev-setup`, 2026-09-21, no domain change) pushed, awaiting
+merge. Prompted by a new Windows machine on Node 24: `reusePort: true` in `httpServer.listen()`
+threw `ENOTSUP` (Node 22.12+ no longer ignores it on Windows) - removed; `engines` (`>=22.12`) and
+`.nvmrc` (24) added; README / DEV_NOTES / PROJECT_MAP now say Node 22/24 and the real first-boot
+sequence. That sequence had never been run: **a fresh `npm run db:push` database could not boot**,
+because the auth / agreement / settings bootstraps insert seed rows without `org_id` and relied on
+`bootstrapTenancy()` - which ran after them - to have set the Heritage default, and tenancy's PK
+swap on `app_settings` assumed the constraint name `app_settings_pkey` (push names it
+`app_settings_org_id_key_pk`). `bootstrapTenancy()` now skips tables that do not exist yet,
+inspects the PK's columns rather than its name, and is called once right after
+`bootstrapOrganizations()` as well as in its old slot; all no-ops on the established DB. Verified:
+`db:reset` → `db:push` → boot (zero bootstrap errors, seed ran, admin login and the main reads
+answered) → boot again (no errors, every table's row count unchanged). The machine's dev DB is then
+**the previous machine's, restored from a `pg_dump`** - 10 customers, 14 locations, 24 agreements,
+66 invoices, 18 payments, 137 audit rows - so this file's history applies to it. Booting the pass's
+code on the restored DB logged no bootstrap error and left all 43 tables' row counts unchanged
+across a reboot, so the tenancy change is a no-op on an established database as well as a fresh one.
+The dump / restore procedure, and the PowerShell UTF-16 trap that silently corrupts a dump taken
+with `>`, are in `DEV_NOTES.md`. One correction to the Pass 10 note above: **INV-000001 and
+INV-000072 are both VOID, and INV-000001 carries a location** - that note describes them as still
+OPEN and location-less, which was true when Pass 10 shipped and is not true of this DB.
+
 Next up: **Pass 11d** — the down payment on the first visit's invoice (`PLAN_ROADMAP_V2.md` Phase 2
 table, C2.1d). Branch `feature/phase-2-down-payment-first-visit` from `origin/main` after confirming
 it contains Pass 11c's merge. Pass 11d asks the owner at its start about the three unissued `Daily
