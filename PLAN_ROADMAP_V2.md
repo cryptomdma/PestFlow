@@ -107,7 +107,7 @@ routes, three dialogs) is the ceiling.
 | Fields immutable once posted / finalized (price, service date, collection data) | **NOT ENFORCED** | `PATCH /api/service-records/:id` (`routes.ts:1647-1657`) has no permission gate and no status guard; `updateServiceRecord` (`storage.ts:3866-3902`) blind-writes; `completeService` re-posts over a FINALIZED record and resets `confirmed / ticketStatus / finalizedAt / readyForBilling` (`:3971-3988`). Lockdown is a UI convention (`ServiceDetailModal` hides re-post; `technician-work.tsx:477-485` still passes the existing record into the ticket dialog). Payment records are immutable (Pass 6). |
 | Technician ticket: add a second service / surcharge line / Generate Proposal | ABSENT | none in `service-completion-dialog.tsx`; `ADD_FIELD_SURCHARGE` permission exists (`permissions.ts:9`) with no UI; `lineType: "SURCHARGE"` exists in schema |
 | Invoice document: Bill To from the primary location / billing profile; a Service Location block (owner, 2026-09-21) | DONE — Pass 11c (2026-09-21) | was a defect: `getInvoiceDocumentContext` fell back to the **service** location's live address when no profile address was snapshotted, which was every invoice on the dev DB. Now the parties are frozen at issue in `billingProfileSnapshot.billTo` / `.serviceLocation` by `resolveInvoicePartiesTx` on every issuing path, the renderer prints Remit To / Bill To / Service Location, and the 64 pre-11c rows (45 with no snapshot, 19 profile-only) resolve at render by the same rule, marked transitional. Documents already stored keep their bytes (§1.7). See "Shipped in Pass 11c" at the end of Part D. C2.1c |
-| Down payment collected in the field rides the first visit's invoice; the technician sees it as due today (owner, 2026-09-21) | ABSENT, by D4's design | `createAgreement` issues a standalone `INITIAL_CHARGE` invoice (`storage.ts:3252`, `7625-7714`); `getVisitBillingSummary` (`:4724`) never finds it, so the ticket says $0 due; `initialChargeCollectedBy` has no reader in the field. Owner correction recorded under D4 in `PLAN_BILLING_V1_1.md`. C2.1d |
+| Down payment collected in the field rides the first visit's invoice; the technician sees it as due today (owner, 2026-09-21) | DONE — Pass 11d (2026-09-22) | now: `createAgreement` issues nothing; the down payment rides the first visit's invoice as an `INITIAL_CHARGE` line (`buildVisitInvoiceLinesTx`), `getVisitBillingSummary` prices it into the visit's figures as `charges`, the collector field has its readers (the office prompt at signing and scheduling, the technician's callout), the explicit up-front button stays, and the three unissued `Daily Rodent Trapping` deposits are settled outside the ledger. See "Shipped in Pass 11d" at the end of Part D. Was: `createAgreement` issues a standalone `INITIAL_CHARGE` invoice (`storage.ts:3252`, `7625-7714`); `getVisitBillingSummary` (`:4724`) never finds it, so the ticket says $0 due; `initialChargeCollectedBy` has no reader in the field. Owner correction recorded under D4 in `PLAN_BILLING_V1_1.md`. C2.1d |
 
 ### A3. Dispatch, field tickets, appointment details, opportunities, cancellations
 
@@ -342,7 +342,7 @@ by name; `CURRENT_FOCUS.md`'s unscheduled list points at them.
 | C2.1a (**Pass 11a**) — **done** (`feature/phase-2-invoice-modal-core`, 2026-09-19; see "Shipped in Pass 11a" at the end of Part D) | **Invoice modal, core** — new `GET /api/invoices/:id`; `InvoiceDetailDialog` with every section and every action; the Invoices screen rows slimmed to data + open, **no quick action** (owner), customer and location on the row become links; `/invoices?invoiceId=`. Spec in Part D. | Invoices: modal, Void in modal, cash/check collection, mark sent / print; hyperlinks on invoice rows | — | — |
 | C2.1b (**Pass 11b**) — **done** (`feature/phase-2-invoice-modal-reach`, 2026-09-20; see "Shipped in Pass 11b" at the end of Part D) | **Invoice modal, reach** — `InvoiceRowLedger` rows open the same modal; `/customers/:id?locationId=&tab=invoices&invoiceId=`; Ticket Review reads `?recordId=` (entry point `openRecordFromQueue`, `service-ticket-review.tsx:280`) so the modal's per-line "Open ticket" lands; new `GET /api/invoices/by-appointment/:id` feeding an **invoice badge** on the review modal, or **Generate** when the visit is finalized and un-invoiced (the "Later" case); the Services tab Invoice column and `ServiceDetailModal` open the modal; `POST /api/invoices/:id/assign-location` (manager+, audit `update`) for the two location-less rows. | Links to the ticket system-wide; Generate Invoice on the review modal | C2.1a | — |
 | C2.1c (**Pass 11c**) — **done** (`feature/phase-2-invoice-document-parties`, 2026-09-21; see "Shipped in Pass 11c" at the end of Part D) | **Invoice document parties** (owner review 2026-09-21, item 1). The Bill To is decided at **issue** and frozen: `resolveInvoiceTermsForLocationTx` (`storage.ts:5463`) always writes a snapshot, growing the existing `billingProfileSnapshot` jsonb with `billTo: { name, address, source: PROFILE \| LOCATION_OVERRIDE \| PRIMARY_LOCATION }` and `serviceLocation: { name, address }`, `profileId` null when no profile resolved. Address rule: the profile's `billingAddress`, else (a location-override profile) that location's own address, else the customer's **primary location's** address; name: the profile's `billingName`, else today's customer-name order. `createManualInvoice` (`storage.ts:5045`, snapshot hardcoded null) and the schedule-driven path's inline duplicate of the snapshot (`~storage.ts:6141`) both call the resolver. `getInvoiceDocumentContext` reads the keys; the 45 legacy null-snapshot rows fall back at render (primary location for Bill To, the invoice's location for Service Location), marked transitional. `InvoiceDocumentContext` gains `serviceLocation`; the PDF and HTML print a third block. Client: `readBillingProfileSnapshot` (`shared/invoice-detail.ts`) reads the keys; the modal's Terms shows "Bill to … (primary location)" and the service location; "No billing profile was snapshotted" only for legacy rows. No migration. **Verify** (5001): a manual invoice at a non-primary location → `billTo.source = PRIMARY_LOCATION` with the primary's address and `serviceLocation` = that location; a `POST /api/billing-profiles` override row with an address → `PROFILE`; an override row without one → `LOCATION_OVERRIDE` with that location's own address; a legacy row's document still renders; the `/document` PDF is stored once; fixture profiles deleted in cleanup. | Bill To from the primary location; service location on the invoice (owner, 2026-09-21) | C2.1a | — |
-| C2.1d (**Pass 11d**) | **Down payment on the first visit's invoice** (owner correction 2026-09-21 under D4, `PLAN_BILLING_V1_1.md`). `createAgreement` stops calling `issueInitialChargeInvoiceTx` (`storage.ts:3252`); `POST /api/agreements/:id/issue-initial-charge` and its event stay as the explicit up-front path. A **live** event is an `INITIAL_CHARGE` billing event whose invoice is not VOID (or that has no invoice: settled outside the ledger). `buildVisitInvoiceLinesTx` (`storage.ts:5496`) appends, for each agreement behind the visit's services with `initialChargeType = DOWN_PAYMENT`, a resolvable amount (`resolveInitialChargeCents`) and no live event, an `INITIAL_CHARGE` line "Down payment - <agreement>" taxed as the standalone path taxes it; generation and `issueInvoiceTx` (never the draft) insert the event with `invoiceId` = the visit invoice, so a void of that invoice makes the event non-live and the corrected invoice carries the line again. `DOWN_PAYMENT` only (`CLEANOUT_SURCHARGE` / `PREPAY_FULL` leave in C3.6). `isFullyAgreementCovered` must not read a covered visit with a down-payment line as "No charge". `getVisitBillingSummary`'s un-invoiced branch prices the pending line as `BILLABLE` (Price / COA in D4's order / Due today) so the ticket, appointment details, collect step and review modal show it. `initialChargeCollectedBy` gets its reader: the office prompt at scheduling fires unless `TECH_AT_FIRST_SERVICE`; the technician's collect step shows a "Down payment $X" callout unless `OFFICE_AT_SIGNING`; both when null. **Office prompt**: appointment creation (`POST /api/appointments` and the schedule screen's placement) for a service on an agreement with a live-less down payment and no designated payment covering it returns `initialChargeDue: { agreementId, amountCents }`; the client asks "Collect the $X down payment now?" → `RecordPaymentDialog` with `designatedAgreementId` + `appointmentId` (split into 11e if the pass runs long — the routing and the technician's figures are the must-haves). Copy: `initial-charge-fields.tsx:106`; the agreement card's `AgreementInitialChargeStatus` → "Billed on the first visit's invoice" + "Issue up front instead", "Invoiced as INV-x (first visit)" once fired. **Migration** (`agreement-bootstrap.ts`, guarded, per-row effect printed before commit): the three `Daily Rodent Trapping` rows per the open flag in Part E. Canon §13 and the initial-charge canon corrected in the same PR. **Verify** (5001): `DOWN_PAYMENT` $100 on a plan-less agreement → no invoice at creation; the first visit's summary shows the `INITIAL_CHARGE` line `BILLABLE` $100 beside the service line at remaining ÷ expected; generate → both lines and the event on the visit invoice; the second visit's summary has no down-payment line; void the first invoice → the summary shows it again; the explicit button on a fresh agreement → standalone + event, second press refused; a schedule-billed agreement → $100 down + $0 covered, no "No charge" banner; appointment creation returns `initialChargeDue`, and not after a covering designated payment. | Down payment shares the visit's invoice; office prompt at scheduling; tech collects against it (owner, 2026-09-21) | C2.1c (the line's Bill To), Pass 6 | Open flag in Part E (the three unissued rows) |
+| C2.1d (**Pass 11d**) — **done** (`feature/phase-2-down-payment-first-visit`, 2026-09-22; see "Shipped in Pass 11d" at the end of Part D; the open flag in Part E answered the same day) | **Down payment on the first visit's invoice** (owner correction 2026-09-21 under D4, `PLAN_BILLING_V1_1.md`). `createAgreement` stops calling `issueInitialChargeInvoiceTx` (`storage.ts:3252`); `POST /api/agreements/:id/issue-initial-charge` and its event stay as the explicit up-front path. A **live** event is an `INITIAL_CHARGE` billing event whose invoice is not VOID (or that has no invoice: settled outside the ledger). `buildVisitInvoiceLinesTx` (`storage.ts:5496`) appends, for each agreement behind the visit's services with `initialChargeType = DOWN_PAYMENT`, a resolvable amount (`resolveInitialChargeCents`) and no live event, an `INITIAL_CHARGE` line "Down payment - <agreement>" taxed as the standalone path taxes it; generation and `issueInvoiceTx` (never the draft) insert the event with `invoiceId` = the visit invoice, so a void of that invoice makes the event non-live and the corrected invoice carries the line again. `DOWN_PAYMENT` only (`CLEANOUT_SURCHARGE` / `PREPAY_FULL` leave in C3.6). `isFullyAgreementCovered` must not read a covered visit with a down-payment line as "No charge". `getVisitBillingSummary`'s un-invoiced branch prices the pending line as `BILLABLE` (Price / COA in D4's order / Due today) so the ticket, appointment details, collect step and review modal show it. `initialChargeCollectedBy` gets its reader: the office prompt at scheduling fires unless `TECH_AT_FIRST_SERVICE`; the technician's collect step shows a "Down payment $X" callout unless `OFFICE_AT_SIGNING`; both when null. **Office prompt**: appointment creation (`POST /api/appointments` and the schedule screen's placement) for a service on an agreement with a live-less down payment and no designated payment covering it returns `initialChargeDue: { agreementId, amountCents }`; the client asks "Collect the $X down payment now?" → `RecordPaymentDialog` with `designatedAgreementId` + `appointmentId` (split into 11e if the pass runs long — the routing and the technician's figures are the must-haves). Copy: `initial-charge-fields.tsx:106`; the agreement card's `AgreementInitialChargeStatus` → "Billed on the first visit's invoice" + "Issue up front instead", "Invoiced as INV-x (first visit)" once fired. **Migration** (`agreement-bootstrap.ts`, guarded, per-row effect printed before commit): the three `Daily Rodent Trapping` rows per the open flag in Part E. Canon §13 and the initial-charge canon corrected in the same PR. **Verify** (5001): `DOWN_PAYMENT` $100 on a plan-less agreement → no invoice at creation; the first visit's summary shows the `INITIAL_CHARGE` line `BILLABLE` $100 beside the service line at remaining ÷ expected; generate → both lines and the event on the visit invoice; the second visit's summary has no down-payment line; void the first invoice → the summary shows it again; the explicit button on a fresh agreement → standalone + event, second press refused; a schedule-billed agreement → $100 down + $0 covered, no "No charge" banner; appointment creation returns `initialChargeDue`, and not after a covering designated payment. | Down payment shares the visit's invoice; office prompt at scheduling; tech collects against it (owner, 2026-09-21) | C2.1c (the line's Bill To), Pass 6 | Open flag in Part E (the three unissued rows) |
 | C2.2 (**Pass 12**) | **Billing Plan required on every Agreement + sale attribution.** Backfill the 11, `billingPlanId NOT NULL` + zod; `agreements.soldByUserId` — a `users` FK (owner: one identity table for techs and office), defaulting to the session user at creation, changed only under a new `ASSIGN_SALE_CREDIT` (manager+), audit `update`; template propagation untouched. `technicians` has no link to `users` today (`schema.ts:160-172`), so the same pass adds a nullable `technicians.userId` bridge; the full merge is C5.7. | Compensation basis (CURRENT_FOCUS) | — | Answered 2026-09-19: attach the billing plan named **Monthly Recurring** to all 11 — the 9 `Quarterly Control` rows (monthly billing for a quarterly program, the industry norm; the marked "Monthly" line in `notes` is deleted once attached) and the 2 Wildlife rows, whose term is already past its end, so Pass 3.5's attach rule starts no schedule and bills nothing. The 4 CANCELLED rows attach for the constraint only. The pass prints the per-row effect (`nextBillingDate` or the refusal) before committing. |
 | C2.3 (**Pass 13**) | **Batch Invoice moves to the Invoices screen**; range labelled "posted between"; group by technician then service date (a "route" is technician × day — `appointments` carry no route columns); technician filter passed to preview; Send All stays; Ticket Review loses the button. **New Invoice is removed** (owner); the screen gains **"Draft invoice for a visit"** (customer → location → un-invoiced appointment → `createDraftInvoiceForAppointment`, `storage.ts:5618`); the manual path survives only as **"Add fee / adjustment"** on the location ledger panel (owner, B6); `createManualInvoice` keeps requiring a location. | Move Batch Invoice (×2), batch by route/tech, sort by date, New Invoice → Draft | C2.1a (result rows open the modal) | — |
 | C2.4 (**Pass 14**) | **Aging and balances on the customer screen.** Derived reads: `GET /api/customers/:id/aging` (per location + rollup) and `GET /api/reports/aging` (org-wide); buckets **Current (0-30) / 31-60 / 61-90 / Over 90 days since invoiced** (`issuedAt`, B20) over issued open balances, pending-applied and on-account shown beside, never netted. Header card: the customer-wide open balance, on-account figure and oldest bucket sit beside the primary-location chip (`customer-detail.tsx:3538-3593`); location profile card: the location's strip below `LocationNotesPanel`; Reports: an Aging tab. Nothing stored; UTC days like every other date-only value. | Aging report, customer balance at top with primary location info, location balance below notes | C2.1a (bucket rows open the modal) | — |
@@ -733,6 +733,97 @@ Behavior worth knowing before the next pass touches it:
   across two renders; the modal module transforms through Vite. Nothing rendered in a browser - the third block's
   layout on a real page and the Terms wording reach the owner first.
 
+**Shipped in Pass 11d** (`feature/phase-2-down-payment-first-visit`, 2026-09-22) — the C2.1d row as
+built, plus what it found.
+
+```ts
+// shared/initial-charge.ts
+export function initialChargeRidesFirstVisit(charge): boolean      // DOWN_PAYMENT - the one type that bills on the first visit
+export function officeMayCollectInitialCharge(charge) / technicianMayCollectInitialCharge(charge)   // the collector field's readers; null = both
+export interface AgreementInitialChargeStatus { kind: "NONE" | "PENDING" | "ISSUED" | "SETTLED_OUTSIDE_LEDGER"; ridesFirstVisit; amountCents;
+                                                invoice: InitialChargeInvoiceRef | null; message }
+                                        // PENDING: no live event (invoice = the voided carrier, if any); ISSUED: invoice.appointmentId says visit or up front
+export interface InitialChargeDue { agreementId; agreementName; locationId; amountCents; collectedBy }   // the office prompt's payload
+
+// shared/visit-billing.ts
+export interface VisitChargeBilling { kind: "INITIAL_CHARGE"; agreementId; agreementName; description; collectedBy; priceCents; taxCents;
+                                      coaAppliedCents; coaAvailableCents; dueTodayCents }
+VisitBillingSummary.charges: VisitChargeBilling[]     // counted in totals; COA draws on the services first, then the charges (invoice line order)
+export function technicianCollectibleCents(summary)    // due today less charges only the office may collect - the collect step's default amount
+
+// server/storage.ts - private
+getInitialChargeEventTx(reader, agreementId)           // { event, invoice, live }: live = no invoice (settled outside the ledger) or invoice not VOID
+resolvePendingInitialChargesTx(reader, { agreements, accountId, lock? })   // DOWN_PAYMENT, not CANCELLED, resolvable, no live event; taxed as the
+                                                       // standalone path taxes it; lock = FOR UPDATE on the agreement row + re-read (the issuing paths)
+attachInitialChargeEventsTx(tx, invoice, initialCharges)   // insert, or re-point a non-live event; throws if another issue made it live meanwhile
+describeInitialChargeDueTx(reader, agreement)          // office may collect, still owed, designated unapplied money < amount
+buildVisitInvoiceLinesTx(...)                          // appends the INITIAL_CHARGE line(s) after the service lines; PricedVisitInvoice.initialCharges
+issueInitialChargeInvoiceTx(...)                       // the explicit path: row lock; refuses a LIVE event ("billed on visit invoice INV-x" /
+                                                       // "issued as INV-x" / "settled outside the ledger"); re-points a non-live one
+// IStorage
+getAgreementInitialChargeStatus(agreementId): Promise<AgreementInitialChargeStatus | undefined>   // replaces getAgreementInitialChargeInvoice
+getInitialChargeDueForAgreement(agreementId) / getInitialChargeDueForAppointment(appointmentId): Promise<InitialChargeDue | null | undefined>
+issueInitialChargeInvoice(agreementId, actor)          // now throws on ALREADY_ISSUED (Pass 6 returned that invoice with a 201)
+
+// Routes
+GET  /api/agreements/:id/initial-charge-status        // replaces /initial-charge-invoice (the card was its only consumer)
+POST /api/agreements, POST /api/appointments          // the created row plus `initialChargeDue: InitialChargeDue | null`
+
+// server/agreement-bootstrap.ts - self-guarding one-shot, guarded on the ledger tables existing: DOWN_PAYMENT agreements created before
+// 2026-09-22 with no INITIAL_CHARGE event whose first visit is already invoiced (non-void, appointment-anchored) get an event with no invoice;
+// the per-row effect is printed before each insert. Three rows on the dev DB, none on a later boot.
+
+// client
+components/visit-billing-summary.tsx   charge rows in VisitBillingRows / VisitBillingTable; VisitInitialChargeCallout({ summary }) - the technician's
+                                       reader (a muted line for OFFICE_AT_SIGNING); ServiceBillingFigures takes a testId
+components/initial-charge-due-prompt.tsx   InitialChargeDuePrompt({ due, onClose }) - "Collect the $X down payment now?" -> RecordPaymentDialog
+                                       with `preset` (designation and amount fixed); WithInitialChargeDue<T>
+components/record-payment-dialog.tsx   preset?: RecordPaymentPreset;  components/collect-payment-dialog.tsx  default = technicianCollectibleCents
+pages/schedule.tsx                     placement -> the prompt, then returnTo;  pages/customer-detail.tsx  AgreementForm.onCreated -> the prompt on
+                                       the agreements tab; AgreementInitialChargeStatus reads the status: "Billed on the first visit's invoice" +
+                                       "Issue up front instead" / "Invoiced as INV-x (first visit | up front)" / "settled outside the ledger"
+pages/technician-work.tsx, components/service-completion-dialog.tsx   the callout beside the figures
+```
+
+Behavior worth knowing before the next pass touches it:
+- **Two un-invoiced visits of one agreement both show the pending deposit.** The line means "no live
+  event", not "first by date": whichever visit is issued first takes it (under the agreement's row
+  lock) and the other's summary drops it on its next read. Two technicians on the same day could each
+  be shown it; the office sees one line, on one invoice.
+- **Liveness, not existence.** Voiding the invoice that carries the deposit - a visit's or the
+  standalone - makes the charge owed again everywhere: the next visit summary shows it, generation
+  carries it, the explicit button works, and the one event is re-pointed at the new carrier. Pass 6's
+  "voiding does not re-open the event" no longer holds for INITIAL_CHARGE events; it still holds for
+  the nightly run's SCHEDULE_DRIVEN ones.
+- **A draft previews, issue attaches.** A DRAFT's lines carry the down-payment line; the event is
+  written when the draft is issued, or adopted by Generate, after the lines are rebuilt.
+- **The office prompt never sets `payments.appointmentId`.** The spec named the appointment; canon
+  §14 reserves that column for the field's collect dialog. The designation alone puts the money in
+  D4's order (designated first) for the visit's invoice and in the technician's "COA available".
+- **Office-only deposits stay on the figures.** With `OFFICE_AT_SIGNING` the technician's due today
+  still includes the deposit (it is on the invoice), the callout says the office collects it, and the
+  collect step's default amount leaves it out.
+- **Not built:** the batch-invoice preview's per-ticket amounts do not show a pending deposit that
+  generate will bill (C2.3 moves the batch anyway); `CLEANOUT_SURCHARGE` / `PREPAY_FULL` never ride a
+  visit and are issued only from the card until C3.6 retires them; a visit carrying two agreements'
+  deposits prompts the office for the first by name only. The 11e split was not needed.
+- **Verified 2026-09-22** (PORT=5001; boot 1 printed the migration's three rows, boot 2 printed only
+  "serving on port 5001" with all 42 tables unchanged; 54 API assertions on boot 2 with every count
+  back at baseline; a Vite 200 on the ten touched client modules): creation returns `initialChargeDue`
+  and no invoice; the first visit's summary prices $75 (remaining ÷ 4) beside the $100 deposit,
+  BILLABLE, totals summed; a $100 payment designated to the agreement silences the prompt at the next
+  scheduling and shows as COA available; generate → SERVICE 7500 + INITIAL_CHARGE 10000, the tax
+  snapshot per line, one event on the visit invoice, the second visit's summary empty of it, the
+  explicit button refused "billed on visit invoice"; void → PENDING naming the voided invoice, the
+  line back on both summaries, regenerate → the line again with the event re-pointed; the explicit
+  path on a fresh agreement → standalone + event, a second press 400, a visit after it carries
+  nothing, void → the visit shows the office-only charge, a third press re-points; a Monthly Recurring
+  agreement → PRODUCTION $0 + the $100 deposit, a draft previews both lines with no event, Generate
+  adopts and attaches; the three Daily Rodent Trapping rows read SETTLED_OUTSIDE_LEDGER with their
+  next visit clean and the button refused; Wildlife PENDING at $124.75; a technician's press 403.
+  Nothing was rendered in a browser: the callout, the charge rows, the prompt and the new card copy
+  reach the owner first.
+
 ---
 
 ## Part E — Decision log
@@ -776,8 +867,11 @@ the assessment is recorded under D4 in `PLAN_BILLING_V1_1.md`):
 | 2 | Sequencing of the two passes | **11c and 11d before Pass 12** |
 | 3 | What happens in the 11b session | **Record decisions only** — this docs branch; 11c is built in a fresh session |
 
-**Open, with a default:** the three `Daily Rodent Trapping` agreements carry a $99.95 `DOWN_PAYMENT`
-that was never issued (Pass 6: "assumed collected outside the ledger"). Under answer 1 their next
-visit invoice would carry $99.95. Default: Pass 11d's migration marks them settled outside the ledger
-(an `INITIAL_CHARGE` event with no invoice) and prints the per-row effect before committing. The
-owner may answer "bill them" instead; Pass 11d asks at its start.
+**Answered 2026-09-22, at the start of Pass 11d** (the flag was: the three `Daily Rodent Trapping`
+agreements carry a $99.95 `DOWN_PAYMENT` that was never issued, and under answer 1 their next visit
+invoice would carry it):
+
+| # | Question | Answer |
+|---|---|---|
+| 1 | The three `Daily Rodent Trapping` deposits, whose first visits were already invoiced at $0 | **Settled outside the ledger** (the default): Pass 11d's migration inserted an `INITIAL_CHARGE` billing event with no invoice for each, printing the per-row effect at boot; no visit invoice carries them and the agreement card says so |
+| 2 | The fourth unissued deposit, `Wildlife Trapping Program` (25% of $499 = $124.75, COD plan, no visit yet) | **Rides its first visit**, as the new rule says; no migration touches it |

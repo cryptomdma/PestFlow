@@ -16,6 +16,8 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, getApiErrorMessage, queryClient } from "@/lib/queryClient";
 import { DraftInvoiceVoidPrompt, getDraftInvoiceDecisionRequired, type DraftInvoiceRef } from "@/components/draft-invoice-void-prompt";
 import { VisitBillingRows, useVisitBillingSummary } from "@/components/visit-billing-summary";
+import { InitialChargeDuePrompt, type WithInitialChargeDue } from "@/components/initial-charge-due-prompt";
+import type { InitialChargeDue } from "@shared/initial-charge";
 import { formatCents, dollarsToCents } from "@shared/money";
 import {
   CalendarDays,
@@ -581,7 +583,7 @@ export default function Schedule() {
         lockTechnician: false,
         notes: service.notes || null,
       });
-      return response.json() as Promise<Appointment>;
+      return response.json() as Promise<WithInitialChargeDue<Appointment>>;
     },
     onSuccess: async (createdAppointment) => {
       const additionalServiceIds = groupedServiceIds.filter((id) => id !== createdAppointment.serviceId);
@@ -605,12 +607,27 @@ export default function Schedule() {
       setSelectedServiceId(null);
       toast({ title: additionalServiceIds.length ? "Grouped services scheduled" : "Service scheduled" });
       const returnTo = params.get("returnTo");
+      // Pass 11d: the office's prompt at scheduling. The server said whether
+      // a down payment is still owed on this visit; ask before leaving the
+      // board, and follow returnTo once the prompt is answered.
+      if (createdAppointment.initialChargeDue) {
+        setInitialChargePrompt({ due: createdAppointment.initialChargeDue, returnTo });
+        return;
+      }
       if (returnTo) {
         setLocation(returnTo);
       }
     },
     onError: (error: Error) => toast({ title: "Unable to schedule service", description: error.message, variant: "destructive" }),
   });
+  const [initialChargePrompt, setInitialChargePrompt] = useState<{ due: InitialChargeDue; returnTo: string | null } | null>(null);
+  const closeInitialChargePrompt = () => {
+    const returnTo = initialChargePrompt?.returnTo ?? null;
+    setInitialChargePrompt(null);
+    if (returnTo) {
+      setLocation(returnTo);
+    }
+  };
 
   const attachServiceToAppointmentMutation = useMutation({
     mutationFn: async ({ service, appointment }: { service: Service; appointment: Appointment }) => {
@@ -1145,6 +1162,8 @@ export default function Schedule() {
         }}
         isSaving={updateAppointmentMutation.isPending}
       />
+
+      <InitialChargeDuePrompt due={initialChargePrompt?.due ?? null} onClose={closeInitialChargePrompt} />
 
       <DraftInvoiceVoidPrompt
         drafts={draftPrompt?.drafts ?? null}

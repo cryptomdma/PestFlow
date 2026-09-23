@@ -1448,7 +1448,10 @@ export async function registerRoutes(
         agreement: validated.agreement,
         actor: getAuditActor(req),
       });
-      res.status(201).json(data);
+      // Pass 11d: the office's prompt at signing - "Collect the $X down
+      // payment now?" - when the sale carries one the office may collect.
+      const initialChargeDue = (await req.storage.getInitialChargeDueForAgreement(data.id)) ?? null;
+      res.status(201).json({ ...data, initialChargeDue });
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
       res.status(400).json({ message: e.message });
@@ -1509,15 +1512,15 @@ export async function registerRoutes(
     }
   });
 
-  // D4: the agreement's initial charge as a receivable. The GET answers
-  // "was it issued, and as what?" (null = not yet); the POST is the explicit
-  // path for an agreement created before Pass 6, or one whose percent charge
-  // could not resolve until a price was set. Idempotent: a second POST
-  // returns the invoice already issued. Same permission as generating any
-  // invoice - it IS one.
-  app.get("/api/agreements/:id/initial-charge-invoice", async (req, res) => {
-    const data = await req.storage.getAgreementInitialChargeInvoice(req.params.id);
-    if (data === undefined) return res.status(404).json({ message: "Agreement not found" });
+  // The agreement's initial charge (D4, corrected 2026-09-21 - Pass 11d). The
+  // GET answers where it stands: PENDING (a down payment rides the next visit
+  // invoice; any other type waits for the button), ISSUED as which invoice -
+  // a visit's or the standalone - or SETTLED_OUTSIDE_LEDGER. The POST is the
+  // explicit up-front path: a standalone invoice now, refused once the charge
+  // is live anywhere. Same permission as generating any invoice - it IS one.
+  app.get("/api/agreements/:id/initial-charge-status", async (req, res) => {
+    const data = await req.storage.getAgreementInitialChargeStatus(req.params.id);
+    if (!data) return res.status(404).json({ message: "Agreement not found" });
     res.json(data);
   });
 
@@ -1556,7 +1559,11 @@ export async function registerRoutes(
         scheduledEndDate: validated.scheduledEndDate,
         generatedForDate: toDateOnlyStringOrNull(validated.generatedForDate),
       });
-      res.status(201).json(data);
+      // Pass 11d: the office's prompt at scheduling (D4 step 1) - a down
+      // payment behind this visit's services that the office may collect,
+      // still owed and not covered by money designated to the agreement.
+      const initialChargeDue = (await req.storage.getInitialChargeDueForAppointment(data.id)) ?? null;
+      res.status(201).json({ ...data, initialChargeDue });
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
       res.status(400).json({ message: e.message });

@@ -103,7 +103,7 @@ export function InitialChargeFormFields({
             ))}
           </SelectContent>
         </Select>
-        <p className="text-xs text-muted-foreground">A down payment or prepayment agreed at the sale. It is issued as its own invoice when the agreement is created (or from the agreement card once a price is set), and a down payment counts toward the contract price unless marked otherwise below.</p>
+        <p className="text-xs text-muted-foreground">A down payment or prepayment agreed at the sale. A down payment is billed as its own line on the first visit's invoice, whoever collects it, and counts toward the contract price unless marked otherwise below; the agreement card can issue it up front instead. A cleanout surcharge or prepayment is issued only from the agreement card.</p>
       </div>
       {hasCharge && (
         <>

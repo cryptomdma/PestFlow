@@ -10,11 +10,12 @@ import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth";
 import { apiRequest, getApiErrorMessage } from "@/lib/queryClient";
 import { invalidateInvoiceViews } from "@/lib/invalidate-invoice-views";
-import { VisitBillingRows, useVisitBillingSummary } from "@/components/visit-billing-summary";
+import { VisitBillingRows, VisitInitialChargeCallout, useVisitBillingSummary } from "@/components/visit-billing-summary";
 import type { RecordPaymentResponse } from "@/components/record-payment-dialog";
 import { can, PERMISSIONS } from "@shared/permissions";
 import { centsToDollarString, dollarsToCents, formatCents } from "@shared/money";
 import { MANUAL_PAYMENT_METHODS, formatPaymentMethod } from "@shared/payments";
+import { technicianCollectibleCents } from "@shared/visit-billing";
 import type { Agreement, Payment } from "@shared/schema";
 
 // PLAN_BILLING_V1_1.md D8 - the post-ticket sequence is finish -> collect ->
@@ -93,7 +94,9 @@ export function CollectPaymentDialog({
   }, [open]);
 
   // Default the amount to what the visit says is due today, once - a typed
-  // amount, and the empty field after a recording, both stand.
+  // amount, and the empty field after a recording, both stand. A down
+  // payment only the office may collect is on the visit's figures but not
+  // in this default (Pass 11d): it is not the technician's to take.
   useEffect(() => {
     if (!open || amountDefaulted) return;
     if (!appointmentId) {
@@ -101,7 +104,8 @@ export function CollectPaymentDialog({
       return;
     }
     if (!summary) return;
-    setAmount(summary.totals.dueTodayCents > 0 ? centsToDollarString(summary.totals.dueTodayCents) : "");
+    const collectibleCents = technicianCollectibleCents(summary);
+    setAmount(collectibleCents > 0 ? centsToDollarString(collectibleCents) : "");
     setAmountDefaulted(true);
   }, [open, appointmentId, summary, amountDefaulted]);
 
@@ -142,7 +146,7 @@ export function CollectPaymentDialog({
   });
 
   const collectedCents = collected.reduce((sum, payment) => sum + payment.amountCents, 0);
-  const dueTodayCents = appointmentId && summary ? summary.totals.dueTodayCents : null;
+  const dueTodayCents = appointmentId && summary ? technicianCollectibleCents(summary) : null;
   const hasAmount = amountCents != null && amountCents > 0;
   const busy = mutation.isPending || postingTicket;
   const canRecord = canCollect && hasAmount && !busy;
@@ -157,8 +161,9 @@ export function CollectPaymentDialog({
           <div className="rounded-lg border bg-muted/20 p-3">
             <p className="text-xs uppercase tracking-wide text-muted-foreground">Customer summary</p>
             {appointmentId ? (
-              <div className="mt-2">
+              <div className="mt-2 space-y-2">
                 <VisitBillingRows summary={summary} isLoading={isLoading} isError={isError} />
+                <VisitInitialChargeCallout summary={summary} />
               </div>
             ) : (
               <p className="mt-1 text-xs text-muted-foreground">Not on an appointment - there is no visit to price. Enter what was collected.</p>

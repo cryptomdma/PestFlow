@@ -76,7 +76,7 @@ import { addDays, advanceAgreementDate, computeExpectedServiceCount } from "@sha
 // nightly run compute a per-period amount the same way. server/jobs/billing-run.ts
 // and server/production-value-backfill.ts still import it from here.
 export { advanceAgreementDate, computeExpectedServiceCount };
-import type { VisitBillingSummary, VisitServiceBilling } from "@shared/visit-billing";
+import type { VisitBillingSummary, VisitChargeBilling, VisitServiceBilling } from "@shared/visit-billing";
 import type { AppointmentInvoiceStatus, InvoiceBillToSnapshot, InvoiceDetail, InvoiceServiceLocationSnapshot } from "@shared/invoice-detail";
 import {
   formatInitialChargeType,
@@ -87,7 +87,12 @@ import {
   normalizeInitialCharge,
   resolveInitialChargeCents,
   resolveRemainingContractPriceCents,
+  initialChargeRidesFirstVisit,
+  officeMayCollectInitialCharge,
+  type AgreementInitialChargeStatus,
+  type InitialChargeDue,
   type InitialChargeFields,
+  type InitialChargeInvoiceRef,
 } from "@shared/initial-charge";
 import { computeInvoiceRollup, deriveInvoiceStatus, isFullyAgreementCovered, isInvoiceIssued } from "@shared/invoice-status";
 import {
@@ -399,7 +404,7 @@ interface VisitBillingUnit {
 interface VisitInvoiceLine {
   serviceId: string | null;
   serviceRecordId: string | null;
-  lineType: "SERVICE" | "AGREEMENT_COVERED";
+  lineType: "SERVICE" | "AGREEMENT_COVERED" | "INITIAL_CHARGE";
   description: string;
   unitPriceCents: number;
   amountCents: number;
@@ -412,6 +417,16 @@ interface PricedVisitInvoice {
   amountCents: number;
   taxCents: number;
   taxSnapshot: Record<string, unknown>;
+  /** The agreements whose down payment rides this invoice (Pass 11d): the INITIAL_CHARGE events the issuing paths attach. */
+  initialCharges: Array<{ agreementId: string; amountCents: number }>;
+}
+
+/** A down payment with no live INITIAL_CHARGE event yet, priced as the next visit invoice will carry it (Pass 11d). */
+interface PendingInitialCharge {
+  agreement: Agreement;
+  description: string;
+  amountCents: number;
+  taxDecision: { taxable: boolean; taxCents: number; snapshot: Record<string, unknown> };
 }
 
 export interface TechnicianWorkService {
@@ -784,7 +799,9 @@ export interface IStorage {
   // creation when the amount resolves; this is the explicit path for an
   // agreement created before Pass 6 or one whose price was set later.
   issueInitialChargeInvoice(agreementId: string, actor?: AuditActor | null): Promise<Invoice | undefined>;
-  getAgreementInitialChargeInvoice(agreementId: string): Promise<Invoice | null | undefined>;
+  getAgreementInitialChargeStatus(agreementId: string): Promise<AgreementInitialChargeStatus | undefined>;
+  getInitialChargeDueForAgreement(agreementId: string): Promise<InitialChargeDue | null | undefined>;
+  getInitialChargeDueForAppointment(appointmentId: string): Promise<InitialChargeDue | null | undefined>;
 
   getInvoiceDocumentContext(invoiceId: string): Promise<InvoiceDocumentContext | undefined>;
   getOrCreateInvoiceDocument(invoiceId: string): Promise<Document | undefined>;
@@ -3264,14 +3281,13 @@ export class DatabaseStorage implements IStorage {
         finalAgreement = (await this.syncAgreementInitialAppointmentDates(tx, createdAgreement.id, actor)) || createdAgreement;
       }
 
-      // D4: the initial charge is a real issued receivable at agreement
-      // start, in the same transaction as the sale. A charge that cannot be
-      // resolved (a percent of a price not yet set) is not issued and not
-      // fatal: the agreement card says so and offers the explicit path once
-      // the price exists. Never $0.
-      if (finalAgreement.status !== "CANCELLED") {
-        await this.issueInitialChargeInvoiceTx(tx, finalAgreement, actor);
-      }
+      // Pass 11d (owner review 2026-09-21, D4 item 2a): nothing is invoiced
+      // here any more. A down payment is a charge of the initial service and
+      // rides the first visit's invoice (buildVisitInvoiceLinesTx); the
+      // explicit up-front path (issueInitialChargeInvoice) stays for a
+      // deposit invoice the customer pays before the visit and for the other
+      // charge types. What the office is prompted to collect at signing is
+      // getInitialChargeDueForAgreement, read by the route after this returns.
 
       return finalAgreement;
     });
@@ -4777,6 +4793,7 @@ export class DatabaseStorage implements IStorage {
     });
 
     const lines: VisitServiceBilling[] = [];
+    const charges: VisitChargeBilling[] = [];
     let coaPendingCents = 0;
 
     if (invoice && invoiced) {
@@ -4824,6 +4841,41 @@ export class DatabaseStorage implements IStorage {
           note: noteMatch?.[1] ?? null,
         });
       }
+
+      // The down payment that rode this invoice (Pass 11d): its INITIAL_CHARGE
+      // line, paired with its agreement through the INITIAL_CHARGE event the
+      // issuing path attached, so the field can say whose deposit it is and
+      // who may collect it. Lines and events are both in insertion order.
+      const chargeLines = lineItems.filter((line) => line.lineType === "INITIAL_CHARGE");
+      if (chargeLines.length) {
+        const chargeEvents = await db
+          .select()
+          .from(billingEvents)
+          .where(and(eq(billingEvents.orgId, this.orgId), eq(billingEvents.invoiceId, invoice.id), eq(billingEvents.source, "INITIAL_CHARGE")))
+          .orderBy(asc(billingEvents.createdAt));
+        const chargeAgreementIds = chargeEvents.map((event) => event.agreementId);
+        const chargeAgreements = chargeAgreementIds.length
+          ? await db.select().from(agreements).where(and(eq(agreements.orgId, this.orgId), inArray(agreements.id, chargeAgreementIds)))
+          : [];
+        const chargeAgreementById = new Map(chargeAgreements.map((agreement) => [agreement.id, agreement]));
+        chargeLines.forEach((line, index) => {
+          const event = chargeEvents[index];
+          const agreement = event ? chargeAgreementById.get(event.agreementId) : undefined;
+          const appliedCents = appliedByLineId.get(line.id) ?? 0;
+          charges.push({
+            kind: "INITIAL_CHARGE",
+            agreementId: agreement?.id ?? event?.agreementId ?? "",
+            agreementName: agreement?.agreementName ?? line.description.replace(/^[^-]*-\s*/, ""),
+            description: line.description,
+            collectedBy: agreement?.initialChargeCollectedBy ?? null,
+            priceCents: line.amountCents,
+            taxCents: line.taxCents,
+            coaAppliedCents: appliedCents,
+            coaAvailableCents: 0,
+            dueTodayCents: Math.max(line.amountCents + line.taxCents - appliedCents, 0),
+          });
+        });
+      }
     } else {
       const agreementIds = visitServices.map((service) => service.agreementId).filter((id): id is string => !!id);
       const agreementContextById = await this.resolveAgreementBillingContextTx(db as any, agreementIds);
@@ -4865,13 +4917,35 @@ export class DatabaseStorage implements IStorage {
         }
       }
 
+      // The down payment this visit's invoice will carry (Pass 11d): the same
+      // resolver generation reads, so the figures here are what the invoice
+      // will say. After the service lines, as the invoice orders them.
+      for (const pending of await this.resolvePendingInitialChargesTx(db, {
+        agreements: Array.from(agreementContextById.values(), (context) => context.agreement),
+        accountId,
+      })) {
+        charges.push({
+          kind: "INITIAL_CHARGE",
+          agreementId: pending.agreement.id,
+          agreementName: pending.agreement.agreementName,
+          description: pending.description,
+          collectedBy: pending.agreement.initialChargeCollectedBy ?? null,
+          priceCents: pending.amountCents,
+          taxCents: pending.taxDecision.taxCents,
+          coaAppliedCents: 0,
+          coaAvailableCents: 0,
+          dueTodayCents: pending.amountCents + pending.taxDecision.taxCents,
+        });
+      }
+
       // What the location already holds that this visit could draw on when it
       // is invoiced - D4's order, D4's eligibility (money designated to another
-      // agreement is never offered), capped at what the visit would owe.
+      // agreement is never offered), capped at what the visit would owe. The
+      // services draw first, then the down payment: invoice line order.
       if (locationId) {
         const { eligible } = await this.orderSourcesForAgreementsTx(db, locationId, new Set(agreementIds), appointment.id);
         let poolCents = eligible.reduce((sum, source) => sum + source.unappliedCents, 0);
-        for (const line of lines) {
+        for (const line of [...lines, ...charges]) {
           if (line.priceCents == null || poolCents <= 0) continue;
           const grossCents = line.priceCents + line.taxCents;
           const take = Math.min(grossCents, poolCents);
@@ -4882,7 +4956,7 @@ export class DatabaseStorage implements IStorage {
       }
     }
 
-    const totals = lines.reduce(
+    const totals = [...lines, ...charges].reduce(
       (acc, line) => ({
         priceCents: acc.priceCents + (line.priceCents ?? 0),
         taxCents: acc.taxCents + line.taxCents,
@@ -4910,6 +4984,7 @@ export class DatabaseStorage implements IStorage {
         : null,
       invoiced,
       services: lines,
+      charges,
       totals,
     };
   }
@@ -5652,6 +5727,32 @@ export class DatabaseStorage implements IStorage {
       });
     }
 
+    // Pass 11d: the down payment of each agreement behind the visit rides
+    // this invoice as its own line when it has no live INITIAL_CHARGE event -
+    // after the service lines, taxed as the standalone path taxes it. The
+    // agreement rows are locked for the transaction so two visits of one
+    // agreement invoiced at once cannot both carry it; the event the issuing
+    // path attaches (attachInitialChargeEventsTx) is what makes it fire once.
+    const initialCharges: PricedVisitInvoice["initialCharges"] = [];
+    for (const pending of await this.resolvePendingInitialChargesTx(tx, {
+      agreements: Array.from(agreementContextById.values(), (context) => context.agreement),
+      accountId: input.accountId,
+      lock: true,
+    })) {
+      taxSnapshots.push({ agreementId: pending.agreement.id, lineType: "INITIAL_CHARGE", ...pending.taxDecision.snapshot });
+      lines.push({
+        serviceId: null,
+        serviceRecordId: null,
+        lineType: "INITIAL_CHARGE",
+        description: pending.description,
+        unitPriceCents: pending.amountCents,
+        amountCents: pending.amountCents,
+        taxable: pending.taxDecision.taxable,
+        taxCents: pending.taxDecision.taxCents,
+      });
+      initialCharges.push({ agreementId: pending.agreement.id, amountCents: pending.amountCents });
+    }
+
     const amountCents = lines.reduce((sum, line) => sum + line.amountCents, 0);
     const taxCents = lines.reduce((sum, line) => sum + line.taxCents, 0);
 
@@ -5666,7 +5767,7 @@ export class DatabaseStorage implements IStorage {
           ? { taxable: false, reason: "AGREEMENT_COVERED", taxCents: 0, snapshottedAt: new Date().toISOString() }
           : { taxable: taxCents > 0, reason: "PER_LINE", taxCents, lines: taxSnapshots, snapshottedAt: new Date().toISOString() };
 
-    return { lines, amountCents, taxCents, taxSnapshot };
+    return { lines, amountCents, taxCents, taxSnapshot, initialCharges };
   }
 
   private async insertInvoiceLineItemsTx(tx: DbTransaction, invoiceId: string, lines: VisitInvoiceLine[]): Promise<void> {
@@ -5805,6 +5906,7 @@ export class DatabaseStorage implements IStorage {
       const invoice = await insertInvoiceRow();
 
       await this.insertInvoiceLineItemsTx(tx, invoice.id, priced.lines);
+      await this.attachInitialChargeEventsTx(tx, invoice, priced.initialCharges);
 
       await this.recordAuditLogTx(tx, {
         entityType: "invoice",
@@ -5980,6 +6082,8 @@ export class DatabaseStorage implements IStorage {
     // Once issued the lines are frozen like any other invoice's.
     await tx.delete(invoiceLineItems).where(and(eq(invoiceLineItems.orgId, this.orgId), eq(invoiceLineItems.invoiceId, draft.id)));
     await this.insertInvoiceLineItemsTx(tx, draft.id, priced.lines);
+    // Issue, not draft, is when the down payment's event is attached (Pass 11d).
+    await this.attachInitialChargeEventsTx(tx, draft, priced.initialCharges);
 
     const totalAmountCents = priced.amountCents + priced.taxCents;
     // Leaving DRAFT: derive from the amounts with no currentStatus, so a $0
@@ -7685,28 +7789,37 @@ export class DatabaseStorage implements IStorage {
     });
   }
 
-  // D4: the agreement's initial charge becomes a real issued receivable at
-  // agreement start. Amount = resolveInitialChargeCents(agreement, price);
-  // a percent of a price that is not set resolves to nothing and is REFUSED,
-  // never issued at $0. The INITIAL_CHARGE billing event (fixed periodKey)
-  // is what makes this fire once per agreement - the same idempotency the
-  // nightly run relies on. Voiding the invoice does not re-open the event,
-  // exactly as for a schedule-driven invoice: the correction is a credit memo
-  // or a manual invoice, not a second receivable for the same term of sale.
+  // The explicit up-front path (D4 as corrected by the owner on 2026-09-21,
+  // Pass 11d): a standalone invoice for the agreement's initial charge, on
+  // request from the agreement card - a customer who wants a deposit invoice
+  // to pay before the visit, or a charge type that never rides a visit.
+  // Nothing calls this at agreement creation any more; a down payment
+  // otherwise rides the first visit's invoice (buildVisitInvoiceLinesTx).
+  // Amount = resolveInitialChargeCents(agreement, price); a percent of a
+  // price that is not set resolves to nothing and is REFUSED, never issued
+  // at $0. The INITIAL_CHARGE billing event (fixed periodKey) is what makes
+  // the charge bill once per agreement, here or on a visit. Voiding the
+  // invoice that carries it makes the event non-live, so the charge is owed
+  // again - on the next visit, or here - and the event is re-pointed, never
+  // duplicated.
   private async issueInitialChargeInvoiceTx(tx: DbTransaction, agreement: Agreement, actor: AuditActor | null | undefined): Promise<InitialChargeReceivableOutcome> {
     if (!agreement.initialChargeType) {
       return { action: "NO_CHARGE", invoice: null, message: "This agreement has no initial charge" };
     }
 
-    const [existingEvent] = await tx
-      .select()
-      .from(billingEvents)
-      .where(and(eq(billingEvents.orgId, this.orgId), eq(billingEvents.agreementId, agreement.id), eq(billingEvents.periodKey, INITIAL_CHARGE_PERIOD_KEY)));
-    if (existingEvent) {
-      const [existingInvoice] = existingEvent.invoiceId
-        ? await tx.select().from(invoices).where(and(eq(invoices.orgId, this.orgId), eq(invoices.id, existingEvent.invoiceId)))
-        : [undefined];
-      return { action: "ALREADY_ISSUED", invoice: existingInvoice ?? null, message: existingInvoice ? `The initial charge was already issued as ${existingInvoice.invoiceNumber}` : "The initial charge was already issued" };
+    // Under the agreement's row lock, like the visit path, so this button and
+    // a visit being invoiced at the same moment cannot both bill the deposit.
+    await tx.select({ id: agreements.id }).from(agreements).where(and(eq(agreements.orgId, this.orgId), eq(agreements.id, agreement.id))).for("update");
+    const existing = await this.getInitialChargeEventTx(tx, agreement.id);
+    if (existing?.live) {
+      const existingInvoice = existing.invoice;
+      return {
+        action: "ALREADY_ISSUED",
+        invoice: existingInvoice,
+        message: existingInvoice
+          ? `The initial charge was already ${existingInvoice.appointmentId ? "billed on visit invoice" : "issued as"} ${existingInvoice.invoiceNumber}`
+          : "The initial charge was settled outside the ledger",
+      };
     }
 
     const amountCents = resolveInitialChargeCents(agreement, agreement.priceCents);
@@ -7751,14 +7864,7 @@ export class DatabaseStorage implements IStorage {
       })
       .returning();
 
-    await tx.insert(billingEvents).values({
-      orgId: this.orgId,
-      agreementId: agreement.id,
-      source: "INITIAL_CHARGE",
-      periodKey: INITIAL_CHARGE_PERIOD_KEY,
-      amountCents,
-      invoiceId: invoice.id,
-    });
+    await this.attachInitialChargeEventsTx(tx, invoice, [{ agreementId: agreement.id, amountCents }]);
 
     await tx.insert(invoiceLineItems).values({
       orgId: this.orgId,
@@ -7791,27 +7897,233 @@ export class DatabaseStorage implements IStorage {
         return undefined;
       }
       const outcome = await this.issueInitialChargeInvoiceTx(tx, agreement, actor);
-      if (!outcome.invoice) {
+      // Pass 11d: a press once the charge is live anywhere - a visit invoice,
+      // an earlier up-front invoice, settled outside the ledger - is refused
+      // with where it is, never answered with that invoice as if issued now.
+      if (outcome.action !== "ISSUED" || !outcome.invoice) {
         throw new Error(outcome.message ?? "The initial charge could not be issued");
       }
       return outcome.invoice;
     });
   }
 
-  async getAgreementInitialChargeInvoice(agreementId: string): Promise<Invoice | null | undefined> {
+  // The one INITIAL_CHARGE event an agreement can carry, and whether it is
+  // LIVE (Pass 11d): an event with no invoice (the charge was settled outside
+  // the ledger) or with an invoice that is not VOID. A voided invoice makes
+  // the event non-live, so the down payment rides the corrected visit invoice
+  // - or a fresh up-front one - and the event is re-pointed at it rather than
+  // duplicated (the unique index on agreementId + periodKey holds).
+  private async getInitialChargeEventTx(
+    reader: DbReader,
+    agreementId: string,
+  ): Promise<{ event: typeof billingEvents.$inferSelect; invoice: Invoice | null; live: boolean } | null> {
+    const [event] = await reader
+      .select()
+      .from(billingEvents)
+      .where(and(eq(billingEvents.orgId, this.orgId), eq(billingEvents.agreementId, agreementId), eq(billingEvents.periodKey, INITIAL_CHARGE_PERIOD_KEY)));
+    if (!event) {
+      return null;
+    }
+    const [invoice] = event.invoiceId
+      ? await reader.select().from(invoices).where(and(eq(invoices.orgId, this.orgId), eq(invoices.id, event.invoiceId)))
+      : [undefined];
+    return { event, invoice: invoice ?? null, live: !event.invoiceId || invoice?.status !== "VOID" };
+  }
+
+  // Each agreement's down payment that the next visit invoice will carry
+  // (Pass 11d): a DOWN_PAYMENT on a live agreement, resolvable to an amount
+  // (a percent of a price that is not set resolves to nothing and is skipped,
+  // never $0), with no live INITIAL_CHARGE event. Taxed exactly as the
+  // standalone path taxes it. `lock` (the issuing paths) takes a row lock on
+  // each candidate agreement and re-reads it, so the liveness check and the
+  // event the caller attaches happen under one lock; the field's read-only
+  // summary does not lock. Sorted by name so two agreements' deposits on one
+  // visit always land in the same order.
+  private async resolvePendingInitialChargesTx(
+    reader: DbReader,
+    input: { agreements: Agreement[]; accountId: string | null; lock?: boolean },
+  ): Promise<PendingInitialCharge[]> {
+    const candidates = new Map<string, Agreement>();
+    for (const agreement of input.agreements) {
+      if (agreement.status !== "CANCELLED" && initialChargeRidesFirstVisit(agreement)) {
+        candidates.set(agreement.id, agreement);
+      }
+    }
+    const ordered = Array.from(candidates.values()).sort((a, b) => a.agreementName.localeCompare(b.agreementName) || a.id.localeCompare(b.id));
+    const pending: PendingInitialCharge[] = [];
+    for (let agreement of ordered) {
+      if (input.lock) {
+        const [locked] = await reader.select().from(agreements).where(and(eq(agreements.orgId, this.orgId), eq(agreements.id, agreement.id))).for("update");
+        if (!locked || locked.status === "CANCELLED" || !initialChargeRidesFirstVisit(locked)) {
+          continue;
+        }
+        agreement = locked;
+      }
+      const amountCents = resolveInitialChargeCents(agreement, agreement.priceCents);
+      if (amountCents == null || amountCents <= 0) {
+        continue;
+      }
+      const existing = await this.getInitialChargeEventTx(reader, agreement.id);
+      if (existing?.live) {
+        continue;
+      }
+      const taxDecision = await this.resolveTaxDecision(reader as any, {
+        accountId: input.accountId,
+        locationId: agreement.locationId,
+        serviceTypeId: agreement.serviceTypeId,
+        amountCents,
+      });
+      pending.push({
+        agreement,
+        description: `${formatInitialChargeType(agreement.initialChargeType)} - ${agreement.agreementName}`,
+        amountCents,
+        taxDecision,
+      });
+    }
+    return pending;
+  }
+
+  // The INITIAL_CHARGE events for the down payments an invoice carries
+  // (Pass 11d), attached by the issuing paths only - generation, issue and
+  // the explicit up-front path, never a draft. One event per agreement: a
+  // non-live event (its earlier invoice voided) is re-pointed at this
+  // invoice; a live one means another issue won under the lock, and this
+  // transaction must not bill the deposit twice.
+  private async attachInitialChargeEventsTx(tx: DbTransaction, invoice: Invoice, initialCharges: PricedVisitInvoice["initialCharges"]): Promise<void> {
+    for (const charge of initialCharges) {
+      const existing = await this.getInitialChargeEventTx(tx, charge.agreementId);
+      if (existing?.live) {
+        throw new Error(
+          `The agreement's initial charge was ${existing.invoice ? `billed as ${existing.invoice.invoiceNumber}` : "settled outside the ledger"} while ${invoice.invoiceNumber} was being issued; retry`,
+        );
+      }
+      if (existing) {
+        await tx
+          .update(billingEvents)
+          .set({ invoiceId: invoice.id, amountCents: charge.amountCents })
+          .where(and(eq(billingEvents.orgId, this.orgId), eq(billingEvents.id, existing.event.id)));
+        continue;
+      }
+      await tx.insert(billingEvents).values({
+        orgId: this.orgId,
+        agreementId: charge.agreementId,
+        source: "INITIAL_CHARGE",
+        periodKey: INITIAL_CHARGE_PERIOD_KEY,
+        amountCents: charge.amountCents,
+        invoiceId: invoice.id,
+      });
+    }
+  }
+
+  // The office's prompt at signing and at scheduling (Pass 11d; D4 step 1,
+  // "payment recorded at scheduling"): a down payment the office may collect,
+  // still owed - no live event - and not already covered by money designated
+  // to the agreement in the location's unapplied pool. Null means do not ask.
+  private async describeInitialChargeDueTx(reader: DbReader, agreement: Agreement): Promise<InitialChargeDue | null> {
+    if (agreement.status === "CANCELLED" || !initialChargeRidesFirstVisit(agreement) || !officeMayCollectInitialCharge(agreement)) {
+      return null;
+    }
+    const amountCents = resolveInitialChargeCents(agreement, agreement.priceCents);
+    if (amountCents == null || amountCents <= 0) {
+      return null;
+    }
+    const existing = await this.getInitialChargeEventTx(reader, agreement.id);
+    if (existing?.live) {
+      return null;
+    }
+    const sources = await this.unappliedSourcesForLocationTx(reader, agreement.locationId);
+    const designatedCents = sources
+      .filter((source) => source.designatedAgreementId === agreement.id)
+      .reduce((sum, source) => sum + source.unappliedCents, 0);
+    if (designatedCents >= amountCents) {
+      return null;
+    }
+    return {
+      agreementId: agreement.id,
+      agreementName: agreement.agreementName,
+      locationId: agreement.locationId,
+      amountCents,
+      collectedBy: agreement.initialChargeCollectedBy ?? null,
+    };
+  }
+
+  async getInitialChargeDueForAgreement(agreementId: string): Promise<InitialChargeDue | null | undefined> {
     const [agreement] = await db.select().from(agreements).where(and(eq(agreements.orgId, this.orgId), eq(agreements.id, agreementId)));
     if (!agreement) {
       return undefined;
     }
-    const [event] = await db
-      .select()
-      .from(billingEvents)
-      .where(and(eq(billingEvents.orgId, this.orgId), eq(billingEvents.agreementId, agreementId), eq(billingEvents.periodKey, INITIAL_CHARGE_PERIOD_KEY)));
-    if (!event?.invoiceId) {
-      return null;
+    return this.describeInitialChargeDueTx(db, agreement);
+  }
+
+  // For a just-created appointment: the first still-owed down payment among
+  // the agreements behind its services. One prompt - a visit carrying two
+  // agreements' deposits is asked about the first by name; the other is
+  // asked at its own next scheduling, and both are on the technician's figures.
+  async getInitialChargeDueForAppointment(appointmentId: string): Promise<InitialChargeDue | null | undefined> {
+    const group = await this.getAppointmentBillingGroupTx(db as any, appointmentId);
+    if (!group) {
+      return undefined;
     }
-    const [invoice] = await db.select().from(invoices).where(and(eq(invoices.orgId, this.orgId), eq(invoices.id, event.invoiceId)));
-    return invoice ?? null;
+    const contexts = await this.resolveAgreementBillingContextTx(
+      db as any,
+      group.services.map((service) => service.agreementId).filter((id): id is string => !!id),
+    );
+    const candidates = Array.from(contexts.values(), (context) => context.agreement)
+      .sort((a, b) => a.agreementName.localeCompare(b.agreementName) || a.id.localeCompare(b.id));
+    for (const agreement of candidates) {
+      const due = await this.describeInitialChargeDueTx(db, agreement);
+      if (due) {
+        return due;
+      }
+    }
+    return null;
+  }
+
+  // Where an agreement's initial charge stands, for the agreement card
+  // (Pass 11d): NONE, PENDING (a down payment rides the next visit invoice;
+  // any other type waits for the explicit button), ISSUED as which invoice -
+  // a visit's or the standalone - or SETTLED_OUTSIDE_LEDGER.
+  async getAgreementInitialChargeStatus(agreementId: string): Promise<AgreementInitialChargeStatus | undefined> {
+    const [agreement] = await db.select().from(agreements).where(and(eq(agreements.orgId, this.orgId), eq(agreements.id, agreementId)));
+    if (!agreement) {
+      return undefined;
+    }
+    if (!agreement.initialChargeType) {
+      return { kind: "NONE", ridesFirstVisit: false, amountCents: null, invoice: null, message: null };
+    }
+    const toRef = (invoice: Invoice | null): InitialChargeInvoiceRef | null =>
+      invoice
+        ? {
+          id: invoice.id,
+          invoiceNumber: invoice.invoiceNumber,
+          status: invoice.status,
+          totalAmountCents: invoice.totalAmountCents,
+          balanceDueCents: invoice.balanceDueCents,
+          appointmentId: invoice.appointmentId ?? null,
+        }
+        : null;
+    const existing = await this.getInitialChargeEventTx(db, agreement.id);
+    if (existing?.live) {
+      return {
+        kind: existing.event.invoiceId ? "ISSUED" : "SETTLED_OUTSIDE_LEDGER",
+        ridesFirstVisit: false,
+        amountCents: existing.event.amountCents,
+        invoice: toRef(existing.invoice),
+        message: null,
+      };
+    }
+    const amountCents = resolveInitialChargeCents(agreement, agreement.priceCents);
+    return {
+      kind: "PENDING",
+      ridesFirstVisit: agreement.status !== "CANCELLED" && initialChargeRidesFirstVisit(agreement),
+      amountCents,
+      invoice: toRef(existing?.invoice ?? null),
+      message: amountCents == null || amountCents <= 0
+        ? (agreement.initialChargeAmountMode === "PERCENT_OF_PRICE" && agreement.priceCents == null
+          ? "The initial charge is a percent of the contract price and no contract price is set; set the price to bill it"
+          : "The initial charge has no amount to bill")
+        : null,
+    };
   }
 
   // Everything here is drawn from the invoice's own frozen data

@@ -6,13 +6,12 @@ appointment-anchored invoicing wired to finalization, payments-lite ledger (cash
 balances, application/release), COA as payment application, and `audit_logs` as the system-wide
 immutable financial history.
 
-Now active: **Phase 2 — Invoices you can work from**, per `PLAN_ROADMAP_V2.md`. Passes 11a and 11b
-(the Invoice modal, core and reach) are merged (PRs #73, #74), the owner review of 2026-09-21 is
-merged (PR #75), and Pass 11c (the invoice document's parties) is pushed, awaiting merge; **next
-pass: 11d, the down payment on the first visit's invoice** — the C2.1d row of that document's Phase
-2 table, inserted with 11c ahead of Pass 12 by the owner's review of 2026-09-21 (recorded under D4
-in `PLAN_BILLING_V1_1.md` and in the roadmap's Part E). The roadmap sequences every remaining item
-below; this file keeps only the status pointer.
+Now active: **Phase 2 — Invoices you can work from**, per `PLAN_ROADMAP_V2.md`. Passes 11a-11c (the
+Invoice modal, core and reach; the invoice document's parties) are merged (PRs #73, #74, #76), as
+are the owner review of 2026-09-21 (PR #75) and the dev-setup chore (PR #77); Pass 11d (the down
+payment on the first visit's invoice) is pushed, awaiting merge; **next pass: 12, Billing Plan
+required on every Agreement + sale attribution** — the C2.2 row of that document's Phase 2 table.
+The roadmap sequences every remaining item below; this file keeps only the status pointer.
 
 ## Status
 Pass 1 (`feature/phase-1-appointment-status-enum`, D1a) merged as PR #56.
@@ -367,7 +366,7 @@ recorded under D4 in `PLAN_BILLING_V1_1.md` and in `PLAN_ROADMAP_V2.md` Part E; 
 passes inserted ahead of Pass 12, C2.1c (**11c**) and C2.1d (**11d**), specified in the Phase 2
 table. Canon §13 is corrected in 11d's PR, with the code.
 
-Pass 11c (`feature/phase-2-invoice-document-parties`, 2026-09-21, C2.1c) pushed, awaiting merge.
+Pass 11c (`feature/phase-2-invoice-document-parties`, 2026-09-21, C2.1c) merged as PR #76.
 **The invoice's parties are decided at issue and frozen.** `resolveInvoiceTermsForLocationTx` now
 always writes `billingProfileSnapshot` when the invoice has a location - profile or not - and grows
 it with `billTo { name, address, source }` and `serviceLocation { name, address }`; the source is
@@ -391,8 +390,8 @@ testing - this pass changes server code and the document renderer, and the third
 not been rendered by anyone yet.** Signatures and behavior are under "Shipped in Pass 11c" at the end
 of `PLAN_ROADMAP_V2.md` Part D.
 
-Dev-setup chore (`chore/windows-node-lts-dev-setup`, 2026-09-21, no domain change) pushed, awaiting
-merge. Prompted by a new Windows machine on Node 24: `reusePort: true` in `httpServer.listen()`
+Dev-setup chore (`chore/windows-node-lts-dev-setup`, 2026-09-21, no domain change) merged as PR #77.
+Prompted by a new Windows machine on Node 24: `reusePort: true` in `httpServer.listen()`
 threw `ENOTSUP` (Node 22.12+ no longer ignores it on Windows) - removed; `engines` (`>=22.12`) and
 `.nvmrc` (24) added; README / DEV_NOTES / PROJECT_MAP now say Node 22/24 and the real first-boot
 sequence. That sequence had never been run: **a fresh `npm run db:push` database could not boot**,
@@ -413,11 +412,43 @@ with `>`, are in `DEV_NOTES.md`. One correction to the Pass 10 note above: **INV
 INV-000072 are both VOID, and INV-000001 carries a location** - that note describes them as still
 OPEN and location-less, which was true when Pass 10 shipped and is not true of this DB.
 
-Next up: **Pass 11d** — the down payment on the first visit's invoice (`PLAN_ROADMAP_V2.md` Phase 2
-table, C2.1d). Branch `feature/phase-2-down-payment-first-visit` from `origin/main` after confirming
-it contains Pass 11c's merge. Pass 11d asks the owner at its start about the three unissued `Daily
-Rodent Trapping` down payments (the open flag in the roadmap's Part E; default: settled outside the
-ledger).
+Pass 11d (`feature/phase-2-down-payment-first-visit`, 2026-09-22, C2.1d) pushed, awaiting merge.
+**A down payment bills on the first visit's invoice.** `createAgreement` issues nothing any more;
+`buildVisitInvoiceLinesTx` appends, for each agreement behind the visit with a `DOWN_PAYMENT`, a
+resolvable amount and no **live** `INITIAL_CHARGE` event (live = no invoice, i.e. settled outside
+the ledger, or an invoice that is not VOID), an `INITIAL_CHARGE` line "Down payment - <agreement>"
+after the service lines, taxed as the standalone path taxes it. Generation, issue and the explicit
+up-front route attach the event to the invoice they issue (a draft previews the line and attaches
+nothing), under a row lock on the agreement so two visits cannot both carry it; a voided carrier
+invoice makes the event non-live, so the corrected invoice carries the line again and the event is
+re-pointed, never duplicated. `getVisitBillingSummary` gains `charges` - the pending line priced
+`BILLABLE` before invoicing, the invoice's own line after - counted in the totals and drawn on by COA
+after the services, so the ticket, appointment details, collect step, review modal and dispatch
+sheet all show the deposit as due, and a covered visit reads $0 covered plus the deposit, never "No
+charge". `initialChargeCollectedBy` has its readers: `POST /api/appointments` and
+`POST /api/agreements` return `initialChargeDue` when a down payment the office may collect is still
+owed and no money designated to the agreement covers it, and the schedule screen's placement and the
+agreement form open "Collect the $X down payment now?" → Record Payment with the designation and
+amount preset (the money lands designated to the agreement and is offered first at invoicing); the
+technician's surfaces carry a "Down payment $X" callout unless the office is the only collector, in
+which case the collect step leaves it out of its default amount. The card's explicit button stays as
+"Issue up front instead" (`GET .../initial-charge-status` replaces `.../initial-charge-invoice`)
+and is refused once the charge is live anywhere. **Migration** (`agreement-bootstrap.ts`,
+self-guarding one-shot, per-row report at boot): the three `Daily Rodent Trapping` deposits - never
+issued, first visits already invoiced at $0 - are **settled outside the ledger** per the owner
+(2026-09-22): an `INITIAL_CHARGE` event with no invoice each; the Wildlife Trapping Program deposit
+(25% of $499, no visit yet) rides its first visit, as the owner chose. Canon §13 corrected in the
+same PR. Not built: the batch-invoice preview's per-ticket amounts do not show a pending deposit that
+generate will bill (C2.3), and a visit carrying two agreements' deposits prompts the office for the
+first only. **Restart `npm run dev:full` now, not after the merge: the migration ran on the shared
+dev DB during this pass's verification boot, and a server on pre-11d code still issues a deposit
+invoice at agreement creation.** Signatures and behavior are under "Shipped in Pass 11d" at the end
+of `PLAN_ROADMAP_V2.md` Part D.
+
+Next up: **Pass 12** — Billing Plan required on every Agreement + sale attribution
+(`PLAN_ROADMAP_V2.md` Phase 2 table, C2.2; the owner's answer of 2026-09-19: attach **Monthly
+Recurring** to all 11 plan-less agreements, the per-row effect printed before committing). Branch
+from `origin/main` after confirming it contains Pass 11d's merge.
 
 Phase 1's ordered plan, impact analysis, conflict resolutions, and per-pass verification steps live in
 `PLAN_BILLING_V1_1_EXECUTION.md` — read it when a pass builds on a Phase 1 helper (its "Shipped in
