@@ -22,7 +22,7 @@ import { normalizePhone } from "@shared/phone";
 import { ZodError, z } from "zod";
 import type { Request } from "express";
 import { requirePermission } from "./auth";
-import { DraftInvoiceDecisionRequiredError, PrefinalizationIssueError } from "./storage";
+import { DraftInvoiceDecisionRequiredError, PrefinalizationIssueError, TicketLockedError } from "./storage";
 import { can, PERMISSIONS, type UserRole } from "@shared/permissions";
 import { INVOICE_ON_FINALIZE_MODES, normalizeInvoiceOnFinalizeMode } from "@shared/invoice-on-finalize";
 import {
@@ -239,9 +239,26 @@ export async function registerRoutes(
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["serviceId"], message: "serviceId is required" });
     }
   });
-  const updateServiceRecordSchema = insertServiceRecordSchema.omit({ serviceDate: true }).extend({
+  // D9 (Pass 16): the office's edit of a posted ticket - its content only.
+  // Strict, so a lifecycle column (`confirmed`, `ticketStatus`, the stamps,
+  // `readyForBilling`) or an identity column (service, appointment, customer,
+  // location) is refused, not silently written: `{ confirmed: true }` was the
+  // pre-Phase-1 Service History "Confirm", which completed a Service without
+  // finalization. Finalize and reopen are their own routes. Materials are
+  // replace-all when sent (the post's shape), untouched when omitted.
+  const updateServiceRecordSchema = z.object({
     serviceDate: z.coerce.date().optional(),
-  }).partial();
+    technicianId: z.string().nullable().optional(),
+    notes: z.string().nullable().optional(),
+    targetPests: z.array(z.string()).nullable().optional(),
+    areasServiced: z.string().nullable().optional(),
+    conditionsFound: z.string().nullable().optional(),
+    recommendations: z.string().nullable().optional(),
+    followUpRequired: z.boolean().optional(),
+    followUpNotes: z.string().nullable().optional(),
+    customerSignature: z.boolean().nullable().optional(),
+    productApplications: z.array(insertProductApplicationSchema.omit({ serviceRecordId: true })).optional(),
+  }).strict();
   const completeServiceSchema = z.object({
     appointmentId: z.string().nullable().optional(),
     technicianId: z.string().nullable().optional(),
@@ -361,6 +378,11 @@ export async function registerRoutes(
   // and resubmits with voidDraftInvoices true or false.
   const respondDraftInvoiceDecisionRequired = (res: any, err: DraftInvoiceDecisionRequiredError) =>
     res.status(409).json({ message: err.message, code: err.code, draftInvoices: err.draftInvoices });
+  // D9 (Pass 16): a ticket edit or re-post its state forbids - 409
+  // TICKET_FINALIZED ("reopen first"), 403 TICKET_IN_REVIEW (a technician's
+  // re-post on a ticket the office holds).
+  const respondTicketLocked = (res: any, err: TicketLockedError) =>
+    res.status(err.status).json({ message: err.message, code: err.code });
   // D4: the initial charge block on agreements (actual) and templates
   // (default). The enums are the shared vocabulary; the cross-field rule - a
   // typed charge must carry a usable amount - is validateInitialCharge(), run
@@ -1347,6 +1369,7 @@ export async function registerRoutes(
       res.status(201).json(data);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
+      if (e instanceof TicketLockedError) return respondTicketLocked(res, e);
       res.status(400).json({ message: e.message });
     }
   });
@@ -1687,14 +1710,18 @@ export async function registerRoutes(
     }
   });
 
-  app.patch("/api/service-records/:id", async (req, res) => {
+  // D9 (Pass 16): the office edit. EDIT_TICKET (support+); a FINALIZED
+  // ticket answers 409 TICKET_FINALIZED; an edit that changes nothing writes
+  // nothing; one that does writes `ticket_edited`. The actor is the session's.
+  app.patch("/api/service-records/:id", requirePermission(PERMISSIONS.EDIT_TICKET), async (req, res) => {
     try {
       const validated = updateServiceRecordSchema.parse(req.body);
-      const data = await req.storage.updateServiceRecord(req.params.id, validated);
+      const data = await req.storage.updateServiceRecord(req.params.id, { ...validated, actor: getAuditActor(req) });
       if (!data) return res.status(404).json({ message: "Service record not found" });
       res.json(data);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
+      if (e instanceof TicketLockedError) return respondTicketLocked(res, e);
       res.status(400).json({ message: e.message });
     }
   });

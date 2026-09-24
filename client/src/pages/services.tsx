@@ -32,6 +32,8 @@ import {
   Beaker,
   AlertTriangle,
 } from "lucide-react";
+import { Link } from "wouter";
+import { describeTicketLifecycle, isTicketFinalized } from "@shared/ticket-status";
 import type { Appointment, Customer, Service, ServiceRecord, ProductApplication, ServiceType, Location, Technician } from "@shared/schema";
 
 function toDateTimeLocalValue(value?: string | Date | null) {
@@ -313,19 +315,16 @@ function ServiceRecordForm({ onClose }: { onClose: () => void }) {
 export default function Services() {
   const [search, setSearch] = useState("");
   const [dialogOpen, setDialogOpen] = useState(false);
-  const { toast } = useToast();
 
   const { data: services, isLoading } = useQuery<ServiceRecord[]>({ queryKey: ["/api/service-records"] });
   const { data: customers } = useQuery<Customer[]>({ queryKey: ["/api/customers"] });
   const { data: productApps } = useQuery<ProductApplication[]>({ queryKey: ["/api/product-applications"] });
 
-  const confirmMutation = useMutation({
-    mutationFn: (id: string) => apiRequest("PATCH", `/api/service-records/${id}`, { confirmed: true }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/service-records"] });
-      toast({ title: "Service record confirmed" });
-    },
-  });
+  // D9 (Pass 16): the "Confirm" that lived here (PATCH { confirmed: true })
+  // was the pre-Phase-1 completion - it marked a Service COMPLETED with no
+  // finalization, no invoicing moment and no audit row. Finalization is the
+  // one completion event, so each card now reads the ticket's real lifecycle
+  // and opens it on Service Ticket Review, where Finalize / Reopen live.
 
   const filtered = services?.filter((s) => {
     const cust = customers?.find((c) => c.id === s.customerId);
@@ -387,13 +386,13 @@ export default function Services() {
                           <Badge variant="secondary" className="text-xs">
                             {new Date(svc.serviceDate).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
                           </Badge>
-                          {svc.confirmed ? (
+                          {isTicketFinalized(svc) ? (
                             <Badge variant="secondary" className="text-xs bg-primary/10 text-primary">
-                              <CheckCircle className="h-3 w-3 mr-1" /> Confirmed
+                              <CheckCircle className="h-3 w-3 mr-1" /> {describeTicketLifecycle(svc)}
                             </Badge>
                           ) : (
                             <Badge variant="secondary" className="text-xs bg-chart-3/10 text-chart-3">
-                              <AlertTriangle className="h-3 w-3 mr-1" /> Unconfirmed
+                              <AlertTriangle className="h-3 w-3 mr-1" /> {describeTicketLifecycle(svc)}
                             </Badge>
                           )}
                         </div>
@@ -425,17 +424,11 @@ export default function Services() {
                           </div>
                         )}
                       </div>
-                      {!svc.confirmed && (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => confirmMutation.mutate(svc.id)}
-                          disabled={confirmMutation.isPending}
-                          data-testid={`button-confirm-${svc.id}`}
-                        >
-                          <CheckCircle className="h-3 w-3 mr-1" /> Confirm
-                        </Button>
-                      )}
+                      <Button variant="outline" size="sm" asChild>
+                        <Link href={`/service-ticket-review?recordId=${encodeURIComponent(svc.id)}`} data-testid={`link-review-ticket-${svc.id}`}>
+                          <ClipboardList className="h-3 w-3 mr-1" /> {isTicketFinalized(svc) ? "Open ticket" : "Review ticket"}
+                        </Link>
+                      </Button>
                     </div>
                   </CardContent>
                 </Card>

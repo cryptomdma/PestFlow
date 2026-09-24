@@ -17,6 +17,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth";
 import { apiRequest, getApiErrorMessage, queryClient } from "@/lib/queryClient";
 import { can, PERMISSIONS } from "@shared/permissions";
+import { isTicketFinalized, isTicketReopened, technicianMayPostTicket } from "@shared/ticket-status";
 import { AlertTriangle, Banknote, CalendarDays, CheckCircle2, ClipboardList, Clock3, MapPin, Navigation } from "lucide-react";
 import type { Appointment, Customer, Location, Service, ServiceRecord, ServiceType, Technician } from "@shared/schema";
 
@@ -75,15 +76,19 @@ function hasLocalTicketDraft(serviceId: string) {
   return !!localStorage.getItem(`pestflow.service-ticket-draft.${serviceId}`);
 }
 
+// D9 (Pass 16): the button offers exactly what the server accepts. The rule
+// is shared/ticket-status.ts's technicianMayPostTicket - no record yet, or a
+// REOPENED one - so this view can never offer a post the route refuses. A
+// disabled button names the ticket's state honestly (it opens nothing).
 function getTicketActionLabel(service: Service, serviceRecord?: ServiceRecord | null) {
   if (!serviceRecord) return hasLocalTicketDraft(service.id) ? "Resume Service Ticket" : "Create Service Ticket";
-  if (serviceRecord.confirmed || serviceRecord.ticketStatus === "FINALIZED") return "View Finalized Ticket";
-  if (serviceRecord.ticketStatus === "REOPENED") return "Edit Service Ticket";
-  return "View Service Ticket";
+  if (isTicketFinalized(serviceRecord)) return "Ticket Finalized";
+  if (isTicketReopened(serviceRecord)) return "Edit Reopened Ticket";
+  return "Ticket in Office Review";
 }
 
 function canOpenTicketEditor(serviceRecord?: ServiceRecord | null) {
-  return !serviceRecord || serviceRecord.ticketStatus === "REOPENED";
+  return technicianMayPostTicket(serviceRecord);
 }
 
 export default function TechnicianWork() {
@@ -114,6 +119,13 @@ export default function TechnicianWork() {
   // server-resolved. Refetched by refreshWork's ["/api/appointments"] prefix.
   const { data: detailBilling, isLoading: detailBillingLoading, isError: detailBillingError } = useVisitBillingSummary(detailVisit?.appointment.id);
   const collectLocationId = detailVisit?.appointment.locationId ?? detailVisit?.location?.id ?? detailVisit?.services[0]?.service.locationId ?? null;
+  // D9 (Pass 16): the ticket dialog is handed a record only to edit and
+  // re-post a REOPENED ticket. A posted or finalized record is never passed -
+  // the server refuses that re-post, so the dialog never starts from it.
+  const completionRecord = completionContext
+    ? detailVisit?.services.find(({ service }) => service.id === completionContext.service.id)?.serviceRecord ?? null
+    : null;
+  const reopenedRecordForCompletion = completionRecord && isTicketReopened(completionRecord) ? completionRecord : null;
   const collectDesignation = resolveVisitDesignation((detailVisit?.services ?? []).map(({ service }) => service.agreementId));
   const closeDetail = () => {
     setCollectOpen(false);
@@ -483,7 +495,7 @@ export default function TechnicianWork() {
         technicians={technicians}
         serviceTypes={serviceTypes}
         defaultTechnicianId={selectedTechnicianId}
-        existingServiceRecord={completionContext ? detailVisit?.services.find(({ service }) => service.id === completionContext.service.id)?.serviceRecord ?? null : null}
+        existingServiceRecord={reopenedRecordForCompletion}
         onCompleted={() => {
           refreshWork();
           setCompletionContext(null);

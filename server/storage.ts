@@ -67,6 +67,7 @@ import { createHash } from "crypto";
 import type { InvoiceDocumentContext } from "./documents/types";
 import { renderInvoicePdf } from "./documents/invoice-pdf";
 import { can, PERMISSIONS, type UserRole } from "@shared/permissions";
+import { isTicketFinalized, isTicketInOfficeReview } from "@shared/ticket-status";
 import { computeProductionValueCents } from "@shared/production-value";
 import { formatCents } from "@shared/money";
 import { buildBillingPlanSnapshot as buildSharedBillingPlanSnapshot, isScheduleBilledPlan } from "@shared/billing-plan";
@@ -261,6 +262,96 @@ export interface CancelAgreementInput {
   // so the UI can ask, rather than auto-voiding or silently orphaning them.
   voidDraftInvoices?: boolean;
   actor?: AuditActor;
+}
+
+// D9 (Pass 16): a ticket edit or re-post that the ticket's state forbids.
+// Routes send `status` straight through: 409 when the ticket is FINALIZED
+// (anyone - "reopen first"), 403 when a technician re-posts a ticket the
+// office holds in review (EDIT_TICKET would let the office do it).
+export class TicketLockedError extends Error {
+  constructor(
+    readonly code: "TICKET_FINALIZED" | "TICKET_IN_REVIEW",
+    readonly status: 403 | 409,
+    message: string,
+  ) {
+    super(message);
+    this.name = "TicketLockedError";
+  }
+}
+
+// The office's edit of a posted ticket (PATCH /api/service-records/:id,
+// EDIT_TICKET). Content only: the lifecycle columns (confirmed, ticketStatus,
+// the posted / finalized / reopened / flagged stamps, readyForBilling) belong
+// to post / finalize / reopen, and the identity columns (service, appointment,
+// customer, location) never move. The price lives on the Service and is
+// stamped only by a post (Pass 8's price_overridden); an office price edit is
+// C3.1b's. Materials are replace-all when sent, untouched when omitted.
+export interface UpdateServiceRecordInput {
+  serviceDate?: Date;
+  technicianId?: string | null;
+  notes?: string | null;
+  targetPests?: string[] | null;
+  areasServiced?: string | null;
+  conditionsFound?: string | null;
+  recommendations?: string | null;
+  followUpRequired?: boolean;
+  followUpNotes?: string | null;
+  customerSignature?: boolean | null;
+  productApplications?: Array<Omit<InsertProductApplication, "serviceRecordId">>;
+  actor?: AuditActor | null;
+}
+
+// What a post and an edit both do to the materials they were sent: trim the
+// name, drop nameless rows, trim the notes to null.
+function normalizeProductApplicationInputs(
+  list: Array<Omit<InsertProductApplication, "serviceRecordId">> | null | undefined,
+): Array<Omit<InsertProductApplication, "serviceRecordId">> {
+  return (list ?? [])
+    .map((application) => ({
+      ...application,
+      productName: application.productName?.trim() ?? "",
+      notes: application.notes?.trim() || null,
+    }))
+    .filter((application) => application.productName);
+}
+
+// The `ticket_edited` snapshot (D9, Pass 16): the ticket row plus its
+// materials as content, without the per-row ids - a post deletes and
+// reinserts the materials, so with ids two identical lists would never
+// compare equal and every re-post would show its materials as changed.
+const PRODUCT_APPLICATION_SNAPSHOT_FIELDS = [
+  "materialProductId",
+  "productName",
+  "epaRegNumber",
+  "dilutionLabel",
+  "dilutionRate",
+  "amountApplied",
+  "unit",
+  "activeIngredientAmount",
+  "applicationMethod",
+  "device",
+  "applicationLocation",
+  "notes",
+] as const;
+type ProductApplicationSnapshot = Record<(typeof PRODUCT_APPLICATION_SNAPSHOT_FIELDS)[number], string | null>;
+
+function snapshotProductApplication(row: Partial<Omit<InsertProductApplication, "serviceRecordId">>): ProductApplicationSnapshot {
+  const snapshot = {} as ProductApplicationSnapshot;
+  for (const field of PRODUCT_APPLICATION_SNAPSHOT_FIELDS) {
+    snapshot[field] = row[field] ?? null;
+  }
+  return snapshot;
+}
+
+function snapshotTicketForAudit(record: ServiceRecord, applications: Array<Partial<Omit<InsertProductApplication, "serviceRecordId">>>) {
+  return { ...record, productApplications: applications.map(snapshotProductApplication) };
+}
+
+// Structural equality for a ticket field: Dates, arrays and nulls compare by
+// value, the way diffAuditSnapshots() compares the stored snapshots.
+function ticketFieldsEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  return JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 }
 
 export interface CompleteServiceInput {
@@ -716,7 +807,7 @@ export interface IStorage {
   getServiceRecordsByLocation(locationId: string): Promise<ServiceRecord[]>;
   getServiceRecord(id: string): Promise<ServiceRecord | undefined>;
   createServiceRecord(data: InsertServiceRecord): Promise<ServiceRecord>;
-  updateServiceRecord(id: string, data: Partial<InsertServiceRecord>): Promise<ServiceRecord | undefined>;
+  updateServiceRecord(id: string, input: UpdateServiceRecordInput): Promise<ServiceRecord | undefined>;
   completeService(input: CompleteServiceInput): Promise<CompleteServiceResult | undefined>;
   finalizeServiceRecord(id: string, actor?: AuditActor): Promise<FinalizeServiceRecordResult | undefined>;
   reopenServiceRecord(id: string, reason: string, actor?: AuditActor): Promise<ServiceRecord | undefined>;
@@ -4008,41 +4099,113 @@ export class DatabaseStorage implements IStorage {
     });
   }
 
-  async updateServiceRecord(id: string, data: Partial<InsertServiceRecord>): Promise<ServiceRecord | undefined> {
+  // D9 (Pass 16): the office's edit of a posted ticket. EDIT_TICKET is checked
+  // at the route; here the ticket's state decides - a FINALIZED ticket refuses
+  // ("reopen first"), anything else is editable, a technician's ticket
+  // included (it is locked from the technician, not from the office). Only
+  // the content moves (see UpdateServiceRecordInput); the Service's lifecycle
+  // is untouched - this used to flip it to COMPLETED on `confirmed`, which
+  // completed a Service without finalization. An edit that changes nothing
+  // writes nothing (Pass 8's audit-only-on-change rule); one that does writes
+  // `ticket_edited` with the ticket and its materials before and after, in
+  // the same transaction.
+  async updateServiceRecord(id: string, input: UpdateServiceRecordInput): Promise<ServiceRecord | undefined> {
     return db.transaction(async (tx) => {
       const [existingRecord] = await tx.select().from(serviceRecords).where(and(eq(serviceRecords.orgId, this.orgId), eq(serviceRecords.id, id)));
       if (!existingRecord) {
         return undefined;
       }
-
-      const technicianSnapshot = await this.resolveServiceRecordTechnicianSnapshot(tx, data, existingRecord);
-      const [sr] = await tx.update(serviceRecords).set({
-        ...data,
-        technicianId: technicianSnapshot.technicianId,
-        technicianName: technicianSnapshot.technicianName,
-        technicianLicenseNumber: technicianSnapshot.technicianLicenseNumber,
-        notes: technicianSnapshot.notes,
-      }).where(and(eq(serviceRecords.orgId, this.orgId), eq(serviceRecords.id, id))).returning();
-
-      if (sr.serviceId) {
-        await tx
-          .update(services)
-          .set({
-            status: sr.confirmed ? "COMPLETED" : "SCHEDULED",
-            assignedTechnicianId: sr.technicianId || null,
-            updatedAt: new Date(),
-          })
-          .where(and(eq(services.orgId, this.orgId), eq(services.id, sr.serviceId)))
+      if (isTicketFinalized(existingRecord)) {
+        throw new TicketLockedError("TICKET_FINALIZED", 409, "This ticket is finalized. Reopen it before editing it.");
       }
 
-      if (sr.appointmentId) {
-        const [linkedAgreement] = await tx.select().from(agreements).where(and(eq(agreements.orgId, this.orgId), eq(agreements.initialAppointmentId, sr.appointmentId)));
+      const previousApplications = await tx
+        .select()
+        .from(productApplications)
+        .where(and(eq(productApplications.orgId, this.orgId), eq(productApplications.serviceRecordId, existingRecord.id)));
+
+      // The compliance snapshot (canon §12) follows the technician: naming a
+      // different one re-copies the display name and license from that
+      // profile, exactly as a post does.
+      const technicianId = input.technicianId === undefined ? existingRecord.technicianId : input.technicianId || null;
+      let technicianName = existingRecord.technicianName;
+      let technicianLicenseNumber = existingRecord.technicianLicenseNumber;
+      if (technicianId !== existingRecord.technicianId) {
+        const [technician] = technicianId
+          ? await tx.select().from(technicians).where(and(eq(technicians.orgId, this.orgId), eq(technicians.id, technicianId)))
+          : [undefined];
+        if (technicianId && !technician) {
+          throw new Error("Technician not found");
+        }
+        technicianName = technician?.displayName ?? null;
+        technicianLicenseNumber = technician?.licenseId ?? null;
+      }
+
+      const followUpRequired = input.followUpRequired ?? existingRecord.followUpRequired;
+      const nextFields = {
+        serviceDate: input.serviceDate ?? existingRecord.serviceDate,
+        technicianId,
+        technicianName,
+        technicianLicenseNumber,
+        notes: input.notes === undefined ? existingRecord.notes : input.notes?.trim() || null,
+        targetPests: input.targetPests === undefined ? existingRecord.targetPests : input.targetPests?.filter((value) => value.trim()) ?? null,
+        areasServiced: input.areasServiced === undefined ? existingRecord.areasServiced : input.areasServiced?.trim() || null,
+        conditionsFound: input.conditionsFound === undefined ? existingRecord.conditionsFound : input.conditionsFound?.trim() || null,
+        recommendations: input.recommendations === undefined ? existingRecord.recommendations : input.recommendations?.trim() || null,
+        followUpRequired,
+        followUpNotes: !followUpRequired ? null : input.followUpNotes === undefined ? existingRecord.followUpNotes : input.followUpNotes?.trim() || null,
+        customerSignature: input.customerSignature === undefined ? existingRecord.customerSignature : input.customerSignature ?? false,
+      };
+      const nextApplications = input.productApplications === undefined ? null : normalizeProductApplicationInputs(input.productApplications);
+
+      const recordChanged = (Object.keys(nextFields) as Array<keyof typeof nextFields>).some((key) => !ticketFieldsEqual(nextFields[key], existingRecord[key]));
+      const applicationsChanged = nextApplications !== null
+        && !ticketFieldsEqual(nextApplications.map(snapshotProductApplication), previousApplications.map(snapshotProductApplication));
+      if (!recordChanged && !applicationsChanged) {
+        return existingRecord;
+      }
+
+      const [record] = recordChanged
+        ? await tx.update(serviceRecords).set(nextFields).where(and(eq(serviceRecords.orgId, this.orgId), eq(serviceRecords.id, id))).returning()
+        : [existingRecord];
+
+      let applications: Array<Partial<Omit<InsertProductApplication, "serviceRecordId">>> = previousApplications;
+      if (applicationsChanged && nextApplications) {
+        await tx.delete(productApplications).where(and(eq(productApplications.orgId, this.orgId), eq(productApplications.serviceRecordId, record.id)));
+        applications = nextApplications.length
+          ? await tx
+            .insert(productApplications)
+            .values(nextApplications.map((application) => ({ ...application, orgId: this.orgId, serviceRecordId: record.id })))
+            .returning()
+          : [];
+      }
+
+      await this.recordAuditLogTx(tx, {
+        entityType: "service_record",
+        entityId: record.id,
+        action: "ticket_edited",
+        actor: input.actor,
+        before: snapshotTicketForAudit(existingRecord, previousApplications),
+        after: snapshotTicketForAudit(record, applications),
+      });
+
+      if (record.serviceId && record.technicianId !== existingRecord.technicianId) {
+        await tx
+          .update(services)
+          .set({ assignedTechnicianId: record.technicianId || null, updatedAt: new Date() })
+          .where(and(eq(services.orgId, this.orgId), eq(services.id, record.serviceId)));
+      }
+
+      // An agreement whose start date follows this visit (INITIAL_APPOINTMENT)
+      // reads the ticket's service date, so a date edit re-syncs it as before.
+      if (record.appointmentId && !ticketFieldsEqual(record.serviceDate, existingRecord.serviceDate)) {
+        const [linkedAgreement] = await tx.select().from(agreements).where(and(eq(agreements.orgId, this.orgId), eq(agreements.initialAppointmentId, record.appointmentId)));
         if (linkedAgreement?.startDateSource === "INITIAL_APPOINTMENT") {
-          await this.syncAgreementInitialAppointmentDates(tx, linkedAgreement.id);
+          await this.syncAgreementInitialAppointmentDates(tx, linkedAgreement.id, input.actor ?? undefined);
         }
       }
 
-      return sr;
+      return record;
     });
   }
 
@@ -4052,6 +4215,23 @@ export class DatabaseStorage implements IStorage {
       if (!service) {
         return undefined;
       }
+
+      // D9 (Pass 16): the ticket's state decides who may post over it. A
+      // FINALIZED ticket refuses everyone ("reopen first"); a ticket in office
+      // review belongs to the office, so a re-post there needs EDIT_TICKET -
+      // the technician waits for the office to reopen it and re-posts the
+      // REOPENED ticket. Checked before anything is written, so a refused
+      // post touches neither the Service's price nor its type.
+      const [existingRecord] = await tx.select().from(serviceRecords).where(and(eq(serviceRecords.orgId, this.orgId), eq(serviceRecords.serviceId, service.id)));
+      if (existingRecord && isTicketFinalized(existingRecord)) {
+        throw new TicketLockedError("TICKET_FINALIZED", 409, "This ticket is finalized. Reopen it before posting it again.");
+      }
+      if (existingRecord && isTicketInOfficeReview(existingRecord) && !can(input.actorRole, PERMISSIONS.EDIT_TICKET)) {
+        throw new TicketLockedError("TICKET_IN_REVIEW", 403, "This ticket is already in office review. The office reopens it before it can be posted again.");
+      }
+      const previousApplications = existingRecord
+        ? await tx.select().from(productApplications).where(and(eq(productApplications.orgId, this.orgId), eq(productApplications.serviceRecordId, existingRecord.id)))
+        : [];
 
       let appointment: Appointment | undefined;
       const appointmentId = input.appointmentId || service.appointmentId || null;
@@ -4094,7 +4274,6 @@ export class DatabaseStorage implements IStorage {
         }
       }
 
-      const [existingRecord] = await tx.select().from(serviceRecords).where(and(eq(serviceRecords.orgId, this.orgId), eq(serviceRecords.serviceId, effectiveService.id)));
       const recordPayload: Omit<InsertServiceRecord, "orgId"> = {
         serviceId: effectiveService.id,
         appointmentId: appointment?.id ?? effectiveService.appointmentId ?? null,
@@ -4158,18 +4337,27 @@ export class DatabaseStorage implements IStorage {
       const serviceRecord = await this.flagTicketIfVisitAlreadyInvoicedTx(tx, postedRecord);
 
       await tx.delete(productApplications).where(and(eq(productApplications.orgId, this.orgId), eq(productApplications.serviceRecordId, serviceRecord.id)));
-      const validApplications = (input.productApplications ?? [])
-        .map((application) => ({
-          ...application,
-          orgId: this.orgId,
-          productName: application.productName?.trim() ?? "",
-          notes: application.notes?.trim() || null,
-          serviceRecordId: serviceRecord.id,
-        }))
-        .filter((application) => application.productName);
+      const validApplications = normalizeProductApplicationInputs(input.productApplications)
+        .map((application) => ({ ...application, orgId: this.orgId, serviceRecordId: serviceRecord.id }));
       const savedApplications = validApplications.length
         ? await tx.insert(productApplications).values(validApplications).returning()
         : [];
+
+      // D9 (Pass 16): a post over an existing record is an edit of a posted
+      // ticket - a technician's re-post of a REOPENED one, the office's over
+      // one in review - and is recorded as such, ticket and materials before
+      // and after. `after` is the record as posted; the D3 flag step above
+      // writes its own row when it applies.
+      if (existingRecord) {
+        await this.recordAuditLogTx(tx, {
+          entityType: "service_record",
+          entityId: postedRecord.id,
+          action: "ticket_edited",
+          actor: input.actor,
+          before: snapshotTicketForAudit(existingRecord, previousApplications),
+          after: snapshotTicketForAudit(postedRecord, savedApplications),
+        });
+      }
 
       const [postedService] = await tx
         .update(services)

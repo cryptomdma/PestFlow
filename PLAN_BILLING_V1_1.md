@@ -330,6 +330,14 @@ Decided now, built later, so they stop resurfacing as ambiguity:
   locked from tech, office edits role-gated + logged; after finalization → immutable, corrections via
   reopen-with-reason (workflow) or credit memo (money); payment records immutable from creation,
   corrections via void + new entry.
+  **Built as Pass 16** (`feature/phase-3-ticket-lockdown`, 2026-09-23): `PATCH /api/service-records/:id`
+  is `EDIT_TICKET` (support+), content-only and strict, 409 on a finalized ticket; a re-post through
+  `completeService` is refused on a FINALIZED ticket for everyone and on a ticket in office review
+  without `EDIT_TICKET` (the office reopens, the technician re-posts the REOPENED ticket); every
+  accepted edit or re-post writes `ticket_edited` with the ticket and its materials before and after.
+  The rules are `shared/ticket-status.ts`. The pre-Phase-1 Service History "Confirm" (a bare
+  `confirmed: true` that completed a Service without finalization) is gone; its cards link into
+  Service Ticket Review instead.
 - Reopen-reason UX per notes: pop-up with settings-configured dropdown; "Other" requires text
   (role-gated). Review modal gains Next/Back ticket navigation, price/payment and address blocks, and
   the role-gated office edit button.
