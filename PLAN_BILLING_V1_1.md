@@ -195,16 +195,16 @@ a real issued invoice at agreement start. Three tools, three jobs:
 >   and removed only the automatic issue. Office collection at scheduling already exists as the
 >   designated deposit; the new part is the prompt when the appointment is created.
 >
-> **Still open (default stated, owner may overrule):** the three `Daily Rodent Trapping` agreements
-> carry a $99.95 `DOWN_PAYMENT` that was never issued (Pass 6: "assumed collected outside the
-> ledger"). Under 2a their next visit invoice would carry $99.95. **Default: Pass 11d's migration
-> marks them settled outside the ledger** (an `INITIAL_CHARGE` billing event with no invoice) and
-> prints the per-row effect before committing, Pass 12 style. Say "bill them" to have the line ride
-> their next visit instead.
+> **Answered 2026-09-22, at the start of Pass 11d.** The three `Daily Rodent Trapping` deposits
+> ($99.95 each, never issued, first visits already invoiced at $0) are **settled outside the ledger**
+> - the default: the pass's migration inserted an `INITIAL_CHARGE` billing event with no invoice for
+> each and printed the per-row effect at boot, so no visit invoice carries them. The fourth unissued
+> deposit, `Wildlife Trapping Program` (25% of $499, no visit yet), **rides its first visit** under
+> the new rule with no migration. Built as **Pass 11d** (`feature/phase-2-down-payment-first-visit`);
+> the as-built record is "Shipped in Pass 11d" at the end of `PLAN_ROADMAP_V2.md` Part D.
 >
-> `CANONICAL_DOMAIN_RULES_V1.md` §13 ("real issued receivable at agreement creation", lines ~1046-1048)
-> and the initial-charge canon (~961-987) are corrected **in Pass 11d's PR**, with the code, per the
-> working agreement — not here.
+> `CANONICAL_DOMAIN_RULES_V1.md` §13 ("real issued receivable at agreement creation") and the
+> initial-charge canon were corrected **in Pass 11d's PR**, with the code, per the working agreement.
 
 ## D5. Payments-lite ships in Phase 1
 

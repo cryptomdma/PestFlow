@@ -975,7 +975,12 @@ Behavior worth knowing before Pass 7 touches it:
   invented for it. Every other issued invoice starts fully due; DRAFT / VOID owe 0. On the dev DB: 21
   PAID, 29 OPEN, 2 VOID, zero rows where `balance_due <> total - paid` afterwards. Every invoice insert
   now sets `balanceDueCents` explicitly (the column default is 0, which would read as paid up).
-- **The receivable.** `createAgreement` issues the initial charge inside its own transaction:
+- **The receivable — reversed by Pass 11d (2026-09-22).** `createAgreement` issues nothing now: a
+  down payment rides the first visit's invoice as an `INITIAL_CHARGE` line, the explicit route stays
+  as the up-front path and refuses once the charge is live anywhere, and a voided carrier invoice
+  makes the event non-live and re-pointable. Signatures under "Shipped in Pass 11d" at the end of
+  `PLAN_ROADMAP_V2.md` Part D. As built in Pass 6, for the history: `createAgreement` issued the
+  initial charge inside its own transaction:
   `INITIAL_CHARGE` line (description `<type label> - <agreement name>`), tax through the same
   `resolveTaxDecision` the schedule-driven path uses, terms and due date from the location's billing
   profile, an `INITIAL_CHARGE` billing event with the fixed periodKey `INITIAL_CHARGE` so it can only

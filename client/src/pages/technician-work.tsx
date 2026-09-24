@@ -12,7 +12,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { ServiceCompletionDialog } from "@/components/service-completion-dialog";
 import { CollectPaymentDialog, resolveVisitDesignation } from "@/components/collect-payment-dialog";
 import { DraftInvoiceVoidPrompt, getDraftInvoiceDecisionRequired, type DraftInvoiceRef } from "@/components/draft-invoice-void-prompt";
-import { ServiceBillingBlock, VisitDueTodayTotal, describeBillingSource, useVisitBillingSummary } from "@/components/visit-billing-summary";
+import { ServiceBillingBlock, VisitDueTodayTotal, VisitInitialChargeCallout, describeBillingSource, useVisitBillingSummary } from "@/components/visit-billing-summary";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth";
 import { apiRequest, getApiErrorMessage, queryClient } from "@/lib/queryClient";
@@ -389,6 +389,7 @@ export default function TechnicianWork() {
                 })}
                 {detailBilling && (
                   <>
+                    <VisitInitialChargeCallout summary={detailBilling} />
                     <VisitDueTodayTotal summary={detailBilling} />
                     <p className="text-xs text-muted-foreground">{describeBillingSource(detailBilling)}</p>
                   </>

@@ -2,11 +2,13 @@ import { useQuery } from "@tanstack/react-query";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { formatCents } from "@shared/money";
+import { formatInitialChargeCollector } from "@shared/initial-charge";
 import {
   describeServiceDesignation,
   formatServiceDesignation,
   type ServiceBillingDesignation,
   type VisitBillingSummary,
+  type VisitChargeBilling,
   type VisitServiceBilling,
 } from "@shared/visit-billing";
 
@@ -52,29 +54,71 @@ function coaLabel(invoiced: boolean) {
   return invoiced ? "COA applied" : "COA available";
 }
 
-/** Price / COA / Due today for one service, as three small figures. */
-export function ServiceBillingFigures({ line, invoiced, className }: { line: VisitServiceBilling; invoiced: boolean; className?: string }) {
+/** The three figures a service line and a charge line share. */
+type BillingFigures = Pick<VisitServiceBilling, "priceCents" | "taxCents" | "coaAppliedCents" | "coaAvailableCents" | "dueTodayCents">;
+
+/** Price / COA / Due today for one service (or the visit's down payment), as three small figures. */
+export function ServiceBillingFigures({ line, invoiced, className, testId }: { line: BillingFigures; invoiced: boolean; className?: string; testId: string }) {
   const coaCents = invoiced ? line.coaAppliedCents : line.coaAvailableCents;
   return (
     <dl className={cn("grid grid-cols-3 gap-2 text-xs", className)}>
       <div>
         <dt className="text-muted-foreground">Price</dt>
-        <dd className="font-medium" data-testid={`text-service-price-${line.serviceId}`}>
+        <dd className="font-medium" data-testid={`text-service-price-${testId}`}>
           {line.priceCents == null ? "Not resolved" : formatCents(line.priceCents)}
         </dd>
         {line.taxCents > 0 && <dd className="text-muted-foreground">+ {formatCents(line.taxCents)} tax</dd>}
       </div>
       <div>
         <dt className="text-muted-foreground">{coaLabel(invoiced)}</dt>
-        <dd className="font-medium" data-testid={`text-service-coa-${line.serviceId}`}>{formatCents(coaCents)}</dd>
+        <dd className="font-medium" data-testid={`text-service-coa-${testId}`}>{formatCents(coaCents)}</dd>
       </div>
       <div>
         <dt className="text-muted-foreground">Due today</dt>
-        <dd className="font-semibold" data-testid={`text-service-due-today-${line.serviceId}`}>
+        <dd className="font-semibold" data-testid={`text-service-due-today-${testId}`}>
           {line.dueTodayCents == null ? "Unknown" : formatCents(line.dueTodayCents)}
         </dd>
       </div>
     </dl>
+  );
+}
+
+/** The collector field read as a permission, for the charge row. */
+function describeChargeCollector(charge: VisitChargeBilling): string {
+  return `Down payment on the agreement's first visit. Collected by ${formatInitialChargeCollector(charge.collectedBy)}.`;
+}
+
+/**
+ * The technician's reader of the collector field (Pass 11d): the visit's
+ * down payment is called out unless only the office may collect it, in which
+ * case the line says so and the collect step leaves it out of the default
+ * amount. Nothing when the visit carries no charge.
+ */
+export function VisitInitialChargeCallout({ summary, className }: { summary: VisitBillingSummary | undefined; className?: string }) {
+  if (!summary || !summary.charges.length) {
+    return null;
+  }
+  return (
+    <div className={cn("space-y-1", className)} data-testid="callout-visit-initial-charge">
+      {summary.charges.map((charge) => {
+        const officeOnly = charge.collectedBy === "OFFICE_AT_SIGNING";
+        const settled = charge.dueTodayCents <= 0;
+        const tail = settled
+          ? " is covered by money on account - nothing to collect for it."
+          : officeOnly
+            ? " is collected by the office at signing, not on this visit."
+            : " is due with this visit - collect it with the service.";
+        return (
+          <p
+            key={charge.agreementId}
+            className={cn("rounded-md border px-3 py-2 text-xs", officeOnly || settled ? "text-muted-foreground" : "border-chart-3/40 bg-chart-3/10 text-foreground")}
+            data-testid={`text-visit-initial-charge-${charge.agreementId}`}
+          >
+            <span className="font-medium">Down payment {formatCents(charge.priceCents + charge.taxCents)}</span> for {charge.agreementName}{tail}
+          </p>
+        );
+      })}
+    </div>
   );
 }
 
@@ -121,15 +165,36 @@ export function ServiceBillingBlock({
   if (!line) {
     return <p className="text-xs text-muted-foreground">This service is not on the visit's billing.</p>;
   }
-  const noteSuffix = line.priceCents != null && line.note ? ` (${line.note})` : "";
+  // The resolver's "covered by agreement" note repeats what the designation
+  // sentence already says; the callback notes do not.
+  const noteSuffix = line.priceCents != null && line.note && line.note !== "covered by agreement" ? ` (${line.note})` : "";
+  // The figures above are this SERVICE's. When the visit also carries the
+  // agreement's down payment (Pass 11d) the visit owes more than the service
+  // does, so say so here in the service's own words - "nothing due for the
+  // service itself", never "nothing due today" - and reconcile the two
+  // numbers in one line, so the ticket (which shows no visit total) and the
+  // appointment details (whose visit total sits below several cards) both
+  // read the same way as the collect step.
+  const chargeCents = summary.charges.reduce((sum, charge) => sum + charge.dueTodayCents, 0);
+  const hasCharges = summary.charges.length > 0;
+  const designationText = hasCharges && line.designation === "PRODUCTION"
+    ? "Covered by agreement - nothing due for the service itself"
+    : describeServiceDesignation(line.designation);
   return (
     <div className="space-y-2" data-testid={`block-service-billing-${serviceId}`}>
       <div className="flex items-center gap-2 flex-wrap">
         <ServiceDesignationBadge designation={line.designation} />
-        <span className="text-xs text-muted-foreground">{describeServiceDesignation(line.designation)}{noteSuffix}</span>
+        <span className="text-xs text-muted-foreground">{designationText}{noteSuffix}</span>
       </div>
-      <ServiceBillingFigures line={line} invoiced={summary.invoiced} />
+      <ServiceBillingFigures line={line} invoiced={summary.invoiced} testId={line.serviceId} />
       {line.priceCents == null && line.note && <p className="text-xs text-destructive">{line.note}</p>}
+      {hasCharges && (
+        <p className="text-xs text-muted-foreground" data-testid={`text-service-visit-due-${serviceId}`}>
+          {line.dueTodayCents == null
+            ? `The visit's down payment of ${formatCents(chargeCents)} is due in addition to this service.`
+            : `This service ${formatCents(line.dueTodayCents)} + down payment ${formatCents(chargeCents)} = visit due today ${formatCents(summary.totals.dueTodayCents)}.`}
+        </p>
+      )}
       {!compact && <p className="text-xs text-muted-foreground">{describeBillingSource(summary)}</p>}
     </div>
   );
@@ -204,6 +269,28 @@ export function VisitBillingTable({ summary, isLoading, isError }: { summary: Vi
                 </tr>
               );
             })}
+            {summary.charges.map((charge) => {
+              const coaCents = summary.invoiced ? charge.coaAppliedCents : charge.coaAvailableCents;
+              return (
+                <tr key={`charge-${charge.agreementId}`} className="border-t" data-testid={`row-visit-charge-${charge.agreementId}`}>
+                  <td className="py-1.5 pr-3 align-top">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-medium">{charge.description}</span>
+                      <ServiceDesignationBadge designation="BILLABLE" />
+                    </div>
+                    <p className="mt-0.5 text-xs text-muted-foreground">{describeChargeCollector(charge)}</p>
+                  </td>
+                  <td className="py-1.5 pr-3 text-right align-top whitespace-nowrap">
+                    <span className="font-medium" data-testid={`text-service-price-charge-${charge.agreementId}`}>{formatCents(charge.priceCents)}</span>
+                    {charge.taxCents > 0 && <span className="block text-xs text-muted-foreground">+ {formatCents(charge.taxCents)} tax</span>}
+                  </td>
+                  <td className="py-1.5 pr-3 text-right align-top font-medium whitespace-nowrap" data-testid={`text-service-coa-charge-${charge.agreementId}`}>{formatCents(coaCents)}</td>
+                  <td className="py-1.5 text-right align-top font-semibold whitespace-nowrap" data-testid={`text-service-due-today-charge-${charge.agreementId}`}>
+                    {formatCents(charge.dueTodayCents)}
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
           <tfoot>
             <tr className="border-t">
@@ -242,8 +329,18 @@ export function VisitBillingRows({ summary, isLoading, isError }: { summary: Vis
             <span className="text-sm font-medium">{line.serviceTypeName}</span>
             <ServiceDesignationBadge designation={line.designation} />
           </div>
-          <ServiceBillingFigures line={line} invoiced={summary.invoiced} className="mt-2" />
+          <ServiceBillingFigures line={line} invoiced={summary.invoiced} className="mt-2" testId={line.serviceId} />
           {line.priceCents == null && line.note && <p className="mt-1 text-xs text-destructive">{line.note}</p>}
+        </div>
+      ))}
+      {summary.charges.map((charge) => (
+        <div key={`charge-${charge.agreementId}`} className="rounded-md border bg-background p-2" data-testid={`row-visit-charge-${charge.agreementId}`}>
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-sm font-medium">{charge.description}</span>
+            <ServiceDesignationBadge designation="BILLABLE" />
+          </div>
+          <ServiceBillingFigures line={charge} invoiced={summary.invoiced} className="mt-2" testId={`charge-${charge.agreementId}`} />
+          <p className="mt-1 text-xs text-muted-foreground">{describeChargeCollector(charge)}</p>
         </div>
       ))}
       <VisitDueTodayTotal summary={summary} />

@@ -352,3 +352,78 @@ function describeRemainingContractPrice(charge: InitialChargeFields, contractPri
   }
   return `Counts toward the ${formatCentsPlain(contractPriceCents)} price; ${formatCentsPlain(remaining)} remains to bill. `;
 }
+
+// ---------------------------------------------------------------------------
+// Where the charge is billed (owner review of 2026-09-21, PLAN_BILLING_V1_1.md
+// D4 item 2a; Pass 11d). A DOWN_PAYMENT is a charge of the initial service:
+// it rides the agreement's first visit invoice as an INITIAL_CHARGE line,
+// whoever collects it, and the automatic standalone invoice at agreement
+// creation is gone. The explicit "issue up front" path on the agreement card
+// stays for a customer who wants a deposit invoice before the visit. The
+// other two types never ride a visit - they are issued only from the card
+// until the field-surcharge unit (C3.6) retires them.
+
+/** True for the one type that bills on the first visit's invoice. */
+export function initialChargeRidesFirstVisit(charge: Pick<InitialChargeFields, "initialChargeType">): boolean {
+  return charge.initialChargeType === "DOWN_PAYMENT";
+}
+
+/**
+ * The collector field's readers (Pass 11d). It is still "who MAY collect",
+ * never who did: the office prompt at scheduling fires unless the technician
+ * is the only permitted collector, the technician's collect step calls the
+ * charge out unless the office is, and both do when either may (null).
+ */
+export function officeMayCollectInitialCharge(charge: Pick<InitialChargeFields, "initialChargeType" | "initialChargeCollectedBy">): boolean {
+  return !!charge.initialChargeType && charge.initialChargeCollectedBy !== "TECH_AT_FIRST_SERVICE";
+}
+
+export function technicianMayCollectInitialCharge(charge: Pick<InitialChargeFields, "initialChargeType" | "initialChargeCollectedBy">): boolean {
+  return !!charge.initialChargeType && charge.initialChargeCollectedBy !== "OFFICE_AT_SIGNING";
+}
+
+/** The invoice an initial charge landed on, as the agreement card and the status read describe it. */
+export interface InitialChargeInvoiceRef {
+  id: string;
+  invoiceNumber: string;
+  status: string;
+  totalAmountCents: number;
+  balanceDueCents: number;
+  /** Set when the charge rode a visit invoice; null for the standalone up-front invoice. */
+  appointmentId: string | null;
+}
+
+/**
+ * What GET /api/agreements/:id/initial-charge-status answers, and what the
+ * agreement card renders. One INITIAL_CHARGE billing event per agreement is
+ * the record; it is LIVE when it has no invoice (settled outside the ledger)
+ * or its invoice is not VOID. A charge with no live event is PENDING: a down
+ * payment rides the next visit invoice, anything else waits for the card's
+ * explicit button.
+ */
+export interface AgreementInitialChargeStatus {
+  kind: "NONE" | "PENDING" | "ISSUED" | "SETTLED_OUTSIDE_LEDGER";
+  /** PENDING: whether the charge lands on the first visit's invoice by itself (a DOWN_PAYMENT on a live agreement). */
+  ridesFirstVisit: boolean;
+  /** The amount as resolved now; null when a percent charge has no contract price yet. */
+  amountCents: number | null;
+  /** ISSUED: the invoice carrying the line. PENDING: the voided invoice it once rode, if any. */
+  invoice: InitialChargeInvoiceRef | null;
+  /** PENDING with no resolvable amount: why the explicit path would refuse. */
+  message: string | null;
+}
+
+/**
+ * What appointment creation (and agreement creation) hands the office when
+ * a down payment the office may collect is still owed: the prompt to collect
+ * it now as a payment designated to the agreement (D4 step 1). Absent when
+ * the technician is the only permitted collector, when a live event exists,
+ * or when money designated to the agreement already covers the amount.
+ */
+export interface InitialChargeDue {
+  agreementId: string;
+  agreementName: string;
+  locationId: string;
+  amountCents: number;
+  collectedBy: string | null;
+}

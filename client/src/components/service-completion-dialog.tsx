@@ -11,7 +11,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { dollarsToCents, centsToDollarString, formatCents } from "@shared/money";
-import { ServiceBillingBlock, useVisitBillingSummary } from "@/components/visit-billing-summary";
+import { ServiceBillingBlock, VisitInitialChargeCallout, useVisitBillingSummary } from "@/components/visit-billing-summary";
 import { CollectPaymentDialog } from "@/components/collect-payment-dialog";
 import { can, PERMISSIONS } from "@shared/permissions";
 import { computeProductionValueCents } from "@shared/production-value";
@@ -443,7 +443,10 @@ export function ServiceCompletionDialog({
               </div>
               <div className="mt-3 border-t pt-3">
                 {visitAppointmentId ? (
-                  <ServiceBillingBlock summary={visitBilling} serviceId={service.id} isLoading={visitBillingLoading} isError={visitBillingError} />
+                  <>
+                    <ServiceBillingBlock summary={visitBilling} serviceId={service.id} isLoading={visitBillingLoading} isError={visitBillingError} />
+                    <VisitInitialChargeCallout summary={visitBilling} className="mt-2" />
+                  </>
                 ) : (
                   <p className="text-xs text-muted-foreground">Not on an appointment - billing is resolved once the visit is scheduled.</p>
                 )}

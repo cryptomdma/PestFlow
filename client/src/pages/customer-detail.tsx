@@ -50,8 +50,9 @@ import { formatPhoneDisplay } from "@shared/phone";
 import { AuditLogEntryCard } from "@/components/audit-log-entry-card";
 import { dollarsToCents, centsToDollars, centsToDollarString, formatCents } from "@shared/money";
 import { describeBillingPlanBehavior } from "@shared/billing-plan";
-import { describeInitialCharge, initialChargeFromTemplate } from "@shared/initial-charge";
+import { describeInitialCharge, formatInitialChargeType, initialChargeFromTemplate, type AgreementInitialChargeStatus, type InitialChargeDue } from "@shared/initial-charge";
 import { InitialChargeFormFields, initialChargeFieldsFrom, initialChargeFormStateFrom, validateInitialChargeFormState } from "@/components/initial-charge-fields";
+import { InitialChargeDuePrompt, type WithInitialChargeDue } from "@/components/initial-charge-due-prompt";
 import { InvoiceRowLedger, LocationLedgerPanel } from "@/components/location-ledger-panel";
 import { InvoiceDetailDialog } from "@/components/invoice-detail-dialog";
 import { InvoiceStatusBadge } from "@/components/invoice-status-badge";
@@ -85,16 +86,18 @@ interface LocationBalanceSummary {
   unappliedBalanceCents: number;
 }
 
-// D4: the agreement's initial charge is a real receivable. What the card
-// shows: issued as which invoice and where it stands, or not yet issued (a
-// percent of a price that was not set, or an agreement created before Pass
-// 6) with the explicit path to issue it.
+// D4 as corrected on 2026-09-21 (Pass 11d): where the agreement's initial
+// charge stands. A down payment rides the first visit's invoice by itself;
+// the button is the explicit up-front path - a deposit invoice before the
+// visit - and the only path for the other charge types. Once billed: which
+// invoice, a visit's or the standalone. Settled outside the ledger: the rows
+// the Pass 11d migration marked, whose deposit no invoice ever carries.
 function AgreementInitialChargeStatus({ agreement }: { agreement: Agreement }) {
   const { toast } = useToast();
   const { user } = useAuth();
   const canIssue = can(user?.role ?? "", PERMISSIONS.GENERATE_INVOICE);
-  const { data: invoice, isLoading } = useQuery<Invoice | null>({
-    queryKey: ["/api/agreements", agreement.id, "initial-charge-invoice"],
+  const { data: status, isLoading } = useQuery<AgreementInitialChargeStatus>({
+    queryKey: ["/api/agreements", agreement.id, "initial-charge-status"],
     enabled: !!agreement.initialChargeType,
   });
   const issueMutation = useMutation({
@@ -104,25 +107,37 @@ function AgreementInitialChargeStatus({ agreement }: { agreement: Agreement }) {
     },
     onSuccess: (issued) => {
       invalidateInvoiceViews();
-      toast({ title: `Initial charge issued as ${issued.invoiceNumber}`, description: `${formatCents(issued.totalAmountCents)} due.` });
+      toast({ title: `Initial charge issued up front as ${issued.invoiceNumber}`, description: `${formatCents(issued.totalAmountCents)} due.` });
     },
     onError: (error: Error) => toast({ title: "Unable to issue the initial charge", description: getApiErrorMessage(error), variant: "destructive" }),
   });
 
-  if (!agreement.initialChargeType || isLoading) return null;
-  if (invoice) {
+  if (!agreement.initialChargeType || isLoading || !status || status.kind === "NONE") return null;
+  if (status.kind === "SETTLED_OUTSIDE_LEDGER") {
     return (
-      <p className="mt-1 text-xs text-muted-foreground" data-testid={`text-agreement-initial-charge-invoice-${agreement.id}`}>
-        Invoiced as {invoice.invoiceNumber}: {formatCents(invoice.totalAmountCents)}, {invoice.status === "VOID" ? "voided" : invoice.balanceDueCents > 0 ? `${formatCents(invoice.balanceDueCents)} due` : "paid"}.
+      <p className="mt-1 text-xs text-muted-foreground" data-testid={`text-agreement-initial-charge-settled-${agreement.id}`}>
+        {formatInitialChargeType(agreement.initialChargeType)}{status.amountCents != null ? ` of ${formatCents(status.amountCents)}` : ""} settled outside the ledger; no invoice carries it.
       </p>
     );
   }
+  if (status.kind === "ISSUED" && status.invoice) {
+    const invoice = status.invoice;
+    return (
+      <p className="mt-1 text-xs text-muted-foreground" data-testid={`text-agreement-initial-charge-invoice-${agreement.id}`}>
+        Invoiced as {invoice.invoiceNumber} ({invoice.appointmentId ? "first visit" : "up front"}): {formatCents(invoice.totalAmountCents)}, {invoice.balanceDueCents > 0 ? `${formatCents(invoice.balanceDueCents)} due` : "paid"}.
+      </p>
+    );
+  }
+  const voided = status.invoice?.status === "VOID" ? `${status.invoice.invoiceNumber} was voided. ` : "";
   return (
     <div className="mt-1 flex items-center gap-2 flex-wrap text-xs text-muted-foreground" data-testid={`text-agreement-initial-charge-uninvoiced-${agreement.id}`}>
-      <span>Not yet invoiced.</span>
-      {canIssue && agreement.status !== "CANCELLED" ? (
+      <span>
+        {voided}
+        {status.message ? `Not yet invoiced: ${status.message}.` : status.ridesFirstVisit ? "Billed on the first visit's invoice." : "Not yet invoiced."}
+      </span>
+      {canIssue && agreement.status !== "CANCELLED" && !status.message ? (
         <Button variant="outline" size="sm" className="h-6 px-2 text-xs" onClick={() => issueMutation.mutate()} disabled={issueMutation.isPending} data-testid={`button-issue-initial-charge-${agreement.id}`}>
-          {issueMutation.isPending ? "Issuing..." : "Issue initial charge invoice"}
+          {issueMutation.isPending ? "Issuing..." : status.ridesFirstVisit ? "Issue up front instead" : "Issue initial charge invoice"}
         </Button>
       ) : null}
     </div>
@@ -1429,16 +1444,20 @@ function AgreementForm({
   agreement,
   appointments,
   onClose,
+  onCreated,
 }: {
   customerId: string;
   locationId: string;
   agreement?: Agreement | null;
   appointments?: Appointment[];
   onClose: () => void;
+  /** Pass 11d: after a creation, the office's prompt when the sale carries a down payment the office may collect. */
+  onCreated?: (due: InitialChargeDue) => void;
 }) {
   const { toast } = useToast();
   const [, setLocation] = useLocation();
   const [draftAgreement, setDraftAgreement] = useState<Agreement | null>(agreement ?? null);
+  const createdInitialChargeDueRef = useRef<InitialChargeDue | null>(null);
   const currentAgreement = draftAgreement ?? agreement ?? null;
   const isEditMode = !!currentAgreement;
   const { data: serviceTypes } = useQuery<ServiceType[]>({ queryKey: ["/api/service-types"] });
@@ -1590,10 +1609,15 @@ function AgreementForm({
           agreement: payload,
         });
 
-    const savedAgreement = await response.json() as Agreement;
-    setDraftAgreement(savedAgreement);
+    const { initialChargeDue, ...savedAgreement } = await response.json() as WithInitialChargeDue<Agreement>;
+    setDraftAgreement(savedAgreement as Agreement);
     invalidateAgreementQueries();
-    return savedAgreement;
+    // Pass 11d: a creation answers whether a down payment the office may
+    // collect is still owed; the prompt fires once the form has closed.
+    if (!currentAgreement && initialChargeDue) {
+      createdInitialChargeDueRef.current = initialChargeDue;
+    }
+    return savedAgreement as Agreement;
   };
 
   const validateBeforeSave = () => {
@@ -1625,7 +1649,10 @@ function AgreementForm({
     mutationFn: persistAgreement,
     onSuccess: () => {
       toast({ title: isEditMode ? "Agreement updated" : "Agreement created" });
+      const due = createdInitialChargeDueRef.current;
+      createdInitialChargeDueRef.current = null;
       onClose();
+      if (due) onCreated?.(due);
     },
     onError: (error: Error) => {
       toast({ title: isEditMode ? "Error updating agreement" : "Error creating agreement", description: error.message, variant: "destructive" });
@@ -2172,6 +2199,8 @@ function AgreementsTab({
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingAgreement, setEditingAgreement] = useState<Agreement | null>(null);
   const [cancellingAgreement, setCancellingAgreement] = useState<Agreement | null>(null);
+  // Pass 11d: the office's prompt after creating an agreement with a down payment it may collect.
+  const [initialChargeDue, setInitialChargeDue] = useState<InitialChargeDue | null>(null);
   const { data: agreements } = useQuery<Agreement[]>({ queryKey: ["/api/agreements/location", locationId], enabled: !!locationId });
   const { data: services } = useQuery<Service[]>({ queryKey: ["/api/services/by-location", locationId], enabled: !!locationId });
   const { data: serviceTypes } = useQuery<ServiceType[]>({ queryKey: ["/api/service-types"] });
@@ -2249,7 +2278,7 @@ function AgreementsTab({
             <DialogHeader>
               <DialogTitle>{editingAgreement ? "Edit Agreement" : "Create Agreement"}</DialogTitle>
             </DialogHeader>
-            <AgreementForm customerId={customerId} locationId={locationId} agreement={editingAgreement} appointments={appointments} onClose={() => closeDialog(false)} />
+            <AgreementForm customerId={customerId} locationId={locationId} agreement={editingAgreement} appointments={appointments} onClose={() => closeDialog(false)} onCreated={setInitialChargeDue} />
           </DialogContent>
         </Dialog>
         <CancelAgreementDialog
@@ -2258,6 +2287,7 @@ function AgreementsTab({
           open={!!cancellingAgreement}
           onOpenChange={(open) => { if (!open) setCancellingAgreement(null); }}
         />
+        <InitialChargeDuePrompt due={initialChargeDue} onClose={() => setInitialChargeDue(null)} />
       </div>
       {!agreements || agreements.length === 0 ? (
         <Card>

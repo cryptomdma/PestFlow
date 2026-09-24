@@ -6,7 +6,7 @@ import { queryClient } from "@/lib/queryClient";
  * "/api/invoices/ready-for-billing", "/api/audit-logs?locationId=...",
  * ["/api/payments/by-location", id], ["/api/locations", id, "ledger-summary"],
  * ["/api/location-balances", customerId], ["/api/agreements", id,
- * "initial-charge-invoice"], ["/api/appointments", id, "billing-summary"]
+ * "initial-charge-status"], ["/api/appointments", id, "billing-summary"]
  * (D6's field figures - only that key, not every appointment list). A prefix
  * match on the first element would miss most of these, so match on the
  * string itself. Money moving changes every one of them

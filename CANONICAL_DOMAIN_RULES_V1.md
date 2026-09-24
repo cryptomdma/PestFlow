@@ -965,9 +965,20 @@ silent one. An Agreement with neither a plan nor a price refuses to invoice rath
   (`initialChargeType`, an amount mode of flat cents or percent of price, `initialChargeCollectedBy`),
   with the Agreement Template carrying the default — exactly the `defaultPriceCents` → `priceCents`
   relationship. The block moves as one: a sale's type with a template's amount describes nothing.
+* **A down payment bills on the first visit's invoice** (owner, 2026-09-21; PLAN_BILLING_V1.1 D4 item
+  2a, built as Pass 11d). It is a charge of the initial service, whoever collects it: the visit
+  Invoice carries it as its own `INITIAL_CHARGE` line after the service lines — a covered visit is
+  then $0 covered plus the deposit, never "No Charge" — and the Agreement's one `INITIAL_CHARGE`
+  billing event, attached when that Invoice is issued (never by a DRAFT), is what makes it bill once.
+  The event is **live** when it has no invoice (settled outside the ledger) or its invoice is not
+  VOID; a voided invoice makes it non-live, so the deposit rides the corrected Invoice and the event
+  is re-pointed, never duplicated. Nothing is issued at agreement creation. The explicit "issue up
+  front" path on the agreement card is a standalone Invoice for a deposit the customer pays before
+  the visit, and the only path for the other charge types; it is refused once the charge is live
+  anywhere.
 * A down payment **counts toward the contract price** by default ($400 agreement, $100 down, $300
-  remains); "in addition to" is an explicit exception (D4 owner review, built with the receivable in
-  Pass 6). Only a *surcharge* is inherently additional, and a surcharge is not a term of the sale at
+  remains); "in addition to" is an explicit exception (D4 owner review, built with the remaining-price
+  arithmetic in Pass 6). Only a *surcharge* is inherently additional, and a surcharge is not a term of the sale at
   all: the technician charges it at the initial service for what scheduling could not see. The
   template holds only whether the technician may (the field-surcharge unit).
 * The Billing Plan says how and when a customer is charged and is shared by every agreement on it. It
@@ -975,8 +986,12 @@ silent one. An Agreement with neither a plan nor a price refuses to invoice rath
   period 1) and, until it moves to the template, `fieldAddableSurcharge`. A plan never carries an
   amount. Paid-in-full is a plan arrangement: `PREPAID_TERM` bills the whole contract price once at
   start, for any term length, and every visit is a $0 covered line.
-* `initialChargeCollectedBy` is **who may collect**, never who did. Null means either role may. It
-  never affects per-service production value (contract price ÷ expected visits, no production on
+* `initialChargeCollectedBy` is **who may collect**, never who did. Null means either role may. Its
+  readers (Pass 11d): the office is prompted to collect the deposit at signing and at scheduling
+  unless the technician is the only permitted collector, the technician's figures and collect step
+  call it out unless the office is, and both happen when either may; money the office collects is a
+  Payment designated to the Agreement (§14), offered first when the first visit's Invoice is issued.
+  It never affects per-service production value (contract price ÷ expected visits, no production on
   callbacks), which is independent of collection and of any balance due; comp plans decide payout.
   The only thing inferred from it is the *separate* SURCHARGE credit for a technician-collected
   cleanout surcharge, given only when the technician is the *sole* permitted collector, until the
@@ -1043,9 +1058,12 @@ invoices only — agreement revenue on schedule-billed plans still comes solely 
   PENDING payments): it is shown wherever the invoice is shown, and never read by status. No status
   is ever hand-set; there is no "mark paid". A DRAFT or VOID invoice owes nothing and can hold
   nothing; voiding an invoice releases what was applied to it back to the location.
-* The Agreement's initial charge is a **real issued receivable** at agreement creation — its own
-  Invoice with an `INITIAL_CHARGE` line, fired once per Agreement — refused, never issued at $0, when a
-  percent charge has no price to resolve against.
+* The Agreement's initial charge is billed **with the first visit** by default (a `DOWN_PAYMENT` line
+  on that visit's Invoice, above) and **up front on request** (the agreement card's explicit path, its
+  own Invoice) — either way one `INITIAL_CHARGE` line and one billing event, fired once per Agreement,
+  and refused, never issued at $0, when a percent charge has no price to resolve against. A deposit
+  the office collects before the visit is an unapplied Payment designated to the Agreement, not an
+  Invoice.
 
 ### Required fields
 

@@ -1,11 +1,17 @@
 import { sql } from "drizzle-orm";
 import { db } from "./db";
+import { resolveInitialChargeCents } from "@shared/initial-charge";
 
 async function columnExists(table: string, column: string): Promise<boolean> {
   const result = await db.execute(
     sql`SELECT 1 FROM information_schema.columns WHERE table_name = ${table} AND column_name = ${column}`,
   );
   return result.rows.length > 0;
+}
+
+async function tableExists(table: string): Promise<boolean> {
+  const result = await db.execute(sql`SELECT 1 FROM information_schema.tables WHERE table_name = ${table}`);
+  return (result.rows?.length ?? 0) > 0;
 }
 
 export async function bootstrapAgreements(): Promise<void> {
@@ -341,6 +347,95 @@ export async function bootstrapAgreements(): Promise<void> {
       console.log(`[agreement-bootstrap]   ${row.id}  "${row.name}"  legacy default billing frequency "${row.default_billing_frequency.trim()}"`);
     }
     await db.execute(sql`ALTER TABLE agreement_templates DROP COLUMN IF EXISTS default_billing_frequency`);
+  }
+
+  // Pass 11d (owner review 2026-09-21, answered 2026-09-22): a DOWN_PAYMENT
+  // rides the agreement's first visit invoice now, instead of being issued
+  // as its own invoice at creation. An agreement sold before this pass whose
+  // down payment was never issued AND whose first visit was already invoiced
+  // under the old model - Pass 6 assumed that money collected outside the
+  // ledger and has billed price minus down payment through its schedule
+  // since - would otherwise carry the deposit on its NEXT visit invoice. The
+  // owner's answer for those rows (the three Daily Rodent Trapping
+  // agreements on the dev DB) is settled outside the ledger: an
+  // INITIAL_CHARGE billing event with no invoice, the "live" event that keeps
+  // every later visit invoice from carrying the line and that the agreement
+  // card reads as settled. A down payment whose first visit has NOT been
+  // invoiced yet (the Wildlife Trapping Program row) is left alone: it rides
+  // that visit, as the new rule says.
+  //
+  // Self-guarding one-shot: the date fence keeps rows sold from this pass on
+  // out, and a matched row gains the very event that excludes it forever.
+  // The per-row effect is printed before each insert. Guarded on the ledger
+  // tables existing because this bootstrap runs before theirs on a database
+  // that predates them.
+  if ((await tableExists("billing_events")) && (await tableExists("invoices"))) {
+    const unissued = await db.execute(sql`
+      SELECT a.id, a.org_id, a.agreement_name, a.status, a.price_cents,
+             a.initial_charge_amount_mode, a.initial_charge_cents, a.initial_charge_percent_basis_points,
+             l.name AS location_name, c.first_name, c.last_name, c.company_name,
+             (SELECT min(i.invoice_number) FROM invoices i
+                JOIN services s ON s.appointment_id = i.appointment_id
+               WHERE s.agreement_id = a.id AND i.status <> 'VOID') AS first_visit_invoice
+      FROM agreements a
+      LEFT JOIN locations l ON l.id = a.location_id
+      LEFT JOIN customers c ON c.id = a.customer_id
+      WHERE a.initial_charge_type = 'DOWN_PAYMENT'
+        AND a.created_at < '2026-09-22'
+        AND NOT EXISTS (SELECT 1 FROM billing_events be WHERE be.agreement_id = a.id AND be.period_key = 'INITIAL_CHARGE')
+        AND EXISTS (SELECT 1 FROM invoices i JOIN services s ON s.appointment_id = i.appointment_id
+                     WHERE s.agreement_id = a.id AND i.status <> 'VOID')
+      ORDER BY a.agreement_name, a.created_at, a.id
+    `);
+    const rows = unissued.rows as Array<{
+      id: string;
+      org_id: string;
+      agreement_name: string;
+      status: string;
+      price_cents: number | null;
+      initial_charge_amount_mode: string | null;
+      initial_charge_cents: number | null;
+      initial_charge_percent_basis_points: number | null;
+      location_name: string | null;
+      first_name: string | null;
+      last_name: string | null;
+      company_name: string | null;
+      first_visit_invoice: string | null;
+    }>;
+    if (rows.length) {
+      console.log(
+        `[agreement-bootstrap] Pass 11d pre-migration report: ${rows.length} agreement(s) carry a down payment that was never ` +
+          `issued and whose first visit was already invoiced. Each is marked settled outside the ledger (an INITIAL_CHARGE ` +
+          `billing event with no invoice): no invoice is created and no later visit invoice carries it.`,
+      );
+    }
+    for (const row of rows) {
+      const amountCents = resolveInitialChargeCents(
+        {
+          initialChargeType: "DOWN_PAYMENT",
+          initialChargeAmountMode: row.initial_charge_amount_mode,
+          initialChargeCents: row.initial_charge_cents,
+          initialChargePercentBasisPoints: row.initial_charge_percent_basis_points,
+          initialChargeCollectedBy: null,
+          initialChargeInAdditionToPrice: false,
+        },
+        row.price_cents,
+      );
+      const customer = row.company_name?.trim() || `${row.first_name ?? ""} ${row.last_name ?? ""}`.trim() || "unknown customer";
+      const where = `${customer} @ ${row.location_name ?? "unknown location"}  first visit invoiced as ${row.first_visit_invoice ?? "?"}`;
+      if (amountCents == null || amountCents <= 0) {
+        console.log(`[agreement-bootstrap]   ${row.id}  "${row.agreement_name}"  ${row.status}  ${where}  down payment has no resolvable amount - left alone`);
+        continue;
+      }
+      console.log(
+        `[agreement-bootstrap]   ${row.id}  "${row.agreement_name}"  ${row.status}  ${where}  ` +
+          `$${(amountCents / 100).toFixed(2)} down payment marked settled outside the ledger`,
+      );
+      await db.execute(sql`
+        INSERT INTO billing_events (org_id, agreement_id, source, period_key, amount_cents, invoice_id)
+        VALUES (${row.org_id}, ${row.id}, 'INITIAL_CHARGE', 'INITIAL_CHARGE', ${amountCents}, NULL)
+      `);
+    }
   }
 
   await db.execute(sql`

@@ -35,12 +35,26 @@ function todayDateInputValue() {
   return local.toISOString().slice(0, 10);
 }
 
+/**
+ * The office prompt's preset (Pass 11d): a down payment to collect now,
+ * designated to its agreement - D4 intent, offered first when the first
+ * visit's invoice is issued - with the amount defaulted and the designation
+ * fixed rather than picked.
+ */
+export interface RecordPaymentPreset {
+  designatedAgreementId: string;
+  designatedAgreementName: string;
+  amountCents: number;
+  title: string;
+}
+
 export function RecordPaymentDialog({
   open,
   onOpenChange,
   locationId,
   invoice,
   agreements,
+  preset,
   onRecorded,
 }: {
   open: boolean;
@@ -50,6 +64,8 @@ export function RecordPaymentDialog({
   invoice?: Invoice | null;
   /** Agreements at the location, offered for designation when no invoice is given. */
   agreements?: Agreement[];
+  /** A down payment to collect now, designation and amount preset (no invoice). */
+  preset?: RecordPaymentPreset | null;
   onRecorded?: (result: RecordPaymentResponse) => void;
 }) {
   const { toast } = useToast();
@@ -71,14 +87,16 @@ export function RecordPaymentDialog({
     if (!open) return;
     setForm({
       method: "CASH",
-      amount: invoice && invoice.balanceDueCents > 0 ? centsToDollarString(invoice.balanceDueCents) : "",
+      amount: preset
+        ? centsToDollarString(preset.amountCents)
+        : invoice && invoice.balanceDueCents > 0 ? centsToDollarString(invoice.balanceDueCents) : "",
       receivedAt: todayDateInputValue(),
       checkNumber: "",
       referenceNumber: "",
       memo: "",
-      designatedAgreementId: "NONE",
+      designatedAgreementId: preset?.designatedAgreementId ?? "NONE",
     });
-  }, [open, invoice]);
+  }, [open, invoice, preset]);
 
   const amountCents = dollarsToCents(form.amount);
 
@@ -127,7 +145,7 @@ export function RecordPaymentDialog({
     <Dialog open={open} onOpenChange={(next) => !mutation.isPending && onOpenChange(next)}>
       <DialogContent className="max-w-md">
         <DialogHeader>
-          <DialogTitle>{invoice ? `Record payment for ${invoice.invoiceNumber}` : "Record payment"}</DialogTitle>
+          <DialogTitle>{invoice ? `Record payment for ${invoice.invoiceNumber}` : preset?.title ?? "Record payment"}</DialogTitle>
         </DialogHeader>
         <form
           className="space-y-4"
@@ -142,6 +160,10 @@ export function RecordPaymentDialog({
               {applyingToInvoice
                 ? "The payment is applied to this invoice as far as it goes; anything over stays on the location balance."
                 : "Your role records the collection; the office applies it to the invoice."}
+            </p>
+          ) : preset ? (
+            <p className="text-sm text-muted-foreground" data-testid="text-payment-preset">
+              Down payment for {preset.designatedAgreementName}. Recorded on this location's balance and designated to the agreement, so it is offered first when the first visit's invoice - which carries the down payment as its own line - is issued.
             </p>
           ) : (
             <p className="text-sm text-muted-foreground">Recorded on this location's balance, to be applied to an invoice by the office.</p>
@@ -181,7 +203,7 @@ export function RecordPaymentDialog({
               </div>
             )}
           </div>
-          {!invoice && agreements && agreements.length > 0 && (
+          {!invoice && !preset && agreements && agreements.length > 0 && (
             <div className="space-y-1.5">
               <Label>For agreement (optional)</Label>
               <Select value={form.designatedAgreementId} onValueChange={(value) => setForm((prev) => ({ ...prev, designatedAgreementId: value }))}>

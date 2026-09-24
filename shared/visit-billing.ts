@@ -60,6 +60,36 @@ export interface VisitServiceBilling {
   note: string | null;
 }
 
+/**
+ * A charge on the visit that is not a service: the agreement's down payment
+ * (Pass 11d, owner review 2026-09-21). It rides the first visit's invoice
+ * as an INITIAL_CHARGE line whoever collects it, so before the visit is
+ * invoiced it is priced here exactly as generation will price it (a live
+ * INITIAL_CHARGE event - issued up front, settled outside the ledger, or
+ * already on an earlier visit - means no line and no entry here), and once
+ * invoiced it is the invoice's own line. Always BILLABLE: money is owed on
+ * this visit even when every service is covered.
+ */
+export interface VisitChargeBilling {
+  kind: "INITIAL_CHARGE";
+  agreementId: string;
+  agreementName: string;
+  /** The invoice line's description: "Down payment - <agreement>". */
+  description: string;
+  /**
+   * Who MAY collect it (shared/initial-charge.ts): OFFICE_AT_SIGNING,
+   * TECH_AT_FIRST_SERVICE, or null for either. The technician's collect step
+   * calls the charge out unless the office is the only collector; never a
+   * record of who did.
+   */
+  collectedBy: string | null;
+  priceCents: number;
+  taxCents: number;
+  coaAppliedCents: number;
+  coaAvailableCents: number;
+  dueTodayCents: number;
+}
+
 export interface VisitBillingInvoiceRef {
   id: string;
   invoiceNumber: string;
@@ -81,6 +111,8 @@ export interface VisitBillingSummary {
    */
   invoiced: boolean;
   services: VisitServiceBilling[];
+  /** Charges on the visit that are not services: the pending or invoiced down payment (Pass 11d). Counted in totals. */
+  charges: VisitChargeBilling[];
   totals: {
     priceCents: number;
     taxCents: number;
@@ -102,4 +134,17 @@ export function formatServiceDesignation(designation: ServiceBillingDesignation)
 /** The one-line meaning under the designation, for the field. */
 export function describeServiceDesignation(designation: ServiceBillingDesignation): string {
   return designation === "PRODUCTION" ? "Covered by agreement - nothing due today" : "Collect today";
+}
+
+/**
+ * What the technician's collect step defaults to: the visit's due today less
+ * any down payment only the office may collect (Pass 11d). The charge is
+ * still owed and still on the invoice; it is just not the technician's to
+ * take, so it must not be the amount the field is handed to collect.
+ */
+export function technicianCollectibleCents(summary: VisitBillingSummary): number {
+  const officeOnlyCents = summary.charges
+    .filter((charge) => charge.collectedBy === "OFFICE_AT_SIGNING")
+    .reduce((sum, charge) => sum + charge.dueTodayCents, 0);
+  return Math.max(summary.totals.dueTodayCents - officeOnlyCents, 0);
 }
