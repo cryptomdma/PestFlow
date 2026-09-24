@@ -23,8 +23,9 @@ read Phase 6.
 **Pass discipline is unchanged** (`AGENT_WORKING_AGREEMENT.md`): one pass per session, one branch
 from `origin/main`, `npm run check` + double boot + the pass's smoke test before the push, never
 merge, never push to main. A pass that changes server code needs the owner's `npm run dev:full`
-restarted before manual testing. Pass sizes below are calibrated to Phase 1's: Pass 6 (four tables,
-routes, three dialogs) is the ceiling.
+restarted before manual testing. Every pass ends by writing the next pass's handoff prompt (the last
+section of `CURRENT_FOCUS.md`, and the session's final message; owner, 2026-09-23). Pass sizes below
+are calibrated to Phase 1's: Pass 6 (four tables, routes, three dialogs) is the ceiling.
 
 ---
 
@@ -983,3 +984,9 @@ invoice would carry it):
 |---|---|---|
 | 1 | The three `Daily Rodent Trapping` deposits, whose first visits were already invoiced at $0 | **Settled outside the ledger** (the default): Pass 11d's migration inserted an `INITIAL_CHARGE` billing event with no invoice for each, printing the per-row effect at boot; no visit invoice carries them and the agreement card says so |
 | 2 | The fourth unissued deposit, `Wildlife Trapping Program` (25% of $499 = $124.75, COD plan, no visit yet) | **Rides its first visit**, as the new rule says; no migration touches it |
+
+**Owner, 2026-09-23 (Pass 12 merged as PR #79):** every pass ends by writing the handoff prompt for
+the next pass - the owner's start-of-session message in full - into the last section of
+`CURRENT_FOCUS.md` (same PR as the code) and the session's final message. Recorded as an
+end-of-pass step in `AGENT_WORKING_AGREEMENT.md`; the first such prompt, for Pass 16, is in
+`CURRENT_FOCUS.md`.
