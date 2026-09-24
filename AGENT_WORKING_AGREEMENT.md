@@ -12,13 +12,21 @@ entry points (`CLAUDE.md`, etc.) point here rather than duplicating these rules.
   subagents may run freely.
 - Every pass ends with: npm run check, double-boot (bootstrap idempotency),
   and the pass's smoke test, BEFORE the branch is pushed.
+- Every pass ends by writing the **handoff prompt for the next pass** (owner, 2026-09-23): the
+  owner's start-of-session message, in full - the pass and its roadmap row, the branch name and
+  the merge to confirm on main, the recorded decisions and any open flag, the ground truth with
+  file:line citations, what to build and what not to touch, the environment and verification
+  steps, and this agreement's closing lines. It goes in two places: replacing the "Handoff prompt
+  for the next session" section at the end of `CURRENT_FOCUS.md`, in the same PR as the code, and
+  as the last thing in the session's final message. The owner pastes it to start the next session.
 - The human merges PRs. Never merge, never push to main.
 
 ## Keeping docs current
 
 `CURRENT_FOCUS.md` is updated at the end of every pass — mark the finished branch's status, state
-what's next. A plan doc that isn't updated after the pass it described just shipped is worse than no
-plan doc: the next session will trust it and be wrong. If a pass changes the domain model in a way
+what's next, and replace its handoff prompt with the next pass's. A plan doc that isn't updated after
+the pass it described just shipped is worse than no plan doc: the next session will trust it and be
+wrong. If a pass changes the domain model in a way
 `CANONICAL_DOMAIN_RULES_V1.md` no longer reflects, or changes the stack/layout in a way `PROJECT_MAP.md`
 no longer reflects, update those too, in the same PR as the code change — not as a follow-up.
 
@@ -71,3 +79,4 @@ A task is not done unless:
 - dead/demo UI introduced by the task is not left behind
 - changed files are listed
 - known follow-up work is stated honestly
+- the handoff prompt for the next pass is written, in `CURRENT_FOCUS.md` and in the final message

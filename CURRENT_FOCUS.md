@@ -10,10 +10,11 @@ Now active: **Phase 2 — Invoices you can work from**, per `PLAN_ROADMAP_V2.md`
 Invoice modal, core and reach; the invoice document's parties; the down payment on the first
 visit's invoice) are merged (PRs #73, #74, #76, #78), as are the owner review of 2026-09-21 (PR
 #75) and the dev-setup chore (PR #77); Pass 12 (Billing Plan required on every Agreement + sale
-attribution) is pushed, awaiting merge; **next pass: 16, ticket lockdown (D9) enforced
+attribution) is merged (PR #79); **next pass: 16, ticket lockdown (D9) enforced
 server-side** — the C3.1 row of that document's Phase 3 table, pulled forward in its recommended
 order because it is an integrity hole, not a feature. The roadmap sequences every remaining item
-below; this file keeps only the status pointer.
+below; this file keeps the status pointer and, as its last section, the handoff prompt that starts
+the next session.
 
 ## Status
 Pass 1 (`feature/phase-1-appointment-status-enum`, D1a) merged as PR #56.
@@ -453,7 +454,7 @@ dev DB during this pass's verification boot, and a server on pre-11d code still 
 invoice at agreement creation.** Signatures and behavior are under "Shipped in Pass 11d" at the end
 of `PLAN_ROADMAP_V2.md` Part D.
 
-Pass 12 (`feature/phase-2-billing-plan-required-sold-by`, 2026-09-23, C2.2) pushed, awaiting merge.
+Pass 12 (`feature/phase-2-billing-plan-required-sold-by`, 2026-09-23, C2.2) merged as PR #79.
 **Every agreement carries a Billing Plan, and records who sold it.** `agreements.billingPlanId` is
 NOT NULL: the route's zod refuses null and "", `buildAgreementInsertFromTemplate` refuses an
 agreement that names no plan when its template carries none (template propagation untouched), and
@@ -492,12 +493,14 @@ table, C3.1): `PATCH /api/service-records/:id` gated by a new `EDIT_TICKET` (sup
 on FINALIZED ("reopen first"), `completeService` refusing a re-post on a FINALIZED ticket and a
 technician's re-post on a ticket already in office review, every accepted edit writing
 `ticket_edited`. A defect fix, not a feature. Branch from `origin/main` after confirming it
-contains Pass 12's merge.
+contains Pass 12's merge. The handoff prompt for it is the last section of this file.
 
 Phase 1's ordered plan, impact analysis, conflict resolutions, and per-pass verification steps live in
 `PLAN_BILLING_V1_1_EXECUTION.md` — read it when a pass builds on a Phase 1 helper (its "Shipped in
 Pass N" sections are the signatures). Update the roadmap's pass table and this file when a pass
-finishes. This file only tracks the one-line "where are we" pointer.
+finishes, and replace the handoff prompt at the end of this file with the next pass's (the
+working agreement's end-of-pass step, owner, 2026-09-23). This file tracks the "where are we"
+pointer and that prompt.
 
 ## Reference documents, in reading order
 1. `AGENT_WORKING_AGREEMENT.md` — how a session works here (one pass, one branch, when to stop)
@@ -505,7 +508,7 @@ finishes. This file only tracks the one-line "where are we" pointer.
 3. `PLAN_BILLING_V1_1.md` — the settled decision record (D1-D9); governs over any older billing doc
 4. `PLAN_BILLING_V1_1_EXECUTION.md` — the ordered, impact-analyzed execution plan for D1-D9
 5. `PLAN_ROADMAP_V2.md` — Phases 2-9 pass by pass, the owner's recorded decisions, the next pass's spec
-6. This file — current status pointer only
+6. This file — current status pointer, and the handoff prompt for the next session as its last section
 
 ## Constraints (apply to every pass below)
 - Finalization remains the authoritative completion event. Pre-finalization invoices are DRAFT-only;
@@ -713,3 +716,57 @@ finishes. This file only tracks the one-line "where are we" pointer.
     options on those two dropdowns and migrate `CUSTOM(N)` → `DAY(N)`. Affects 7 agreements and 2
     templates today, including the Wildlife Trapping Program rows, which are `CUSTOM/7` term *and*
     recurrence — i.e. the daily-trap-check case this vocabulary was quietly already serving.
+
+## Handoff prompt for the next session
+
+Replaced at the end of every pass (`AGENT_WORKING_AGREEMENT.md`, the end-of-pass step). The owner
+pastes it verbatim to start the next session; it is also the last thing in the finishing session's
+final message. Written 2026-09-23, after Pass 12 merged as PR #79.
+
+```text
+Start Pass 16 — Ticket lockdown (D9) enforced server-side (PLAN_ROADMAP_V2.md Phase 3 table,
+row C3.1; B15 in Part B; A2's "Fields immutable once posted / finalized" row). Read the CLAUDE.md
+docs in order first; CURRENT_FOCUS.md's last two entries (Pass 12 and "Next up") are the ones that
+matter.
+
+Branch feature/phase-3-ticket-lockdown from origin/main. Confirm main contains the Pass 12 merge
+(feature/phase-2-billing-plan-required-sold-by, one commit 2d11ab7, PR #79) before branching.
+
+The decision is recorded (D9 in PLAN_BILLING_V1_1.md; owner in B15: "enforce server-side first, a
+defect fix"): after a technician posts, price / service date / materials / collection data are
+locked from the technician and office edits are role-gated and logged; after finalization the
+ticket is immutable and corrections go through reopen-with-reason (workflow) or a credit memo
+(money). Ground truth today (line numbers from origin/main at PR #79; they drift, the names do
+not): PATCH /api/service-records/:id (server/routes.ts:1690) has no permission gate and no status
+guard; updateServiceRecord (server/storage.ts:4011) blind-writes and, on `confirmed`, flips the
+linked Service to COMPLETED outside finalization; completeService (storage.ts:4049) re-posts over
+an existing record and resets ticketStatus / finalizedAt / readyForBilling (~4117-4126), so a
+re-post un-finalizes a FINALIZED ticket; client/src/pages/technician-work.tsx:486 still passes the
+posted record into the ticket dialog as existingServiceRecord. EDIT_TICKET and ticket_edited do
+not exist yet. The PATCH's only client caller is the Service History page's "Confirm" button
+(client/src/pages/services.tsx:323, `{ confirmed: true }`) - decide what it becomes under the
+gate (it is a pre-Phase-1 mechanic that completes a Service without finalization; dev behavior
+rule 6 applies) and record the choice in the pass entry rather than leaving it dead.
+
+Build per C3.1: a new EDIT_TICKET permission (support+) gating the PATCH, refused on FINALIZED
+("reopen first"); completeService refuses a re-post on a FINALIZED ticket and a technician's
+re-post on a ticket already in office review (the office reopens; a technician re-posts a
+REOPENED one); every accepted edit writes a `ticket_edited` audit row (a new AuditAction in
+shared/audit.ts; before / after, product applications included; payment records are already
+immutable and out of scope); the one UI change is technician-work.tsx no longer passing a posted
+record into the dialog. No schema change and no migration are expected; if one turns out to be
+needed, stop and ask. Sale attribution and billing plans (Pass 12) are untouched.
+
+Environment: Node 24.21.0, npm run dev:full (restart it before manually testing anything that
+changes server code), DEV_NOTES.md for the DB backup/restore and PowerShell traps. Verify on
+PORT=5001 as the previous passes did: npm run check, double boot (both boots must print only
+"serving on port 5001" and every table count must be unchanged, since there is no migration), the
+pass's API smoke test as all four roles (a technician re-post on a pending ticket and on a
+FINALIZED one, a support PATCH on a pending ticket with its audit row, a PATCH on a FINALIZED
+ticket refused, an unchanged PATCH writing nothing, reopen then re-post allowed) with fixtures
+deleted and counts back at baseline.
+
+Working agreement as always: one pass, one branch, update CURRENT_FOCUS and the roadmap's pass
+table at the end, replace the handoff prompt at the end of CURRENT_FOCUS.md with the one for Pass
+13 (Batch Invoice + Draft, C2.3, next in the recommended order), push and stop. I merge.
+```
