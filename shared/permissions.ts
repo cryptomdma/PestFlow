@@ -4,6 +4,13 @@ export const PERMISSIONS = {
   POST_SERVICE_TICKET: "post_service_ticket",
   FINALIZE_TICKET: "finalize_ticket",
   REOPEN_TICKET: "reopen_ticket",
+  // PLAN_BILLING_V1_1.md D9 (Pass 16, C3.1): edit a posted ticket - the
+  // office's PATCH on a service record, and a re-post over a ticket that is
+  // already in office review. Support+. A technician's ticket is locked from
+  // the moment it is posted until the office reopens it; a FINALIZED ticket
+  // refuses everyone until reopened. Every accepted edit is logged as
+  // `ticket_edited`.
+  EDIT_TICKET: "edit_ticket",
   ADJUST_PRICE_NON_AGREEMENT: "adjust_price_non_agreement",
   ADJUST_PRICE_AGREEMENT: "adjust_price_agreement",
   ADD_FIELD_SURCHARGE: "add_field_surcharge",
@@ -63,6 +70,7 @@ const ROLE_PERMISSIONS: Record<UserRole, ReadonlySet<Permission>> = {
     PERMISSIONS.POST_SERVICE_TICKET,
     PERMISSIONS.FINALIZE_TICKET,
     PERMISSIONS.REOPEN_TICKET,
+    PERMISSIONS.EDIT_TICKET,
     PERMISSIONS.ADJUST_PRICE_NON_AGREEMENT,
     PERMISSIONS.ADD_FIELD_SURCHARGE,
     PERMISSIONS.GENERATE_INVOICE,
@@ -75,6 +83,7 @@ const ROLE_PERMISSIONS: Record<UserRole, ReadonlySet<Permission>> = {
     PERMISSIONS.POST_SERVICE_TICKET,
     PERMISSIONS.FINALIZE_TICKET,
     PERMISSIONS.REOPEN_TICKET,
+    PERMISSIONS.EDIT_TICKET,
     PERMISSIONS.ADJUST_PRICE_NON_AGREEMENT,
     PERMISSIONS.ADJUST_PRICE_AGREEMENT,
     PERMISSIONS.ADD_FIELD_SURCHARGE,

@@ -32,7 +32,11 @@ export type AuditEntityType =
  *  snake_case: an audit row records something that already happened.
  *  `invoice_line_edited` has no writer: nothing edits an invoice line in
  *  place - lines are written once at draft / issue and re-priced from the
- *  tickets on issue - so it stays reserved for the day a line editor exists. */
+ *  tickets on issue - so it stays reserved for the day a line editor exists.
+ *  `ticket_edited` (Pass 16, D9): a posted ticket changed after posting - the
+ *  office's PATCH, or a re-post over an existing record (a technician's on a
+ *  REOPENED ticket, the office's on one in review). The snapshots are the
+ *  ticket row plus its product applications, so the materials diff too. */
 export type AuditAction =
   | "update"
   | "invoice_drafted"
@@ -51,6 +55,7 @@ export type AuditAction =
   | "payment_voided"
   | "price_overridden"
   | "ticket_reopened"
+  | "ticket_edited"
   | "prefinalization_issue_override";
 
 const ENTITY_TYPE_LABELS: Record<AuditEntityType, string> = {
@@ -83,6 +88,7 @@ const ACTION_LABELS: Record<AuditAction, string> = {
   payment_voided: "Payment voided",
   price_overridden: "Price overridden",
   ticket_reopened: "Ticket reopened",
+  ticket_edited: "Ticket edited",
   prefinalization_issue_override: "Issued before finalization",
 };
 

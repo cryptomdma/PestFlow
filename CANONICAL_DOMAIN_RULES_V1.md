@@ -857,6 +857,25 @@ any other pending ticket; the flag exists so the reviewer knows the customer alr
 that a price difference is a correction on the invoice, not an edit to the ticket. Who flagged it and
 why are recorded on the ticket and in the audit log.
 
+### Canonical rule — lockdown after posting (PLAN_BILLING_V1.1 D9, enforced server-side in Pass 16)
+
+A posted ticket is **locked from the technician**: a re-post over a ticket in office review
+(`OFFICE_REVIEW_PENDING` or `FLAGGED_FOR_REVIEW`) needs `EDIT_TICKET` (support+), so the technician's
+only way back in is the office's reopen, after which the `REOPENED` ticket is theirs to re-post.
+The office edits a posted ticket through the gated `PATCH /api/service-records/:id` — its content
+only (service date, technician, notes, target pests, areas, conditions, recommendations, follow-up,
+signature, materials); the lifecycle columns belong to post / finalize / reopen and are refused,
+not written. A **finalized** ticket is immutable for everyone: an edit or a re-post is refused with
+"reopen first", and corrections go through reopen-with-reason (workflow, `ticket_reopened`) or a
+credit memo (money, §14) — never an edit. Every accepted edit or re-post over an existing ticket is
+recorded in the audit log (§17) as `ticket_edited`, the ticket row and its product applications
+before and after; an edit that changes nothing writes nothing. "Finalized" is any of the three
+signals finalization sets and reopen clears — `ticketStatus = FINALIZED`, `confirmed`,
+`readyForBilling` — read through `shared/ticket-status.ts`, which the technician view reads too, so
+the field is never offered a post the server refuses. The Service's price lives on the Service and
+is stamped only by a post (`price_overridden`, §10); an office price edit is the review modal's
+Edit (C3.1b).
+
 Agreement-generated Services advance agreement recurrence when the generated Service is office-finalized. Non-agreement finalized Services may generate future Opportunities according to Service Type follow-up rules.
 
 ### Materials support

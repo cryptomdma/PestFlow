@@ -10,11 +10,12 @@ Now active: **Phase 2 — Invoices you can work from**, per `PLAN_ROADMAP_V2.md`
 Invoice modal, core and reach; the invoice document's parties; the down payment on the first
 visit's invoice) are merged (PRs #73, #74, #76, #78), as are the owner review of 2026-09-21 (PR
 #75) and the dev-setup chore (PR #77); Pass 12 (Billing Plan required on every Agreement + sale
-attribution) is merged (PR #79); **next pass: 16, ticket lockdown (D9) enforced
-server-side** — the C3.1 row of that document's Phase 3 table, pulled forward in its recommended
-order because it is an integrity hole, not a feature. The roadmap sequences every remaining item
-below; this file keeps the status pointer and, as its last section, the handoff prompt that starts
-the next session.
+attribution) is merged (PR #79); Pass 16 (ticket lockdown, D9, enforced server-side - the C3.1
+row of that document's Phase 3 table, pulled forward because it was an integrity hole, not a
+feature) is pushed, awaiting merge; **next pass: 13, Batch Invoice moves to the Invoices screen +
+Draft invoice for a visit** (C2.3, next in the recommended order). The roadmap sequences every
+remaining item below; this file keeps the status pointer and, as its last section, the handoff
+prompt that starts the next session.
 
 ## Status
 Pass 1 (`feature/phase-1-appointment-status-enum`, D1a) merged as PR #56.
@@ -488,12 +489,57 @@ boot, and a server on pre-Pass-12 code still lets the form send a plan-less agre
 database now refuses.** Signatures and behavior are under "Shipped in Pass 12" at the end of
 `PLAN_ROADMAP_V2.md` Part D.
 
-Next up: **Pass 16** — ticket lockdown (D9) enforced server-side (`PLAN_ROADMAP_V2.md` Phase 3
-table, C3.1): `PATCH /api/service-records/:id` gated by a new `EDIT_TICKET` (support+) and refused
-on FINALIZED ("reopen first"), `completeService` refusing a re-post on a FINALIZED ticket and a
-technician's re-post on a ticket already in office review, every accepted edit writing
-`ticket_edited`. A defect fix, not a feature. Branch from `origin/main` after confirming it
-contains Pass 12's merge. The handoff prompt for it is the last section of this file.
+Pass 16 (`feature/phase-3-ticket-lockdown`, 2026-09-23, C3.1) pushed, awaiting merge.
+**Ticket lockdown (D9) is enforced server-side.** A defect fix, not a feature: `PATCH
+/api/service-records/:id` had no permission gate and no status guard, and a re-post through
+`completeService` overwrote a FINALIZED ticket and un-finalized it. Now the PATCH is gated by a
+new **`EDIT_TICKET`** (support+) and takes the ticket's **content only** - service date,
+technician, notes, target pests, areas, conditions, recommendations, follow-up, signature, and
+materials as replace-all when sent - through a strict zod object, so a lifecycle column
+(`confirmed`, `ticketStatus`, the stamps, `readyForBilling`) or an identity column is a 400, never
+a silent write; a FINALIZED ticket answers 409 `TICKET_FINALIZED` ("reopen first"); an edit that
+changes nothing writes nothing (Pass 8's rule); one that does writes **`ticket_edited`** (a new
+`AuditAction`) with the ticket row plus its product applications before and after, the materials
+snapshotted as content without ids so an unchanged list compares equal; a technician change
+re-copies the name and license from the new profile and follows onto
+`services.assignedTechnicianId`; and the Service's own status is no longer touched (the old path
+flipped it COMPLETED on `confirmed` - a completion without finalization). `completeService`
+refuses a re-post over a FINALIZED ticket for everyone (409) and over a ticket in office review
+(OFFICE_REVIEW_PENDING or FLAGGED_FOR_REVIEW) unless the caller holds `EDIT_TICKET` (403
+`TICKET_IN_REVIEW`: the office reopens, the technician re-posts the REOPENED ticket), checked
+before the Service's price or type is touched; every accepted re-post over an existing record -
+the technician's on a REOPENED one, the office's on one in review - writes `ticket_edited` too, so
+a ticket's History reads reopened, edited, finalized in order. The rules live in one shared
+module, **`shared/ticket-status.ts`** (`isTicketFinalized`, `isTicketInOfficeReview`,
+`isTicketReopened`, `technicianMayPostTicket`, `describeTicketLifecycle`), read by the server and
+the technician view alike. **"Finalized" is any of the three signals** finalize sets and reopen
+clears - `ticketStatus = FINALIZED`, `confirmed`, `readyForBilling` - which is also what covers
+the **10 legacy rows** on the dev DB carrying `confirmed = true` under `OFFICE_REVIEW_PENDING` (the
+old Service History Confirm): they already read as finalized on the Services tab and the review
+modal, the PATCH and a re-post now say "reopen first", and reopen clears them (verified on a
+simulated row); no migration, by design. **The Service History "Confirm" button is gone** (dev
+behavior rule 6): it was `PATCH { confirmed: true }`, the pre-Phase-1 completion that marked a
+Service COMPLETED with no finalization, no invoicing moment and no audit row; each card now shows
+the ticket's real lifecycle badge (Pending review / Flagged for review / Reopened / Finalized)
+and a **Review ticket** / **Open ticket** link into Service Ticket Review (`?recordId=`, Pass
+11b), where Finalize and Reopen live - no third finalize surface was built. The technician view's
+button reads the shared predicate (Create / Resume Service Ticket, Edit Reopened Ticket, and the
+disabled Ticket in Office Review / Ticket Finalized), and the ticket dialog is handed a record
+only when it is REOPENED - a posted or finalized record is never passed. Not on the PATCH: the
+Service's price and type (an office price edit is C3.1b's, with `ADJUST_PRICE_AGREEMENT`), and
+`POST /api/service-records` (the Service History page's direct create) is untouched. No schema
+change, no migration. **Restart `npm run dev:full` before manually testing - this pass changes
+server code and a route's gate; the badge and link on Service History and the technician view's
+relabelled button have not been rendered by anyone yet.** Signatures and behavior are under
+"Shipped in Pass 16" at the end of `PLAN_ROADMAP_V2.md` Part D.
+
+Next up: **Pass 13** — Batch Invoice moves to the Invoices screen + Draft invoice for a visit
+(`PLAN_ROADMAP_V2.md` Phase 2 table, C2.3): the batch dialog leaves Service Ticket Review for the
+Invoices screen with its range labelled "posted between", grouped by technician then service
+date, the technician filter passed to the preview and Send All kept; New Invoice is removed and
+the screen gains "Draft invoice for a visit"; the manual path survives only as "Add fee /
+adjustment" on the location ledger panel (owner, B6). Branch from `origin/main` after confirming
+it contains Pass 16's merge. The handoff prompt for it is the last section of this file.
 
 Phase 1's ordered plan, impact analysis, conflict resolutions, and per-pass verification steps live in
 `PLAN_BILLING_V1_1_EXECUTION.md` — read it when a pass builds on a Phase 1 helper (its "Shipped in
@@ -721,52 +767,77 @@ pointer and that prompt.
 
 Replaced at the end of every pass (`AGENT_WORKING_AGREEMENT.md`, the end-of-pass step). The owner
 pastes it verbatim to start the next session; it is also the last thing in the finishing session's
-final message. Written 2026-09-23, after Pass 12 merged as PR #79.
+final message. Written 2026-09-23, after Pass 16 was pushed as `feature/phase-3-ticket-lockdown`.
 
 ```text
-Start Pass 16 — Ticket lockdown (D9) enforced server-side (PLAN_ROADMAP_V2.md Phase 3 table,
-row C3.1; B15 in Part B; A2's "Fields immutable once posted / finalized" row). Read the CLAUDE.md
-docs in order first; CURRENT_FOCUS.md's last two entries (Pass 12 and "Next up") are the ones that
-matter.
+Start Pass 13 — Batch Invoice moves to the Invoices screen + Draft invoice for a visit
+(PLAN_ROADMAP_V2.md Phase 2 table, row C2.3; B6 in Part B with the owner's second review of
+2026-09-19 in Part E; A2's "Batch Invoice on the Invoices screen", "Batch by route / technician",
+"Batch date range labelled as posting date" and "'New Invoice' must link to an existing service"
+rows). Read the CLAUDE.md docs in order first; CURRENT_FOCUS.md's last two entries (Pass 16 and
+"Next up") are the ones that matter.
 
-Branch feature/phase-3-ticket-lockdown from origin/main. Confirm main contains the Pass 12 merge
-(feature/phase-2-billing-plan-required-sold-by, one commit 2d11ab7, PR #79) before branching.
+Branch feature/phase-2-batch-invoice-and-draft from origin/main. Confirm main contains the Pass 16
+merge (feature/phase-3-ticket-lockdown, one commit) before branching.
 
-The decision is recorded (D9 in PLAN_BILLING_V1_1.md; owner in B15: "enforce server-side first, a
-defect fix"): after a technician posts, price / service date / materials / collection data are
-locked from the technician and office edits are role-gated and logged; after finalization the
-ticket is immutable and corrections go through reopen-with-reason (workflow) or a credit memo
-(money). Ground truth today (line numbers from origin/main at PR #79; they drift, the names do
-not): PATCH /api/service-records/:id (server/routes.ts:1690) has no permission gate and no status
-guard; updateServiceRecord (server/storage.ts:4011) blind-writes and, on `confirmed`, flips the
-linked Service to COMPLETED outside finalization; completeService (storage.ts:4049) re-posts over
-an existing record and resets ticketStatus / finalizedAt / readyForBilling (~4117-4126), so a
-re-post un-finalizes a FINALIZED ticket; client/src/pages/technician-work.tsx:486 still passes the
-posted record into the ticket dialog as existingServiceRecord. EDIT_TICKET and ticket_edited do
-not exist yet. The PATCH's only client caller is the Service History page's "Confirm" button
-(client/src/pages/services.tsx:323, `{ confirmed: true }`) - decide what it becomes under the
-gate (it is a pre-Phase-1 mechanic that completes a Service without finalization; dev behavior
-rule 6 applies) and record the choice in the pass entry rather than leaving it dead.
+The decisions are recorded (B6, answered twice on 2026-09-19): New Invoice is removed from the
+Invoices screen; the screen gains "Draft invoice for a visit" (customer → location → un-invoiced
+appointment → createDraftInvoiceForAppointment, Pass 4's path); the manual invoice survives only as
+"Add fee / adjustment" on the location ledger panel, where the location is already known, and
+createManualInvoice keeps requiring a location (Pass 10). Batch Invoice is an invoicing action
+sitting on a review queue: it moves to the Invoices screen, its date range is labelled as what it
+filters on ("posted between" - the server filters postedAt falling back to serviceDate), results
+group by technician then service date (a "route" is technician × day; appointments carry no route
+columns), the technician filter is passed to the preview, Send All stays, and Service Ticket Review
+loses the button. Ground truth today (line numbers from origin/main at the Pass 16 merge; they
+drift, the names do not): the batch lives on Service Ticket Review - the button at
+client/src/pages/service-ticket-review.tsx:525-535 (GENERATE_INVOICE), the dialog at :799-816 with
+the bare "from through to" subtitle, the preview query at :463-464 (GET
+/api/invoices/batch-preview?dateFrom=&dateTo=, no technician), generate at :470, Send All at :484;
+the page's Technician filter at :352 is applied to the review queue only. Routes: server/routes.ts:2037
+(batch-preview), :2048 (batch-generate), :2059 (batch-send, SEND_INVOICE), :1959 (POST /api/invoices,
+the manual invoice, GENERATE_INVOICE), :1985 (POST /api/invoices/draft-for-appointment/:appointmentId).
+Storage: getBatchInvoicePreviewForDateRange (server/storage.ts:4999; rows typed BatchInvoicePreviewRow
+at :679 - the ticket plus billingLineType / billableAmountCents / billingNote),
+getServiceRecordsReadyForBillingInRange (:4985, the postedAt ?? serviceDate filter at :4988),
+batchGenerateInvoicesForDateRange (:5288, BatchGenerateResult at :685), batchSendInvoices (:5352),
+createManualInvoice (:5401, CreateManualInvoiceInput at :551), createDraftInvoiceForAppointment
+(:6219). The Invoices screen (client/src/pages/invoices.tsx) has InvoiceForm at :46 (the manual
+invoice, POST /api/invoices at :83) behind two "New Invoice" buttons at :280 and :345,
+ReadyToBillSection at :165, and rows that open InvoiceDetailDialog (Pass 11a); the location ledger
+panel (client/src/components/location-ledger-panel.tsx) has Record Payment and Issue Credit Memo in
+its header at :517-521 with their dialogs at :627-628, which is where "Add fee / adjustment"
+belongs; the Services tab's canDraftForVisit rule (customer-detail.tsx, next to the Draft invoice
+button) is the eligibility a visit needs for a draft. One known gap rides along from Pass 11d: the
+batch preview's per-ticket amounts do not show a pending down payment that generate will bill (the
+INITIAL_CHARGE line rides the visit invoice) - show it in the preview or say it is coming; do not
+leave it silent.
 
-Build per C3.1: a new EDIT_TICKET permission (support+) gating the PATCH, refused on FINALIZED
-("reopen first"); completeService refuses a re-post on a FINALIZED ticket and a technician's
-re-post on a ticket already in office review (the office reopens; a technician re-posts a
-REOPENED one); every accepted edit writes a `ticket_edited` audit row (a new AuditAction in
-shared/audit.ts; before / after, product applications included; payment records are already
-immutable and out of scope); the one UI change is technician-work.tsx no longer passing a posted
-record into the dialog. No schema change and no migration are expected; if one turns out to be
-needed, stop and ask. Sale attribution and billing plans (Pass 12) are untouched.
+Build per C2.3: Batch Invoice on the Invoices screen (result rows open the invoice modal), the
+range labelled "posted between", the technician filter passed to batch-preview and batch-generate
+(a query / body field added server-side; all technicians stays the default), the preview grouped by
+technician then service date, Send All kept, the button and dialog removed from Service Ticket
+Review; New Invoice removed from the Invoices screen and replaced by "Draft invoice for a visit"
+(customer → location → that location's draftable appointments → the existing draft-for-appointment
+route, the created DRAFT opening in the modal); "Add fee / adjustment" on the location ledger panel
+through the existing POST /api/invoices with the panel's location fixed (description, amount, tax,
+due date, notes; the customer is the location's). No schema change and no migration are expected;
+if one turns out to be needed, stop and ask. The ticket lockdown (Pass 16), sale attribution and
+billing plans (Pass 12) are untouched.
 
 Environment: Node 24.21.0, npm run dev:full (restart it before manually testing anything that
 changes server code), DEV_NOTES.md for the DB backup/restore and PowerShell traps. Verify on
 PORT=5001 as the previous passes did: npm run check, double boot (both boots must print only
 "serving on port 5001" and every table count must be unchanged, since there is no migration), the
-pass's API smoke test as all four roles (a technician re-post on a pending ticket and on a
-FINALIZED one, a support PATCH on a pending ticket with its audit row, a PATCH on a FINALIZED
-ticket refused, an unchanged PATCH writing nothing, reopen then re-post allowed) with fixtures
-deleted and counts back at baseline.
+pass's API smoke test as all four roles (batch-preview with and without a technician filter and
+the grouping the client renders from it, batch-generate over a range holding two technicians'
+visits, a draft for an un-invoiced appointment and a refusal for an already-invoiced one, an "Add
+fee / adjustment" invoice landing on the location's Invoices tab and in its balance,
+support / technician 403s where the gates say so) with fixtures deleted and counts back at
+baseline, and a Vite 200 on every touched client module.
 
 Working agreement as always: one pass, one branch, update CURRENT_FOCUS and the roadmap's pass
 table at the end, replace the handoff prompt at the end of CURRENT_FOCUS.md with the one for Pass
-13 (Batch Invoice + Draft, C2.3, next in the recommended order), push and stop. I merge.
+14 (Aging and balances on the customer screen, C2.4, next in the recommended order), push and
+stop. I merge.
 ```

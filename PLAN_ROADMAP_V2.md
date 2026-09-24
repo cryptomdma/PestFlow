@@ -105,7 +105,7 @@ are calibrated to Phase 1's: Pass 6 (four tables, routes, three dialogs) is the 
 | Review modal: office Edit button (role-gated) | ABSENT | modal is read-only; footer is Open Location / Close / Reopen / Finalize (`:648-657`) |
 | Review modal: reopen reason as a pop-up with a settings list, "Other" requires text | ABSENT | inline free-text `Textarea` (`:643-646`); `reopenReason` is text, no code column, no settings key |
 | Reopen must be role-authorized | DONE | `REOPEN_TICKET` support+ (`routes.ts:1669`), reason required, audit-logged (Pass 8) |
-| Fields immutable once posted / finalized (price, service date, collection data) | **NOT ENFORCED** | `PATCH /api/service-records/:id` (`routes.ts:1647-1657`) has no permission gate and no status guard; `updateServiceRecord` (`storage.ts:3866-3902`) blind-writes; `completeService` re-posts over a FINALIZED record and resets `confirmed / ticketStatus / finalizedAt / readyForBilling` (`:3971-3988`). Lockdown is a UI convention (`ServiceDetailModal` hides re-post; `technician-work.tsx:477-485` still passes the existing record into the ticket dialog). Payment records are immutable (Pass 6). |
+| Fields immutable once posted / finalized (price, service date, collection data) | DONE — Pass 16 (2026-09-23) | was **NOT ENFORCED**: `PATCH /api/service-records/:id` had no permission gate and no status guard, `updateServiceRecord` blind-wrote (and completed the Service on `confirmed`), and `completeService` re-posted over a FINALIZED record and reset its stamps. Now the PATCH is `EDIT_TICKET` (support+), content-only and strict, 409 on FINALIZED; a re-post is refused on FINALIZED (anyone) and on a ticket in review without `EDIT_TICKET`; every accepted edit or re-post writes `ticket_edited`; the rules are `shared/ticket-status.ts`, read by the technician view too. See "Shipped in Pass 16" at the end of Part D. Payment records were already immutable (Pass 6). |
 | Technician ticket: add a second service / surcharge line / Generate Proposal | ABSENT | none in `service-completion-dialog.tsx`; `ADD_FIELD_SURCHARGE` permission exists (`permissions.ts:9`) with no UI; `lineType: "SURCHARGE"` exists in schema |
 | Invoice document: Bill To from the primary location / billing profile; a Service Location block (owner, 2026-09-21) | DONE — Pass 11c (2026-09-21) | was a defect: `getInvoiceDocumentContext` fell back to the **service** location's live address when no profile address was snapshotted, which was every invoice on the dev DB. Now the parties are frozen at issue in `billingProfileSnapshot.billTo` / `.serviceLocation` by `resolveInvoicePartiesTx` on every issuing path, the renderer prints Remit To / Bill To / Service Location, and the 64 pre-11c rows (45 with no snapshot, 19 profile-only) resolve at render by the same rule, marked transitional. Documents already stored keep their bytes (§1.7). See "Shipped in Pass 11c" at the end of Part D. C2.1c |
 | Down payment collected in the field rides the first visit's invoice; the technician sees it as due today (owner, 2026-09-21) | DONE — Pass 11d (2026-09-22) | now: `createAgreement` issues nothing; the down payment rides the first visit's invoice as an `INITIAL_CHARGE` line (`buildVisitInvoiceLinesTx`), `getVisitBillingSummary` prices it into the visit's figures as `charges`, the collector field has its readers (the office prompt at signing and scheduling, the technician's callout), the explicit up-front button stays, and the three unissued `Daily Rodent Trapping` deposits are settled outside the ledger. See "Shipped in Pass 11d" at the end of Part D. Was: `createAgreement` issues a standalone `INITIAL_CHARGE` invoice (`storage.ts:3252`, `7625-7714`); `getVisitBillingSummary` (`:4724`) never finds it, so the ticket says $0 due; `initialChargeCollectedBy` has no reader in the field. Owner correction recorded under D4 in `PLAN_BILLING_V1_1.md`. C2.1d |
@@ -281,6 +281,7 @@ decided it: after tech post → locked from the technician, office edits role-ga
 finalization → immutable, corrections via reopen-with-reason or credit memo. **The inventory found it
 is not enforced**: the service-record PATCH has no gate and no status guard, and a re-post silently
 un-finalizes a FINALIZED ticket. **Owner:** agreed — enforce server-side first (C3.1), a defect fix.
+**Built as Pass 16** (`feature/phase-3-ticket-lockdown`, 2026-09-23).
 
 **B16. "Reopen must be role-authorized."** Done (`REOPEN_TICKET`, support+). **Owner:** no change, but
 **role profiles must be configurable in Settings** for the production-ready product — org-defined
@@ -356,9 +357,9 @@ so every field action is a route and every screen is data from a read — no pag
 
 | # | Unit | Notes covered | Depends on | Open decision |
 |---|---|---|---|---|
-| C3.1 (**Pass 16**) | **Ticket lockdown (D9) enforced server-side.** `PATCH /api/service-records/:id` gated by a new `EDIT_TICKET` (support+) and refused on FINALIZED ("reopen first"); `completeService` refuses a re-post on a FINALIZED ticket, and a technician's re-post on a ticket already in office review (the office reopens; the technician re-posts a REOPENED one); every accepted edit writes `ticket_edited` (before/after, product applications included; payment records are already immutable and out of scope). The only UI change: `technician-work.tsx:477-485` stops passing a posted record into the ticket dialog. A defect fix, not a feature. | Immutable fields once posted | — | — |
+| C3.1 (**Pass 16**) — **done** (`feature/phase-3-ticket-lockdown`, 2026-09-23; see "Shipped in Pass 16" at the end of Part D) | **Ticket lockdown (D9) enforced server-side.** `PATCH /api/service-records/:id` gated by a new `EDIT_TICKET` (support+) and refused on FINALIZED ("reopen first"); `completeService` refuses a re-post on a FINALIZED ticket, and a technician's re-post on a ticket already in office review (the office reopens; the technician re-posts a REOPENED one); every accepted edit writes `ticket_edited` (before/after, product applications included; payment records are already immutable and out of scope). The only UI change: `technician-work.tsx:477-485` stops passing a posted record into the ticket dialog. A defect fix, not a feature. | Immutable fields once posted | — | — |
 | C3.2 (**Pass 17**) | **Reopen-reason pop-up** with a settings list (`ticket_reopen_reasons`, the `app_settings` shape of `appointment_cancel_reschedule_reasons`), `reopenReasonCode` + text; "Other" requires text and `REOPEN_TICKET_OTHER` (manager+); the inline textarea leaves the modal; the modal closes on Finalize when the queue is exhausted. | Remove reopen reason from modal; pop-up; dropdown config; Other role-gated; close on finalize | — (after C3.1 only to avoid a footer merge conflict) | — |
-| C3.1b (**Pass 18**) | **Office Edit on the review modal** (D9): the role-gated Edit button opens `service-completion-dialog.tsx` in an `office-edit` mode (same fields, materials included) that submits through the gated PATCH instead of the post route; `ADJUST_PRICE_AGREEMENT` still guards an agreement price (support edits everything else); a FINALIZED ticket says "reopen first". | Office edit button | C3.1, C3.2 | — |
+| C3.1b (**Pass 18**) | **Office Edit on the review modal** (D9): the role-gated Edit button opens `service-completion-dialog.tsx` in an `office-edit` mode (same fields, materials included) that submits through the gated PATCH instead of the post route; `ADJUST_PRICE_AGREEMENT` still guards an agreement price (support edits everything else); a FINALIZED ticket says "reopen first". Pass 16 built the PATCH content-only with materials as replace-all; the Service's price and type are not on it, so this unit adds the price edit (on the Service, logged `price_overridden` as a post's is). | Office edit button | C3.1, C3.2 | — |
 | C3.3 (**Pass 19**) | **Technician ticket modal, money and instructions**: draft-price override on the billing-summary read (`?serviceId=&priceCents=`, priced server-side through `resolveServiceLineBillingTx` + tax), dollars.cents on blur, service instructions (agreement `serviceInstructions`, service notes, location notes) at the top, the **billing-plan pill** in the ticket header (the profile display waits for C5.2), **time-in prompt** on opening a ticket with no Time In (bypass allowed). Landing after Post unchanged (B1). | Tech modal items 1-4; time-in prompt; display billing plan | — | — |
 | C3.4a (**Pass 20**) | **Material units and application areas**: a settings-managed unit list (`material_units`) feeding a Unit dropdown, product `defaultUnit` migrated to pick from it; an org-level application-area list in Settings feeding products' allowed areas; application area multi-select per material line (`applicationAreas[]`, areas serviced still derived). | Unit dropdown; Application area multi-select | — | — |
 | C3.4b (**Pass 21**) | **Target pests, two levels** (B12): `productApplications.targetPests[]` per material row from the target-pest list (compliance); the ticket-level target pests stay on the ticket, selectable from a searchable multi-select placed in the Materials section, and are **selected ∪ every material's pests**; the summary line at the top of the ticket shows that union. | Target pests; pest per application | C3.4a | — |
@@ -932,6 +933,96 @@ Behavior worth knowing before the next pass touches it:
   module. Nothing was rendered in a
   browser: the Sale section, the five-column card, the Linked user selector and the reworded plan
   text reach the owner first.
+
+**Shipped in Pass 16** (`feature/phase-3-ticket-lockdown`, 2026-09-23) — the C3.1 row as built,
+plus what it found.
+
+```ts
+// shared/ticket-status.ts (new) - the lockdown rules, read by the server and the technician view
+export const TICKET_STATUSES = ["OFFICE_REVIEW_PENDING", "FLAGGED_FOR_REVIEW", "FINALIZED", "REOPENED"] as const;
+isTicketFinalized(record)          // ticketStatus FINALIZED, or confirmed, or readyForBilling - finalize sets all three, reopen clears all three
+isTicketInOfficeReview(record)     // OFFICE_REVIEW_PENDING | FLAGGED_FOR_REVIEW and not finalized
+isTicketReopened(record)           // REOPENED and not finalized
+technicianMayPostTicket(record | null)   // no record, or a REOPENED one
+describeTicketLifecycle(record)    // "Finalized" (any signal) | "Pending review" | "Flagged for review" | "Reopened"
+
+// shared/permissions.ts
+EDIT_TICKET = "edit_ticket"        // support, manager, admin
+
+// shared/audit.ts
+AuditAction gains "ticket_edited"  // label "Ticket edited"; before / after = the ticket row + `productApplications` (content-only snapshots)
+
+// server/storage.ts
+export class TicketLockedError extends Error { code: "TICKET_FINALIZED" | "TICKET_IN_REVIEW"; status: 409 | 403 }
+export interface UpdateServiceRecordInput { serviceDate?; technicianId?; notes?; targetPests?; areasServiced?; conditionsFound?;
+                                            recommendations?; followUpRequired?; followUpNotes?; customerSignature?;
+                                            productApplications? (replace-all when sent); actor? }
+updateServiceRecord(id, input)     // IStorage; 409 TICKET_FINALIZED on a finalized ticket; returns the existing row untouched when nothing
+                                   // changed (no UPDATE, no audit row); otherwise UPDATE + materials replaced if changed + `ticket_edited`;
+                                   // a technician change re-copies technicianName / technicianLicenseNumber from the profile ("Technician
+                                   // not found" for an unknown id) and follows onto services.assignedTechnicianId; a service-date change
+                                   // re-syncs an INITIAL_APPOINTMENT agreement as before. The Service's status is never touched.
+completeService(input)             // the existing record is read FIRST: FINALIZED -> TicketLockedError 409; in review without
+                                   // can(actorRole, EDIT_TICKET) -> 403; then the post as before, plus `ticket_edited` when it wrote over
+                                   // an existing record (before = old row + old materials, after = the posted row + new materials).
+normalizeProductApplicationInputs(list)        // module-level: the post's trim / drop-nameless rule, now shared with the PATCH
+snapshotTicketForAudit(record, applications)   // row + productApplications without ids (PRODUCT_APPLICATION_SNAPSHOT_FIELDS)
+
+// Routes
+PATCH /api/service-records/:id     // requirePermission(EDIT_TICKET); body is a STRICT z.object of the content fields above - `confirmed`,
+                                   // `ticketStatus`, `readyForBilling`, the stamps and the identity columns are 400; 409 { code:
+                                   // TICKET_FINALIZED } on a finalized ticket; the actor is the session's
+POST  /api/services/:id/complete   // unchanged shape; 409 TICKET_FINALIZED / 403 TICKET_IN_REVIEW as above, before any write
+
+// client
+pages/services.tsx                 // the Confirm button and its PATCH { confirmed: true } are gone; the badge is describeTicketLifecycle();
+                                   // each card links "Review ticket" / "Open ticket" -> /service-ticket-review?recordId=
+pages/technician-work.tsx          // canOpenTicketEditor = technicianMayPostTicket; labels Create / Resume Service Ticket, Edit Reopened
+                                   // Ticket, Ticket in Office Review, Ticket Finalized (the last two disabled); existingServiceRecord is
+                                   // passed only for a REOPENED record
+```
+
+Behavior worth knowing before the next pass touches it:
+- **Three signals, one meaning.** `confirmed`, `readyForBilling` and `ticketStatus = FINALIZED` are set
+  together by finalize and cleared together by reopen, and every earlier reader used a different one
+  (the finalize rollup `confirmed`, the by-appointment read `readyForBilling`, the flag guard both).
+  `isTicketFinalized` reads all three, so the 10 dev-DB rows with `confirmed = true` under
+  `OFFICE_REVIEW_PENDING` - the old Service History Confirm - are finalized for the lockdown exactly
+  as they already were for the Services tab and the review modal; reopen unlocks them. No migration.
+- **The office may re-post a ticket in review; the technician may not.** `EDIT_TICKET` is the line, not
+  the role name, so C5.6's profiles inherit it. A re-post by anyone over an existing record is logged
+  `ticket_edited`; a first post is an insert and writes nothing.
+- **A re-post's `after` is the record as posted.** The D3 flag step (`flagTicketIfVisitAlreadyInvoicedTx`)
+  writes its own `prefinalization_issue_override` row when the visit is already invoiced; the two rows
+  chain (edited: old to posted; override: posted to flagged) rather than one row skipping a state.
+- **Materials compare as content.** The snapshot drops `id` / `orgId` / `serviceRecordId`, so a re-post
+  that resends the same materials shows no materials diff, and an unchanged PATCH with materials writes
+  nothing at all. The post path still deletes and reinserts (unchanged).
+- **Not on the PATCH:** the Service's price and type (C3.1b, with `ADJUST_PRICE_AGREEMENT`, logged
+  `price_overridden` as a post's is); `POST /api/service-records` (the Service History page's direct
+  create) is ungated as before; `updateServiceRecord`'s old `technicianName` / `technicianLicenseNumber`
+  inputs are gone (the snapshot follows the technician id now).
+- **Two 4xx shapes.** `{ message, code }` - `TICKET_FINALIZED` is a 409 for everyone, `TICKET_IN_REVIEW`
+  a 403 for the technician; `getApiErrorCode()` reads both. The strict schema's refusal is the ordinary
+  zod 400 ("Unrecognized key(s) in object: 'confirmed'").
+- **Verified 2026-09-23** (PORT=5001): `npm run check` clean; boot 1 printed only "serving on port
+  5001" with all 43 tables' counts unchanged; 60 API / SQL assertions on boot 1 as the four roles -
+  a technician's first post (no audit row), a re-post in review 403 leaving the notes and the
+  Service's price untouched, tech PATCH 403, unauthenticated 401, support PATCH with materials (one
+  `ticket_edited`, actor / before / after / content-only materials), the same PATCH again and an
+  empty one writing nothing, `confirmed` / `ticketStatus` / `readyForBilling` / `serviceId` /
+  `finalizedAt` each 400 with the Service still SCHEDULED, a technician change (Austin Lowe /
+  0526597, `assigned_technician_id` following, an unknown id 400), the office's re-post over the
+  pending ticket 201 and logged with identical materials comparing equal, finalize, then tech /
+  admin re-post and support / manager PATCH all 409, reopen (`ticket_reopened`), the technician's
+  re-post 201 with REOPENED to OFFICE_REVIEW_PENDING and the reason cleared on the row, `GET
+  /api/audit-logs` listing 5 rows (4 `ticket_edited`), finalize again; a second ticket simulating
+  the legacy `confirmed` row (PATCH and re-post 409, reopen clears it) and FLAGGED_FOR_REVIEW (tech
+  403, support PATCH 200), then a re-post on REOPENED 201 - with every fixture deleted and 42 of 43
+  counts back at baseline (`session` up by the four logins); boot 2 printed only the serving line
+  with every count unchanged; a Vite 200 on the two touched pages, the ticket dialog and the new
+  shared module. Nothing was rendered in a browser: the lifecycle badge and the Review / Open ticket
+  link on Service History and the technician view's relabelled button reach the owner first.
 
 ---
 
