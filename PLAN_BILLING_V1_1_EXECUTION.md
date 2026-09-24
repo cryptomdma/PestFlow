@@ -1516,7 +1516,9 @@ Behavior worth knowing:
   failure); they are exactly the rows the "Billing Plan required on every Agreement" item in
   `CURRENT_FOCUS.md` resolves, and whoever does that should read the note on each of the 9 before
   picking a plan - `"Monthly"` on an agreement named `Quarterly Control` is a question for the owner,
-  not a mapping.
+  not a mapping. **Resolved in Pass 12:** the owner answered "Monthly Recurring" for all 11
+  (2026-09-19); the per-row effect and the constraint are under "Shipped in Pass 12" in
+  `PLAN_ROADMAP_V2.md`.
 - **The note is the only durable trace of the legacy text.** It is ordinary `notes` text, appended
   after a blank line when notes already existed (none did), and the office deletes it once a plan is
   attached. It is a one-shot carry, not a flag: an agreement created plan-less *after* the migration

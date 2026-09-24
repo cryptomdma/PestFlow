@@ -46,6 +46,8 @@ import {
 } from "@/components/invoice-on-finalize-prompt";
 import { useAuth } from "@/hooks/use-auth";
 import { can, PERMISSIONS } from "@shared/permissions";
+import { selectableUsers, userDisplayName } from "@shared/users";
+import type { UserSummary } from "@shared/schema";
 import { formatPhoneDisplay } from "@shared/phone";
 import { AuditLogEntryCard } from "@/components/audit-log-entry-card";
 import { dollarsToCents, centsToDollars, centsToDollarString, formatCents } from "@shared/money";
@@ -324,6 +326,9 @@ function buildAgreementFormState(agreement?: Agreement | null, template?: Agreem
     renewalDate: agreement?.renewalDate ?? (startDate ? addAgreementInterval(startDate, termUnit, parseInt(termInterval, 10)) : ""),
     nextServiceDate: agreement?.nextServiceDate ?? (startDate ? addAgreementInterval(startDate, recurrenceUnit, parseInt(recurrenceInterval, 10)) : ""),
     billingPlanId: agreement?.billingPlanId ?? template?.billingPlanId ?? "",
+    // Pass 12: sale credit. Never from the template; the form fills the
+    // session user in on a new agreement (see AgreementForm).
+    soldByUserId: agreement?.soldByUserId ?? "",
     price: agreement?.priceCents != null
       ? centsToDollarString(agreement.priceCents)
       : template?.defaultPriceCents != null
@@ -1466,6 +1471,12 @@ function AgreementForm({
   // plan still renders its own plan name instead of silently reading as
   // plan-less - the same reason activeTemplates keeps the current template.
   const { data: billingPlans } = useQuery<BillingPlan[]>({ queryKey: ["/api/billing-plans?includeInactive=true"] });
+  // Pass 12: sale attribution. The session user is the default sold-by on a
+  // new agreement; only ASSIGN_SALE_CREDIT (manager+) may name anyone else,
+  // so the selector is read-only for everyone else.
+  const { user: sessionUser } = useAuth();
+  const canAssignSaleCredit = can(sessionUser?.role ?? "", PERMISSIONS.ASSIGN_SALE_CREDIT);
+  const { data: users } = useQuery<UserSummary[]>({ queryKey: ["/api/users"] });
   const selectableBillingPlans = useMemo(
     () => (billingPlans ?? []).filter((plan) => plan.isActive || plan.id === currentAgreement?.billingPlanId),
     [billingPlans, currentAgreement?.billingPlanId],
@@ -1495,6 +1506,10 @@ function AgreementForm({
     [billingPlans, form.billingPlanId],
   );
   const billingPlanChanged = form.billingPlanId !== (currentAgreement?.billingPlanId ?? "");
+  const soldByOptions = useMemo(
+    () => selectableUsers(users ?? [], form.soldByUserId || currentAgreement?.soldByUserId),
+    [users, form.soldByUserId, currentAgreement?.soldByUserId],
+  );
 
   useEffect(() => {
     if (draftAgreement && !agreement) {
@@ -1509,6 +1524,14 @@ function AgreementForm({
     setRenewalDateOverridden(false);
     setNextServiceDateOverridden(false);
   }, [agreement, templateById, draftAgreement]);
+
+  // Pass 12: a new agreement is sold by whoever is creating it until a
+  // manager+ says otherwise; an existing one keeps what it carries.
+  useEffect(() => {
+    if (!currentAgreement && sessionUser?.id) {
+      setForm((prev) => (prev.soldByUserId ? prev : { ...prev, soldByUserId: sessionUser.id }));
+    }
+  }, [currentAgreement, sessionUser?.id]);
 
   const applyTemplate = (templateId: string) => {
     setSelectedTemplateId(templateId);
@@ -1526,6 +1549,7 @@ function AgreementForm({
         contractUrl: prev.contractUrl,
         contractSignedAt: prev.contractSignedAt,
         notes: prev.notes,
+        soldByUserId: prev.soldByUserId,
       };
     });
   };
@@ -1575,7 +1599,8 @@ function AgreementForm({
     termInterval: parseInt(data.termInterval, 10),
     renewalDate: data.renewalDate || null,
     nextServiceDate: data.nextServiceDate,
-    billingPlanId: data.billingPlanId || null,
+    billingPlanId: data.billingPlanId,
+    soldByUserId: data.soldByUserId || null,
     priceCents: dollarsToCents(data.price),
     ...initialChargeFieldsFrom(data.initialCharge),
     recurrenceUnit: data.recurrenceUnit,
@@ -1628,6 +1653,11 @@ function AgreementForm({
 
     if (!form.agreementName.trim() || !form.startDate || !form.nextServiceDate || !form.serviceTypeId) {
       toast({ title: "Agreement name, start date, next service date, and service type are required", variant: "destructive" });
+      return false;
+    }
+
+    if (!form.billingPlanId) {
+      toast({ title: "A billing plan is required - every agreement carries one", variant: "destructive" });
       return false;
     }
 
@@ -1833,14 +1863,13 @@ function AgreementForm({
       </div>
       <div className="space-y-1">
         <h3 className="text-sm font-semibold">Billing</h3>
-        <p className="text-sm text-muted-foreground">The Billing Plan decides how this agreement is charged. Plans are configured in Settings.</p>
+        <p className="text-sm text-muted-foreground">Every agreement carries a Billing Plan; it decides how this agreement is charged. Plans are configured in Settings.</p>
       </div>
       <div className="space-y-1.5">
         <Label>Billing Plan</Label>
-        <Select value={form.billingPlanId || "NONE"} onValueChange={(value) => setForm((prev) => ({ ...prev, billingPlanId: value === "NONE" ? "" : value }))}>
-          <SelectTrigger data-testid="select-agreement-billing-plan"><SelectValue placeholder="Select a billing plan" /></SelectTrigger>
+        <Select value={form.billingPlanId} onValueChange={(value) => setForm((prev) => ({ ...prev, billingPlanId: value }))}>
+          <SelectTrigger data-testid="select-agreement-billing-plan"><SelectValue placeholder="Select a billing plan (required)" /></SelectTrigger>
           <SelectContent>
-            <SelectItem value="NONE">No billing plan (bills at each visit)</SelectItem>
             {selectableBillingPlans.map((plan) => (
               <SelectItem key={plan.id} value={plan.id}>{plan.name}{plan.isActive ? "" : " (inactive)"}</SelectItem>
             ))}
@@ -1860,6 +1889,33 @@ function AgreementForm({
             </p>
           )
         )}
+      </div>
+      <div className="space-y-1">
+        <h3 className="text-sm font-semibold">Sale</h3>
+        <p className="text-sm text-muted-foreground">Who sold this agreement - the basis a sales commission pays from. Recorded per user, office staff and technicians alike.</p>
+      </div>
+      <div className="space-y-1.5">
+        <Label>Sold by</Label>
+        <Select
+          value={form.soldByUserId || "NONE"}
+          onValueChange={(value) => setForm((prev) => ({ ...prev, soldByUserId: value === "NONE" ? "" : value }))}
+          disabled={!canAssignSaleCredit}
+        >
+          <SelectTrigger data-testid="select-agreement-sold-by"><SelectValue placeholder="Not recorded" /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="NONE">Not recorded</SelectItem>
+            {soldByOptions.map((user) => (
+              <SelectItem key={user.id} value={user.id}>
+                {userDisplayName(user)}{user.id === sessionUser?.id ? " (you)" : ""}{user.status === "active" ? "" : " (inactive)"}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <p className="text-xs text-muted-foreground">
+          {canAssignSaleCredit
+            ? "Defaults to whoever creates the agreement. Changing it assigns sale credit to that user and is recorded in the agreement's history."
+            : "Defaults to you. Only a manager or admin can credit the sale to someone else."}
+        </p>
       </div>
       <div className="space-y-1">
         <h3 className="text-sm font-semibold">Contract / Document</h3>
@@ -2208,6 +2264,9 @@ function AgreementsTab({
   // D6: the billing-plan pill needs the plan's name and cadence; the agreement
   // row carries only billingPlanId. Inactive included so a retired plan still names itself.
   const { planById: billingPlanById, isLoading: billingPlansLoading } = useBillingPlanById();
+  // Pass 12: the sold-by line needs a name; the row carries only soldByUserId.
+  const { data: users } = useQuery<UserSummary[]>({ queryKey: ["/api/users"] });
+  const userById = useMemo(() => new Map((users ?? []).map((user) => [user.id, user])), [users]);
 
   const agreementAppointments = useMemo(() => {
     return (appointments ?? []).filter((appointment) => appointment.source === "AGREEMENT_GENERATED" && !!appointment.agreementId);
@@ -2357,7 +2416,7 @@ function AgreementsTab({
                       </Button>
                     </div>
                   </div>
-                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 text-sm">
+                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5 text-sm">
                     <div>
                       <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Service Type</p>
                       <p className="mt-1">{serviceTypeLabel}</p>
@@ -2379,6 +2438,14 @@ function AgreementsTab({
                     <div>
                       <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Scheduling Mode</p>
                       <p className="mt-1">{agreement.schedulingMode || "MANUAL"}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Sold by</p>
+                      <p className="mt-1" data-testid={`text-agreement-sold-by-${agreement.id}`}>
+                        {agreement.soldByUserId
+                          ? userDisplayName(userById.get(agreement.soldByUserId)) || "Unknown user"
+                          : "Not recorded"}
+                      </p>
                     </div>
                   </div>
                   {agreement.status === "CANCELLED" ? (

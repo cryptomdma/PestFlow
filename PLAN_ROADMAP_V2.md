@@ -138,7 +138,7 @@ routes, three dialogs) is the ceiling.
 | Service-level cancel / return one service to pending | ABSENT | "Cancel Service" (`schedule.tsx:315`) cancels the whole appointment; `PATCH /api/services/:id` accepts `PENDING_SCHEDULING` (`routes.ts:175`) but no UI uses it that way |
 | Materials modeled as products with allowed methods / equipment / areas | DONE | `materialProducts` (`schema.ts:556-579`) |
 | Role profiles configurable in Settings | ABSENT | four fixed roles, matrix in `shared/permissions.ts:44-86`, one `can()` helper |
-| Technicians and users are one table | ABSENT | `technicians` (`schema.ts:160-172`) has no `userId`; the two are unlinked |
+| Technicians and users are one table | PARTIAL — Pass 12 | `technicians.userId` (nullable, one technician per user) bridges a technician profile to its login, set in Settings → Technicians; the merge itself is C5.7. Was: `technicians` (`schema.ts:160-172`) had no `userId`; the two were unlinked |
 
 ---
 
@@ -343,7 +343,7 @@ by name; `CURRENT_FOCUS.md`'s unscheduled list points at them.
 | C2.1b (**Pass 11b**) — **done** (`feature/phase-2-invoice-modal-reach`, 2026-09-20; see "Shipped in Pass 11b" at the end of Part D) | **Invoice modal, reach** — `InvoiceRowLedger` rows open the same modal; `/customers/:id?locationId=&tab=invoices&invoiceId=`; Ticket Review reads `?recordId=` (entry point `openRecordFromQueue`, `service-ticket-review.tsx:280`) so the modal's per-line "Open ticket" lands; new `GET /api/invoices/by-appointment/:id` feeding an **invoice badge** on the review modal, or **Generate** when the visit is finalized and un-invoiced (the "Later" case); the Services tab Invoice column and `ServiceDetailModal` open the modal; `POST /api/invoices/:id/assign-location` (manager+, audit `update`) for the two location-less rows. | Links to the ticket system-wide; Generate Invoice on the review modal | C2.1a | — |
 | C2.1c (**Pass 11c**) — **done** (`feature/phase-2-invoice-document-parties`, 2026-09-21; see "Shipped in Pass 11c" at the end of Part D) | **Invoice document parties** (owner review 2026-09-21, item 1). The Bill To is decided at **issue** and frozen: `resolveInvoiceTermsForLocationTx` (`storage.ts:5463`) always writes a snapshot, growing the existing `billingProfileSnapshot` jsonb with `billTo: { name, address, source: PROFILE \| LOCATION_OVERRIDE \| PRIMARY_LOCATION }` and `serviceLocation: { name, address }`, `profileId` null when no profile resolved. Address rule: the profile's `billingAddress`, else (a location-override profile) that location's own address, else the customer's **primary location's** address; name: the profile's `billingName`, else today's customer-name order. `createManualInvoice` (`storage.ts:5045`, snapshot hardcoded null) and the schedule-driven path's inline duplicate of the snapshot (`~storage.ts:6141`) both call the resolver. `getInvoiceDocumentContext` reads the keys; the 45 legacy null-snapshot rows fall back at render (primary location for Bill To, the invoice's location for Service Location), marked transitional. `InvoiceDocumentContext` gains `serviceLocation`; the PDF and HTML print a third block. Client: `readBillingProfileSnapshot` (`shared/invoice-detail.ts`) reads the keys; the modal's Terms shows "Bill to … (primary location)" and the service location; "No billing profile was snapshotted" only for legacy rows. No migration. **Verify** (5001): a manual invoice at a non-primary location → `billTo.source = PRIMARY_LOCATION` with the primary's address and `serviceLocation` = that location; a `POST /api/billing-profiles` override row with an address → `PROFILE`; an override row without one → `LOCATION_OVERRIDE` with that location's own address; a legacy row's document still renders; the `/document` PDF is stored once; fixture profiles deleted in cleanup. | Bill To from the primary location; service location on the invoice (owner, 2026-09-21) | C2.1a | — |
 | C2.1d (**Pass 11d**) — **done** (`feature/phase-2-down-payment-first-visit`, 2026-09-22; see "Shipped in Pass 11d" at the end of Part D; the open flag in Part E answered the same day) | **Down payment on the first visit's invoice** (owner correction 2026-09-21 under D4, `PLAN_BILLING_V1_1.md`). `createAgreement` stops calling `issueInitialChargeInvoiceTx` (`storage.ts:3252`); `POST /api/agreements/:id/issue-initial-charge` and its event stay as the explicit up-front path. A **live** event is an `INITIAL_CHARGE` billing event whose invoice is not VOID (or that has no invoice: settled outside the ledger). `buildVisitInvoiceLinesTx` (`storage.ts:5496`) appends, for each agreement behind the visit's services with `initialChargeType = DOWN_PAYMENT`, a resolvable amount (`resolveInitialChargeCents`) and no live event, an `INITIAL_CHARGE` line "Down payment - <agreement>" taxed as the standalone path taxes it; generation and `issueInvoiceTx` (never the draft) insert the event with `invoiceId` = the visit invoice, so a void of that invoice makes the event non-live and the corrected invoice carries the line again. `DOWN_PAYMENT` only (`CLEANOUT_SURCHARGE` / `PREPAY_FULL` leave in C3.6). `isFullyAgreementCovered` must not read a covered visit with a down-payment line as "No charge". `getVisitBillingSummary`'s un-invoiced branch prices the pending line as `BILLABLE` (Price / COA in D4's order / Due today) so the ticket, appointment details, collect step and review modal show it. `initialChargeCollectedBy` gets its reader: the office prompt at scheduling fires unless `TECH_AT_FIRST_SERVICE`; the technician's collect step shows a "Down payment $X" callout unless `OFFICE_AT_SIGNING`; both when null. **Office prompt**: appointment creation (`POST /api/appointments` and the schedule screen's placement) for a service on an agreement with a live-less down payment and no designated payment covering it returns `initialChargeDue: { agreementId, amountCents }`; the client asks "Collect the $X down payment now?" → `RecordPaymentDialog` with `designatedAgreementId` + `appointmentId` (split into 11e if the pass runs long — the routing and the technician's figures are the must-haves). Copy: `initial-charge-fields.tsx:106`; the agreement card's `AgreementInitialChargeStatus` → "Billed on the first visit's invoice" + "Issue up front instead", "Invoiced as INV-x (first visit)" once fired. **Migration** (`agreement-bootstrap.ts`, guarded, per-row effect printed before commit): the three `Daily Rodent Trapping` rows per the open flag in Part E. Canon §13 and the initial-charge canon corrected in the same PR. **Verify** (5001): `DOWN_PAYMENT` $100 on a plan-less agreement → no invoice at creation; the first visit's summary shows the `INITIAL_CHARGE` line `BILLABLE` $100 beside the service line at remaining ÷ expected; generate → both lines and the event on the visit invoice; the second visit's summary has no down-payment line; void the first invoice → the summary shows it again; the explicit button on a fresh agreement → standalone + event, second press refused; a schedule-billed agreement → $100 down + $0 covered, no "No charge" banner; appointment creation returns `initialChargeDue`, and not after a covering designated payment. | Down payment shares the visit's invoice; office prompt at scheduling; tech collects against it (owner, 2026-09-21) | C2.1c (the line's Bill To), Pass 6 | Open flag in Part E (the three unissued rows) |
-| C2.2 (**Pass 12**) | **Billing Plan required on every Agreement + sale attribution.** Backfill the 11, `billingPlanId NOT NULL` + zod; `agreements.soldByUserId` — a `users` FK (owner: one identity table for techs and office), defaulting to the session user at creation, changed only under a new `ASSIGN_SALE_CREDIT` (manager+), audit `update`; template propagation untouched. `technicians` has no link to `users` today (`schema.ts:160-172`), so the same pass adds a nullable `technicians.userId` bridge; the full merge is C5.7. | Compensation basis (CURRENT_FOCUS) | — | Answered 2026-09-19: attach the billing plan named **Monthly Recurring** to all 11 — the 9 `Quarterly Control` rows (monthly billing for a quarterly program, the industry norm; the marked "Monthly" line in `notes` is deleted once attached) and the 2 Wildlife rows, whose term is already past its end, so Pass 3.5's attach rule starts no schedule and bills nothing. The 4 CANCELLED rows attach for the constraint only. The pass prints the per-row effect (`nextBillingDate` or the refusal) before committing. |
+| C2.2 (**Pass 12**) — **done** (`feature/phase-2-billing-plan-required-sold-by`, 2026-09-23; see "Shipped in Pass 12" at the end of Part D) | **Billing Plan required on every Agreement + sale attribution.** Backfill the 11, `billingPlanId NOT NULL` + zod; `agreements.soldByUserId` — a `users` FK (owner: one identity table for techs and office), defaulting to the session user at creation, changed only under a new `ASSIGN_SALE_CREDIT` (manager+), audit `update`; template propagation untouched. `technicians` has no link to `users` today (`schema.ts:160-172`), so the same pass adds a nullable `technicians.userId` bridge; the full merge is C5.7. | Compensation basis (CURRENT_FOCUS) | — | Answered 2026-09-19: attach the billing plan named **Monthly Recurring** to all 11 — the 9 `Quarterly Control` rows (monthly billing for a quarterly program, the industry norm; the marked "Monthly" line in `notes` is deleted once attached) and the 2 Wildlife rows, whose term is already past its end, so Pass 3.5's attach rule starts no schedule and bills nothing. The 4 CANCELLED rows attach for the constraint only. The pass prints the per-row effect (`nextBillingDate` or the refusal) before committing. **Built as decided** (the DB had 5 CANCELLED rows, not 4; the 4 ACTIVE rows anchored on 2026-09-24, the Wildlife rows refused at their term end, nothing else asked). |
 | C2.3 (**Pass 13**) | **Batch Invoice moves to the Invoices screen**; range labelled "posted between"; group by technician then service date (a "route" is technician × day — `appointments` carry no route columns); technician filter passed to preview; Send All stays; Ticket Review loses the button. **New Invoice is removed** (owner); the screen gains **"Draft invoice for a visit"** (customer → location → un-invoiced appointment → `createDraftInvoiceForAppointment`, `storage.ts:5618`); the manual path survives only as **"Add fee / adjustment"** on the location ledger panel (owner, B6); `createManualInvoice` keeps requiring a location. | Move Batch Invoice (×2), batch by route/tech, sort by date, New Invoice → Draft | C2.1a (result rows open the modal) | — |
 | C2.4 (**Pass 14**) | **Aging and balances on the customer screen.** Derived reads: `GET /api/customers/:id/aging` (per location + rollup) and `GET /api/reports/aging` (org-wide); buckets **Current (0-30) / 31-60 / 61-90 / Over 90 days since invoiced** (`issuedAt`, B20) over issued open balances, pending-applied and on-account shown beside, never netted. Header card: the customer-wide open balance, on-account figure and oldest bucket sit beside the primary-location chip (`customer-detail.tsx:3538-3593`); location profile card: the location's strip below `LocationNotesPanel`; Reports: an Aging tab. Nothing stored; UTC days like every other date-only value. | Aging report, customer balance at top with primary location info, location balance below notes | C2.1a (bucket rows open the modal) | — |
 | C2.5 (**Pass 15**) | **Statements.** Location statement (period roll-up: opening balance, invoices, payments, credits, closing balance, aging strip) and **account statement** (the same across every location of the account — the property-manager case) through the existing renderer, stored like invoices; a **paid-in-full / zero-balance letter** variant with agreement status for a home sale; Open / Download from the location Invoices tab and the customer header; on request only (a scheduled monthly statement is a later Settings toggle); delivery arrives with C6.3. | B5 (statements for commercial, property managers, home sale) | C2.4 | — |
@@ -830,6 +830,107 @@ Behavior worth knowing before the next pass touches it:
   next visit clean and the button refused; Wildlife PENDING at $124.75; a technician's press 403.
   Nothing was rendered in a browser: the callout, the charge rows, the prompt and the new card copy
   reach the owner first.
+
+**Shipped in Pass 12** (`feature/phase-2-billing-plan-required-sold-by`, 2026-09-23) — the C2.2 row as
+built, plus what it found.
+
+```ts
+// shared/schema.ts
+agreements.billingPlanId          // NOT NULL (was nullable); every insert path resolves one
+agreements.soldByUserId           // nullable users FK - sale attribution; null = not recorded
+technicians.userId                // nullable users FK - the bridge to the login; partial unique index technicians_user_id_uidx
+export type UserSummary = Omit<User, "passwordHash">
+
+// shared/permissions.ts
+ASSIGN_SALE_CREDIT = "assign_sale_credit"   // manager, admin
+
+// shared/audit.ts
+AuditEntityType gains "agreement"           // action `update`, written only for a soldByUserId change (the rest of the entity is C5.1a)
+
+// shared/billing-plan.ts
+export function buildBillingPlanSnapshot(plan, snapshottedAt?)   // THE snapshot builder (storage's private method delegates to it);
+                                                                  // BillingPlanSnapshotFields in, BillingPlanSnapshot out
+describeBillingPlanBehavior(null)           // "No billing plan chosen. Every agreement needs one: ..." (templates and an empty form)
+
+// shared/users.ts (new)
+userDisplayName(user) / sortUsersByName(list) / describeUserRole(role) / selectableUsers(list, currentId)   // active users + the current one
+
+// server/storage.ts
+getUsers(): Promise<UserSummary[]>          // IStorage; org-scoped, the hash column never selected, sorted by name
+buildAgreementInsertFromTemplate            // throws "A Billing Plan is required: ..." when neither the agreement nor its template names
+                                            // one, "Billing plan not found" for an unknown id; soldByUserId = the caller's value, else the actor
+normalizeAgreementInsert / normalizeAgreementUpdate   // requireBillingPlanId() - a plan-less write is refused, never inserted
+createAgreement / updateAgreement           // assertOrgUserTx on soldByUserId; updateAgreement writes the `agreement` `update` audit row
+                                            // only when soldByUserId changes: before / after { soldByUserId, soldBy: "First Last" | null }
+createTechnician / updateTechnician         // assertTechnicianUserLink: the user is the org's and linked to no OTHER technician
+getAuditLogsForLocation                     // rolls the location's agreements in
+
+// Routes
+GET   /api/users                            // any authenticated user; UserSummary[]
+POST  /api/agreements                       // agreement.soldByUserId other than the session user (null included) -> 403 without ASSIGN_SALE_CREDIT
+PATCH /api/agreements/:id                   // a CHANGED soldByUserId -> 403 without it (the form sends the whole row; unchanged is not an
+                                            // assignment); billingPlanId is z.string().min(1) - null and "" are 400
+POST / PATCH /api/technicians               // userId: z.string().min(1).nullable().optional()
+
+// server/agreement-bootstrap.ts - attachRequiredBillingPlans(), keyed on billing_plan_id still being nullable (a db:push database has
+//   NOT NULL already and skips it). REPORT each plan-less row with the effect Pass 3.5's attach rules give it (plus: CANCELLED attaches for
+//   the constraint only), THEN attach "Monthly Recurring" (id, snapshot, next billing date, the Pass 9 note line removed), THEN SET NOT
+//   NULL - or, if an org has no plan of that name, leave its rows plan-less, say so, and let the constraint wait for the next boot.
+// server/service-scheduling-bootstrap.ts - technicians.user_id + the partial unique index.
+
+// client
+pages/customer-detail.tsx   AgreementForm: the Billing Plan selector has no "No billing plan" option and Save refuses an empty one; a "Sale"
+                            section with a Sold by selector (the org's active users plus the current one, "(you)" marked; defaults to the
+                            session user on a new agreement; disabled below manager, with the reason). AgreementsTab card: a "Sold by" cell
+                            (five columns now), "Not recorded" on a null.
+pages/settings.tsx          TechnicianForm: a "Linked user" selector (None / the org's users with their role); the technicians list says
+                            "Linked to X" / "No linked user". The template form's "No billing plan" option reads "No default - the office
+                            picks a plan on each agreement".
+```
+
+Behavior worth knowing before the next pass touches it:
+- **What the migration did on the dev DB** (boot of 2026-09-24 UTC, the evening of 2026-09-23 local).
+  11 rows, all attached to Monthly Recurring. The 4 ACTIVE `Quarterly Control` rows (`76c15778`,
+  `c21e8f9e`, `83408897`, `1957a3ed`) anchored on today - **next billing 2026-09-24** - because their
+  April / May start dates had elapsed; the nightly run bills each **$33.33/mo** ($399.95 ÷ 12 periods
+  of the term, the pill's own number) from there to its term end, never the elapsed periods. The 5
+  CANCELLED `Quarterly Control` rows (`94343aa9`, `43438e38`, `12ffbbcb`, `d8de7167`, `9662bca9` -
+  the roadmap said 4) attached for the constraint only, no schedule. The 2 `Wildlife Trapping
+  Program` rows (`6e6f03c3`, `1044779c`) hit Pass 3.5's term-end refusal (CUSTOM/7 terms that ended
+  2026-05-23 / 2026-05-30): plan attached, nothing billed. No row hit the billing-events refusal.
+  The 9 `Quarterly Control` notes were exactly the Pass 9 line and are null now. A field-by-field
+  diff of all 25 rows against a pre-boot JSON snapshot shows only `billing_plan_id`,
+  `billing_plan_snapshot`, `next_billing_date`, `notes` and `updated_at` moving on the 11, and
+  nothing but the new null column on the other 14.
+- **The Wildlife rows are schedule-billed plans with no schedule.** Their visits now price as
+  AGREEMENT_COVERED $0 and nothing bills them - the owner's call (the terms are over). `1044779c`'s
+  pending 25% down payment still rides its first visit invoice (Pass 11d) if one is ever scheduled.
+- **A new agreement from the Quarterly Control template bills one period out.** The template's
+  $99.95 DOWN_PAYMENT default plus Monthly Recurring's "initial charge covers the first period" put
+  `nextBillingDate` one month after the start date - Pass 3.5 / 5.5 arithmetic, unchanged; the smoke
+  test's first expectation got this wrong, not the code.
+- **The sale-credit gate is in the route, the audit row in the storage.** Only a *change* of
+  `soldByUserId` needs the permission and only a change writes the row (Pass 8's audit-only-on-change
+  rule), so a Save that leaves it alone writes nothing. Clearing to null is a change: gated, logged,
+  and read as "Not recorded" everywhere.
+- **Creation is not audited.** The created row carries `createdByUserId` and `soldByUserId`; a
+  manager creating an agreement credited to someone else leaves no audit row until C5.1a records
+  creations. The 25 pre-pass rows read "Not recorded"; the owner assigns them from the form.
+- **A template still may carry no plan.** Only the agreement is constrained: a template without a
+  default makes the office pick on each agreement, and the form refuses to save without one.
+- **Verified 2026-09-23** (PORT=5001): `npm run check` clean; boot 1 printed the 11-row report and
+  the constraint line and no bootstrap error; 80 API / SQL assertions on boot 1 as the four roles -
+  the migration state row by row, the users read (sanitized, sorted, 401 unauthenticated), the plan
+  refusals (missing / "" / null / unknown, on create and on PATCH), template propagation, the sold-by
+  default and every gate as support, technician and manager, the audit row's actor / before / after
+  and its absence on an unchanged Save, the History rollup, the technician bridge's refusals and the
+  unique link - with every fixture deleted and nine table counts back at baseline; boot 2 printed
+  only "serving on port 5001" with 42 of 43 tables' counts identical to the pre-boot-1 snapshot
+  (`session` up by the smoke test's eight logins, which share the table with the owner's own
+  sessions and were left alone); a Vite 200 on the four touched client modules and the new shared
+  module. Nothing was rendered in a
+  browser: the Sale section, the five-column card, the Linked user selector and the reworded plan
+  text reach the owner first.
 
 ---
 

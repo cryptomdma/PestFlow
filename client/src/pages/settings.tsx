@@ -29,9 +29,10 @@ import { describeBillingPlanBehavior } from "@shared/billing-plan";
 import { describeInitialCharge, initialChargeFromTemplate, initialChargeToTemplate } from "@shared/initial-charge";
 import { InitialChargeFormFields, initialChargeFieldsFrom, initialChargeFormStateFrom, validateInitialChargeFormState } from "@/components/initial-charge-fields";
 import { can, PERMISSIONS } from "@shared/permissions";
+import { describeUserRole, selectableUsers, userDisplayName } from "@shared/users";
 import { INVOICE_ON_FINALIZE_MODES, describeInvoiceOnFinalizeMode, normalizeInvoiceOnFinalizeMode, type InvoiceOnFinalizeMode } from "@shared/invoice-on-finalize";
 import { Plus, Settings as SettingsIcon, Wrench, FileText, Users, ShieldCheck, FlaskConical, Bug, CreditCard, CalendarClock, Percent, Scale, Building2, Receipt } from "lucide-react";
-import type { AgreementCancellationPolicy, AgreementTemplate, BillingPlan, BillingProfileTemplate, MaterialProduct, OpportunityDisposition, Organization, ServiceType, TargetPest, TaxRate, TaxRule, Technician } from "@shared/schema";
+import type { AgreementCancellationPolicy, AgreementTemplate, BillingPlan, BillingProfileTemplate, MaterialProduct, OpportunityDisposition, Organization, ServiceType, TargetPest, TaxRate, TaxRule, Technician, UserSummary } from "@shared/schema";
 
 function formatTemplateRecurrence(template: AgreementTemplate) {
   const interval = template.defaultRecurrenceInterval || 1;
@@ -809,6 +810,10 @@ function OpportunityDispositionForm({ disposition, onClose }: { disposition?: Op
 function TechnicianForm({ technician, onClose }: { technician?: Technician | null; onClose: () => void }) {
   const { toast } = useToast();
   const isEditMode = !!technician;
+  // Pass 12: the technician -> user bridge (technicians.userId). Active users
+  // plus the one already linked, so an inactive login still names itself.
+  const { data: users } = useQuery<UserSummary[]>({ queryKey: ["/api/users"] });
+  const linkableUsers = useMemo(() => selectableUsers(users ?? [], technician?.userId), [users, technician?.userId]);
   const [form, setForm] = useState({
     displayName: technician?.displayName ?? "",
     licenseId: technician?.licenseId ?? "",
@@ -817,6 +822,7 @@ function TechnicianForm({ technician, onClose }: { technician?: Technician | nul
     phone: technician?.phone ?? "",
     color: technician?.color ?? "",
     notes: technician?.notes ?? "",
+    userId: technician?.userId ?? "",
   });
 
   const mutation = useMutation({
@@ -829,6 +835,7 @@ function TechnicianForm({ technician, onClose }: { technician?: Technician | nul
         phone: data.phone.trim() || null,
         color: data.color.trim() || null,
         notes: data.notes.trim() || null,
+        userId: data.userId || null,
       };
       const response = isEditMode
         ? await apiRequest("PATCH", `/api/technicians/${technician.id}`, payload)
@@ -866,6 +873,23 @@ function TechnicianForm({ technician, onClose }: { technician?: Technician | nul
       <div className="grid gap-3 sm:grid-cols-2">
         <div className="space-y-1.5"><Label>Email</Label><Input value={form.email} onChange={(e) => setForm((prev) => ({ ...prev, email: e.target.value }))} /></div>
         <div className="space-y-1.5"><Label>Phone</Label><Input value={form.phone} onChange={(e) => setForm((prev) => ({ ...prev, phone: e.target.value }))} /></div>
+      </div>
+      <div className="space-y-1.5">
+        <Label>Linked user</Label>
+        <Select value={form.userId || "NONE"} onValueChange={(value) => setForm((prev) => ({ ...prev, userId: value === "NONE" ? "" : value }))}>
+          <SelectTrigger data-testid="select-technician-user"><SelectValue placeholder="No linked user" /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="NONE">No linked user</SelectItem>
+            {linkableUsers.map((user) => (
+              <SelectItem key={user.id} value={user.id}>
+                {userDisplayName(user)} ({describeUserRole(user.role)}){user.status === "active" ? "" : " (inactive)"}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <p className="text-xs text-muted-foreground">
+          The login this technician signs in with. Sale credit is recorded per user and production credit per technician; this link is how the two meet on one person. One user per technician.
+        </p>
       </div>
       <div className="space-y-1.5"><Label>Notes</Label><Textarea value={form.notes} onChange={(e) => setForm((prev) => ({ ...prev, notes: e.target.value }))} className="resize-none" /></div>
       <div className="flex justify-end gap-2">
@@ -1118,7 +1142,7 @@ function AgreementTemplateForm({
         <Select value={form.billingPlanId || "NONE"} onValueChange={(value) => setForm((prev) => ({ ...prev, billingPlanId: value === "NONE" ? "" : value }))}>
           <SelectTrigger data-testid="select-template-billing-plan"><SelectValue placeholder="Select a billing plan" /></SelectTrigger>
           <SelectContent>
-            <SelectItem value="NONE">No billing plan (bills at each visit)</SelectItem>
+            <SelectItem value="NONE">No default - the office picks a plan on each agreement</SelectItem>
             {selectableBillingPlans.map((plan) => (
               <SelectItem key={plan.id} value={plan.id}>{plan.name}{plan.isActive ? "" : " (inactive)"}</SelectItem>
             ))}
@@ -1249,6 +1273,9 @@ export default function Settings() {
   const [appointmentCancelReasonsText, setAppointmentCancelReasonsText] = useState("");
   const { data: serviceTypes, isLoading } = useQuery<ServiceType[]>({ queryKey: ["/api/service-types"] });
   const { data: technicians, isLoading: techniciansLoading } = useQuery<Technician[]>({ queryKey: ["/api/technicians?includeInactive=true"] });
+  // Pass 12: the technician rows name their linked user.
+  const { data: orgUsers } = useQuery<UserSummary[]>({ queryKey: ["/api/users"] });
+  const orgUserById = useMemo(() => new Map((orgUsers ?? []).map((user) => [user.id, user])), [orgUsers]);
   const { data: materialProducts, isLoading: materialProductsLoading } = useQuery<MaterialProduct[]>({ queryKey: ["/api/material-products?includeInactive=true"] });
   const { data: targetPests, isLoading: targetPestsLoading } = useQuery<TargetPest[]>({ queryKey: ["/api/target-pests?includeInactive=true"] });
   const { data: agreementTemplates, isLoading: templatesLoading } = useQuery<AgreementTemplate[]>({ queryKey: ["/api/agreement-templates"] });
@@ -1744,6 +1771,8 @@ export default function Settings() {
                     </div>
                     <p className="text-xs text-muted-foreground mt-0.5">
                       {technician.email || "No email"} {technician.phone ? `| ${technician.phone}` : ""}
+                      {" | "}
+                      {technician.userId ? `Linked to ${userDisplayName(orgUserById.get(technician.userId)) || "unknown user"}` : "No linked user"}
                     </p>
                   </div>
                   <Button variant="outline" size="sm" onClick={() => { setEditingTechnician(technician); setTechnicianDialogOpen(true); }}>

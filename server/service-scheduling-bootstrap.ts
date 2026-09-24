@@ -12,11 +12,21 @@ export async function bootstrapServiceSchedulingFoundation(): Promise<void> {
       phone text,
       color text,
       notes text,
+      user_id varchar REFERENCES users(id),
       created_at timestamp NOT NULL DEFAULT now(),
       updated_at timestamp NOT NULL DEFAULT now()
     )
   `);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS technicians_status_idx ON technicians (status)`);
+  // Pass 12 (PLAN_ROADMAP_V2.md C2.2): the bridge from a technician profile
+  // to its login identity, nullable, at most one technician per user. The
+  // owner's decision is one users table for everyone (C5.7, Pass 38, which
+  // rewires every technician FK and uses this column as its key); until then
+  // this is what lets a technician's production credit (technicianId) and
+  // their sale credit (agreements.soldByUserId, a users FK) meet on one
+  // person. users exists by now: auth-bootstrap runs before this one.
+  await db.execute(sql`ALTER TABLE technicians ADD COLUMN IF NOT EXISTS user_id varchar REFERENCES users(id)`);
+  await db.execute(sql`CREATE UNIQUE INDEX IF NOT EXISTS technicians_user_id_uidx ON technicians (user_id) WHERE user_id IS NOT NULL`);
 
   await db.execute(sql`
     CREATE TABLE IF NOT EXISTS services (

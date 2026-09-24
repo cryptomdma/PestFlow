@@ -20,6 +20,12 @@ export const PERMISSIONS = {
   // required one. Manager+. Never a transfer: the route refuses an invoice
   // that already has a location.
   ASSIGN_INVOICE_LOCATION: "assign_invoice_location",
+  // PLAN_ROADMAP_V2.md C2.2 (Pass 12): give sale credit for an agreement
+  // (agreements.soldByUserId) to someone other than the session user - at
+  // creation or by a later change. Manager+. Comp basis: who sold it decides
+  // who a commission component will pay (Phase 7), so a technician or
+  // support user records only their own sale.
+  ASSIGN_SALE_CREDIT: "assign_sale_credit",
   // PLAN_BILLING_V1_1.md D5, the payments ledger. TAKE_PAYMENT_FIELD records
   // a payment (it posts PENDING); the rest are office actions on the ledger.
   TAKE_PAYMENT_FIELD: "take_payment_field",
@@ -78,6 +84,7 @@ const ROLE_PERMISSIONS: Record<UserRole, ReadonlySet<Permission>> = {
     PERMISSIONS.VOID_INVOICE,
     PERMISSIONS.ISSUE_CREDIT_MEMO,
     PERMISSIONS.ASSIGN_INVOICE_LOCATION,
+    PERMISSIONS.ASSIGN_SALE_CREDIT,
     PERMISSIONS.TAKE_PAYMENT_FIELD,
     PERMISSIONS.APPLY_PAYMENT,
     PERMISSIONS.CONFIRM_PAYMENT,

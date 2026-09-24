@@ -178,8 +178,11 @@ export async function registerRoutes(
   const appointmentStatusSchema = z.enum(["SCHEDULED", "IN_PROGRESS", "COMPLETED", "CANCELED"]);
   const serviceSourceSchema = z.enum(["MANUAL", "AGREEMENT_GENERATED", "AGREEMENT_INITIAL"]);
   const agreementSchedulingModeSchema = z.enum(["AUTO_ELIGIBLE", "CONTACT_REQUIRED", "MANUAL"]);
+  // Pass 12: userId is the technician -> user bridge (C2.2); an empty string
+  // is refused rather than stored, null clears the link.
   const technicianSchema = insertTechnicianSchema.extend({
     status: technicianStatusSchema,
+    userId: z.string().min(1).nullable().optional(),
   }).superRefine((value, ctx) => {
     if (!value.displayName?.trim()) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["displayName"], message: "displayName is required" });
@@ -190,6 +193,7 @@ export async function registerRoutes(
   });
   const updateTechnicianSchema = insertTechnicianSchema.extend({
     status: technicianStatusSchema.optional(),
+    userId: z.string().min(1).nullable().optional(),
   }).partial();
   const serviceSchema = insertServiceSchema.extend({
     status: serviceStatusSchema,
@@ -435,6 +439,14 @@ export async function registerRoutes(
     termUnit: recurrenceUnitSchema,
     recurrenceUnit: recurrenceUnitSchema,
     schedulingMode: agreementSchedulingModeSchema,
+    // Pass 12 (PLAN_ROADMAP_V2.md C2.2): every agreement carries a Billing
+    // Plan. The column is NOT NULL, so null is refused by the base schema;
+    // this refuses the empty string too. On creation the key may be absent
+    // (the template's plan propagates) - buildAgreementInsertFromTemplate
+    // refuses when neither names one. Sale credit is a users FK; null means
+    // "not recorded" and only a manager+ may set it to anything but themselves.
+    billingPlanId: z.string().min(1, "a Billing Plan is required"),
+    soldByUserId: z.string().min(1).nullable().optional(),
     initialChargeType: initialChargeTypeSchema,
     initialChargeAmountMode: initialChargeAmountModeSchema,
     initialChargeCents: initialChargeIntSchema,
@@ -1125,6 +1137,13 @@ export async function registerRoutes(
     }
   });
 
+  // Users (Pass 12): the org's people, for the sold-by selector on the
+  // agreement form and the technician -> user bridge in Settings. Names,
+  // roles and status only - the password hash never leaves the storage.
+  app.get("/api/users", async (req, res) => {
+    res.json(await req.storage.getUsers());
+  });
+
   // Technicians
   app.get("/api/technicians", async (req, res) => {
     const includeInactive = req.query.includeInactive === "true";
@@ -1443,6 +1462,13 @@ export async function registerRoutes(
   app.post("/api/agreements", async (req, res) => {
     try {
       const validated = createAgreementFromTemplateSchema.parse(req.body);
+      // Pass 12: sale credit defaults to the session user (the storage fills
+      // it in); naming anyone else - or nobody - at creation is an
+      // assignment, and needs ASSIGN_SALE_CREDIT like a later change does.
+      const requestedSoldBy = validated.agreement.soldByUserId;
+      if (requestedSoldBy !== undefined && requestedSoldBy !== req.user!.id && !can(req.user!.role, PERMISSIONS.ASSIGN_SALE_CREDIT)) {
+        return res.status(403).json({ message: "Only a manager or admin can credit a sale to someone else" });
+      }
       const data = await req.storage.createAgreementFromTemplate({
         agreementTemplateId: validated.agreementTemplateId ?? null,
         agreement: validated.agreement,
@@ -1461,6 +1487,16 @@ export async function registerRoutes(
   app.patch("/api/agreements/:id", async (req, res) => {
     try {
       const validated = updateAgreementSchema.parse(req.body);
+      // Pass 12: the form sends the whole row, so an unchanged sold-by is
+      // not an assignment; a changed one is, and needs ASSIGN_SALE_CREDIT.
+      // The storage writes the audit row when the value actually moves.
+      if (validated.soldByUserId !== undefined) {
+        const existing = await req.storage.getAgreement(req.params.id);
+        if (!existing) return res.status(404).json({ message: "Agreement not found" });
+        if ((validated.soldByUserId ?? null) !== (existing.soldByUserId ?? null) && !can(req.user!.role, PERMISSIONS.ASSIGN_SALE_CREDIT)) {
+          return res.status(403).json({ message: "Only a manager or admin can change who gets credit for this sale" });
+        }
+      }
       const data = await req.storage.updateAgreement(req.params.id, validated, getAuditActor(req));
       if (!data) return res.status(404).json({ message: "Agreement not found" });
       res.json(data);

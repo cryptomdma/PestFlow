@@ -6,12 +6,14 @@ appointment-anchored invoicing wired to finalization, payments-lite ledger (cash
 balances, application/release), COA as payment application, and `audit_logs` as the system-wide
 immutable financial history.
 
-Now active: **Phase 2 — Invoices you can work from**, per `PLAN_ROADMAP_V2.md`. Passes 11a-11c (the
-Invoice modal, core and reach; the invoice document's parties) are merged (PRs #73, #74, #76), as
-are the owner review of 2026-09-21 (PR #75) and the dev-setup chore (PR #77); Pass 11d (the down
-payment on the first visit's invoice) is pushed, awaiting merge; **next pass: 12, Billing Plan
-required on every Agreement + sale attribution** — the C2.2 row of that document's Phase 2 table.
-The roadmap sequences every remaining item below; this file keeps only the status pointer.
+Now active: **Phase 2 — Invoices you can work from**, per `PLAN_ROADMAP_V2.md`. Passes 11a-11d (the
+Invoice modal, core and reach; the invoice document's parties; the down payment on the first
+visit's invoice) are merged (PRs #73, #74, #76, #78), as are the owner review of 2026-09-21 (PR
+#75) and the dev-setup chore (PR #77); Pass 12 (Billing Plan required on every Agreement + sale
+attribution) is pushed, awaiting merge; **next pass: 16, ticket lockdown (D9) enforced
+server-side** — the C3.1 row of that document's Phase 3 table, pulled forward in its recommended
+order because it is an integrity hole, not a feature. The roadmap sequences every remaining item
+below; this file keeps only the status pointer.
 
 ## Status
 Pass 1 (`feature/phase-1-appointment-status-enum`, D1a) merged as PR #56.
@@ -412,7 +414,7 @@ with `>`, are in `DEV_NOTES.md`. One correction to the Pass 10 note above: **INV
 INV-000072 are both VOID, and INV-000001 carries a location** - that note describes them as still
 OPEN and location-less, which was true when Pass 10 shipped and is not true of this DB.
 
-Pass 11d (`feature/phase-2-down-payment-first-visit`, 2026-09-22, C2.1d) pushed, awaiting merge.
+Pass 11d (`feature/phase-2-down-payment-first-visit`, 2026-09-22, C2.1d) merged as PR #78.
 **A down payment bills on the first visit's invoice.** `createAgreement` issues nothing any more;
 `buildVisitInvoiceLinesTx` appends, for each agreement behind the visit with a `DOWN_PAYMENT`, a
 resolvable amount and no **live** `INITIAL_CHARGE` event (live = no invoice, i.e. settled outside
@@ -451,10 +453,46 @@ dev DB during this pass's verification boot, and a server on pre-11d code still 
 invoice at agreement creation.** Signatures and behavior are under "Shipped in Pass 11d" at the end
 of `PLAN_ROADMAP_V2.md` Part D.
 
-Next up: **Pass 12** — Billing Plan required on every Agreement + sale attribution
-(`PLAN_ROADMAP_V2.md` Phase 2 table, C2.2; the owner's answer of 2026-09-19: attach **Monthly
-Recurring** to all 11 plan-less agreements, the per-row effect printed before committing). Branch
-from `origin/main` after confirming it contains Pass 11d's merge.
+Pass 12 (`feature/phase-2-billing-plan-required-sold-by`, 2026-09-23, C2.2) pushed, awaiting merge.
+**Every agreement carries a Billing Plan, and records who sold it.** `agreements.billingPlanId` is
+NOT NULL: the route's zod refuses null and "", `buildAgreementInsertFromTemplate` refuses an
+agreement that names no plan when its template carries none (template propagation untouched), and
+the form's "No billing plan" option is gone. **Migration** (`agreement-bootstrap.ts`, keyed on the
+column still being nullable, so it ran once and a `db:push` database skips it): the 11 plan-less
+agreements were attached to **Monthly Recurring** on the owner's answer of 2026-09-19, each row's
+effect under Pass 3.5's attach rules printed at boot before it was written - the 4 ACTIVE
+`Quarterly Control` rows anchored on the boot's UTC day (**next billing 2026-09-24**; the elapsed
+periods are never back-billed, so the nightly run bills each $33.33/mo from there to its term end),
+the 5 CANCELLED `Quarterly Control` rows attached for the constraint only (no schedule; the DB has
+5, the roadmap said 4), the 2 `Wildlife Trapping Program` rows refused by the term-end rule (terms
+ended 2026-05-23 / 2026-05-30 - plan attached, nothing billed); no row hit the billing-events
+refusal; the 9 marked "Legacy billing frequency" note lines Pass 9 wrote were deleted; then
+`ALTER COLUMN billing_plan_id SET NOT NULL`. The snapshot builder moved to `shared/billing-plan.ts`
+(`buildBillingPlanSnapshot`) so the migration and storage freeze the same shape. **Sale
+attribution**: `agreements.soldByUserId`, a `users` FK, defaults to the session user at creation;
+naming anyone else (or nobody) at creation, and any later change, needs the new
+`ASSIGN_SALE_CREDIT` (manager+), and a change writes an audit `update` on a new `agreement` entity
+(before / after carry the id and the user's name; the location History tab rolls agreements in).
+The 25 existing rows are null - "Not recorded", never guessed from `createdByUserId`. Shown as a
+"Sold by" selector on the agreement form (read-only below manager, defaulted to you) and a "Sold
+by" cell on the agreement card. `technicians.userId` is the nullable bridge to the login (one
+technician per user, a partial unique index), set from a "Linked user" selector on Settings →
+Technicians, with each row naming its user; the full merge stays C5.7. New `GET /api/users`
+(names, roles, status - never the hash). Canon §9 / §13 / §16 and D9 updated in the same PR. Not
+built: a backfill of sold-by for the 25 pre-pass rows (the owner assigns from the form), audit rows
+for any other agreement edit (C5.1a), a required plan on templates (a template without one just
+makes the office pick on each agreement; its selector now says so). **Restart `npm run dev:full`
+now, not after the merge: the migration ran on the shared dev DB during this pass's verification
+boot, and a server on pre-Pass-12 code still lets the form send a plan-less agreement, which the
+database now refuses.** Signatures and behavior are under "Shipped in Pass 12" at the end of
+`PLAN_ROADMAP_V2.md` Part D.
+
+Next up: **Pass 16** — ticket lockdown (D9) enforced server-side (`PLAN_ROADMAP_V2.md` Phase 3
+table, C3.1): `PATCH /api/service-records/:id` gated by a new `EDIT_TICKET` (support+) and refused
+on FINALIZED ("reopen first"), `completeService` refusing a re-post on a FINALIZED ticket and a
+technician's re-post on a ticket already in office review, every accepted edit writing
+`ticket_edited`. A defect fix, not a feature. Branch from `origin/main` after confirming it
+contains Pass 12's merge.
 
 Phase 1's ordered plan, impact analysis, conflict resolutions, and per-pass verification steps live in
 `PLAN_BILLING_V1_1_EXECUTION.md` — read it when a pass builds on a Phase 1 helper (its "Shipped in
@@ -474,8 +512,9 @@ finishes. This file only tracks the one-line "where are we" pointer.
   issuing early requires `ISSUE_INVOICE_PREFINALIZATION` (Manager+) and flags the ticket.
 - Agreement revenue comes only from the nightly billing run **for plans the run actually bills**
   (`isScheduleBilledPlan()`); those services appear on visit invoices at $0 billable. Every other plan
-  — COD/per-service, charge-at-start, installment, or no plan — makes the visit the billing event and
-  the line carries a real amount. Never emit service-driven billing events for agreement work either way.
+  — COD/per-service, charge-at-start, installment — makes the visit the billing event and the line
+  carries a real amount; every agreement carries a plan since Pass 12. Never emit service-driven
+  billing events for agreement work either way.
 - Price is never mutated by COA, deposits, or applications. Status fields derive from amounts and are
   never hand-set.
 - Payments, applications, credit memos, and audit logs are append-only. Corrections are new records
@@ -508,7 +547,10 @@ finishes. This file only tracks the one-line "where are we" pointer.
     location" on the Invoices screen with Record Payment disabled. **The repair exists since Pass
     11b**: open either in the invoice modal as a manager and use "Assign location"; the pass
     assigned neither, since which location is the owner's call.
-  - **Billing Plan required on every Agreement** `[Roadmap: Pass 12, C2.2]` — backfill the 11 plan-less agreements, then
+  - ~~**Billing Plan required on every Agreement**~~ **Done — Pass 12** (`feature/phase-2-billing-plan-required-sold-by`,
+    2026-09-23): all 11 attached to Monthly Recurring, `billingPlanId NOT NULL` + zod, sale attribution
+    (`soldByUserId`, `ASSIGN_SALE_CREDIT`) and the `technicians.userId` bridge riding along. As it was
+    specified: backfill the 11 plan-less agreements, then
     `billingPlanId NOT NULL` + zod. **Unblocked by Pass 3.5**: the creation UI, template propagation,
     and plan-attachment-on-update all exist now, so what remains is the backfill and the constraint.
     Until then a plan-less agreement bills COD per visit. D9's column drop (Pass 9, 2026-09-16)
@@ -625,6 +667,8 @@ finishes. This file only tracks the one-line "where are we" pointer.
     **Sequencing (owner delegated the call, 2026-09-10):**
     - **Sale attribution → Phase 1**, riding with the "Billing Plan required on every Agreement" pass
       above: same form, same zod, same template-propagation path, so it is cheap to do together.
+      **Built in Pass 12** (`soldByUserId`, a users FK; `ASSIGN_SALE_CREDIT`; the `technicians.userId`
+      bridge; C5.7 merges the tables).
       §1.6.2's own rule is that Phase 1 builds the basis because "you cannot reconstruct what a
       technician earned last March if the basis was never recorded" — and *who sold it* is basis.
     - **Crew assignment → the deferred scheduling pass** (D8, which already collects unschedule and
