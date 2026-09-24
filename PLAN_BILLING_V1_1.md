@@ -323,8 +323,9 @@ Decided now, built later, so they stop resurfacing as ambiguity:
   **Built as Pass 9** (`feature/phase-1-legacy-billing-frequency-removal`, 2026-09-16). The
   bootstrap reported every plan-less agreement before the drop (9 with legacy text, 2 with none),
   carried the legacy text into each of the 9 agreements' notes as a marked line, assigned no plan,
-  and dropped both columns. The 11 stay plan-less until the "Billing Plan required on every
-  Agreement" item in `CURRENT_FOCUS.md` resolves them.
+  and dropped both columns. The 11 stayed plan-less until the "Billing Plan required on every
+  Agreement" item in `CURRENT_FOCUS.md` resolved them: **Pass 12** (2026-09-23) attached "Monthly
+  Recurring" to all 11 on the owner's answer of 2026-09-19 and made `billingPlanId` NOT NULL.
 - Field lockdown per prior decision, now explicit: after tech post → price/date/materials/collection
   locked from tech, office edits role-gated + logged; after finalization → immutable, corrections via
   reopen-with-reason (workflow) or credit memo (money); payment records immutable from creation,

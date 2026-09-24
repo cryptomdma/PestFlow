@@ -21,7 +21,7 @@ import {
   productionValueEntries,
   noteRevisions,
   users,
-  type User, type InsertUser,
+  type User, type InsertUser, type UserSummary,
   type Account,
   type Customer, type InsertCustomer,
   type Contact, type InsertContact,
@@ -69,7 +69,8 @@ import { renderInvoicePdf } from "./documents/invoice-pdf";
 import { can, PERMISSIONS, type UserRole } from "@shared/permissions";
 import { computeProductionValueCents } from "@shared/production-value";
 import { formatCents } from "@shared/money";
-import { isScheduleBilledPlan } from "@shared/billing-plan";
+import { buildBillingPlanSnapshot as buildSharedBillingPlanSnapshot, isScheduleBilledPlan } from "@shared/billing-plan";
+import { sortUsersByName, userDisplayName } from "@shared/users";
 import { addDays, advanceAgreementDate, computeExpectedServiceCount } from "@shared/agreement-schedule";
 // Transitional re-export (Pass 7): the calendar arithmetic moved to
 // shared/agreement-schedule.ts so the client's billing-plan pill and the
@@ -651,6 +652,9 @@ export interface IStorage {
   getTechnicians(includeInactive?: boolean): Promise<Technician[]>;
   createTechnician(data: InsertTechnician): Promise<Technician>;
   updateTechnician(id: string, data: Partial<InsertTechnician>): Promise<Technician | undefined>;
+  // Pass 12: the org's users, sanitized - for the sold-by selector and the
+  // technician -> user bridge. Never the password hash.
+  getUsers(): Promise<UserSummary[]>;
 
   getServices(): Promise<Service[]>;
   getServicesByLocation(locationId: string): Promise<Service[]>;
@@ -931,6 +935,17 @@ function resolveAgreementStartDateFromValues(
   };
 }
 
+// Pass 12 (PLAN_ROADMAP_V2.md C2.2): every agreement carries a Billing Plan.
+// The column is NOT NULL and the route's zod refuses null and "", so this is
+// the last line of defence for any other caller - a refusal with a reason
+// rather than a constraint violation.
+function requireBillingPlanId(value: string | null | undefined): string {
+  if (!value) {
+    throw new Error("A Billing Plan is required on every agreement");
+  }
+  return value;
+}
+
 export class DatabaseStorage implements IStorage {
   constructor(private readonly orgId: string) {}
 
@@ -1019,6 +1034,11 @@ export class DatabaseStorage implements IStorage {
       .select({ id: creditMemos.id })
       .from(creditMemos)
       .where(and(eq(creditMemos.orgId, this.orgId), eq(creditMemos.locationId, locationId)));
+    // Agreements, for sale-credit changes (Pass 12's `update` on soldByUserId).
+    const locationAgreements = await db
+      .select({ id: agreements.id })
+      .from(agreements)
+      .where(and(eq(agreements.orgId, this.orgId), eq(agreements.locationId, locationId)));
 
     const allRefs: Array<{ entityType: AuditEntityType; entityIds: string[] }> = [
       { entityType: "location", entityIds: [locationId] },
@@ -1028,6 +1048,7 @@ export class DatabaseStorage implements IStorage {
       { entityType: "service", entityIds: locationServices.map((service) => service.id) },
       { entityType: "payment", entityIds: locationPayments.map((payment) => payment.id) },
       { entityType: "credit_memo", entityIds: locationCredits.map((memo) => memo.id) },
+      { entityType: "agreement", entityIds: locationAgreements.map((agreement) => agreement.id) },
     ];
     const refs = allRefs.filter((ref) => ref.entityIds.length > 0);
 
@@ -1123,7 +1144,7 @@ export class DatabaseStorage implements IStorage {
       agreementTemplateId: data.agreementTemplateId || null,
       cancellationPolicyId: data.cancellationPolicyId || null,
       cancellationPolicySnapshot: data.cancellationPolicySnapshot ?? null,
-      billingPlanId: data.billingPlanId || null,
+      billingPlanId: requireBillingPlanId(data.billingPlanId),
       billingPlanSnapshot: data.billingPlanSnapshot ?? null,
       initialAppointmentId: data.initialAppointmentId || null,
       startDateSource: data.startDateSource || "MANUAL",
@@ -1160,6 +1181,7 @@ export class DatabaseStorage implements IStorage {
       cancellationOverrideByUserId: data.cancellationOverrideByUserId || null,
       cancellationOverrideByLabel: data.cancellationOverrideByLabel?.trim() || null,
       cancellationOverrideAt: data.cancellationOverrideAt ?? null,
+      soldByUserId: data.soldByUserId || null,
       createdByUserId: actor?.userId || data.createdByUserId || null,
       updatedByUserId: actor?.userId || data.updatedByUserId || null,
     };
@@ -1175,8 +1197,11 @@ export class DatabaseStorage implements IStorage {
     if (data.agreementTemplateId !== undefined) payload.agreementTemplateId = data.agreementTemplateId || null;
     if (data.cancellationPolicyId !== undefined) payload.cancellationPolicyId = data.cancellationPolicyId || null;
     if (data.cancellationPolicySnapshot !== undefined) payload.cancellationPolicySnapshot = data.cancellationPolicySnapshot ?? null;
-    if (data.billingPlanId !== undefined) payload.billingPlanId = data.billingPlanId || null;
+    // Pass 12: an agreement cannot be made plan-less. The route's zod refuses
+    // null and ""; this refuses any caller that gets past it.
+    if (data.billingPlanId !== undefined) payload.billingPlanId = requireBillingPlanId(data.billingPlanId);
     if (data.billingPlanSnapshot !== undefined) payload.billingPlanSnapshot = data.billingPlanSnapshot ?? null;
+    if (data.soldByUserId !== undefined) payload.soldByUserId = data.soldByUserId || null;
     if (data.initialAppointmentId !== undefined) payload.initialAppointmentId = data.initialAppointmentId || null;
     if (data.startDateSource !== undefined) payload.startDateSource = data.startDateSource || "MANUAL";
     if (data.agreementType !== undefined) payload.agreementType = data.agreementType?.trim() || null;
@@ -1326,27 +1351,11 @@ export class DatabaseStorage implements IStorage {
     };
   }
 
+  // The terms the customer was sold, frozen at attachment. One builder for
+  // every writer - creation, the plan-change path below, and the Pass 12
+  // migration in agreement-bootstrap.ts - lives in shared/billing-plan.ts.
   private buildBillingPlanSnapshot(plan?: BillingPlan | null) {
-    if (!plan) return null;
-    return {
-      planId: plan.id,
-      name: plan.name,
-      chargeTrigger: plan.chargeTrigger,
-      billingMode: plan.billingMode,
-      intervalUnit: plan.intervalUnit,
-      intervalCount: plan.intervalCount,
-      installmentCount: plan.installmentCount,
-      anchorMode: plan.anchorMode,
-      anchorDay: plan.anchorDay,
-      prorationRule: plan.prorationRule,
-      // The initial charge (type / amount / collector) is no longer a plan
-      // fact and is not carried here - it lives on the agreement's own
-      // columns (PLAN_BILLING_V1_1.md D4). Snapshots written before Pass 5.5
-      // still hold the old keys as frozen history; nothing reads them.
-      initialChargeCoversFirstPeriod: plan.initialChargeCoversFirstPeriod,
-      fieldAddableSurcharge: plan.fieldAddableSurcharge,
-      snapshottedAt: new Date().toISOString(),
-    };
+    return buildSharedBillingPlanSnapshot(plan);
   }
 
   // The nightly run only ever looks at agreements with a nextBillingDate
@@ -1385,8 +1394,9 @@ export class DatabaseStorage implements IStorage {
       : anchorDate;
   }
 
-  // Attaching, switching, or clearing an agreement's Billing Plan has to move
-  // nextBillingDate and billingPlanSnapshot with it. Without this, an
+  // Attaching or switching an agreement's Billing Plan has to move
+  // nextBillingDate and billingPlanSnapshot with it (clearing one is refused
+  // since Pass 12 - every agreement carries a plan). Without this, an
   // agreement edited to add a plan looks correctly configured everywhere in
   // the UI and is never billed by anyone: only the creation path
   // (buildAgreementInsertFromTemplate) ever set nextBillingDate, and the
@@ -1504,6 +1514,7 @@ export class DatabaseStorage implements IStorage {
       phone: data.phone?.trim() || null,
       color: data.color?.trim() || null,
       notes: data.notes?.trim() || null,
+      userId: data.userId || null,
     };
   }
 
@@ -1515,6 +1526,7 @@ export class DatabaseStorage implements IStorage {
     if (data.phone !== undefined) payload.phone = data.phone?.trim() || null;
     if (data.color !== undefined) payload.color = data.color?.trim() || null;
     if (data.notes !== undefined) payload.notes = data.notes?.trim() || null;
+    if (data.userId !== undefined) payload.userId = data.userId || null;
     return payload;
   }
 
@@ -1681,14 +1693,21 @@ export class DatabaseStorage implements IStorage {
     const policyId = input.agreement.cancellationPolicyId ?? template?.cancellationPolicyId ?? null;
     const policy = policyId ? await this.getAgreementCancellationPolicy(policyId) : undefined;
     // `undefined` means the caller said nothing about a plan, so the template's
-    // plan propagates; an explicit `null` means the agreement form's "No
-    // billing plan" was chosen and must stick. `??` would collapse those two
-    // into one, silently re-attaching the template's plan to an agreement the
-    // office deliberately left plan-less (COD per visit).
+    // plan propagates (template propagation is untouched by Pass 12); a named
+    // plan wins. Pass 12: every agreement carries a plan, so neither naming
+    // one is a refusal, reported as such rather than inserted as the
+    // COD-by-absence canon §13 used to allow. An id that resolves to no plan
+    // in this org is refused too, instead of surfacing as a foreign-key error.
     const billingPlanId = input.agreement.billingPlanId !== undefined
       ? input.agreement.billingPlanId
       : template?.billingPlanId ?? null;
-    const billingPlan = billingPlanId ? await this.getBillingPlan(billingPlanId) : undefined;
+    if (!billingPlanId) {
+      throw new Error("A Billing Plan is required: choose one on the agreement, or use a template that carries one");
+    }
+    const billingPlan = await this.getBillingPlan(billingPlanId);
+    if (!billingPlan) {
+      throw new Error("Billing plan not found");
+    }
     const agreementData = input.agreement;
 
     const startDate = agreementData.startDate;
@@ -1724,7 +1743,7 @@ export class DatabaseStorage implements IStorage {
       agreementTemplateId: template?.id ?? agreementData.agreementTemplateId ?? null,
       cancellationPolicyId: policy?.id ?? policyId ?? null,
       cancellationPolicySnapshot: agreementData.cancellationPolicySnapshot ?? this.buildCancellationPolicySnapshot(policy),
-      billingPlanId: billingPlan?.id ?? billingPlanId ?? null,
+      billingPlanId: billingPlan.id,
       billingPlanSnapshot: agreementData.billingPlanSnapshot ?? this.buildBillingPlanSnapshot(billingPlan),
       initialAppointmentId: agreementData.initialAppointmentId ?? null,
       startDateSource: agreementData.startDateSource ?? "MANUAL",
@@ -1753,6 +1772,10 @@ export class DatabaseStorage implements IStorage {
       contractUploadedAt: agreementData.contractUploadedAt ?? null,
       contractSignedAt: agreementData.contractSignedAt ?? null,
       notes: agreementData.notes ?? null,
+      // Pass 12: sale credit defaults to whoever is creating the agreement;
+      // a caller naming someone else (or null, "not recorded") has already
+      // passed the route's ASSIGN_SALE_CREDIT gate. Never from the template.
+      soldByUserId: agreementData.soldByUserId !== undefined ? agreementData.soldByUserId || null : input.actor?.userId || null,
       createdByUserId: input.actor?.userId || null,
       updatedByUserId: input.actor?.userId || null,
     };
@@ -2741,14 +2764,73 @@ export class DatabaseStorage implements IStorage {
 
   async createTechnician(data: InsertTechnician): Promise<Technician> {
     const payload = this.normalizeTechnicianInsert(data);
+    await this.assertTechnicianUserLink(payload.userId, undefined);
     const [technician] = await db.insert(technicians).values({ ...payload, orgId: this.orgId }).returning();
     return technician;
   }
 
   async updateTechnician(id: string, data: Partial<InsertTechnician>): Promise<Technician | undefined> {
     const payload = this.normalizeTechnicianUpdate(data);
+    if (payload.userId !== undefined) {
+      await this.assertTechnicianUserLink(payload.userId, id);
+    }
     const [technician] = await db.update(technicians).set({ ...payload, updatedAt: new Date() }).where(and(eq(technicians.orgId, this.orgId), eq(technicians.id, id))).returning();
     return technician;
+  }
+
+  // Pass 12: the technician -> user bridge. The user must be one of this
+  // org's and linked to no OTHER technician (the partial unique index would
+  // refuse that anyway; this says why). Null clears the link.
+  private async assertTechnicianUserLink(userId: string | null | undefined, technicianId: string | undefined): Promise<void> {
+    if (!userId) return;
+    await this.assertOrgUserTx(db, userId, "Linked user");
+    const [taken] = await db
+      .select({ id: technicians.id, displayName: technicians.displayName })
+      .from(technicians)
+      .where(and(eq(technicians.orgId, this.orgId), eq(technicians.userId, userId), technicianId ? ne(technicians.id, technicianId) : sql`true`));
+    if (taken) {
+      throw new Error(`That user is already linked to technician ${taken.displayName}`);
+    }
+  }
+
+  // Pass 12: the org's users, sanitized at the query - the hash column is
+  // never selected - in the order every user selector lists them.
+  async getUsers(): Promise<UserSummary[]> {
+    const rows = await db
+      .select({
+        id: users.id,
+        orgId: users.orgId,
+        firstName: users.firstName,
+        lastName: users.lastName,
+        email: users.email,
+        role: users.role,
+        status: users.status,
+        createdAt: users.createdAt,
+        updatedAt: users.updatedAt,
+      })
+      .from(users)
+      .where(eq(users.orgId, this.orgId));
+    return sortUsersByName(rows);
+  }
+
+  // A users row in THIS org, or a clear refusal naming the field. Null
+  // passes: every column that points at a user is nullable.
+  private async assertOrgUserTx(reader: Pick<typeof db, "select">, userId: string | null | undefined, label: string): Promise<void> {
+    if (!userId) return;
+    const [user] = await reader.select({ id: users.id }).from(users).where(and(eq(users.orgId, this.orgId), eq(users.id, userId)));
+    if (!user) {
+      throw new Error(`${label} not found`);
+    }
+  }
+
+  // "First Last" for an audit snapshot, null for no user or an unknown id.
+  private async describeUserTx(reader: Pick<typeof db, "select">, userId: string | null | undefined): Promise<string | null> {
+    if (!userId) return null;
+    const [user] = await reader
+      .select({ firstName: users.firstName, lastName: users.lastName })
+      .from(users)
+      .where(and(eq(users.orgId, this.orgId), eq(users.id, userId)));
+    return user ? userDisplayName(user) : null;
   }
 
   async getServices(): Promise<Service[]> {
@@ -3266,6 +3348,7 @@ export class DatabaseStorage implements IStorage {
   async createAgreement(data: InsertAgreement, actor?: AuditActor): Promise<Agreement> {
     const agreement = await db.transaction(async (tx) => {
       const payload = this.normalizeAgreementInsert(data, actor);
+      await this.assertOrgUserTx(tx, payload.soldByUserId, "Sold-by user");
       const [createdAgreement] = await tx.insert(agreements).values({ ...payload, orgId: this.orgId }).returning();
 
       let finalAgreement = createdAgreement;
@@ -3307,9 +3390,27 @@ export class DatabaseStorage implements IStorage {
       }
       const payload = this.normalizeAgreementUpdate(data, actor);
       await this.resolveBillingPlanChangeTx(tx, existingAgreement, payload);
+      if (payload.soldByUserId !== undefined) {
+        await this.assertOrgUserTx(tx, payload.soldByUserId, "Sold-by user");
+      }
       const [updatedAgreement] = await tx.update(agreements).set({ ...payload, updatedAt: new Date() }).where(and(eq(agreements.orgId, this.orgId), eq(agreements.id, id))).returning();
       if (!updatedAgreement) {
         return undefined;
+      }
+      // Pass 12: a sale-credit change is comp basis moving, so it is the one
+      // agreement edit the audit log records today (the rest joins with
+      // C5.1a): an `update` with the sold-by field before and after, the
+      // users named so the History tab reads as people rather than ids. An
+      // unchanged sold-by - the form sends the whole row - writes nothing.
+      if ((existingAgreement.soldByUserId ?? null) !== (updatedAgreement.soldByUserId ?? null)) {
+        await this.recordAuditLogTx(tx, {
+          entityType: "agreement",
+          entityId: updatedAgreement.id,
+          action: "update",
+          actor,
+          before: { soldByUserId: existingAgreement.soldByUserId ?? null, soldBy: await this.describeUserTx(tx, existingAgreement.soldByUserId) },
+          after: { soldByUserId: updatedAgreement.soldByUserId ?? null, soldBy: await this.describeUserTx(tx, updatedAgreement.soldByUserId) },
+        });
       }
 
       if (updatedAgreement.initialAppointmentId && updatedAgreement.startDateSource === "INITIAL_APPOINTMENT") {

@@ -167,6 +167,16 @@ export const technicians = pgTable("technicians", {
   phone: text("phone"),
   color: text("color"),
   notes: text("notes"),
+  // The bridge to the login identity (PLAN_ROADMAP_V2.md C2.2, Pass 12).
+  // Technicians and users are separate tables today; the owner's decision
+  // is one identity table for everyone, built as C5.7 (Pass 38), which
+  // rewires every technician FK and uses this column as its migration key.
+  // Until then: nullable, at most one technician per user (partial unique
+  // index in service-scheduling-bootstrap.ts), set from Settings ->
+  // Technicians. Sale attribution (agreements.soldByUserId) is a users FK,
+  // so this is how a technician's production credit and their commission
+  // will resolve to one person.
+  userId: varchar("user_id").references(() => users.id),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
@@ -303,7 +313,12 @@ export const agreements = pgTable("agreements", {
   agreementTemplateId: varchar("agreement_template_id"),
   cancellationPolicyId: varchar("cancellation_policy_id").references(() => agreementCancellationPolicies.id),
   cancellationPolicySnapshot: jsonb("cancellation_policy_snapshot"),
-  billingPlanId: varchar("billing_plan_id").references(() => billingPlans.id),
+  // Every Agreement carries a Billing Plan (PLAN_ROADMAP_V2.md C2.2, Pass
+  // 12): NOT NULL, and the one mechanism deciding how and when the agreement
+  // is charged (canon §13). The 11 plan-less rows that predated the
+  // constraint were attached to "Monthly Recurring" by agreement-bootstrap.ts
+  // on the owner's answer of 2026-09-19, each row's effect printed at boot.
+  billingPlanId: varchar("billing_plan_id").notNull().references(() => billingPlans.id),
   billingPlanSnapshot: jsonb("billing_plan_snapshot"),
   initialAppointmentId: varchar("initial_appointment_id").references(() => appointments.id),
   startDateSource: text("start_date_source").notNull().default("MANUAL"),
@@ -379,6 +394,17 @@ export const agreements = pgTable("agreements", {
   cancellationOverrideByUserId: varchar("cancellation_override_by_user_id"),
   cancellationOverrideByLabel: text("cancellation_override_by_label"),
   cancellationOverrideAt: timestamp("cancellation_override_at"),
+  // Sale attribution (PLAN_ROADMAP_V2.md C2.2, Pass 12; the compensation
+  // entry in CURRENT_FOCUS.md): who SOLD this agreement - comp basis that
+  // cannot be reconstructed later, and the payee COMMISSION_ON_NEW_AGREEMENT
+  // will resolve (Phase 7). A users FK, never a technicians one (owner: one
+  // identity table for everyone; technicians.userId is the bridge until
+  // C5.7). Defaults to the session user at creation; any other value, at
+  // creation or later, needs ASSIGN_SALE_CREDIT (manager+) and a change is
+  // recorded in audit_logs as an `update` on the agreement. Null on the
+  // rows sold before this pass - "not recorded", never guessed from
+  // createdByUserId. Template propagation never touches it.
+  soldByUserId: varchar("sold_by_user_id").references(() => users.id),
   createdByUserId: varchar("created_by_user_id"),
   updatedByUserId: varchar("updated_by_user_id"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
@@ -1134,6 +1160,8 @@ export type AuditLog = typeof auditLogs.$inferSelect;
 export type InsertAuditLog = z.infer<typeof insertAuditLogSchema>;
 export type User = typeof users.$inferSelect;
 export type InsertUser = z.infer<typeof insertUserSchema>;
+/** A user as any authenticated screen may see one: the row without its password hash (GET /api/users, /api/auth/me). */
+export type UserSummary = Omit<User, "passwordHash">;
 export type Organization = typeof organizations.$inferSelect;
 export type InsertOrganization = z.infer<typeof insertOrganizationSchema>;
 export type OutboxEvent = typeof outboxEvents.$inferSelect;

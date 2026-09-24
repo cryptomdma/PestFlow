@@ -28,9 +28,10 @@ export interface ScheduleBilledPlanFields {
  * - `ON_SERVICE_COMPLETION` / `PER_SERVICE`: COD, charged per visit
  * - `ON_AGREEMENT_START`: charged once up front, not per period
  * - `INSTALLMENT`: needs its own remaining-balance tracking, not built yet
- * - no plan: transitional, treated as COD. Every agreement is meant to carry a
- *   plan; until `billingPlanId` is required, charging per visit is the visible
- *   failure and $0 is the silent one.
+ * - no plan: unreachable for an Agreement since Pass 12 (`billingPlanId` is
+ *   NOT NULL); kept for a plan row that fails to load and for a template
+ *   with no default, and still answered as COD - charging per visit is the
+ *   visible failure and $0 is the silent one.
  */
 export function isScheduleBilledPlan(plan: ScheduleBilledPlanFields | null | undefined): boolean {
   if (!plan) {
@@ -59,7 +60,7 @@ export interface BillingPlanBehaviorFields extends ScheduleBilledPlanFields {
  */
 export function describeBillingPlanBehavior(plan: BillingPlanBehaviorFields | null | undefined): string {
   if (!plan) {
-    return "No billing plan - each visit is billed on its own invoice at contract price divided by expected visits (COD). To bill the whole agreement up front, choose a Prepaid Term plan.";
+    return "No billing plan chosen. Every agreement needs one: a COD plan bills each visit on its own invoice at contract price divided by expected visits, a recurring plan bills on its cadence, and a Prepaid Term plan bills the whole agreement up front.";
   }
 
   if (isScheduleBilledPlan(plan)) {
@@ -173,8 +174,8 @@ export interface BillingPlanPill {
  * D6's billing-plan pill: plan name + periodic amount, on the agreement card
  * and the location screen. Plans attach to AGREEMENTS - a customer or a
  * location is never "monthly" or "COD" as a whole, which is why this takes an
- * agreement and not a location. A plan-less agreement gets an honest pill
- * too: it bills at each visit today, and D9 will make a plan required.
+ * agreement and not a location. Every agreement carries a plan since Pass 12;
+ * the null branch is for a plan row the caller could not load, and stays honest.
  */
 export function describeBillingPlanPill(
   plan: BillingPlanChargeFields | null | undefined,
@@ -199,4 +200,63 @@ export function describeBillingPlanPill(
     default:
       return { label: `${name} · ${amount}/visit`, title };
   }
+}
+
+/** What an Agreement freezes about its plan when the plan is attached - the live row's terms, read by buildBillingPlanSnapshot. */
+export interface BillingPlanSnapshotFields extends BillingPlanChargeFields {
+  id: string;
+  installmentCount: number | null;
+  anchorMode: string;
+  anchorDay: number | null;
+  prorationRule: string;
+  fieldAddableSurcharge: boolean;
+}
+
+// A type alias rather than an interface so it stays assignable to the loose
+// Record<string, unknown> the snapshot column and its resolver are typed as.
+export type BillingPlanSnapshot = {
+  planId: string;
+  name: string;
+  chargeTrigger: string;
+  billingMode: string;
+  intervalUnit: string | null;
+  intervalCount: number | null;
+  installmentCount: number | null;
+  anchorMode: string;
+  anchorDay: number | null;
+  prorationRule: string;
+  initialChargeCoversFirstPeriod: boolean;
+  fieldAddableSurcharge: boolean;
+  snapshottedAt: string;
+};
+
+/**
+ * The terms an agreement was sold under, frozen at plan attachment and never
+ * rewritten by an unrelated edit (agreements.billingPlanSnapshot). One builder
+ * for every writer: agreement creation and the plan-change path in
+ * server/storage.ts, and the Pass 12 migration in agreement-bootstrap.ts that
+ * attached the required plan to the rows created before it was required.
+ *
+ * The initial charge (type / amount / collector) is not a plan fact and is not
+ * carried here - it lives on the agreement's own columns (PLAN_BILLING_V1_1.md
+ * D4). Snapshots written before Pass 5.5 still hold the old keys as frozen
+ * history; nothing reads them.
+ */
+export function buildBillingPlanSnapshot(plan: BillingPlanSnapshotFields | null | undefined, snapshottedAt: Date = new Date()): BillingPlanSnapshot | null {
+  if (!plan) return null;
+  return {
+    planId: plan.id,
+    name: plan.name,
+    chargeTrigger: plan.chargeTrigger,
+    billingMode: plan.billingMode,
+    intervalUnit: plan.intervalUnit ?? null,
+    intervalCount: plan.intervalCount ?? null,
+    installmentCount: plan.installmentCount,
+    anchorMode: plan.anchorMode,
+    anchorDay: plan.anchorDay,
+    prorationRule: plan.prorationRule,
+    initialChargeCoversFirstPeriod: plan.initialChargeCoversFirstPeriod,
+    fieldAddableSurcharge: plan.fieldAddableSurcharge,
+    snapshottedAt: snapshottedAt.toISOString(),
+  };
 }

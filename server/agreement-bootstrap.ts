@@ -1,6 +1,8 @@
 import { sql } from "drizzle-orm";
 import { db } from "./db";
-import { resolveInitialChargeCents } from "@shared/initial-charge";
+import { initialChargeSkipsFirstPeriod, resolveInitialChargeCents } from "@shared/initial-charge";
+import { advanceAgreementDate } from "@shared/agreement-schedule";
+import { buildBillingPlanSnapshot, isScheduleBilledPlan, type BillingPlanSnapshotFields } from "@shared/billing-plan";
 
 async function columnExists(table: string, column: string): Promise<boolean> {
   const result = await db.execute(
@@ -12,6 +14,14 @@ async function columnExists(table: string, column: string): Promise<boolean> {
 async function tableExists(table: string): Promise<boolean> {
   const result = await db.execute(sql`SELECT 1 FROM information_schema.tables WHERE table_name = ${table}`);
   return (result.rows?.length ?? 0) > 0;
+}
+
+async function columnIsNullable(table: string, column: string): Promise<boolean> {
+  const result = await db.execute(
+    sql`SELECT is_nullable FROM information_schema.columns WHERE table_name = ${table} AND column_name = ${column}`,
+  );
+  const row = result.rows[0] as { is_nullable?: string } | undefined;
+  return row?.is_nullable === "YES";
 }
 
 export async function bootstrapAgreements(): Promise<void> {
@@ -106,7 +116,7 @@ export async function bootstrapAgreements(): Promise<void> {
       agreement_template_id varchar,
       cancellation_policy_id varchar REFERENCES agreement_cancellation_policies(id),
       cancellation_policy_snapshot jsonb,
-      billing_plan_id varchar REFERENCES billing_plans(id),
+      billing_plan_id varchar NOT NULL REFERENCES billing_plans(id),
       billing_plan_snapshot jsonb,
       initial_appointment_id varchar REFERENCES appointments(id),
       start_date_source text NOT NULL DEFAULT 'MANUAL',
@@ -150,6 +160,7 @@ export async function bootstrapAgreements(): Promise<void> {
       cancellation_override_by_user_id varchar,
       cancellation_override_by_label text,
       cancellation_override_at timestamp,
+      sold_by_user_id varchar REFERENCES users(id),
       created_by_user_id varchar,
       updated_by_user_id varchar,
       created_at timestamp NOT NULL DEFAULT now(),
@@ -158,6 +169,12 @@ export async function bootstrapAgreements(): Promise<void> {
   `);
 
   await db.execute(sql`CREATE INDEX IF NOT EXISTS agreements_location_id_idx ON agreements (location_id)`);
+  // Pass 12 (PLAN_ROADMAP_V2.md C2.2): sale attribution - who sold the
+  // agreement, a users FK (owner: one identity table for everyone). Nullable:
+  // the rows sold before this pass stay "not recorded" rather than guessed
+  // from created_by_user_id. users exists by now (auth-bootstrap runs first).
+  await db.execute(sql`ALTER TABLE agreements ADD COLUMN IF NOT EXISTS sold_by_user_id varchar REFERENCES users(id)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS agreements_sold_by_user_id_idx ON agreements (sold_by_user_id)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS agreements_status_idx ON agreements (status)`);
   await db.execute(sql`ALTER TABLE agreements ADD COLUMN IF NOT EXISTS agreement_template_id varchar`);
   await db.execute(sql`ALTER TABLE agreements ADD COLUMN IF NOT EXISTS cancellation_policy_id varchar`);
@@ -522,8 +539,217 @@ export async function bootstrapAgreements(): Promise<void> {
   await db.execute(sql`UPDATE agreement_templates SET billing_plan_id = (SELECT id FROM billing_plans WHERE name = 'Monthly Recurring' LIMIT 1) WHERE internal_code = 'MOSQUITO_SEASONAL' AND billing_plan_id IS NULL`);
   await db.execute(sql`UPDATE agreement_templates SET billing_plan_id = (SELECT id FROM billing_plans WHERE name = 'Annual Prepaid' LIMIT 1) WHERE internal_code = 'SENTRICON_RENEWAL' AND billing_plan_id IS NULL`);
 
+  // Pass 12 (PLAN_ROADMAP_V2.md C2.2; owner, second review of 2026-09-19):
+  // every Agreement carries a Billing Plan. Keyed on the column still being
+  // nullable, so it runs until the constraint is applied and never again -
+  // a db:push database already has NOT NULL and skips it entirely. Runs after
+  // the plan seeds above so "Monthly Recurring" exists on a fresh database.
+  if (await columnIsNullable("agreements", "billing_plan_id")) {
+    await attachRequiredBillingPlans();
+  }
+
   await db.execute(sql`ALTER TABLE appointments ADD COLUMN IF NOT EXISTS agreement_id varchar`);
   await db.execute(sql`ALTER TABLE appointments ADD COLUMN IF NOT EXISTS source text DEFAULT 'MANUAL'`);
   await db.execute(sql`ALTER TABLE appointments ADD COLUMN IF NOT EXISTS generated_for_date date`);
   await db.execute(sql`UPDATE appointments SET source = 'MANUAL' WHERE source IS NULL`);
+}
+
+// The plan the owner chose for every agreement that predated the constraint
+// (second review, 2026-09-19): the 9 "Quarterly Control" rows carrying the
+// legacy "Monthly" text Pass 9 moved into their notes (monthly billing for a
+// quarterly program - the industry norm) and the 2 "Wildlife Trapping
+// Program" rows that never had billing data. Same name the seed above uses.
+const REQUIRED_BILLING_PLAN_NAME = "Monthly Recurring";
+
+// The marked line Pass 9 wrote into notes when it dropped the legacy column
+// (see the D9 block above). Deleted once the plan is attached, as the owner
+// asked: the note said "assign one", and one is now assigned.
+const LEGACY_FREQUENCY_NOTE_LINE =
+  /^Legacy billing frequency ".*" - no Billing Plan attached\. Assign one on the agreement form; until then this agreement bills per visit\.$/;
+
+interface PlanlessAgreementRow {
+  id: string;
+  org_id: string;
+  agreement_name: string;
+  status: string;
+  start_date: string;
+  term_unit: string;
+  term_interval: number;
+  next_billing_date: string | null;
+  notes: string | null;
+  initial_charge_type: string | null;
+  initial_charge_in_addition_to_price: boolean;
+  has_schedule_events: boolean;
+  location_name: string | null;
+  first_name: string | null;
+  last_name: string | null;
+  company_name: string | null;
+}
+
+interface RequiredPlanRow extends BillingPlanSnapshotFields {
+  orgId: string;
+}
+
+// Pass 3.5's attach rules (resolveNextBillingDateForPlanChangeTx in
+// server/storage.ts; "Shipped in Pass 3.5" in PLAN_BILLING_V1_1_EXECUTION.md)
+// applied to a row the office never edited, plus the one rule the roadmap
+// adds for this migration: a CANCELLED agreement attaches for the constraint
+// only and starts no schedule (the nightly run reads ACTIVE rows only, and a
+// date on a cancelled agreement would read as "next scheduled billing" on
+// its form). In order: not schedule-billed -> null; already on a schedule ->
+// keep the date; else anchor on the LATER of the start date and today (an
+// elapsed start date would back-bill every period since signup); refuse when
+// the anchor sits past the term end or a schedule already ran (billing
+// events other than the INITIAL_CHARGE one), both leaving the date null; the
+// initial-charge skip applies only when the anchor IS the start date.
+function resolveRequiredPlanAttachEffect(
+  row: PlanlessAgreementRow,
+  plan: RequiredPlanRow,
+  today: string,
+): { nextBillingDate: string | null; effect: string } {
+  if (row.status === "CANCELLED") {
+    return { nextBillingDate: null, effect: "CANCELLED - attached for the constraint only, no billing schedule" };
+  }
+  if (!isScheduleBilledPlan(plan)) {
+    return { nextBillingDate: null, effect: "plan is not schedule-billed - each visit stays the billing event" };
+  }
+  if (row.next_billing_date) {
+    return { nextBillingDate: row.next_billing_date, effect: `already on a schedule - next billing ${row.next_billing_date} kept` };
+  }
+  const anchorDate = row.start_date > today ? row.start_date : today;
+  const termEndDate = advanceAgreementDate(row.start_date, row.term_unit, row.term_interval);
+  if (anchorDate >= termEndDate) {
+    return {
+      nextBillingDate: null,
+      effect: `REFUSED (Pass 3.5): the anchor ${anchorDate} is past the term end ${termEndDate} - plan attached, no billing schedule, nothing billed`,
+    };
+  }
+  if (row.has_schedule_events) {
+    return { nextBillingDate: null, effect: "REFUSED (Pass 3.5): a billing schedule already ran for this agreement - plan attached, no new schedule" };
+  }
+  const skipsFirstPeriod =
+    anchorDate === row.start_date
+    && initialChargeSkipsFirstPeriod(plan, { initialChargeType: row.initial_charge_type, initialChargeInAdditionToPrice: row.initial_charge_in_addition_to_price });
+  const nextBillingDate = plan.billingMode === "PREPAID_TERM"
+    ? anchorDate
+    : skipsFirstPeriod
+      ? advanceAgreementDate(anchorDate, plan.intervalUnit ?? "MONTH", plan.intervalCount ?? 1)
+      : anchorDate;
+  const anchoredOnToday = anchorDate === today && row.start_date < today;
+  return {
+    nextBillingDate,
+    effect:
+      `next billing ${nextBillingDate}`
+      + (anchoredOnToday ? " (anchored on today - the periods that elapsed plan-less are never back-billed)" : "")
+      + (skipsFirstPeriod ? " (the initial charge covers period 1)" : ""),
+  };
+}
+
+function stripLegacyFrequencyNote(notes: string | null): { value: string | null; stripped: boolean } {
+  if (!notes) return { value: null, stripped: false };
+  const lines = notes.split(/\r?\n/);
+  const kept = lines.filter((line) => !LEGACY_FREQUENCY_NOTE_LINE.test(line.trim()));
+  if (kept.length === lines.length) return { value: notes, stripped: false };
+  const value = kept.join("\n").trim();
+  return { value: value || null, stripped: true };
+}
+
+// The Pass 12 migration. REPORT every plan-less agreement with the effect the
+// attach rules give it - printed before the row is written - then attach the
+// required plan (id, snapshot, next billing date, the legacy note removed)
+// and, once no plan-less row remains, make billing_plan_id NOT NULL. An org
+// with no plan of that name keeps its rows plan-less and is reported; the
+// constraint then waits for the next boot, and nothing is guessed.
+async function attachRequiredBillingPlans(): Promise<void> {
+  const planRows = await db.execute(sql`
+    SELECT id, org_id, name, charge_trigger, billing_mode, interval_unit, interval_count, installment_count,
+           anchor_mode, anchor_day, proration_rule, initial_charge_covers_first_period, field_addable_surcharge
+    FROM billing_plans
+    WHERE name = ${REQUIRED_BILLING_PLAN_NAME}
+    ORDER BY org_id, created_at, id
+  `);
+  const planByOrg = new Map<string, RequiredPlanRow>();
+  for (const raw of planRows.rows as Array<Record<string, unknown>>) {
+    const orgId = String(raw.org_id);
+    if (planByOrg.has(orgId)) continue;
+    planByOrg.set(orgId, {
+      orgId,
+      id: String(raw.id),
+      name: String(raw.name),
+      chargeTrigger: String(raw.charge_trigger),
+      billingMode: String(raw.billing_mode),
+      intervalUnit: raw.interval_unit == null ? null : String(raw.interval_unit),
+      intervalCount: raw.interval_count == null ? null : Number(raw.interval_count),
+      installmentCount: raw.installment_count == null ? null : Number(raw.installment_count),
+      anchorMode: String(raw.anchor_mode),
+      anchorDay: raw.anchor_day == null ? null : Number(raw.anchor_day),
+      prorationRule: String(raw.proration_rule),
+      initialChargeCoversFirstPeriod: raw.initial_charge_covers_first_period === true,
+      fieldAddableSurcharge: raw.field_addable_surcharge === true,
+    });
+  }
+
+  const planless = await db.execute(sql`
+    SELECT a.id, a.org_id, a.agreement_name, a.status,
+           a.start_date::text AS start_date, a.term_unit, a.term_interval,
+           a.next_billing_date::text AS next_billing_date, a.notes,
+           a.initial_charge_type, a.initial_charge_in_addition_to_price,
+           EXISTS (SELECT 1 FROM billing_events be WHERE be.agreement_id = a.id AND be.source <> 'INITIAL_CHARGE') AS has_schedule_events,
+           l.name AS location_name, c.first_name, c.last_name, c.company_name
+    FROM agreements a
+    LEFT JOIN locations l ON l.id = a.location_id
+    LEFT JOIN customers c ON c.id = a.customer_id
+    WHERE a.billing_plan_id IS NULL
+    ORDER BY a.agreement_name, (a.status = 'CANCELLED'), a.start_date, a.id
+  `);
+  const rows = planless.rows as unknown as PlanlessAgreementRow[];
+  const today = new Date().toISOString().slice(0, 10);
+
+  if (rows.length) {
+    console.log(
+      `[agreement-bootstrap] Pass 12 pre-migration report: ${rows.length} agreement(s) have no Billing Plan. Each is attached to ` +
+        `"${REQUIRED_BILLING_PLAN_NAME}" (owner, 2026-09-19) under Pass 3.5's attach rules - the per-row effect below is printed ` +
+        `before the row is written - and agreements.billing_plan_id then becomes NOT NULL.`,
+    );
+  }
+
+  let leftPlanless = 0;
+  for (const row of rows) {
+    const customer = row.company_name?.trim() || `${row.first_name ?? ""} ${row.last_name ?? ""}`.trim() || "unknown customer";
+    const where = `${customer} @ ${row.location_name ?? "unknown location"}`;
+    const plan = planByOrg.get(row.org_id);
+    if (!plan) {
+      leftPlanless += 1;
+      console.log(
+        `[agreement-bootstrap]   ${row.id}  "${row.agreement_name}"  ${row.status}  ${where}  ` +
+          `no billing plan named "${REQUIRED_BILLING_PLAN_NAME}" in its org - left plan-less; the NOT NULL constraint waits`,
+      );
+      continue;
+    }
+    const { nextBillingDate, effect } = resolveRequiredPlanAttachEffect(row, plan, today);
+    const notes = stripLegacyFrequencyNote(row.notes);
+    console.log(
+      `[agreement-bootstrap]   ${row.id}  "${row.agreement_name}"  ${row.status}  ${where}  ` +
+        `-> "${plan.name}" attached; ${effect}${notes.stripped ? "; legacy billing-frequency note removed" : ""}`,
+    );
+    const snapshot = JSON.stringify(buildBillingPlanSnapshot(plan));
+    await db.execute(sql`
+      UPDATE agreements
+      SET billing_plan_id = ${plan.id},
+          billing_plan_snapshot = ${snapshot}::jsonb,
+          next_billing_date = ${nextBillingDate},
+          notes = ${notes.value},
+          updated_at = now()
+      WHERE id = ${row.id} AND billing_plan_id IS NULL
+    `);
+  }
+
+  if (leftPlanless > 0) {
+    console.log(`[agreement-bootstrap] Pass 12: ${leftPlanless} agreement(s) still have no Billing Plan; billing_plan_id stays nullable until they are resolved.`);
+    return;
+  }
+  await db.execute(sql`ALTER TABLE agreements ALTER COLUMN billing_plan_id SET NOT NULL`);
+  console.log(
+    `[agreement-bootstrap] Pass 12: ${rows.length} agreement(s) attached to "${REQUIRED_BILLING_PLAN_NAME}"; agreements.billing_plan_id is now NOT NULL.`,
+  );
 }

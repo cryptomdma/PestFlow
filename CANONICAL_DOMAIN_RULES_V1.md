@@ -602,6 +602,25 @@ Future invoice display options:
 
 Immediate next implementation priority after cancellation policy MVP verification: Terms & Conditions / contract snapshot/versioning.
 
+### Sale attribution
+
+Who sold an Agreement is comp basis that cannot be reconstructed later (PLAN_ROADMAP_V2.md C2.2,
+Pass 12; the compensation entry in `CURRENT_FOCUS.md`), and it is the payee a
+`COMMISSION_ON_NEW_AGREEMENT` component resolves once the comp engine exists (Phase 7).
+
+* `soldByUserId` is a **users** FK, never a technicians one. The owner's decision (2026-09-19) is one
+  identity table for everyone, office and field; until C5.7 merges the two tables,
+  `technicians.userId` is the nullable bridge (at most one technician per user, set in Settings →
+  Technicians) that lets a technician's production credit (`technicianId`) and their sale credit
+  meet on one person.
+* It defaults to the session user at creation. Naming anyone else, or nobody, at creation, and any
+  later change, needs `ASSIGN_SALE_CREDIT` (manager+); a change is recorded in the audit log (§17)
+  as an `update` on the Agreement with the sold-by before and after, the users named.
+* Null means **not recorded**: the agreements sold before Pass 12 keep it, never guessed from
+  `createdByUserId`. Template propagation never touches it.
+* It is attribution, not payout: production value stays contract price ÷ expected visits for
+  whoever performs the work, and comp plans decide what a sale earns.
+
 ### Required fields
 
 * id
@@ -613,6 +632,8 @@ Immediate next implementation priority after cancellation policy MVP verificatio
 * frequencyRule nullable
 * defaultPrice nullable
 * billingProfileId nullable
+* billingPlanId — the Billing Plan that decides how and when the agreement is billed (§13); required since Pass 12
+* soldByUserId nullable — who sold the agreement (see "Sale attribution" above)
 * startDate
 * endDate nullable
 * nextServiceDate nullable
@@ -954,9 +975,13 @@ run and the invoice can never disagree about who charges for a visit.)
 Never infer coverage from the mere presence of an `agreementId`. An agreement whose plan the nightly
 run skips is billed by nobody if the visit invoice also zeroes it, and that failure is silent.
 
-**Every Agreement is meant to carry a Billing Plan.** Until `billingPlanId` is required, a plan-less
-Agreement is treated as COD and billed per visit — the visible failure, deliberately chosen over the
-silent one. An Agreement with neither a plan nor a price refuses to invoice rather than guessing.
+**Every Agreement carries a Billing Plan.** `billingPlanId` is NOT NULL since Pass 12
+(PLAN_ROADMAP_V2.md C2.2): the office names one on the form or the template supplies its default,
+and an Agreement naming neither is refused at creation, never inserted plan-less. The 11 rows that
+predated the constraint were attached to "Monthly Recurring" on the owner's answer of 2026-09-19,
+each row's effect under Pass 3.5's attach rules printed at boot. `isScheduleBilledPlan()` still
+answers "no plan" as COD, for a plan row that fails to load — the visible failure, deliberately
+chosen over the silent one. An Agreement with no price refuses to invoice rather than guessing.
 
 ### Canonical rule — the initial charge is a term of the Agreement, not of the Billing Plan (PLAN_BILLING_V1.1 D4)
 
@@ -1211,6 +1236,12 @@ Examples:
 * Exclusion
 * Rodents
 * Fire Ants
+
+### Notes
+
+* `technicians` is a separate table today; this section already puts the technician profile (license,
+  training, service area) on the User, which is where C5.7 moves it. Until then `technicians.userId`
+  (Pass 12) is the nullable bridge from a technician profile to its login, one technician per user.
 
 ---
 
