@@ -440,7 +440,13 @@ issued, first visits already invoiced at $0 - are **settled outside the ledger**
 (25% of $499, no visit yet) rides its first visit, as the owner chose. Canon §13 corrected in the
 same PR. Not built: the batch-invoice preview's per-ticket amounts do not show a pending deposit that
 generate will bill (C2.3), and a visit carrying two agreements' deposits prompts the office for the
-first only. **Restart `npm run dev:full` now, not after the merge: the migration ran on the shared
+first only. The owner's first render (2026-09-23) found the per-service block on the ticket and the
+technician's appointment details saying "nothing due today / Due today $0.00" for a covered service
+beside the callout's "$108.20 is due" - the service's own figure in the visit's vocabulary, and no
+visit total on the ticket at all. Second commit: that block says "nothing due for the service
+itself" and reconciles the two in one line ("This service $0.00 + down payment $108.20 = visit due
+today $108.20"), and the duplicate "(covered by agreement)" suffix from Pass 7 is gone. **Restart
+`npm run dev:full` now, not after the merge: the migration ran on the shared
 dev DB during this pass's verification boot, and a server on pre-11d code still issues a deposit
 invoice at agreement creation.** Signatures and behavior are under "Shipped in Pass 11d" at the end
 of `PLAN_ROADMAP_V2.md` Part D.

@@ -165,15 +165,36 @@ export function ServiceBillingBlock({
   if (!line) {
     return <p className="text-xs text-muted-foreground">This service is not on the visit's billing.</p>;
   }
-  const noteSuffix = line.priceCents != null && line.note ? ` (${line.note})` : "";
+  // The resolver's "covered by agreement" note repeats what the designation
+  // sentence already says; the callback notes do not.
+  const noteSuffix = line.priceCents != null && line.note && line.note !== "covered by agreement" ? ` (${line.note})` : "";
+  // The figures above are this SERVICE's. When the visit also carries the
+  // agreement's down payment (Pass 11d) the visit owes more than the service
+  // does, so say so here in the service's own words - "nothing due for the
+  // service itself", never "nothing due today" - and reconcile the two
+  // numbers in one line, so the ticket (which shows no visit total) and the
+  // appointment details (whose visit total sits below several cards) both
+  // read the same way as the collect step.
+  const chargeCents = summary.charges.reduce((sum, charge) => sum + charge.dueTodayCents, 0);
+  const hasCharges = summary.charges.length > 0;
+  const designationText = hasCharges && line.designation === "PRODUCTION"
+    ? "Covered by agreement - nothing due for the service itself"
+    : describeServiceDesignation(line.designation);
   return (
     <div className="space-y-2" data-testid={`block-service-billing-${serviceId}`}>
       <div className="flex items-center gap-2 flex-wrap">
         <ServiceDesignationBadge designation={line.designation} />
-        <span className="text-xs text-muted-foreground">{describeServiceDesignation(line.designation)}{noteSuffix}</span>
+        <span className="text-xs text-muted-foreground">{designationText}{noteSuffix}</span>
       </div>
       <ServiceBillingFigures line={line} invoiced={summary.invoiced} testId={line.serviceId} />
       {line.priceCents == null && line.note && <p className="text-xs text-destructive">{line.note}</p>}
+      {hasCharges && (
+        <p className="text-xs text-muted-foreground" data-testid={`text-service-visit-due-${serviceId}`}>
+          {line.dueTodayCents == null
+            ? `The visit's down payment of ${formatCents(chargeCents)} is due in addition to this service.`
+            : `This service ${formatCents(line.dueTodayCents)} + down payment ${formatCents(chargeCents)} = visit due today ${formatCents(summary.totals.dueTodayCents)}.`}
+        </p>
+      )}
       {!compact && <p className="text-xs text-muted-foreground">{describeBillingSource(summary)}</p>}
     </div>
   );

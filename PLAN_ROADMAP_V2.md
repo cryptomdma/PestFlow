@@ -800,6 +800,13 @@ Behavior worth knowing before the next pass touches it:
 - **The office prompt never sets `payments.appointmentId`.** The spec named the appointment; canon
   §14 reserves that column for the field's collect dialog. The designation alone puts the money in
   D4's order (designated first) for the visit's invoice and in the technician's "COA available".
+- **A per-service figure is not the visit's** (owner's first render, 2026-09-23). `ServiceBillingBlock`
+  shows the SERVICE's Price / COA / Due today; with a deposit on the visit a covered service read
+  "nothing due today / $0.00" under a callout saying $108.20 is due, and the ticket header shows no
+  visit total. The block now says "nothing due for the service itself" and adds "This service $X +
+  down payment $Y = visit due today $Z" wherever a charge rides (ticket header and appointment
+  details); the collect step and the review table already listed both lines. The per-service label
+  stays "Due today" (D6's vocabulary); the reconciling line is what removes the contradiction.
 - **Office-only deposits stay on the figures.** With `OFFICE_AT_SIGNING` the technician's due today
   still includes the deposit (it is on the invoice), the callout says the office collects it, and the
   collect step's default amount leaves it out.
