@@ -584,6 +584,22 @@ export async function registerRoutes(
     res.json(data);
   });
 
+  // Pass 14 (PLAN_ROADMAP_V2.md C2.4, B20): the customer's aging - per
+  // location plus the rollup, Current (0-30) / 31-60 / 61-90 / Over 90 UTC
+  // days since invoiced, derived from the ledger's stored rollups at read
+  // time (shared/aging.ts), nothing stored. Open read like every other read
+  // in this file, and specifically like /api/location-balances/:customerId
+  // and /api/locations/:id/ledger-summary, which already hand any
+  // authenticated role the same open and on-account figures this rearranges:
+  // a gate here would 403 the header card while the location switcher one
+  // inch below still says "Open $X". Who may read money at all is C5.6's
+  // role profiles, not a per-route call. 404 outside the org.
+  app.get("/api/customers/:id/aging", async (req, res) => {
+    const data = await req.storage.getCustomerAging(req.params.id);
+    if (!data) return res.status(404).json({ message: "Customer not found" });
+    res.json(data);
+  });
+
   app.post("/api/customers", async (req, res) => {
     try {
       const validated = insertCustomerSchema.parse(req.body);
@@ -2282,6 +2298,19 @@ export async function registerRoutes(
       if (e instanceof ZodError) return handleZodError(res, e);
       res.status(400).json({ message: e.message });
     }
+  });
+
+  // Pass 14 (PLAN_ROADMAP_V2.md C2.4): the org-wide aging report - per
+  // customer and per location, the same buckets and figures as
+  // GET /api/customers/:id/aging summed, so the two can never disagree.
+  // Derived, nothing stored. The first /api/reports route, and open like the
+  // collections report above and every other read here: GET /api/invoices
+  // already lists every balance in the org to any authenticated role, the
+  // RBAC matrix (PLAN_BILLING_V1.md 0.3) gates cost / margin / LTV and not
+  // receivables, and a real read gate is C5.6's role profiles.
+  app.get("/api/reports/aging", async (req, res) => {
+    const data = await req.storage.getAgingReport();
+    res.json(data);
   });
 
   app.get("/api/credit-memos/by-location/:locationId", async (req, res) => {

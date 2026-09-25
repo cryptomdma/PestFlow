@@ -13,8 +13,9 @@ visit's invoice) are merged (PRs #73, #74, #76, #78), as are the owner review of
 attribution) is merged (PR #79); Pass 16 (ticket lockdown, D9, enforced server-side - the C3.1
 row of that document's Phase 3 table, pulled forward because it was an integrity hole, not a
 feature) is merged (PR #81); Pass 13 (Batch Invoice on the Invoices screen + Draft invoice for a
-visit, C2.3) is pushed, awaiting merge; **next pass: 14, Aging and balances on the customer
-screen** (C2.4, next in the recommended order). The roadmap sequences every
+visit, C2.3) is merged (PR #82); Pass 14 (Aging and balances on the customer screen, C2.4) is
+pushed, awaiting merge; **next pass: 25, Opportunity taxonomy, assignee and search** (C4.1, next
+in the recommended order). The roadmap sequences every
 remaining item below; this file keeps the status pointer and, as its last section, the handoff
 prompt that starts the next session.
 
@@ -534,7 +535,7 @@ server code and a route's gate; the badge and link on Service History and the te
 relabelled button have not been rendered by anyone yet.** Signatures and behavior are under
 "Shipped in Pass 16" at the end of `PLAN_ROADMAP_V2.md` Part D.
 
-Pass 13 (`feature/phase-2-batch-invoice-and-draft`, 2026-09-24, C2.3) pushed, awaiting merge.
+Pass 13 (`feature/phase-2-batch-invoice-and-draft`, 2026-09-24, C2.3) merged as PR #82.
 **Batch Invoice lives on the Invoices screen, New Invoice is gone, and the manual invoice is "Add
 fee / adjustment" on the location's ledger.** The batch is an invoicing action, so it left the
 Service Ticket Review queue (button, dialog, queries and types removed; the queue's own filters
@@ -580,14 +581,54 @@ this pass changes server code and two routes' inputs, and the three dialogs and 
 third button have not been rendered by anyone yet.** Signatures and behavior are under "Shipped in
 Pass 13" at the end of `PLAN_ROADMAP_V2.md` Part D.
 
-Next up: **Pass 14** — Aging and balances on the customer screen (`PLAN_ROADMAP_V2.md` Phase 2
-table, C2.4): two derived reads (`GET /api/customers/:id/aging` per location plus the rollup,
-`GET /api/reports/aging` org-wide), buckets Current (0-30) / 31-60 / 61-90 / Over 90 **days since
-invoiced** (`issuedAt`, B20) over issued open balances, pending-applied and on-account shown beside
-and never netted; the customer-wide open balance, on-account figure and oldest bucket on the
-header card beside the primary-location chip, the location's strip below `LocationNotesPanel`,
-an Aging section on Reports. Nothing stored. Branch from `origin/main` after confirming it
-contains Pass 13's merge. The handoff prompt for it is the last section of this file.
+Pass 14 (`feature/phase-2-aging-and-balances`, 2026-09-24, C2.4) pushed, awaiting merge.
+**Aging and balances on the customer screen - derived, never stored.** Two reads compute the
+aging at request time from the ledger's stored rollups (D5) and the unapplied pool the location
+switcher already reads: `GET /api/customers/:id/aging` (per location plus the rollup) and
+`GET /api/reports/aging` (org-wide, per customer and per location) - the same figures summed, so
+the two cannot disagree. Buckets are **Current (0-30) / 31-60 / 61-90 / Over 90 days since
+invoiced** (B20, owner 2026-09-19): whole UTC calendar days from `issuedAt`, never days past due;
+the Invoices screen's Overdue tile keeps its due-date meaning and every surface says "days since
+invoiced". What ages is an issued invoice with a balance (`isInvoiceIssued` - a DRAFT or VOID owes
+nothing - and `balanceDueCents > 0`, so a PAID row drops out); an invoice with no location (the
+legacy manual rows) lands under its customer with `locationId` null rather than vanishing. Beside
+the aged balance, never netted: money on account (confirmed payments and issued credit memos with
+value left to apply, at the location, D4), pending money applied to the aged invoices
+(`pendingAppliedCents`, "pending shows, confirmed counts") and pending money recorded but not yet
+applied. The customer-wide figure is a rollup; the balance still lives at the location (canon rule
+1). The bucketing, the day arithmetic, the rollup and the ordering are one pure shared module,
+`shared/aging.ts` (`summarizeAgingByLocation`, `rollupAging`; exercised directly by the pass's
+unit script), read by storage (`getCustomerAging`, `getAgingReport`) and the client. Customer
+screen: the header card's chip row, beside the primary-location chip, carries Open $X across all
+locations, Oldest: <bucket> days since invoiced, $Y on account and $Z pending confirmation
+(`CustomerAgingChips`); the location profile's right column carries the location's **Balance**
+strip below `LocationNotesPanel` (`LocationAgingStrip`): the four bucket rows with the invoices
+behind each as buttons that open the invoice modal (`openInvoice`, Pass 11b's URL), on account and
+pending beneath. Reports: an **Aging** section fed by `/api/reports/aging` - bucket tiles and a
+table of customers with their locations, every row a link to the customer screen
+(`/customers/:id` and `?locationId=`), a totals row; the five existing cards untouched (the page
+has no tabs, so a section rather than the roadmap row's "tab"). **Gate: both reads are open to any
+authenticated role**, like every read in `server/routes.ts` and specifically like
+`/api/location-balances/:customerId`, `/api/locations/:id/ledger-summary` and `GET /api/invoices`,
+which already hand every role the same open and on-account figures: a gate would 403 the header
+while the switcher one inch below still says "Open $X", the RBAC matrix (PLAN_BILLING_V1.md 0.3)
+gates cost / margin / LTV and not receivables, and a real read gate is C5.6's role profiles.
+`invalidateInvoiceViews` refreshes both reads with the ledger. No schema change, no migration,
+nothing stored. Not built: due-date aging (B20's later Settings toggle for Net-terms accounts), an
+`asOf` parameter, aging by technician (V1 §1.4's "by tech"), statements (C2.5). **Restart
+`npm run dev:full` before manually testing - this pass changes server code, and the header chips,
+the strip and the Reports section have not been rendered by anyone yet.** Signatures and behavior
+are under "Shipped in Pass 14" at the end of `PLAN_ROADMAP_V2.md` Part D.
+
+Next up: **Pass 25** — Opportunity taxonomy, assignee and search (`PLAN_ROADMAP_V2.md` Phase 4
+table, C4.1; B7 with the owner's answers in Part E): `category` (settings-managed, seeded NEW_SALE
+/ SERVICE_DUE / RESCHEDULE / WINBACK / RETENTION and no others) + `workType` (AGREEMENT /
+ONE_TIME) on every opportunity, a migration mapping the six hardcoded sources and the free-text
+types, an assignee (a `users` FK; the column `assigned_user_id` already exists with no reader)
+with manual assign / reassign and "My opportunities", and the Opportunities screen filtering on
+category, work type, status, assignee, source and location / zip. Auto-assignment rules and zones
+are Pass 26 (C4.1b). Branch from `origin/main` after confirming it contains Pass 14's merge. The
+handoff prompt for it is the last section of this file.
 
 Phase 1's ordered plan, impact analysis, conflict resolutions, and per-pass verification steps live in
 `PLAN_BILLING_V1_1_EXECUTION.md` — read it when a pass builds on a Phase 1 helper (its "Shipped in
@@ -818,76 +859,107 @@ pointer and that prompt.
 
 Replaced at the end of every pass (`AGENT_WORKING_AGREEMENT.md`, the end-of-pass step). The owner
 pastes it verbatim to start the next session; it is also the last thing in the finishing session's
-final message. Written 2026-09-24, after Pass 13 was pushed as `feature/phase-2-batch-invoice-and-draft`.
+final message. Written 2026-09-24, after Pass 14 was pushed as `feature/phase-2-aging-and-balances`.
 
 ```text
-Start Pass 14 — Aging and balances on the customer screen
-(PLAN_ROADMAP_V2.md Phase 2 table, row C2.4; B20 in Part B with the owner's answer in Part E; A1's
-"Aging report (current/30/60/90/90+)", "Customer-wide (all locations) balance in the header" and
-"Location balance below location notes" rows). Read the CLAUDE.md docs in order first;
-CURRENT_FOCUS.md's last two entries (Pass 13 and "Next up") are the ones that matter.
+Start Pass 25 — Opportunity taxonomy, assignee and search
+(PLAN_ROADMAP_V2.md Phase 4 table, row C4.1; B7 in Part B with the owner's answers in Part E -
+"ASSIGNED_TO with auto-assignment rules (C4.1, C4.1b)" and, from the second review of 2026-09-19,
+"extra opportunity categories: none, the five only"; D8's "Opportunity taxonomy" in
+PLAN_BILLING_V1_1.md; A3's "Opportunity type / category / assignee" row). Read the CLAUDE.md docs
+in order first; CURRENT_FOCUS.md's last two entries (Pass 14 and "Next up") are the ones that
+matter.
 
-Branch feature/phase-2-aging-and-balances from origin/main. Confirm main contains the Pass 13
-merge (feature/phase-2-batch-invoice-and-draft, one commit) before branching.
+Branch feature/phase-4-opportunity-taxonomy from origin/main. Confirm main contains the Pass 14
+merge (feature/phase-2-aging-and-balances, one commit) before branching.
 
-The decisions are recorded (B20, owner 2026-09-19): aging is derived, never stored; age by invoice
-date (issuedAt, days since invoiced), buckets Current (0-30) / 31-60 / 61-90 / Over 90, labelled
-"days since invoiced"; a later Settings toggle can switch to due-date aging for Net-terms commercial
-accounts (not this pass); the customer-wide figure is a rollup and the balance still lives at the
-location (canon rule 1); money on account is shown beside the aged balance, never netted, and so is
-pending-applied money (pendingAppliedCents, "pending shows, confirmed counts"). Days are UTC
-calendar days like every other date-only value in the repo. Ground truth today (line numbers from
-origin/main at the Pass 13 merge; they drift, the names do not): nothing ages an invoice except
-isInvoiceOverdue (client/src/components/invoice-status-badge.tsx:13), a client-only due-date test
-feeding the Invoices screen's Overdue tile and the Reports page's Overdue count
-(client/src/pages/reports.tsx:206; that page has no tabs and no server read - five cards computed
-from GET /api/invoices, /api/customers, /api/appointments and /api/service-records at :18-21 - and
-there is no /api/reports route in server/routes.ts). The balance reads that exist:
-getLocationBalancesByCustomer (server/storage.ts:4742; LocationBalanceSummary at :168 - open,
-total invoiced, count and unapplied per location; route GET /api/location-balances/:customerId at
-server/routes.ts:1123) feeds only the customer screen's location switcher ("Open $X - $Y on
-account", client/src/pages/customer-detail.tsx:3687-3691); getLocationLedgerSummary
-(server/storage.ts:7985; LocationLedgerSummary in shared/payments.ts:390; route GET
-/api/locations/:locationId/ledger-summary at server/routes.ts:2292) feeds the ledger panel's
-Balance card (client/src/components/location-ledger-panel.tsx, the card whose header holds Record
-Payment / Issue Credit Memo / Add fee / adjustment). Invoices carry issuedAt (null while DRAFT),
-balanceDueCents, amountPaidCents and pendingAppliedCents (D5's stored rollups, recomputed under a
-row lock with every application); isInvoiceIssued (shared/invoice-status.ts:81) is the receivable
-test - a DRAFT or VOID owes nothing. The customer header card starts at customer-detail.tsx:3610
-(text-customer-name at :3615; no money on it today); the location profile card renders
-LocationNotesPanel (defined at :1418) at :3813, which is where the location's strip goes, below it.
-An aging row opens the invoice modal (InvoiceDetailDialog, Pass 11a; the customer screen's
-openInvoice and /customers/:id?locationId=&tab=invoices&invoiceId= deep link, Pass 11b).
+The decisions are recorded (D8; B7, owner 2026-09-19): two axes, not one - category is the reason
+(NEW_SALE, SERVICE_DUE, RESCHEDULE, WINBACK, RETENTION; settings-managed, seeded with those five
+and no others) and workType is AGREEMENT | ONE_TIME; an assignee - a users FK, one identity table
+for everyone (Pass 12's decision), manual assign / reassign and a "My opportunities" view; a
+migration maps the six hardcoded sources and the free-text types onto the two axes; the
+Opportunities screen filters on category, work type, status, assignee, source, and location /
+zip. Auto-assignment rules and zones are C4.1b (Pass 26), not this pass; the board's cancel /
+reschedule path is C4.2 (Pass 27). Ground truth today (line numbers from origin/main at the Pass
+14 merge; they drift, the names do not): the opportunities table (shared/schema.ts:508-534)
+carries source (text, default NON_CONTRACT_FOLLOW_UP, :516), opportunityType (free text, :517),
+status (:520; OPEN | CONTACTED | CONVERTED | DISMISSED is opportunityStatusSchema,
+server/routes.ts:309) and - since 2026-04-26, commit 88674f5 - assignedUserId and assignedAt
+(:530-531, added by server/service-scheduling-bootstrap.ts:243-244) with no reader anywhere and
+one writer: PATCH /api/opportunities/:id (server/routes.ts:1301), whose opportunityUpdateSchema is
+insertOpportunitySchema.partial() (:310-314), so any authenticated client can already set
+assignedUserId to any string with no user check, no gate and no audit row. The six source strings
+are written in storage: AGREEMENT_CONTACT_REQUIRED (server/storage.ts:1961), AGREEMENT_INITIAL
+(:3455, :3516, :3713), AGREEMENT_CANCELLATION_RETENTION (:3659),
+APPOINTMENT_RESCHEDULE_REQUIRED / APPOINTMENT_CANCELLATION_REVIEW
+(requestAppointmentCancelOrReschedule, near :3960) and the NON_CONTRACT_FOLLOW_UP default
+(ensureOpportunityForServiceRecordTx, :1742, which returns early for agreement work);
+opportunityType is stamped at :1779 (the service type's opportunityLabel or name), :1962 (the
+agreement's template or agreement name), :3660 ("Agreement Cancellation Retention") and :3960
+("Appointment Reschedule" / "Canceled Appointment Review"). The dev DB holds 16 rows: 4
+AGREEMENT_CANCELLATION_RETENTION, 2 APPOINTMENT_CANCELLATION_REVIEW, 6
+APPOINTMENT_RESCHEDULE_REQUIRED, 4 NON_CONTRACT_FOLLOW_UP (type "Quarterly"), none assigned. The
+list read is getOpportunities (server/storage.ts:3116; OpportunityFilters at :549 - status,
+dueFrom, dueTo, serviceTypeId, applied in SQL) behind GET /api/opportunities
+(server/routes.ts:1252); the Opportunities screen (client/src/pages/opportunities.tsx; filter
+state :52-55, query string :60-68) offers status, a due-date range with presets and service type,
+and no category, work type, assignee, source or location filter; the location screen's
+Opportunities tab reads GET /api/opportunities/by-location/:locationId (routes.ts:1262). The
+settings-managed precedent to copy is dispositions: the opportunity_dispositions table
+(shared/schema.ts:536; created and seeded, guarded, in server/service-scheduling-bootstrap.ts:247
+onward), GET / POST / PATCH /api/opportunity-dispositions (server/routes.ts:1267-1295), the
+Settings card at client/src/pages/settings.tsx:1700. Users: GET /api/users (server/routes.ts:1181,
+Pass 12 - id, names, role, status, never the hash) with selectableUsers / userDisplayName in
+shared/users.ts; the session user is req.user and getAuditActor(req) is the actor. Audit:
+recordAuditLog / recordAuditLogTx on DatabaseStorage with the AuditEntityType / AuditAction unions
+in shared/audit.ts - there is no "opportunity" entity today. The migration convention is a
+guarded, idempotent server/*-bootstrap.ts step run on every boot (PROJECT_MAP.md), the per-row
+effect printed before commit as Passes 11d and 12 did.
 
-Build per C2.4: two derived reads - GET /api/customers/:id/aging (per location plus the rollup:
-per bucket the open balance over issued invoices with a balance, the pending-applied and on-account
-figures beside, the oldest non-empty bucket, and the invoices behind each bucket so a row can open
-the modal) and GET /api/reports/aging (org-wide: per customer and per location, the same buckets and
-totals) - both computed in storage from the invoices and the ledger's stored rollups, nothing
-stored, no schema change, no migration (if one turns out to be needed, stop and ask). Header card:
-the customer-wide open balance, the on-account figure and the oldest bucket beside the
-primary-location chip; location profile card: the location's aging strip below LocationNotesPanel,
-its bucket rows opening the modal; Reports: an Aging section fed by /api/reports/aging, each row
-linking to the customer screen, replacing nothing that exists. Decide the reads' gate against
-shared/permissions.ts (every invoice read is open to any authenticated role today; say what you
-chose and why). The Invoices screen's Overdue tile keeps its due-date meaning - do not conflate the
-two; say "days since invoiced" wherever a bucket is shown. Batch Invoice, the draft dialog and the
-fee dialog (Pass 13), the ticket lockdown (Pass 16), sale attribution and billing plans (Pass 12)
-are untouched.
+Build per C4.1: (1) opportunity_categories, a settings-managed reference list on the dispositions
+pattern (key, label, isActive, sortOrder; org-scoped; seeded NEW_SALE / SERVICE_DUE / RESCHEDULE /
+WINBACK / RETENTION; the owner wants no others, so the Settings card edits labels, order and active
+and the five keys cannot be deleted - if you find a reason to allow new keys, stop and ask rather
+than build it); (2) opportunities.categoryKey and opportunities.workType (AGREEMENT | ONE_TIME),
+both required on every write path through zod enums, stamped at creation by source: AGREEMENT_
+CONTACT_REQUIRED -> SERVICE_DUE / AGREEMENT, AGREEMENT_INITIAL -> NEW_SALE / AGREEMENT, AGREEMENT_
+CANCELLATION_RETENTION -> RETENTION / AGREEMENT, APPOINTMENT_RESCHEDULE_REQUIRED and APPOINTMENT_
+CANCELLATION_REVIEW -> RESCHEDULE with the work type from the source service's agreementId,
+NON_CONTRACT_FOLLOW_UP -> SERVICE_DUE / ONE_TIME (WINBACK has no automatic source until Pass 27's
+cancel flow; it is chosen by hand); the same mapping backfills the 16 existing rows in the
+bootstrap with the per-source count printed, opportunityType kept as the display label and marked
+transitional, nothing dropped; (3) the assignee on the existing assigned_user_id / assigned_at
+columns (do not add a second pair): a validated PATCH field that must name an active user of the
+org or null, assignedAt stamped on change, every change recorded as an audit "update" on a new
+"opportunity" entity with the users named before and after, and opportunityUpdateSchema narrowed
+so the loose insertOpportunitySchema.partial() no longer accepts identity or lifecycle columns
+(the Pass 16 pattern); decide the gate against shared/permissions.ts - who may assign and
+reassign (support+ is the natural reading, a technician sees only their own) - and say what you
+chose and why; new opportunities are unassigned (auto-assignment is Pass 26); (4) the list read
+gains categoryKey, workType, assignedUserId (a user id, "me", or "unassigned"), source and a
+location / zip filter (join locations; a zip prefix), applied in SQL like listPayments, and the
+Opportunities screen gains those filters plus a "My opportunities" preset, category / work type /
+assignee chips on each card and an assign control (a users selector, the session user first);
+the location Opportunities tab shows the chips and nothing else new. Not touched: dispositions,
+convert, the technician's cancel-reschedule route (Pass 27 owns cancel / reschedule), zones and
+rules (Pass 26), aging (Pass 14), sale attribution (Pass 12).
 
 Environment: Node 24.21.0, npm run dev:full (restart it before manually testing anything that
 changes server code), DEV_NOTES.md for the DB backup/restore and PowerShell traps, gh logged in so
-the session can open the PR. Verify on PORT=5001 as the previous passes did: npm run check, double
-boot (both boots must print only "serving on port 5001" and every table count must be unchanged,
-since there is no migration), the pass's API smoke test as all four roles (fixture invoices issued
-into each bucket - set issuedAt by SQL after issuing, since every path stamps now - with a
-pending-applied payment and an on-account payment beside them, a DRAFT and a VOID excluded, a
-two-location customer rolling up while each location keeps its own figures, the org-wide report
-agreeing with the per-customer reads, and the gate you chose answering 403 where it should) with
-fixtures deleted and counts back at baseline, and a Vite 200 on every touched client module.
+the session can open the PR. Verify on PORT=5001 as the previous passes did: npm run check; double
+boot - boot 1 prints the migration's per-row effect (the new table with its 5 seed rows, the 16
+rows mapped per source) and boot 2 prints only "serving on port 5001" with every table count
+unchanged; the pass's API smoke test as all four roles (fixture opportunities of every source
+created through the real paths where they are cheap and by SQL otherwise, each row's category and
+work type as mapped, every filter returning exactly its rows - category, work type, assignee = me
+/ unassigned / a named user, source, zip prefix - assign, reassign and unassign with their audit
+rows and stamps, an inactive or unknown user refused, an identity column on the PATCH refused, the
+gate you chose answering 403 where it should, the Settings CRUD on categories with the five keys
+refused deletion) with fixtures deleted and counts back at baseline, and a Vite 200 on every
+touched client module.
 
 Working agreement as always: one pass, one branch, update CURRENT_FOCUS and the roadmap's pass
 table at the end, replace the handoff prompt at the end of CURRENT_FOCUS.md with the one for Pass
-25 (Opportunity taxonomy, assignee and search, C4.1, next in the recommended order), push, open
-the PR and stop. I merge.
+27 (Cancel and Reschedule, one path, C4.2, next in the recommended order), push, open the PR and
+stop. I merge.
 ```

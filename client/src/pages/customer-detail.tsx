@@ -57,6 +57,8 @@ import { InitialChargeFormFields, initialChargeFieldsFrom, initialChargeFormStat
 import { InitialChargeDuePrompt, type WithInitialChargeDue } from "@/components/initial-charge-due-prompt";
 import { InvoiceRowLedger, LocationLedgerPanel } from "@/components/location-ledger-panel";
 import { InvoiceDetailDialog } from "@/components/invoice-detail-dialog";
+import { CustomerAgingChips, LocationAgingStrip } from "@/components/aging-strip";
+import type { CustomerAging } from "@shared/aging";
 import { InvoiceStatusBadge } from "@/components/invoice-status-badge";
 import {
   ArrowLeft, Mail, Phone, MapPin, Plus, Calendar, FileText, MessageSquare,
@@ -3402,6 +3404,10 @@ export default function CustomerDetail() {
   const { data: contacts } = useQuery<Contact[]>({ queryKey: ["/api/contacts/by-location", activeLocationId], enabled: !!activeLocationId });
   const { data: accountContacts } = useQuery<Contact[]>({ queryKey: ["/api/contacts", customerId], enabled: !!customerId });
   const { data: locationBalances } = useQuery<LocationBalanceSummary[]>({ queryKey: ["/api/location-balances", customerId], enabled: !!customerId });
+  // Pass 14 (C2.4): the customer's aging, derived - the header card's chips
+  // read the rollup, the location profile's strip reads the selected
+  // location's entry. Refreshed by invalidateInvoiceViews with the ledger.
+  const { data: customerAging, isLoading: customerAgingLoading } = useQuery<CustomerAging>({ queryKey: ["/api/customers", customerId, "aging"], enabled: !!customerId });
 
   const { data: locationCounts } = useQuery<{ contacts: number; appointments: number; agreements: number; services: number; invoices: number; communications: number; opportunities: number }>({
     queryKey: ["/api/location-counts", activeLocationId],
@@ -3652,6 +3658,7 @@ export default function CustomerDetail() {
                     <Badge variant="secondary" className="text-xs" data-testid="chip-billing">
                       <CreditCard className="h-3 w-3 mr-1" /> Billing: {hasBillingOverride ? "Per-location" : "Default"}
                     </Badge>
+                    <CustomerAgingChips aging={customerAging} locationCount={allLocations?.length ?? 0} />
                   </div>
                 </div>
 
@@ -3810,7 +3817,18 @@ export default function CustomerDetail() {
               </CardContent>
             </Card>
 
-            <LocationNotesPanel customerId={customerId} locationId={activeLocationId} />
+            <div className="flex flex-col gap-4">
+              <div className="flex-1 min-h-0">
+                <LocationNotesPanel customerId={customerId} locationId={activeLocationId} />
+              </div>
+              {/* Pass 14 (C2.4): the location's balance by days since invoiced, below its notes; a bucket's invoices open the modal. */}
+              <LocationAgingStrip
+                aging={customerAging?.locations.find((entry) => entry.locationId === activeLocationId) ?? null}
+                asOf={customerAging?.asOf}
+                isLoading={customerAgingLoading}
+                onOpenInvoice={openInvoice}
+              />
+            </div>
           </div>
         )}
 

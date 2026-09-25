@@ -60,7 +60,7 @@ import {
   type AuditLog,
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, and, or, inArray, notInArray, sql, gte, lte, lt, asc, desc, ne, isNull, isNotNull, ilike, count, sum, max, type SQL } from "drizzle-orm";
+import { eq, and, or, inArray, notInArray, sql, gt, gte, lte, lt, asc, desc, ne, isNull, isNotNull, ilike, count, sum, max, type SQL } from "drizzle-orm";
 import type { AuditAction, AuditEntityType } from "@shared/audit";
 import { PLACEHOLDER_LOCATION_NAME, PLACEHOLDER_LOCATION_NOTE } from "./account-bootstrap";
 import { createHash } from "crypto";
@@ -125,6 +125,18 @@ import {
   type FinalizationInvoicingOutcome,
   type InvoiceOnFinalizeMode,
 } from "@shared/invoice-on-finalize";
+import {
+  agingAsOf,
+  agingFiguresOf,
+  compareLocationAging,
+  rollupAging,
+  summarizeAgingByLocation,
+  type AgingOnAccountInput,
+  type AgingReport,
+  type AgingReportCustomer,
+  type AgingReportLocation,
+  type CustomerAging,
+} from "@shared/aging";
 
 type DbTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 // A helper that only reads can run inside a transaction or straight off the
@@ -825,6 +837,10 @@ export interface IStorage {
   getInvoices(): Promise<Invoice[]>;
   getInvoicesByLocation(locationId: string): Promise<Invoice[]>;
   getLocationBalancesByCustomer(customerId: string): Promise<LocationBalanceSummary[]>;
+  /** Pass 14 (C2.4): the customer's aging - per location plus the rollup, derived at read time; undefined outside the org. */
+  getCustomerAging(customerId: string): Promise<CustomerAging | undefined>;
+  /** Pass 14 (C2.4): the org-wide aging report - per customer and per location, the customer read's figures summed. */
+  getAgingReport(): Promise<AgingReport>;
   getInvoice(id: string): Promise<Invoice | undefined>;
   getInvoiceLineItems(invoiceId: string): Promise<InvoiceLineItem[]>;
   /** The invoice modal's read (Pass 11a): row + lines + customer / location / visit. Undefined outside the org. */
@@ -4776,6 +4792,116 @@ export class DatabaseStorage implements IStorage {
     }
 
     return Array.from(balances.values());
+  }
+
+  // Aging (PLAN_ROADMAP_V2.md C2.4, Pass 14; B20): derived from the ledger's
+  // stored rollups at read time, never stored. The rows are the issued
+  // invoices still carrying a balance - the balanceDueCents filter already
+  // leaves a DRAFT or VOID out (a non-receivable holds 0, D5) and
+  // shared/aging.ts checks the status again - plus the unapplied pool the
+  // location switcher and the ledger panel already read
+  // (collectUnappliedSourcesTx), placed at each source's location. The
+  // bucketing (Current 0-30 / 31-60 / 61-90 / Over 90 UTC calendar days
+  // since issuedAt), the rollup and the ordering live in shared/aging.ts so
+  // the customer screen, the org-wide report and a scratchpad script agree.
+  // Nothing is netted: money on account and pending money ride beside the
+  // aged balance.
+  private agingSourcesOf(
+    sources: Array<UnappliedSource & { locationId: string }>,
+    customerIdOf: (source: UnappliedSource) => string | undefined,
+  ): AgingOnAccountInput[] {
+    const inputs: AgingOnAccountInput[] = [];
+    for (const source of sources) {
+      const customerId = customerIdOf(source);
+      if (!customerId) continue;
+      inputs.push({ customerId, locationId: source.locationId, status: source.status, unappliedCents: source.unappliedCents });
+    }
+    return inputs;
+  }
+
+  async getCustomerAging(customerId: string): Promise<CustomerAging | undefined> {
+    const [customer] = await db.select({ id: customers.id }).from(customers).where(and(eq(customers.orgId, this.orgId), eq(customers.id, customerId)));
+    if (!customer) {
+      return undefined;
+    }
+    const asOf = agingAsOf();
+    const owed = await db
+      .select()
+      .from(invoices)
+      .where(and(eq(invoices.orgId, this.orgId), eq(invoices.customerId, customerId), gt(invoices.balanceDueCents, 0)));
+    const customerPayments = await db.select().from(payments).where(and(eq(payments.orgId, this.orgId), eq(payments.customerId, customerId)));
+    const customerCredits = await db.select().from(creditMemos).where(and(eq(creditMemos.orgId, this.orgId), eq(creditMemos.customerId, customerId)));
+    const sources = await this.collectUnappliedSourcesTx(db, customerPayments, customerCredits);
+    const byLocation = summarizeAgingByLocation(owed, this.agingSourcesOf(sources, () => customerId), asOf);
+    return { customerId, asOf, rollup: rollupAging(byLocation), locations: byLocation };
+  }
+
+  async getAgingReport(): Promise<AgingReport> {
+    const asOf = agingAsOf();
+    const owed = await db.select().from(invoices).where(and(eq(invoices.orgId, this.orgId), gt(invoices.balanceDueCents, 0)));
+    const orgPayments = await db.select().from(payments).where(eq(payments.orgId, this.orgId));
+    const orgCredits = await db.select().from(creditMemos).where(eq(creditMemos.orgId, this.orgId));
+    const sources = await this.collectUnappliedSourcesTx(db, orgPayments, orgCredits);
+    // A source's customer is the row it came from (a payment or credit memo
+    // carries customerId beside locationId, D4) - the pool helper drops it.
+    const customerByPaymentId = new Map(orgPayments.map((payment) => [payment.id, payment.customerId]));
+    const customerByCreditId = new Map(orgCredits.map((memo) => [memo.id, memo.customerId]));
+    const byLocation = summarizeAgingByLocation(
+      owed,
+      this.agingSourcesOf(sources, (source) => (source.kind === "payment" ? customerByPaymentId.get(source.id) : customerByCreditId.get(source.id))),
+      asOf,
+    );
+
+    const locationIds = Array.from(new Set(byLocation.map((entry) => entry.locationId).filter((id): id is string => !!id)));
+    const locationRows = locationIds.length
+      ? await db
+          .select({ id: locations.id, name: locations.name, address: locations.address, city: locations.city, state: locations.state, zip: locations.zip, isPrimary: locations.isPrimary })
+          .from(locations)
+          .where(and(eq(locations.orgId, this.orgId), inArray(locations.id, locationIds)))
+      : [];
+    const locationById = new Map(locationRows.map((row) => [row.id, row]));
+    const customerIds = Array.from(new Set(byLocation.map((entry) => entry.customerId)));
+    const customerRows = customerIds.length
+      ? await db
+          .select({ id: customers.id, firstName: customers.firstName, lastName: customers.lastName, companyName: customers.companyName })
+          .from(customers)
+          .where(and(eq(customers.orgId, this.orgId), inArray(customers.id, customerIds)))
+      : [];
+    const customerById = new Map(customerRows.map((row) => [row.id, row]));
+
+    const grouped = new Map<string, AgingReportLocation[]>();
+    for (const entry of byLocation) {
+      const location = entry.locationId ? locationById.get(entry.locationId) : undefined;
+      const row: AgingReportLocation = {
+        ...entry,
+        name: location?.name ?? null,
+        address: location ? `${location.address}, ${location.city}, ${location.state} ${location.zip}` : null,
+        isPrimary: location?.isPrimary ?? false,
+      };
+      const list = grouped.get(entry.customerId) ?? [];
+      list.push(row);
+      grouped.set(entry.customerId, list);
+    }
+    const customersOut: AgingReportCustomer[] = [];
+    for (const [customerId, list] of Array.from(grouped.entries())) {
+      const customer = customerById.get(customerId);
+      list.sort((a, b) => (a.isPrimary !== b.isPrimary ? (a.isPrimary ? -1 : 1) : compareLocationAging(a, b)));
+      customersOut.push({
+        ...agingFiguresOf(rollupAging(list)),
+        customerId,
+        firstName: customer?.firstName ?? "",
+        lastName: customer?.lastName ?? "",
+        companyName: customer?.companyName ?? null,
+        locations: list,
+      });
+    }
+    customersOut.sort(
+      (a, b) =>
+        b.openBalanceCents - a.openBalanceCents
+        || b.onAccountCents - a.onAccountCents
+        || `${a.lastName} ${a.firstName}`.localeCompare(`${b.lastName} ${b.firstName}`),
+    );
+    return { asOf, totals: rollupAging(byLocation), customers: customersOut };
   }
 
   async getInvoice(id: string): Promise<Invoice | undefined> {
