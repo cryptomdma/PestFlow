@@ -121,7 +121,7 @@ are calibrated to Phase 1's: Pass 6 (four tables, routes, three dialogs) is the 
 | Unschedule / reschedule to the queue (return a scheduled stop to pending) | ABSENT on the board — **but the mechanism exists** | the technician's `POST /api/appointments/:id/cancel-reschedule` → `requestAppointmentCancelOrReschedule` (`storage.ts:3637-3732`) marks the appointment CANCELED with `rescheduleRequested`, requeues services to `PENDING_SCHEDULING` (`:3690`), and creates an opportunity if none is open (`:3703-3732`) |
 | Board cancel: reason required from a settings list; opportunity prompt | ABSENT on the board; DONE on the technician path | board cancel is `PATCH /api/appointments/:id { status: CANCELED }` (`schedule.tsx:305-317`) → `updateAppointment` (`storage.ts:3606-3635`) which cascades every service to `CANCELLED` (`:1543-1555`), takes **no reason**, creates **no opportunity**. The settings-managed list `appointment_cancel_reschedule_reasons` (`settings.tsx:1885-1910`) is consumed only by `technician-work.tsx:426-433`. **Two divergent cancel paths.** |
 | Smart Schedule / AUTO_ELIGIBLE pill | ABSENT | badge is the raw `schedulingMode` text (`schedule.tsx:1097`); no auto-schedule; no skills column on technicians/users, no required skills on service types, no lat/long on locations (`schema.ts:51-72, 148-172`) |
-| Opportunity type / category / assignee | PARTIAL | `status` is an enum (`routes.ts:288`); `opportunityType` is free text (per-service-type label or hardcoded strings, `storage.ts:1627, 3420, 3720`); `source` is hardcoded (`AGREEMENT_CONTACT_REQUIRED`, `AGREEMENT_CANCELLATION_RETENTION`, `AGREEMENT_INITIAL`, `APPOINTMENT_RESCHEDULE_REQUIRED`, `APPOINTMENT_CANCELLATION_REVIEW`, `NON_CONTRACT_FOLLOW_UP`); dispositions are settings-managed (`opportunity_dispositions`, `settings.tsx:704-740`); no assignee column |
+| Opportunity type / category / assignee | DONE — Pass 25 (2026-09-24) | `categoryKey` (a key of the settings-managed `opportunity_categories`, five seeded keys and no others) + `workType` (AGREEMENT / ONE_TIME) on every row, stamped by source in `shared/opportunities.ts` and backfilled onto the 16 rows; the assignee on `assignedUserId` (a `users` FK, manual under `ASSIGN_OPPORTUNITY` support+, audit `update`), "My opportunities"; the list read filters on category, work type, assignee, source and location / zip in SQL. See "Shipped in Pass 25" at the end of Part D. Was: `status` is an enum (`routes.ts:288`); `opportunityType` is free text (per-service-type label or hardcoded strings, `storage.ts:1627, 3420, 3720`); `source` is hardcoded (`AGREEMENT_CONTACT_REQUIRED`, `AGREEMENT_CANCELLATION_RETENTION`, `AGREEMENT_INITIAL`, `APPOINTMENT_RESCHEDULE_REQUIRED`, `APPOINTMENT_CANCELLATION_REVIEW`, `NON_CONTRACT_FOLLOW_UP`); dispositions are settings-managed (`opportunity_dispositions`, `settings.tsx:704-740`); no assignee column |
 | Ticket: prompt to time in when opened without a Time In | ABSENT | no `timeInAt` read in `service-completion-dialog.tsx`; the only prompt is time-*out* after post under `PROMPT_FOR_TIMEOUT` (`:353`) |
 | Ticket: target pests as a searchable multi-select | PARTIAL | pill toggles **with a search box** (`:501-514`), from `/api/target-pests`, stored comma-joined (`:225`) |
 | Ticket: target pests relocated to Materials with a summary; pest per application | ABSENT | no per-material pest column (`productApplications`) |
@@ -225,6 +225,9 @@ is free text and `source` is six hardcoded strings. **Owner:** agreed; the point
 opportunities by these criteria**, and an **ASSIGNED_TO** is wanted — assign (and auto-assign from
 Settings by zones, zip codes, or other parameters) opportunities to sales reps, office reps, or
 managers. C4.1 gains the assignee and the filters; C4.1b builds the assignment rules and zones.
+**Built as Pass 25** (`feature/phase-4-opportunity-taxonomy`, 2026-09-24): the two axes, the settings
+list with the five keys only (owner, second review), the manual assignee under `ASSIGN_OPPORTUNITY`
+(support+) and the filters; the rules and zones remain C4.1b.
 
 **B8. "Agreement Type: pest, termite, bundle? subscription, one-time?"** D8: two dimensions —
 `serviceCategory` (settings reference data) and structure, which the Billing Plan +
@@ -373,7 +376,7 @@ so every field action is a route and every screen is data from a read — no pag
 
 | # | Unit | Notes covered | Depends on | Open decision |
 |---|---|---|---|---|
-| C4.1 (**Pass 25**) | **Opportunity taxonomy, assignee and search** — `category` (settings-managed, seeded NEW_SALE / SERVICE_DUE / RESCHEDULE / WINBACK / RETENTION) + `workType` (AGREEMENT / ONE_TIME); `assignedToUserId` (a `users` FK, manual assign / reassign, "My opportunities"); migration maps the six hardcoded sources and the free-text types; the Opportunities screen filters on category, work type, status, assignee, source, and location / zip. | Opportunity Type/Category; ASSIGNED_TO; search open opportunities | — | — (owner: the five only) |
+| C4.1 (**Pass 25**) — **done** (`feature/phase-4-opportunity-taxonomy`, 2026-09-24; see "Shipped in Pass 25" at the end of Part D) | **Opportunity taxonomy, assignee and search** — `category` (settings-managed, seeded NEW_SALE / SERVICE_DUE / RESCHEDULE / WINBACK / RETENTION) + `workType` (AGREEMENT / ONE_TIME); `assignedToUserId` (a `users` FK, manual assign / reassign, "My opportunities"); migration maps the six hardcoded sources and the free-text types; the Opportunities screen filters on category, work type, status, assignee, source, and location / zip. | Opportunity Type/Category; ASSIGNED_TO; search open opportunities | — | — (owner: the five only) |
 | C4.1b (**Pass 26**) | **Opportunity assignment rules and zones** — Settings: `zones` (named zip-code lists, reusable later by dispatch and Smart Schedule) and `opportunity_assignment_rules` (category / work type / zone / source → user, ordered, first match wins); auto-assign at creation, unassigned when no rule matches; reassignment logged. | ASSIGNED_TO auto-assign by zones / zip / params | C4.1 | — |
 | C4.2 (**Pass 27**) | **Cancel and Reschedule, one path** (B2). New `POST /api/appointments/:id/disposition { mode: CANCEL \| RESCHEDULE, reasonCode?, opportunity: UPDATE_EXISTING \| CREATE \| NONE, voidDraftInvoices? }` built on `requestAppointmentCancelOrReschedule` (the technician's cancel-reschedule route becomes a thin alias that always creates the office-handoff opportunity). **RESCHEDULE**: services back to `PENDING_SCHEDULING`, no reason required, no policy, no opportunity when the office does it from the board. **CANCEL**: reason required from the settings list; agreement-generated services return to `PENDING_SCHEDULING` with `serviceWindowStart/End` reset from the cancel date and an opportunity created or assigned as the fallback; non-agreement services are `CANCELLED` with the opportunity prompt (category defaulted by path). Both keep the draft-invoice prompt. `PATCH /api/appointments/:id { status: CANCELED }` is refused with 409 `CANCEL_DISPOSITION_REQUIRED`; the sheet's status Select drops CANCELED and its "Cancel Service" button becomes **Cancel appointment** + **Reschedule**. **Board moves confirm on drop** ("Move to <slot>?"). The location's Services tab shows Scheduled / Pending / Rescheduling / Cancelled distinctly — also Q4's PENDING_SCHEDULING-vs-SCHEDULED gap. | Unschedule → Reschedule; cancel reason required; opportunity prompt; agreement services recycled; accidental moves; Services-tab clarity | C4.1 | — |
 | C4.3a (**Pass 28**) | **Appointment composition, server + dispatch sheet** (B13) — add a service to an appointment (new or from the pending queue), remove / cancel / return ONE service to pending (the last service prompts to reschedule the appointment), change a service's type (agreement work stays locked) and duration, appointment instructions (`appointments.notes`) editable; all through `getLinkedServicesForAppointmentTx`. UI on the dispatch sheet. | Appointment Details build-out; service-level cancel | C4.2 | — |
@@ -1252,6 +1255,155 @@ Behavior worth knowing before the next pass touches it:
   line with every count unchanged; a Vite 200 on the two pages, the strip component, the
   invalidation helper and (under `/@fs/`) the shared module. Nothing was rendered in a browser: the
   chips, the strip and the Reports section reach the owner first.
+
+---
+
+**Shipped in Pass 25** (`feature/phase-4-opportunity-taxonomy`, 2026-09-24) — the C4.1 row as built,
+plus what it found.
+
+```ts
+// shared/opportunities.ts (new) - the taxonomy's vocabulary and the one source -> axes mapping; read by storage, the bootstrap and the client
+OPPORTUNITY_WORK_TYPES = ["AGREEMENT", "ONE_TIME"]; OPPORTUNITY_WORK_TYPE_LABELS; describeOpportunityWorkType(workType)
+OPPORTUNITY_CATEGORY_KEYS = ["NEW_SALE", "SERVICE_DUE", "RESCHEDULE", "WINBACK", "RETENTION"]; OPPORTUNITY_CATEGORY_SEED (key, label, sortOrder)
+describeOpportunityCategory(key, categories)   // the org's label, else the seed label, else the key
+OPPORTUNITY_SOURCES (the six) / OPPORTUNITY_SOURCE_LABELS / describeOpportunitySource(source)
+taxonomyForSource(source, hasAgreement)        // -> { categoryKey, workType, mapped }: AGREEMENT_CONTACT_REQUIRED -> SERVICE_DUE / AGREEMENT;
+                                               //    AGREEMENT_INITIAL -> NEW_SALE / AGREEMENT; AGREEMENT_CANCELLATION_RETENTION -> RETENTION / AGREEMENT;
+                                               //    APPOINTMENT_RESCHEDULE_REQUIRED | APPOINTMENT_CANCELLATION_REVIEW -> RESCHEDULE / by agreement;
+                                               //    NON_CONTRACT_FOLLOW_UP -> SERVICE_DUE / ONE_TIME; anything else -> SERVICE_DUE / by agreement, mapped false
+OPPORTUNITY_STATUSES; OPPORTUNITY_ASSIGNEE_ME = "me"; OPPORTUNITY_ASSIGNEE_UNASSIGNED = "unassigned"
+
+// shared/schema.ts
+opportunities.categoryKey / .workType          // text NOT NULL; .assignedUserId now .references(users.id)
+opportunityCategories                          // opportunity_categories: id, orgId, key, label, isActive, sortOrder, createdAt, updatedAt; unique (orgId, key)
+insertOpportunityCategorySchema; OpportunityCategory; InsertOpportunityCategory
+
+// shared/permissions.ts                       ASSIGN_OPPORTUNITY - support, manager, admin
+// shared/audit.ts                             AuditEntityType += "opportunity" (action "update"; snapshots { assignedUserId, assignedTo, assignedAt, categoryKey, workType })
+
+// server/service-scheduling-bootstrap.ts - bootstrapOpportunityTaxonomy(), guarded, quiet once done: opportunity_categories created with its
+//   unique index and seeded per org (the rows inserted printed); category_key / work_type added, every unmapped row mapped by taxonomyForSource
+//   (has_agreement = the row's or its source service's agreement) with the per-row effect and per-source totals printed, then SET NOT NULL;
+//   indexes on category_key and assigned_user_id; the assigned_user_id -> users(id) FK added when the column has no FK under any name
+// server/tenancy-bootstrap.ts                 + opportunity_categories
+
+// server/storage.ts
+OpportunityFilters += categoryKey, workType, assignedUserId (a user id | null = unassigned), source, zip (prefix), location (text)
+OpportunityUpdateInput { notes?, dueDate?, nextActionDate?, categoryKey?, workType?, assignedUserId?: string | null }
+OpportunityCategoryUpdateInput { label?, isActive?, sortOrder? }
+getOpportunities(filters)                      // every filter in SQL; zip / location as subqueries on locations (and customers for the name), LIKE-escaped
+getOpportunity(id)
+updateOpportunity(id, data, actor?)            // one transaction: the category must be an active key of the org (checked on a change only), the
+                                               //    assignee an active org user or null, assignedAt = now | null on a change; one audit `update` when the
+                                               //    assignee, category or work type moved, nothing for a notes-only edit
+getOpportunityCategories(includeInactive?) / updateOpportunityCategory(id, data)
+getAuditLogsForLocation                        // + the location's opportunities
+opportunityTaxonomyColumns(source, hasAgreement) // module helper spread into the four insert sites; escapeLikePattern(value)
+
+// server/routes.ts
+GET   /api/opportunities?status&dueFrom&dueTo&serviceTypeId&categoryKey&workType&assignee&source&zip&location
+                                               // assignee: a user id | me (resolved to req.user) | unassigned; "ALL" / empty = not filtered; a bad workType 400
+PATCH /api/opportunities/:id                   // opportunityUpdateSchema, strict; a CHANGED assignee needs ASSIGN_OPPORTUNITY (403); 404 unknown; storage's refusals 400
+GET   /api/opportunity-categories?includeInactive=true
+PATCH /api/opportunity-categories/:id          // { label?, isActive?, sortOrder? }, strict (a key is refused); ungated like dispositions
+POST  /api/opportunity-categories -> 405; DELETE /api/opportunity-categories/:id -> 405   // the five keys are the list
+
+// client
+components/opportunity-taxonomy-chips.tsx      // OpportunityTaxonomyChips({ opportunity, categories, users, onCategoryChange?, onWorkTypeChange?, changeDisabled? })
+                                               //    category (a picker over the active keys when a handler is given), work type (same), source, assignee;
+                                               //    describeOpportunityAssignee(opportunity, users)
+pages/opportunities.tsx                        // filters: status, category, work type, assignee (Anyone / Me / Unassigned / each active user), source,
+                                               //    service type, next-action range, location / customer text, zip prefix; My Opportunities preset (assignee
+                                               //    = me, status OPEN); per card the chips and an assign Select (Unassigned, Me, everyone active, the current
+                                               //    assignee even if inactive) disabled without the permission; one PATCH mutation for all three changes
+pages/customer-detail.tsx                      // OpportunitiesTab: the chips, display only
+pages/settings.tsx                             // Opportunity Categories card (label / active / sort; no Add, no Delete) before Dispositions
+```
+
+Behavior worth knowing before the next pass touches it:
+- **One mapping.** `taxonomyForSource` is the only place a source turns into a category and a
+  work type. The four runtime writers (`ensureOpportunityForServiceRecordTx`,
+  `ensureAgreementContactRequiredOpportunityTx`, the retention branch of `cancelAgreement`,
+  `requestAppointmentCancelOrReschedule`) spread `opportunityTaxonomyColumns()` into their
+  insert, and the backfill iterated the 16 rows through the same function in JS rather than a SQL
+  CASE, so the migration and a new row cannot drift. The columns are NOT NULL, so a fifth writer
+  fails to compile without them. `hasAgreement` decides the work type only for the two
+  appointment sources; the agreement sources are AGREEMENT and the follow-up source ONE_TIME
+  regardless.
+- **AGREEMENT_INITIAL is not an opportunity source today.** The decision record counts it among
+  the six, but every writer of that string sets `appointments.source` / `services.source`
+  (`createAgreement`, `updateAgreement`, `linkAgreementInitialAppointment`), never
+  `opportunities.source`; the dev DB has no such opportunity. The mapping carries it (NEW_SALE /
+  AGREEMENT) so a future writer, or a hand-inserted row, lands right; the ground-truth citations in
+  the Pass 25 handoff (`storage.ts:3455, :3516, :3713`) were those appointment writers.
+- **The gate.** Assigning is `ASSIGN_OPPORTUNITY` (support, manager, admin). B7 names the
+  assignees as sales reps, office reps and managers, so a technician - who sees the queue like
+  every role, since every read in `routes.ts` is open - is refused even when assigning to
+  themselves; "My opportunities" is how they find what the office handed them. The route checks
+  the gate only when the assignee actually changes (the Pass 12 sold-by rule), so a form that sends
+  the row back does not need the permission; storage then refuses an inactive or unknown user, or a
+  user of another org, with a 400 naming the field. Content (notes, the two dates) and the two
+  taxonomy axes stay ungated, as dispositions and Convert are; a technician re-categorising a row
+  is a content edit, and the audit row names them. The category list's PATCH is ungated on the
+  dispositions precedent - who may edit reference data is C5.6's role profiles - and the Settings
+  card sits beside Dispositions and behaves the same.
+- **What the PATCH accepts.** `{ notes, dueDate, nextActionDate, categoryKey, workType,
+  assignedUserId }`, strict: `locationId`, `agreementId`, `source`, the source service and
+  record, `status`, `convertedServiceId`, the contacted / dismissed stamps, `assignedAt` and
+  `orgId` are all refused with a 400 rather than written. Before this pass the schema was
+  `insertOpportunitySchema.partial()` and every one of them was writable by any authenticated
+  client; `assignedUserId` in particular took any string.
+- **Categories.** Five keys per org, unique on (org_id, key). Deactivating one keeps it on every
+  row that carries it and in the filter (the screen reads `includeInactive=true` and labels it
+  "(inactive)"); it only stops being choosable - the picker disables it, and a PATCH choosing it is
+  refused, while a notes edit on a row that already carries it is not. A renamed label shows
+  everywhere at once because nothing stores the label on the row; `describeOpportunityCategory`
+  falls back to the seed label, then the key.
+- **Audit.** One `update` per PATCH that moved the assignee, the category or the work type, on
+  the `opportunity` entity, with `{ assignedUserId, assignedTo, assignedAt, categoryKey,
+  workType }` before and after so the History tab's diff shows names. The location History read
+  now collects the location's opportunities. Dispositions and Convert keep their activity trail
+  and write no audit row - unchanged.
+- **The search.** Zip is a prefix (`LIKE 'prefix%'`, wildcards escaped); the location text is
+  ILIKE over the location's name, address and city and the customer's first + last name and
+  company name; both are subqueries so the read still returns the plain `Opportunity` row every
+  dialog already takes. The by-location read is untouched.
+- **Not built:** auto-assignment rules and zones (C4.1b, Pass 26), a category on the location
+  tab's cards beyond the chips, editing notes or dates from the screen (the PATCH accepts them; no
+  UI sends them), a gate on category edits, bulk assignment, an assignee on the technician's own
+  screens (they use the queue), paging the queue.
+- **Verified 2026-09-24** (PORT=5001): `npm run check` clean; boot 1 printed the Pass 25 lines and
+  nothing else - the 5 seed rows for Heritage, the 16 rows one per line then per source (4
+  AGREEMENT_CANCELLATION_RETENTION -> RETENTION / AGREEMENT; 2 APPOINTMENT_CANCELLATION_REVIEW ->
+  1 AGREEMENT, 1 ONE_TIME; 6 APPOINTMENT_RESCHEDULE_REQUIRED -> 2 AGREEMENT, 4 ONE_TIME; 4
+  NON_CONTRACT_FOLLOW_UP -> SERVICE_DUE / ONE_TIME), the NOT NULL step and the FK - with 44 tables
+  after (the new one holding 5); 193 API checks as the four roles: unauthenticated 401, every role
+  200 on both reads with the five keys in seed order and org-scoped, all 16 migrated rows equal to
+  `taxonomyForSource` of their source and agreement and still unassigned, the columns NOT NULL
+  and exactly one FK; a fixture customer with two locations (zips 99901 / 99902), two opportunities
+  through the real cancel-reschedule route (reschedule requested on a one-time service ->
+  RESCHEDULE / ONE_TIME; cancel on an agreement service -> RESCHEDULE / AGREEMENT with the
+  agreement carried) and four by SQL through the shared mapping; every filter returning exactly its
+  rows - each category, each work type, a bad work type 400, category + work type combined, each of
+  the six sources, zip 99901 / 99902 / 9990 / 99903 / an escaped `999_`, the location text by
+  location name, city (case-insensitive), address and customer name, status, assignee unassigned /
+  me / a named user, org-wide category and work-type counts equal to SQL, the by-location read
+  carrying the axes; the technician refused 403 assigning to themselves while their notes-only
+  PATCH passed with no audit row; support assigning themselves (assignedAt now, one audit row naming
+  nobody -> Heritage Support), the unchanged re-send writing nothing, "me" finding it for support
+  and not for the technician, the manager reassigning to the technician (a later assignedAt, a
+  second row naming both), the admin unassigning (null / null, a third row), the location History
+  read listing all three; an inactive user and an unknown user refused 400 with no row written;
+  eight identity / lifecycle columns refused 400; unknown ids 404; a hand move to WINBACK audited
+  and filterable, an unknown key 400, a work-type change audited, a bad work type 400; POST and
+  DELETE on the list 405 with the five keys intact, a key on the PATCH 400, a relabel + reorder by
+  the manager, deactivation dropping the key from the default read and not from
+  `includeInactive`, choosing the inactive key refused 400 while the row carrying it kept it,
+  stayed filterable and still took a notes edit, then the seed restored; fixtures deleted and every
+  table back at baseline with `session` up by exactly the run's four logins; boot 2 printed only
+  the serving line with every count unchanged; Vite 200 on the two pages, the location page, the
+  chips component and, under `/@fs/`, the four shared modules. Nothing was rendered in a browser:
+  the filters, chips, assign control and Settings card reach the owner first.
 
 ---
 

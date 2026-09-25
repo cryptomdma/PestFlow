@@ -1,5 +1,5 @@
 ﻿import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, integer, boolean, timestamp, decimal, jsonb, date, primaryKey } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, integer, boolean, timestamp, decimal, jsonb, date, primaryKey, uniqueIndex } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 import { relations } from "drizzle-orm";
@@ -527,7 +527,22 @@ export const opportunities = pgTable("opportunities", {
   contactedAt: timestamp("contacted_at"),
   dismissedAt: timestamp("dismissed_at"),
   dismissedReason: text("dismissed_reason"),
-  assignedUserId: varchar("assigned_user_id"),
+  // Pass 25 (PLAN_ROADMAP_V2.md C4.1; PLAN_BILLING_V1_1.md D8): the taxonomy's
+  // two axes. category_key is the REASON - a key of opportunity_categories
+  // (NEW_SALE | SERVICE_DUE | RESCHEDULE | WINBACK | RETENTION); work_type is
+  // AGREEMENT | ONE_TIME. Both are stamped at creation from `source` by
+  // shared/opportunities.ts taxonomyForSource() and required on every write
+  // path. opportunity_type above stays the free-text display label it always
+  // was - transitional, not an axis.
+  categoryKey: text("category_key").notNull(),
+  workType: text("work_type").notNull(),
+  // The assignee (Pass 25): a users FK (owner: one identity table for
+  // everyone), manual assign / reassign / unassign through the PATCH under
+  // ASSIGN_OPPORTUNITY, assigned_at stamped on every change, each change an
+  // audit `update` on the opportunity. The two columns predate the pass
+  // (2026-04-26, commit 88674f5) with no reader; the bootstrap adds the
+  // constraint. Auto-assignment by rules and zones is C4.1b (Pass 26).
+  assignedUserId: varchar("assigned_user_id").references(() => users.id),
   assignedAt: timestamp("assigned_at"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
@@ -547,6 +562,26 @@ export const opportunityDispositions = pgTable("opportunity_dispositions", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
+
+// Pass 25 (C4.1): the settings-managed reason list behind
+// opportunities.category_key, on the dispositions pattern (key, label,
+// isActive, sortOrder) but org-scoped from the start - unique on (org_id,
+// key), where dispositions carry a pre-tenancy global unique key. Seeded per
+// org with the five keys in shared/opportunities.ts and no others (owner,
+// second review of 2026-09-19): Settings edits labels, order and the active
+// flag; no route creates or deletes a key.
+export const opportunityCategories = pgTable("opportunity_categories", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: varchar("org_id").notNull(),
+  key: text("key").notNull(),
+  label: text("label").notNull(),
+  isActive: boolean("is_active").notNull().default(true),
+  sortOrder: integer("sort_order").notNull().default(0),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => ({
+  orgKey: uniqueIndex("opportunity_categories_org_key_uidx").on(table.orgId, table.key),
+}));
 
 export const opportunityActivities = pgTable("opportunity_activities", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -1060,6 +1095,7 @@ export const insertServiceRecordSchema = createInsertSchema(serviceRecords).omit
 export const insertAppSettingSchema = createInsertSchema(appSettings).omit({ orgId: true, updatedAt: true });
 export const insertOpportunitySchema = createInsertSchema(opportunities).omit({ orgId: true, id: true, createdAt: true, updatedAt: true });
 export const insertOpportunityDispositionSchema = createInsertSchema(opportunityDispositions).omit({ orgId: true, id: true, createdAt: true, updatedAt: true });
+export const insertOpportunityCategorySchema = createInsertSchema(opportunityCategories).omit({ orgId: true, id: true, createdAt: true, updatedAt: true });
 export const insertOpportunityActivitySchema = createInsertSchema(opportunityActivities).omit({ orgId: true, id: true, createdAt: true });
 export const insertProductApplicationSchema = createInsertSchema(productApplications).omit({ orgId: true, id: true });
 export const insertMaterialProductSchema = createInsertSchema(materialProducts).omit({ orgId: true, id: true, createdAt: true, updatedAt: true });
@@ -1122,6 +1158,8 @@ export type Opportunity = typeof opportunities.$inferSelect;
 export type InsertOpportunity = z.infer<typeof insertOpportunitySchema>;
 export type OpportunityDisposition = typeof opportunityDispositions.$inferSelect;
 export type InsertOpportunityDisposition = z.infer<typeof insertOpportunityDispositionSchema>;
+export type OpportunityCategory = typeof opportunityCategories.$inferSelect;
+export type InsertOpportunityCategory = z.infer<typeof insertOpportunityCategorySchema>;
 export type OpportunityActivity = typeof opportunityActivities.$inferSelect;
 export type InsertOpportunityActivity = z.infer<typeof insertOpportunityActivitySchema>;
 export type ProductApplication = typeof productApplications.$inferSelect;

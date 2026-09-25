@@ -7,6 +7,7 @@ import {
   opportunities,
   opportunityActivities,
   opportunityDispositions,
+  opportunityCategories,
   agreements,
   agreementTemplates,
   agreementCancellationPolicies,
@@ -39,6 +40,7 @@ import {
   type Opportunity, type InsertOpportunity,
   type OpportunityActivity, type InsertOpportunityActivity,
   type OpportunityDisposition, type InsertOpportunityDisposition,
+  type OpportunityCategory, type InsertOpportunityCategory,
   type ProductApplication, type InsertProductApplication,
   type MaterialProduct, type InsertMaterialProduct,
   type TargetPest, type InsertTargetPest,
@@ -60,7 +62,7 @@ import {
   type AuditLog,
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, and, or, inArray, notInArray, sql, gt, gte, lte, lt, asc, desc, ne, isNull, isNotNull, ilike, count, sum, max, type SQL } from "drizzle-orm";
+import { eq, and, or, inArray, notInArray, sql, gt, gte, lte, lt, asc, desc, ne, isNull, isNotNull, ilike, like, count, sum, max, type SQL } from "drizzle-orm";
 import type { AuditAction, AuditEntityType } from "@shared/audit";
 import { PLACEHOLDER_LOCATION_NAME, PLACEHOLDER_LOCATION_NOTE } from "./account-bootstrap";
 import { createHash } from "crypto";
@@ -72,6 +74,7 @@ import { computeProductionValueCents } from "@shared/production-value";
 import { formatCents } from "@shared/money";
 import { buildBillingPlanSnapshot as buildSharedBillingPlanSnapshot, isScheduleBilledPlan } from "@shared/billing-plan";
 import { sortUsersByName, userDisplayName } from "@shared/users";
+import { taxonomyForSource, type OpportunityWorkType } from "@shared/opportunities";
 import { addDays, advanceAgreementDate, computeExpectedServiceCount } from "@shared/agreement-schedule";
 // Transitional re-export (Pass 7): the calendar arithmetic moved to
 // shared/agreement-schedule.ts so the client's billing-plan pill and the
@@ -551,6 +554,35 @@ export interface OpportunityFilters {
   dueFrom?: string;
   dueTo?: string;
   serviceTypeId?: string;
+  // Pass 25 (C4.1): the taxonomy and search filters, applied in SQL.
+  categoryKey?: string;
+  workType?: string;
+  /** A user id, or null for "unassigned"; undefined leaves the assignee out. The route resolves "me". */
+  assignedUserId?: string | null;
+  source?: string;
+  /** A prefix on the opportunity's location zip: "760" matches 76053 and 76102. */
+  zip?: string;
+  /** Free text over the location's name / address / city and its customer's name. */
+  location?: string;
+}
+
+// Pass 25: what the PATCH may change. Content (notes, the two dates), the
+// taxonomy, and the assignee; everything else on the row is identity or
+// lifecycle and has its own path (dispositions, Convert) or none.
+export interface OpportunityUpdateInput {
+  notes?: string | null;
+  dueDate?: string | null;
+  nextActionDate?: string | null;
+  categoryKey?: string;
+  workType?: OpportunityWorkType;
+  /** A user id to assign, null to unassign; undefined leaves the assignee alone. */
+  assignedUserId?: string | null;
+}
+
+export interface OpportunityCategoryUpdateInput {
+  label?: string;
+  isActive?: boolean;
+  sortOrder?: number;
 }
 
 export interface ApplyOpportunityDispositionInput {
@@ -756,15 +788,18 @@ export interface IStorage {
   updateServiceType(id: string, data: Partial<InsertServiceType>): Promise<ServiceType | undefined>;
   deleteService(id: string): Promise<boolean>;
   getOpportunities(filters?: OpportunityFilters): Promise<Opportunity[]>;
+  getOpportunity(id: string): Promise<Opportunity | undefined>;
   getOpportunitiesByLocation(locationId: string): Promise<Opportunity[]>;
   createOpportunity(data: InsertOpportunity): Promise<Opportunity>;
-  updateOpportunity(id: string, data: Partial<InsertOpportunity>): Promise<Opportunity | undefined>;
+  updateOpportunity(id: string, data: OpportunityUpdateInput, actor?: AuditActor): Promise<Opportunity | undefined>;
   convertOpportunityToService(id: string, actor?: AuditActor): Promise<{ opportunity: Opportunity; service: Service } | undefined>;
   getOpportunityDispositions(includeInactive?: boolean): Promise<OpportunityDisposition[]>;
   createOpportunityDisposition(data: InsertOpportunityDisposition): Promise<OpportunityDisposition>;
   updateOpportunityDisposition(id: string, data: Partial<InsertOpportunityDisposition>): Promise<OpportunityDisposition | undefined>;
   getOpportunityActivitiesByOpportunity(opportunityId: string): Promise<OpportunityActivity[]>;
   applyOpportunityDisposition(input: ApplyOpportunityDispositionInput): Promise<Opportunity | undefined>;
+  getOpportunityCategories(includeInactive?: boolean): Promise<OpportunityCategory[]>;
+  updateOpportunityCategory(id: string, data: OpportunityCategoryUpdateInput): Promise<OpportunityCategory | undefined>;
 
   getAgreementCancellationPolicies(includeInactive?: boolean): Promise<AgreementCancellationPolicy[]>;
   getAgreementCancellationPolicy(id: string): Promise<AgreementCancellationPolicy | undefined>;
@@ -1041,6 +1076,20 @@ function requireBillingPlanId(value: string | null | undefined): string {
   return value;
 }
 
+// Pass 25: the two taxonomy columns every opportunity insert carries, decided
+// from its source in one place (shared/opportunities.ts) for the runtime
+// writers and the backfill alike.
+function opportunityTaxonomyColumns(source: string, hasAgreement: boolean): { categoryKey: string; workType: OpportunityWorkType } {
+  const taxonomy = taxonomyForSource(source, hasAgreement);
+  return { categoryKey: taxonomy.categoryKey, workType: taxonomy.workType };
+}
+
+// A user-typed term as a LIKE / ILIKE fragment: the wildcards and the escape
+// character are literal (Postgres's default escape is the backslash).
+function escapeLikePattern(value: string): string {
+  return value.replace(/[\\%_]/g, (match) => `\\${match}`);
+}
+
 export class DatabaseStorage implements IStorage {
   constructor(private readonly orgId: string) {}
 
@@ -1134,6 +1183,11 @@ export class DatabaseStorage implements IStorage {
       .select({ id: agreements.id })
       .from(agreements)
       .where(and(eq(agreements.orgId, this.orgId), eq(agreements.locationId, locationId)));
+    // Opportunities, for the assignee / category / work-type changes (Pass 25's `update`).
+    const locationOpportunities = await db
+      .select({ id: opportunities.id })
+      .from(opportunities)
+      .where(and(eq(opportunities.orgId, this.orgId), eq(opportunities.locationId, locationId)));
 
     const allRefs: Array<{ entityType: AuditEntityType; entityIds: string[] }> = [
       { entityType: "location", entityIds: [locationId] },
@@ -1144,6 +1198,7 @@ export class DatabaseStorage implements IStorage {
       { entityType: "payment", entityIds: locationPayments.map((payment) => payment.id) },
       { entityType: "credit_memo", entityIds: locationCredits.map((memo) => memo.id) },
       { entityType: "agreement", entityIds: locationAgreements.map((agreement) => agreement.id) },
+      { entityType: "opportunity", entityIds: locationOpportunities.map((opportunity) => opportunity.id) },
     ];
     const refs = allRefs.filter((ref) => ref.entityIds.length > 0);
 
@@ -1776,6 +1831,9 @@ export class DatabaseStorage implements IStorage {
       sourceServiceId: linkedService.id,
       sourceServiceRecordId: serviceRecord.id,
       serviceTypeId: linkedService.serviceTypeId || null,
+      source: "NON_CONTRACT_FOLLOW_UP",
+      // Pass 25: SERVICE_DUE / ONE_TIME - this path returns early for agreement work.
+      ...opportunityTaxonomyColumns("NON_CONTRACT_FOLLOW_UP", false),
       opportunityType: serviceType?.opportunityLabel || serviceType?.name || "Service Opportunity",
       dueDate: addDays(new Date(serviceRecord.serviceDate).toISOString().slice(0, 10), leadDays),
       status: "OPEN",
@@ -1959,6 +2017,8 @@ export class DatabaseStorage implements IStorage {
       sourceServiceId: service.id,
       serviceTypeId: agreement.serviceTypeId || null,
       source: "AGREEMENT_CONTACT_REQUIRED",
+      // Pass 25: SERVICE_DUE / AGREEMENT.
+      ...opportunityTaxonomyColumns("AGREEMENT_CONTACT_REQUIRED", true),
       opportunityType: agreement.serviceTemplateName || agreement.agreementName || "Agreement Service Contact",
       dueDate: cycleDate as any,
       nextActionDate: cycleDate as any,
@@ -3113,18 +3173,73 @@ export class DatabaseStorage implements IStorage {
     return communication;
   }
 
+  // Pass 25 (C4.1): the queue's search, every filter applied in SQL like
+  // listPayments. The location and zip filters are subqueries on `locations`
+  // rather than a join so the select stays the plain row every caller
+  // renders; the customer-name half of the location search goes one level
+  // deeper the same way. Ordering is unchanged: next action (else due)
+  // ascending, then created.
   async getOpportunities(filters: OpportunityFilters = {}): Promise<Opportunity[]> {
-    const conditions = [eq(opportunities.orgId, this.orgId)];
+    const conditions: SQL[] = [eq(opportunities.orgId, this.orgId)];
     if (filters.status) conditions.push(eq(opportunities.status, filters.status));
     if (filters.dueFrom) conditions.push(sql`coalesce(${opportunities.nextActionDate}, ${opportunities.dueDate}) >= ${filters.dueFrom}`);
     if (filters.dueTo) conditions.push(sql`coalesce(${opportunities.nextActionDate}, ${opportunities.dueDate}) <= ${filters.dueTo}`);
     if (filters.serviceTypeId) conditions.push(eq(opportunities.serviceTypeId, filters.serviceTypeId));
+    if (filters.categoryKey) conditions.push(eq(opportunities.categoryKey, filters.categoryKey));
+    if (filters.workType) conditions.push(eq(opportunities.workType, filters.workType));
+    if (filters.source) conditions.push(eq(opportunities.source, filters.source));
+    if (filters.assignedUserId === null) conditions.push(isNull(opportunities.assignedUserId));
+    else if (filters.assignedUserId) conditions.push(eq(opportunities.assignedUserId, filters.assignedUserId));
+    const zipPrefix = filters.zip?.trim();
+    if (zipPrefix) {
+      conditions.push(
+        inArray(
+          opportunities.locationId,
+          db
+            .select({ id: locations.id })
+            .from(locations)
+            .where(and(eq(locations.orgId, this.orgId), like(locations.zip, `${escapeLikePattern(zipPrefix)}%`))),
+        ),
+      );
+    }
+    const term = filters.location?.trim();
+    if (term) {
+      const pattern = `%${escapeLikePattern(term)}%`;
+      conditions.push(
+        inArray(
+          opportunities.locationId,
+          db
+            .select({ id: locations.id })
+            .from(locations)
+            .where(and(
+              eq(locations.orgId, this.orgId),
+              or(
+                ilike(locations.name, pattern),
+                ilike(locations.address, pattern),
+                ilike(locations.city, pattern),
+                inArray(
+                  locations.customerId,
+                  db
+                    .select({ id: customers.id })
+                    .from(customers)
+                    .where(and(eq(customers.orgId, this.orgId), or(ilike(sql`${customers.firstName} || ' ' || ${customers.lastName}`, pattern), ilike(customers.companyName, pattern)))),
+                ),
+              ),
+            )),
+        ),
+      );
+    }
 
     return db
       .select()
       .from(opportunities)
       .where(and(...conditions))
       .orderBy(sql`coalesce(${opportunities.nextActionDate}, ${opportunities.dueDate}) asc`, asc(opportunities.createdAt));
+  }
+
+  async getOpportunity(id: string): Promise<Opportunity | undefined> {
+    const [opportunity] = await db.select().from(opportunities).where(and(eq(opportunities.orgId, this.orgId), eq(opportunities.id, id)));
+    return opportunity;
   }
 
   async getOpportunitiesByLocation(locationId: string): Promise<Opportunity[]> {
@@ -3140,22 +3255,102 @@ export class DatabaseStorage implements IStorage {
     return opportunity;
   }
 
-  async updateOpportunity(id: string, data: Partial<InsertOpportunity>): Promise<Opportunity | undefined> {
-    const payload: Record<string, unknown> = {
-      ...data,
-      updatedAt: new Date(),
-    };
-    if (data.nextActionDate !== undefined) {
-      payload.nextActionDate = normalizeDateOnly(data.nextActionDate as any);
-    }
-    if (data.dueDate !== undefined) {
-      const normalizedDueDate = normalizeDateOnly(data.dueDate as any);
-      if (normalizedDueDate !== null) {
-        payload.dueDate = normalizedDueDate;
+  // Pass 25: the PATCH. Content (notes, the two dates), the taxonomy (a
+  // category must be an active key of this org's list; the work type is the
+  // enum, checked by the route) and the assignee (an active user of this org,
+  // or null to unassign; assignedAt stamped on every change; the route holds
+  // the ASSIGN_OPPORTUNITY gate). One audit `update` on the opportunity when
+  // the assignee, category or work type actually moved, the users named
+  // before and after so the History tab reads as people rather than ids - an
+  // unchanged field, or a notes-only edit, writes nothing.
+  async updateOpportunity(id: string, data: OpportunityUpdateInput, actor?: AuditActor): Promise<Opportunity | undefined> {
+    return db.transaction(async (tx) => {
+      const [existing] = await tx.select().from(opportunities).where(and(eq(opportunities.orgId, this.orgId), eq(opportunities.id, id)));
+      if (!existing) return undefined;
+
+      const payload: Record<string, unknown> = { updatedAt: new Date() };
+      if (data.notes !== undefined) payload.notes = data.notes;
+      if (data.nextActionDate !== undefined) {
+        payload.nextActionDate = normalizeDateOnly(data.nextActionDate as any);
       }
+      if (data.dueDate !== undefined) {
+        const normalizedDueDate = normalizeDateOnly(data.dueDate as any);
+        if (normalizedDueDate !== null) {
+          payload.dueDate = normalizedDueDate;
+        }
+      }
+      if (data.workType !== undefined) payload.workType = data.workType;
+      if (data.categoryKey !== undefined && data.categoryKey !== existing.categoryKey) {
+        await this.assertActiveOpportunityCategoryTx(tx, data.categoryKey);
+        payload.categoryKey = data.categoryKey;
+      }
+      if (data.assignedUserId !== undefined) {
+        const nextAssignee = data.assignedUserId || null;
+        if (nextAssignee !== (existing.assignedUserId ?? null)) {
+          await this.assertActiveOrgUserTx(tx, nextAssignee, "Assignee");
+          payload.assignedUserId = nextAssignee;
+          payload.assignedAt = nextAssignee ? new Date() : null;
+        }
+      }
+
+      const [updated] = await tx.update(opportunities).set(payload).where(and(eq(opportunities.orgId, this.orgId), eq(opportunities.id, id))).returning();
+      if (!updated) return undefined;
+
+      const before = await this.opportunityAuditSnapshotTx(tx, existing);
+      const after = await this.opportunityAuditSnapshotTx(tx, updated);
+      if (JSON.stringify(before) !== JSON.stringify(after)) {
+        await this.recordAuditLogTx(tx, {
+          entityType: "opportunity",
+          entityId: updated.id,
+          action: "update",
+          actor,
+          before,
+          after,
+        });
+      }
+      return updated;
+    });
+  }
+
+  // The slice of an opportunity an audit row snapshots: the assignee (id and
+  // name), when it was assigned, and the two taxonomy axes.
+  private async opportunityAuditSnapshotTx(reader: Pick<typeof db, "select">, row: Opportunity) {
+    return {
+      assignedUserId: row.assignedUserId ?? null,
+      assignedTo: await this.describeUserTx(reader, row.assignedUserId),
+      assignedAt: row.assignedAt ? new Date(row.assignedAt).toISOString() : null,
+      categoryKey: row.categoryKey,
+      workType: row.workType,
+    };
+  }
+
+  // An assignee must be a user of THIS org who can still log in. Null passes:
+  // it is how an opportunity is unassigned.
+  private async assertActiveOrgUserTx(reader: Pick<typeof db, "select">, userId: string | null | undefined, label: string): Promise<void> {
+    if (!userId) return;
+    const [user] = await reader.select({ id: users.id, status: users.status }).from(users).where(and(eq(users.orgId, this.orgId), eq(users.id, userId)));
+    if (!user) {
+      throw new Error(`${label} not found`);
     }
-    const [opportunity] = await db.update(opportunities).set(payload).where(and(eq(opportunities.orgId, this.orgId), eq(opportunities.id, id))).returning();
-    return opportunity;
+    if (user.status !== "active") {
+      throw new Error(`${label} must be an active user`);
+    }
+  }
+
+  // A hand-picked category must be one of this org's and active; a row that
+  // already carries a since-deactivated key keeps it (the check runs only on
+  // a change).
+  private async assertActiveOpportunityCategoryTx(reader: Pick<typeof db, "select">, key: string): Promise<void> {
+    const [category] = await reader
+      .select({ id: opportunityCategories.id, isActive: opportunityCategories.isActive })
+      .from(opportunityCategories)
+      .where(and(eq(opportunityCategories.orgId, this.orgId), eq(opportunityCategories.key, key)));
+    if (!category) {
+      throw new Error("Opportunity category not found");
+    }
+    if (!category.isActive) {
+      throw new Error("That opportunity category is inactive");
+    }
   }
 
   async getOpportunityDispositions(includeInactive = false): Promise<OpportunityDisposition[]> {
@@ -3174,6 +3369,34 @@ export class DatabaseStorage implements IStorage {
       .update(opportunityDispositions)
       .set({ ...data, updatedAt: new Date() })
       .where(and(eq(opportunityDispositions.orgId, this.orgId), eq(opportunityDispositions.id, id)))
+      .returning();
+    return item;
+  }
+
+  // Pass 25: the settings-managed category list, in sort order. The
+  // active-only read is what the queue's hand-pick offers; the full read is
+  // what Settings and the filters show, since a row may carry a key the
+  // office has since deactivated and the filter must still find it.
+  async getOpportunityCategories(includeInactive = false): Promise<OpportunityCategory[]> {
+    const items = await db
+      .select()
+      .from(opportunityCategories)
+      .where(eq(opportunityCategories.orgId, this.orgId))
+      .orderBy(asc(opportunityCategories.sortOrder), asc(opportunityCategories.label));
+    return includeInactive ? items : items.filter((item) => item.isActive);
+  }
+
+  // Label, order and the active flag only: the key is fixed (the five seeded
+  // keys, owner 2026-09-19) and nothing creates or deletes a row.
+  async updateOpportunityCategory(id: string, data: OpportunityCategoryUpdateInput): Promise<OpportunityCategory | undefined> {
+    const payload: Partial<InsertOpportunityCategory> & { updatedAt: Date } = { updatedAt: new Date() };
+    if (data.label !== undefined) payload.label = data.label.trim();
+    if (data.isActive !== undefined) payload.isActive = data.isActive;
+    if (data.sortOrder !== undefined) payload.sortOrder = data.sortOrder;
+    const [item] = await db
+      .update(opportunityCategories)
+      .set(payload)
+      .where(and(eq(opportunityCategories.orgId, this.orgId), eq(opportunityCategories.id, id)))
       .returning();
     return item;
   }
@@ -3657,6 +3880,8 @@ export class DatabaseStorage implements IStorage {
             agreementId: agreement.id,
             serviceTypeId: agreement.serviceTypeId || null,
             source: "AGREEMENT_CANCELLATION_RETENTION",
+            // Pass 25: RETENTION / AGREEMENT.
+            ...opportunityTaxonomyColumns("AGREEMENT_CANCELLATION_RETENTION", true),
             opportunityType: "Agreement Cancellation Retention",
             dueDate: nextActionDate as any,
             nextActionDate: nextActionDate as any,
@@ -3959,6 +4184,8 @@ export class DatabaseStorage implements IStorage {
             serviceTypeId: service.serviceTypeId || null,
             opportunityType: input.rescheduleRequested ? "Appointment Reschedule" : "Canceled Appointment Review",
             source,
+            // Pass 25: RESCHEDULE, the work type from the service being requeued.
+            ...opportunityTaxonomyColumns(source, !!service.agreementId),
             dueDate: today,
             nextActionDate: today,
             status: "OPEN",
