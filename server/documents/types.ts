@@ -3,6 +3,8 @@
 // passed in, so the renderers stay deterministic and easy to test: the
 // same context always produces the same HTML string / PDF bytes.
 
+import type { AccountStatement, LocationStatement, ZeroBalanceLetter } from "@shared/statements";
+
 export interface InvoiceDocumentLineItem {
   description: string;
   quantity: number;
@@ -56,3 +58,34 @@ export interface InvoiceDocumentContext {
   notes: string | null;
   branding: InvoiceDocumentBranding;
 }
+
+// ---------------------------------------------------------------------------
+// Statements (PLAN_ROADMAP_V2.md C2.5, Pass 15). The same pattern: storage
+// assembles the context once (generateLocationStatement /
+// generateAccountStatement / generateZeroBalanceLetter in storage.ts) from
+// the ledger's rows through the pure summarizers in shared/statements.ts,
+// and renderStatementPdf turns it into bytes. Nothing here is a live join:
+// the figures are the ledger as it stood at generation, and the parties are
+// resolved once, so a stored statement reproduces byte for byte.
+// ---------------------------------------------------------------------------
+
+/** A party as a statement prints it: a name and a one-line address. */
+export interface StatementDocumentParty {
+  name: string;
+  address: string | null;
+}
+
+interface StatementDocumentBase {
+  /** The UTC day the statement was generated - printed as the statement date, and what the PDF's dates are pinned to. */
+  statementDate: string;
+  /** The customer's display name (company first). */
+  customerName: string;
+  /** Who the statement is addressed to - the invoice's Bill To rule (Pass 11c): the billing profile's address, else a location override's own, else the primary location's. */
+  billTo: StatementDocumentParty;
+  branding: InvoiceDocumentBranding;
+}
+
+export type StatementDocumentContext =
+  | (StatementDocumentBase & { variant: "LOCATION"; location: StatementDocumentParty; statement: LocationStatement })
+  | (StatementDocumentBase & { variant: "ACCOUNT"; statement: AccountStatement })
+  | (StatementDocumentBase & { variant: "ZERO_BALANCE_LETTER"; location: StatementDocumentParty; letter: ZeroBalanceLetter });

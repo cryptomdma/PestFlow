@@ -59,6 +59,7 @@ import { InitialChargeFormFields, initialChargeFieldsFrom, initialChargeFormStat
 import { InitialChargeDuePrompt, type WithInitialChargeDue } from "@/components/initial-charge-due-prompt";
 import { InvoiceRowLedger, LocationLedgerPanel } from "@/components/location-ledger-panel";
 import { InvoiceDetailDialog } from "@/components/invoice-detail-dialog";
+import { StatementDialog } from "@/components/statement-dialog";
 import { CustomerAgingChips, LocationAgingStrip } from "@/components/aging-strip";
 import type { CustomerAging } from "@shared/aging";
 import { InvoiceStatusBadge } from "@/components/invoice-status-badge";
@@ -3444,6 +3445,11 @@ export default function CustomerDetail() {
   const [editLocDialogOpen, setEditLocDialogOpen] = useState(false);
   const [contactDialogOpen, setContactDialogOpen] = useState(false);
   const [editingContact, setEditingContact] = useState<Contact | null>(null);
+  // Pass 15 (C2.5): the account statement across every location, from the
+  // header - gated as the location's Statement button is (GENERATE_INVOICE).
+  const [statementOpen, setStatementOpen] = useState(false);
+  const { user: sessionUser } = useAuth();
+  const canStatement = can(sessionUser?.role ?? "", PERMISSIONS.GENERATE_INVOICE);
   const [activeTab, setActiveTab] = useState("contacts");
   const requestedTab = searchParams.get("tab");
 
@@ -3786,6 +3792,24 @@ export default function CustomerDetail() {
             <DialogTrigger asChild><Button variant="outline" size="sm" data-testid="button-add-location"><Plus className="h-3 w-3 mr-1" /> Add Location</Button></DialogTrigger>
             <DialogContent className="max-w-xl"><DialogHeader><DialogTitle>Add Location</DialogTitle></DialogHeader><AddLocationDialog customerId={customerId} customerType={customer?.customerType ?? "residential"} onClose={() => setLocDialogOpen(false)} /></DialogContent>
           </Dialog>
+          {canStatement ? (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setStatementOpen(true)}
+              title="An account statement across every location of this customer - one section per location and a rollup"
+              data-testid="button-account-statement"
+            >
+              <FileText className="h-3 w-3 mr-1" /> Statement
+            </Button>
+          ) : null}
+          <StatementDialog
+            open={statementOpen}
+            onOpenChange={setStatementOpen}
+            customerId={customerId}
+            customerLabel={customerDisplayName}
+            scope={{ kind: "account", locationCount: allLocations?.length ?? 0 }}
+          />
         </div>
 
         {/* Active Location Profile */}
@@ -4009,7 +4033,7 @@ export default function CustomerDetail() {
           </TabsContent>
 
           <TabsContent value="invoices" className="mt-4 space-y-3">
-            <LocationLedgerPanel customerId={customerId} locationId={activeLocationId} invoices={locationInvoices ?? []} agreements={locationAgreements} onOpenInvoice={openInvoice} />
+            <LocationLedgerPanel customerId={customerId} locationId={activeLocationId} locationLabel={activeLocationLabel} invoices={locationInvoices ?? []} agreements={locationAgreements} onOpenInvoice={openInvoice} />
             {!locationInvoices || locationInvoices.length === 0 ? (
               <Card><CardContent className="text-center py-8"><FileText className="h-8 w-8 mx-auto text-muted-foreground/30 mb-2" /><p className="text-sm text-muted-foreground">No invoices for this location</p></CardContent></Card>
             ) : [...locationInvoices].sort((a, b) => new Date(b.issuedAt ?? b.createdAt).getTime() - new Date(a.issuedAt ?? a.createdAt).getTime()).map((inv) => (

@@ -66,8 +66,25 @@ import { eq, and, or, inArray, notInArray, sql, gt, gte, lte, lt, asc, desc, ne,
 import type { AuditAction, AuditEntityType } from "@shared/audit";
 import { PLACEHOLDER_LOCATION_NAME, PLACEHOLDER_LOCATION_NOTE } from "./account-bootstrap";
 import { createHash } from "crypto";
-import type { InvoiceDocumentContext } from "./documents/types";
+import type { InvoiceDocumentBranding, InvoiceDocumentContext, StatementDocumentContext, StatementDocumentParty } from "./documents/types";
 import { renderInvoicePdf } from "./documents/invoice-pdf";
+import { renderStatementPdf } from "./documents/statement-pdf";
+import {
+  buildZeroBalanceLetter,
+  LOCATION_HAS_BALANCE,
+  summarizeAccountStatement,
+  summarizeLocationStatement,
+  zeroBalanceLetterRefusal,
+  type AccountStatement,
+  type LocationStatement,
+  type StatementGenerateResult,
+  type StatementInfo,
+  type StatementLedgerInput,
+  type StatementPeriod,
+  type StatementVariant,
+  type ZeroBalanceLetter,
+  type ZeroBalanceLetterAgreement,
+} from "@shared/statements";
 import { can, PERMISSIONS, type UserRole } from "@shared/permissions";
 import { isTicketFinalized, isTicketInOfficeReview } from "@shared/ticket-status";
 import { computeProductionValueCents } from "@shared/production-value";
@@ -471,6 +488,16 @@ export class AppointmentDispositionError extends Error {
   constructor(readonly status: 400 | 409, readonly code: string, message: string) {
     super(message);
     this.name = "AppointmentDispositionError";
+  }
+}
+
+// Pass 15 (PLAN_ROADMAP_V2.md C2.5): a paid-in-full letter asked of a
+// location that still owes something. The route answers 409 with the code
+// and the balance; the office generates a location statement instead.
+export class StatementRefusedError extends Error {
+  constructor(readonly code: string, message: string, readonly balanceDueCents: number) {
+    super(message);
+    this.name = "StatementRefusedError";
   }
 }
 
@@ -972,6 +999,24 @@ export interface IStorage {
   getInvoiceDocumentContext(invoiceId: string): Promise<InvoiceDocumentContext | undefined>;
   getOrCreateInvoiceDocument(invoiceId: string): Promise<Document | undefined>;
   getDocument(id: string): Promise<Document | undefined>;
+
+  // Statements (PLAN_ROADMAP_V2.md C2.5, Pass 15). Each generate renders the
+  // document and stores one `documents` row of kind STATEMENT - on request
+  // only, one row per generation, never re-rendered in place - and answers
+  // the row's info plus the figures it printed. Undefined outside the org.
+  /** A location's period roll-up: opening balance, the period's lines, closing balance, the aging strip as of the period's end. */
+  generateLocationStatement(locationId: string, period: StatementPeriod, actor?: AuditActor | null): Promise<StatementGenerateResult<LocationStatement> | undefined>;
+  /** The same across every location of the customer (the property-manager case), one section per location and a rollup. */
+  generateAccountStatement(customerId: string, period: StatementPeriod, actor?: AuditActor | null): Promise<StatementGenerateResult<AccountStatement> | undefined>;
+  /** The paid-in-full / zero-balance letter with the location's agreements. Throws StatementRefusedError when the location still owes something. */
+  generateZeroBalanceLetter(locationId: string, actor?: AuditActor | null): Promise<StatementGenerateResult<ZeroBalanceLetter> | undefined>;
+  /** The location's own statements and letters, newest first. */
+  listStatementsByLocation(locationId: string): Promise<StatementInfo[]>;
+  /** Every statement for the customer - account-wide and per location - newest first. */
+  listStatementsByCustomer(customerId: string): Promise<StatementInfo[]>;
+  getStatement(id: string): Promise<StatementInfo | undefined>;
+  /** The stored row with its bytes; undefined for an id that is not a STATEMENT document of the org. */
+  getStatementDocument(id: string): Promise<Document | undefined>;
 
   getTaxRates(includeInactive?: boolean): Promise<TaxRate[]>;
   createTaxRate(data: InsertTaxRate): Promise<TaxRate>;
@@ -9166,6 +9211,13 @@ export class DatabaseStorage implements IStorage {
         orgId: this.orgId,
         kind: "INVOICE",
         invoiceId,
+        statementVariant: null,
+        customerId: null,
+        locationId: null,
+        periodFrom: null,
+        periodTo: null,
+        generatedByUserId: null,
+        generatedByLabel: null,
         contentHash,
         contentBase64,
         mimeType: "application/pdf",
@@ -9203,6 +9255,333 @@ export class DatabaseStorage implements IStorage {
   async getDocument(id: string): Promise<Document | undefined> {
     const [doc] = await db.select().from(documents).where(and(eq(documents.orgId, this.orgId), eq(documents.id, id)));
     return doc;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Statements (PLAN_ROADMAP_V2.md C2.5, Pass 15; B5). The invoice document's
+  // pattern: storage assembles the context once - the customer's ledger rows
+  // handed to the pure summarizers in shared/statements.ts, the parties
+  // resolved by the invoice's own Bill To rule (Pass 11c), the org's
+  // branding - and renderStatementPdf turns it into bytes that are stored
+  // as one `documents` row of kind STATEMENT with the statement's identity
+  // (variant, customer, location, period, who asked). On request only:
+  // nothing here runs on a schedule, and a stored statement is never
+  // re-rendered - a second request is a second row, byte-identical when the
+  // ledger has not moved, so what the office sent can always be reproduced.
+  // ---------------------------------------------------------------------------
+
+  private statementInfoOf(row: Omit<Document, "contentBase64">): StatementInfo {
+    return {
+      id: row.id,
+      variant: (row.statementVariant ?? "LOCATION") as StatementVariant,
+      customerId: row.customerId ?? "",
+      locationId: row.locationId ?? null,
+      periodFrom: row.periodFrom ?? null,
+      periodTo: row.periodTo ?? row.createdAt.toISOString().slice(0, 10),
+      generatedAt: row.createdAt.toISOString(),
+      generatedByLabel: row.generatedByLabel ?? null,
+      contentHash: row.contentHash,
+      mimeType: row.mimeType,
+    };
+  }
+
+  private readonly statementInfoColumns = {
+    id: documents.id,
+    orgId: documents.orgId,
+    kind: documents.kind,
+    invoiceId: documents.invoiceId,
+    statementVariant: documents.statementVariant,
+    customerId: documents.customerId,
+    locationId: documents.locationId,
+    periodFrom: documents.periodFrom,
+    periodTo: documents.periodTo,
+    generatedByUserId: documents.generatedByUserId,
+    generatedByLabel: documents.generatedByLabel,
+    contentHash: documents.contentHash,
+    mimeType: documents.mimeType,
+    createdAt: documents.createdAt,
+  };
+
+  private documentBrandingOf(org: Organization | undefined): InvoiceDocumentBranding {
+    return {
+      orgName: org?.name ?? "PestFlow",
+      logoUrl: org?.logoUrl ?? null,
+      primaryColorHex: org?.primaryColorHex ?? null,
+      remitToName: org?.remitToName ?? null,
+      remitToAddress: org?.remitToAddress ?? null,
+      remitToEmail: org?.remitToEmail ?? null,
+      remitToPhone: org?.remitToPhone ?? null,
+    };
+  }
+
+  private customerDisplayName(customer: Customer | undefined): string {
+    if (!customer) return "Customer";
+    return customer.companyName?.trim() || `${customer.firstName} ${customer.lastName}`.trim() || "Customer";
+  }
+
+  // The customer's whole ledger as the summarizers want it: every invoice
+  // (with its first line's description as the statement's summary of it),
+  // every payment and credit memo, and every application to the customer's
+  // invoices - an application is fenced to its invoice's location, so this
+  // is also every application of the customer's payments and memos. The
+  // summarizer scopes the rows to a location; it does not re-fetch.
+  private async statementLedgerForCustomerTx(reader: DbReader, customerId: string): Promise<StatementLedgerInput> {
+    const invoiceRows = await reader.select().from(invoices).where(and(eq(invoices.orgId, this.orgId), eq(invoices.customerId, customerId)));
+    const invoiceIds = invoiceRows.map((invoice) => invoice.id);
+    const lineRows = invoiceIds.length
+      ? await reader
+          .select({ invoiceId: invoiceLineItems.invoiceId, description: invoiceLineItems.description, sortOrder: invoiceLineItems.sortOrder })
+          .from(invoiceLineItems)
+          .where(and(eq(invoiceLineItems.orgId, this.orgId), inArray(invoiceLineItems.invoiceId, invoiceIds)))
+          .orderBy(asc(invoiceLineItems.sortOrder))
+      : [];
+    const descriptionsByInvoice = new Map<string, string[]>();
+    for (const line of lineRows) {
+      const list = descriptionsByInvoice.get(line.invoiceId) ?? [];
+      list.push(line.description);
+      descriptionsByInvoice.set(line.invoiceId, list);
+    }
+    const paymentRows = await reader.select().from(payments).where(and(eq(payments.orgId, this.orgId), eq(payments.customerId, customerId)));
+    const creditRows = await reader.select().from(creditMemos).where(and(eq(creditMemos.orgId, this.orgId), eq(creditMemos.customerId, customerId)));
+    const paymentApplicationRows = invoiceIds.length
+      ? await reader.select().from(paymentApplications).where(and(eq(paymentApplications.orgId, this.orgId), inArray(paymentApplications.invoiceId, invoiceIds)))
+      : [];
+    const creditApplicationRows = invoiceIds.length
+      ? await reader.select().from(creditApplications).where(and(eq(creditApplications.orgId, this.orgId), inArray(creditApplications.invoiceId, invoiceIds)))
+      : [];
+    return {
+      invoices: invoiceRows.map((invoice) => {
+        const descriptions = descriptionsByInvoice.get(invoice.id) ?? [];
+        return {
+          id: invoice.id,
+          invoiceNumber: invoice.invoiceNumber,
+          customerId: invoice.customerId,
+          locationId: invoice.locationId ?? null,
+          status: invoice.status,
+          issuedAt: invoice.issuedAt ?? null,
+          totalAmountCents: invoice.totalAmountCents,
+          summary: descriptions.length ? `${descriptions[0]}${descriptions.length > 1 ? ` (+${descriptions.length - 1} more)` : ""}` : null,
+        };
+      }),
+      payments: paymentRows.map((payment) => ({
+        id: payment.id,
+        customerId: payment.customerId,
+        locationId: payment.locationId,
+        status: payment.status,
+        method: payment.method,
+        checkNumber: payment.checkNumber ?? null,
+        referenceNumber: payment.referenceNumber ?? null,
+        amountCents: payment.amountCents,
+        receivedAt: payment.receivedAt,
+        refundedAt: payment.refundedAt ?? null,
+      })),
+      creditMemos: creditRows.map((memo) => ({
+        id: memo.id,
+        customerId: memo.customerId,
+        locationId: memo.locationId,
+        status: memo.status,
+        reasonCode: memo.reasonCode,
+        amountCents: memo.amountCents,
+        issuedAt: memo.issuedAt,
+      })),
+      applications: [
+        ...paymentApplicationRows.map((row) => ({
+          id: row.id,
+          sourceKind: "payment" as const,
+          sourceId: row.paymentId,
+          invoiceId: row.invoiceId,
+          amountCents: row.amountCents,
+          appliedAt: row.appliedAt,
+          released: row.released,
+        })),
+        ...creditApplicationRows.map((row) => ({
+          id: row.id,
+          sourceKind: "credit_memo" as const,
+          sourceId: row.creditMemoId,
+          invoiceId: row.invoiceId,
+          amountCents: row.amountCents,
+          appliedAt: row.appliedAt,
+          released: row.released,
+        })),
+      ],
+    };
+  }
+
+  // Who the statement is addressed to: the invoice's Bill To rule (Pass
+  // 11c) - the billing profile's address, else a location override's own,
+  // else the customer's primary location's - resolved now rather than
+  // frozen earlier, since a statement is generated on request from the
+  // ledger as it stands.
+  private async statementBillToTx(reader: DbReader, location: Location): Promise<StatementDocumentParty> {
+    const profile = (await this.resolveBillingProfileForLocation(location.id)) ?? null;
+    const parties = await this.resolveInvoicePartiesTx(reader, location, profile);
+    return { name: parties.billTo.name, address: parties.billTo.address };
+  }
+
+  private async storeStatementDocument(input: {
+    variant: StatementVariant;
+    customerId: string;
+    locationId: string | null;
+    periodFrom: string | null;
+    periodTo: string;
+    context: StatementDocumentContext;
+    actor?: AuditActor | null;
+  }): Promise<StatementInfo> {
+    const pdfBuffer = await renderStatementPdf(input.context);
+    const [row] = await db
+      .insert(documents)
+      .values({
+        orgId: this.orgId,
+        kind: "STATEMENT",
+        invoiceId: null,
+        statementVariant: input.variant,
+        customerId: input.customerId,
+        locationId: input.locationId,
+        periodFrom: input.periodFrom,
+        periodTo: input.periodTo,
+        generatedByUserId: input.actor?.userId ?? null,
+        generatedByLabel: input.actor?.actorLabel ?? null,
+        contentHash: createHash("sha256").update(pdfBuffer).digest("hex"),
+        contentBase64: pdfBuffer.toString("base64"),
+        mimeType: "application/pdf",
+      })
+      .returning();
+    return this.statementInfoOf(row);
+  }
+
+  async generateLocationStatement(locationId: string, period: StatementPeriod, actor?: AuditActor | null): Promise<StatementGenerateResult<LocationStatement> | undefined> {
+    const location = await this.getLocation(locationId);
+    if (!location) {
+      return undefined;
+    }
+    const [customer] = await db.select().from(customers).where(and(eq(customers.orgId, this.orgId), eq(customers.id, location.customerId)));
+    const [org] = await db.select().from(organizations).where(eq(organizations.id, this.orgId));
+    const ledger = await this.statementLedgerForCustomerTx(db, location.customerId);
+    const data = summarizeLocationStatement(ledger, location.id, period);
+    const context: StatementDocumentContext = {
+      variant: "LOCATION",
+      statementDate: agingAsOf(),
+      customerName: this.customerDisplayName(customer),
+      billTo: await this.statementBillToTx(db, location),
+      location: describeServiceLocation(location),
+      statement: data,
+      branding: this.documentBrandingOf(org),
+    };
+    const statement = await this.storeStatementDocument({ variant: "LOCATION", customerId: location.customerId, locationId: location.id, periodFrom: period.from, periodTo: period.to, context, actor });
+    return { statement, data };
+  }
+
+  // Keyed on the CUSTOMER, as the aging rollup is: the canonical Account
+  // (accounts, one per customer today) has no screen and no read of its own,
+  // and locations.accountId and locations.customerId select the same rows.
+  // The customer header is the surface, so the customer is the key.
+  async generateAccountStatement(customerId: string, period: StatementPeriod, actor?: AuditActor | null): Promise<StatementGenerateResult<AccountStatement> | undefined> {
+    const [customer] = await db.select().from(customers).where(and(eq(customers.orgId, this.orgId), eq(customers.id, customerId)));
+    if (!customer) {
+      return undefined;
+    }
+    const [org] = await db.select().from(organizations).where(eq(organizations.id, this.orgId));
+    const customerLocations = await this.getLocations(customerId);
+    const ledger = await this.statementLedgerForCustomerTx(db, customerId);
+    const data = summarizeAccountStatement(
+      ledger,
+      customerId,
+      customerLocations.map((location) => ({ id: location.id, name: location.name.trim() || null, address: formatLocationAddress(location), isPrimary: !!location.isPrimary })),
+      period,
+    );
+    const customerName = this.customerDisplayName(customer);
+    const anchor = customerLocations.find((location) => location.isPrimary) ?? customerLocations[0];
+    const primary = anchor ? await this.getPrimaryLocationTx(db, anchor) : undefined;
+    const context: StatementDocumentContext = {
+      variant: "ACCOUNT",
+      statementDate: agingAsOf(),
+      customerName,
+      billTo: primary ? await this.statementBillToTx(db, primary) : { name: customerName, address: null },
+      statement: data,
+      branding: this.documentBrandingOf(org),
+    };
+    const statement = await this.storeStatementDocument({ variant: "ACCOUNT", customerId, locationId: null, periodFrom: period.from, periodTo: period.to, context, actor });
+    return { statement, data };
+  }
+
+  // Refused, not reworded, when the location still owes something (see
+  // zeroBalanceLetterRefusal): the office generates a location statement
+  // for a balance due. The agreements are listed with their status as they
+  // stand - ACTIVE and CANCELLED in the data today; canon §9 also names
+  // PAUSED and EXPIRED, which the label helper already knows.
+  async generateZeroBalanceLetter(locationId: string, actor?: AuditActor | null): Promise<StatementGenerateResult<ZeroBalanceLetter> | undefined> {
+    const location = await this.getLocation(locationId);
+    if (!location) {
+      return undefined;
+    }
+    const [customer] = await db.select().from(customers).where(and(eq(customers.orgId, this.orgId), eq(customers.id, location.customerId)));
+    const [org] = await db.select().from(organizations).where(eq(organizations.id, this.orgId));
+    const ledger = await this.statementLedgerForCustomerTx(db, location.customerId);
+    const agreementRows = await this.getAgreementsByLocation(location.id);
+    const serviceTypeIds = Array.from(new Set(agreementRows.map((agreement) => agreement.serviceTypeId).filter((id): id is string => !!id)));
+    const serviceTypeRows = serviceTypeIds.length
+      ? await db.select({ id: serviceTypes.id, name: serviceTypes.name }).from(serviceTypes).where(and(eq(serviceTypes.orgId, this.orgId), inArray(serviceTypes.id, serviceTypeIds)))
+      : [];
+    const serviceTypeNameById = new Map(serviceTypeRows.map((row) => [row.id, row.name]));
+    const agreementsForLetter: ZeroBalanceLetterAgreement[] = agreementRows.map((agreement) => ({
+      id: agreement.id,
+      agreementName: agreement.agreementName,
+      status: agreement.status,
+      serviceTypeName: (agreement.serviceTypeId ? serviceTypeNameById.get(agreement.serviceTypeId) : undefined) ?? agreement.serviceTemplateName ?? null,
+      startDate: String(agreement.startDate),
+      renewalDate: agreement.renewalDate ? String(agreement.renewalDate) : null,
+      nextServiceDate: agreement.nextServiceDate ? String(agreement.nextServiceDate) : null,
+      cancelledAt: agreement.cancelledAt ? agreement.cancelledAt.toISOString() : null,
+      cancellationEffectiveDate: agreement.cancellationEffectiveDate ? String(agreement.cancellationEffectiveDate) : null,
+    }));
+    const asOf = agingAsOf();
+    const data = buildZeroBalanceLetter(ledger, location.id, asOf, agreementsForLetter);
+    const refusal = zeroBalanceLetterRefusal(data);
+    if (refusal) {
+      throw new StatementRefusedError(LOCATION_HAS_BALANCE, refusal, data.openBalanceCents);
+    }
+    const context: StatementDocumentContext = {
+      variant: "ZERO_BALANCE_LETTER",
+      statementDate: asOf,
+      customerName: this.customerDisplayName(customer),
+      billTo: await this.statementBillToTx(db, location),
+      location: describeServiceLocation(location),
+      letter: data,
+      branding: this.documentBrandingOf(org),
+    };
+    const statement = await this.storeStatementDocument({ variant: "ZERO_BALANCE_LETTER", customerId: location.customerId, locationId: location.id, periodFrom: null, periodTo: asOf, context, actor });
+    return { statement, data };
+  }
+
+  async listStatementsByLocation(locationId: string): Promise<StatementInfo[]> {
+    const rows = await db
+      .select(this.statementInfoColumns)
+      .from(documents)
+      .where(and(eq(documents.orgId, this.orgId), eq(documents.kind, "STATEMENT"), eq(documents.locationId, locationId)))
+      .orderBy(desc(documents.createdAt));
+    return rows.map((row) => this.statementInfoOf(row));
+  }
+
+  async listStatementsByCustomer(customerId: string): Promise<StatementInfo[]> {
+    const rows = await db
+      .select(this.statementInfoColumns)
+      .from(documents)
+      .where(and(eq(documents.orgId, this.orgId), eq(documents.kind, "STATEMENT"), eq(documents.customerId, customerId)))
+      .orderBy(desc(documents.createdAt));
+    return rows.map((row) => this.statementInfoOf(row));
+  }
+
+  async getStatement(id: string): Promise<StatementInfo | undefined> {
+    const [row] = await db
+      .select(this.statementInfoColumns)
+      .from(documents)
+      .where(and(eq(documents.orgId, this.orgId), eq(documents.kind, "STATEMENT"), eq(documents.id, id)));
+    return row ? this.statementInfoOf(row) : undefined;
+  }
+
+  async getStatementDocument(id: string): Promise<Document | undefined> {
+    const [row] = await db.select().from(documents).where(and(eq(documents.orgId, this.orgId), eq(documents.kind, "STATEMENT"), eq(documents.id, id)));
+    return row;
   }
 
   async getCommunications(customerId: string): Promise<Communication[]> {

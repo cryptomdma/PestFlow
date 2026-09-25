@@ -57,7 +57,7 @@ are calibrated to Phase 1's: Pass 6 (four tables, routes, three dialogs) is the 
 | Billing Plans tied to agreement templates, replacing billing frequency | DONE | Pass 3.5 selector, Pass 9 column drop |
 | Billing profile changeable from the customer screen (edit / add location) | ABSENT | no selector in either dialog; only a "Billing Override" badge (`customer-detail.tsx:3633,3659`). Resolution exists server-side: `resolveBillingProfileForLocation()` (`storage.ts:2522`) location override → account default |
 | Default billing profile option in Settings | ABSENT | `customers.defaultBillingProfileId` exists (`schema.ts:20`) with no UI; no org-level default |
-| "Monthly billing" in template invoice terms | **MISREAD** | terms are `DUE_ON_RECEIPT / NET_15 / NET_30 / NET_60` (`settings.tsx:423-432`); monthly cadence is a Billing Plan, not a term. See B5. |
+| "Monthly billing" in template invoice terms | **MISREAD**; the statement B5 asked for instead is DONE — Pass 15 (2026-09-25) | terms are `DUE_ON_RECEIPT / NET_15 / NET_30 / NET_60` (`settings.tsx:423-432`); monthly cadence is a Billing Plan, not a term. See B5. The statement: `shared/statements.ts` (the arithmetic), `server/documents/statement-pdf.ts` (the document), `StatementDialog` on the location Invoices tab and the customer header. See "Shipped in Pass 15" at the end of Part D. |
 | Agreement Type as a dropdown | ABSENT | free-text `Input` at `settings.tsx:1130`; `agreements.agreementType` is untyped text; seed holds "Residential Recurring" etc. |
 
 ### A2. Invoices, ticket review, services
@@ -353,7 +353,7 @@ by name; `CURRENT_FOCUS.md`'s unscheduled list points at them.
 | C2.2 (**Pass 12**) — **done** (`feature/phase-2-billing-plan-required-sold-by`, 2026-09-23; see "Shipped in Pass 12" at the end of Part D) | **Billing Plan required on every Agreement + sale attribution.** Backfill the 11, `billingPlanId NOT NULL` + zod; `agreements.soldByUserId` — a `users` FK (owner: one identity table for techs and office), defaulting to the session user at creation, changed only under a new `ASSIGN_SALE_CREDIT` (manager+), audit `update`; template propagation untouched. `technicians` has no link to `users` today (`schema.ts:160-172`), so the same pass adds a nullable `technicians.userId` bridge; the full merge is C5.7. | Compensation basis (CURRENT_FOCUS) | — | Answered 2026-09-19: attach the billing plan named **Monthly Recurring** to all 11 — the 9 `Quarterly Control` rows (monthly billing for a quarterly program, the industry norm; the marked "Monthly" line in `notes` is deleted once attached) and the 2 Wildlife rows, whose term is already past its end, so Pass 3.5's attach rule starts no schedule and bills nothing. The 4 CANCELLED rows attach for the constraint only. The pass prints the per-row effect (`nextBillingDate` or the refusal) before committing. **Built as decided** (the DB had 5 CANCELLED rows, not 4; the 4 ACTIVE rows anchored on 2026-09-24, the Wildlife rows refused at their term end, nothing else asked). |
 | C2.3 (**Pass 13**) — **done** (`feature/phase-2-batch-invoice-and-draft`, 2026-09-24; see "Shipped in Pass 13" at the end of Part D) | **Batch Invoice moves to the Invoices screen**; range labelled "posted between"; group by technician then service date (a "route" is technician × day — `appointments` carry no route columns); technician filter passed to preview **and generate**; the preview shows the down payment generate will bill (the Pass 11d gap); Send All stays; Ticket Review loses the button. **New Invoice is removed** (owner); the screen gains **"Draft invoice for a visit"** (customer → location → un-invoiced appointment → `createDraftInvoiceForAppointment`); the manual path survives only as **"Add fee / adjustment"** on the location ledger panel (owner, B6); `createManualInvoice` keeps requiring a location and defaults a blank due date from the location's billing terms. | Move Batch Invoice (×2), batch by route/tech, sort by date, New Invoice → Draft | C2.1a (result rows open the modal) | — |
 | C2.4 (**Pass 14**) — **done** (`feature/phase-2-aging-and-balances`, 2026-09-24; see "Shipped in Pass 14" at the end of Part D) | **Aging and balances on the customer screen.** Derived reads: `GET /api/customers/:id/aging` (per location + rollup) and `GET /api/reports/aging` (org-wide); buckets **Current (0-30) / 31-60 / 61-90 / Over 90 days since invoiced** (`issuedAt`, B20) over issued open balances, pending-applied and on-account shown beside, never netted. Header card: the customer-wide open balance, on-account figure and oldest bucket sit beside the primary-location chip; location profile card: the location's strip below `LocationNotesPanel`, its invoices opening the modal; Reports: an Aging **section** (the page has no tabs - owner's handoff of 2026-09-24), every row linking to the customer screen. Both reads open to any authenticated role, like every invoice read (the reasoning is in the shipped record). Nothing stored; UTC days like every other date-only value. | Aging report, customer balance at top with primary location info, location balance below notes | C2.1a (bucket rows open the modal) | — |
-| C2.5 (**Pass 15**) | **Statements.** Location statement (period roll-up: opening balance, invoices, payments, credits, closing balance, aging strip) and **account statement** (the same across every location of the account — the property-manager case) through the existing renderer, stored like invoices; a **paid-in-full / zero-balance letter** variant with agreement status for a home sale; Open / Download from the location Invoices tab and the customer header; on request only (a scheduled monthly statement is a later Settings toggle); delivery arrives with C6.3. | B5 (statements for commercial, property managers, home sale) | C2.4 | — |
+| C2.5 (**Pass 15**) — **done** (`feature/phase-2-statements`, 2026-09-25; see "Shipped in Pass 15" at the end of Part D) | **Statements.** Location statement (period roll-up: opening balance, invoices, payments, credits, closing balance, aging strip) and **account statement** (the same across every location of the account — the property-manager case) through the existing renderer, stored like invoices; a **paid-in-full / zero-balance letter** variant with agreement status for a home sale; Open / Download from the location Invoices tab and the customer header; on request only (a scheduled monthly statement is a later Settings toggle); delivery arrives with C6.3. | B5 (statements for commercial, property managers, home sale) | C2.4 | — |
 
 ### Phase 3 — Ticket integrity and the field workflow
 
@@ -1638,6 +1638,162 @@ Behavior worth knowing before the next pass touches it:
   in a browser** - the repo has no browser automation and this session had no browser - so the board
   without its red cards, the two dialogs closing on completion and the deep-link toast reach the owner
   first.
+
+---
+
+**Shipped in Pass 15** (`feature/phase-2-statements`, 2026-09-25) — the C2.5 row as built, plus
+what it found.
+
+```ts
+// shared/statements.ts (new) - the statement's vocabulary and arithmetic, pure, read by the server, the dialog and a scratchpad script
+STATEMENT_VARIANTS = ["LOCATION", "ACCOUNT", "ZERO_BALANCE_LETTER"]; STATEMENT_VARIANT_LABELS; LOCATION_HAS_BALANCE
+isUtcDay(value) / defaultStatementPeriod(now) / STATEMENT_EPOCH   // inclusive UTC days, a real YYYY-MM-DD; month to date by default
+summarizeLocationStatement(ledger, locationId | null, { from, to })
+                                                // -> LocationStatement: opening (invoices issued before the period less the counted
+                                                //    applications made before it), the period's lines in date order, closing = opening +
+                                                //    charges - credits, on account / pending beside (never netted), aging as of `to`
+                                                //    from the same rows cut off at the period's end, the open invoices behind it
+summarizeAccountStatement(ledger, customerId, locations, period)
+                                                // -> AccountStatement: a section per location (primary first, then as given) plus a
+                                                //    no-location section when an issued invoice carries none; figures summed; rollupAging
+buildZeroBalanceLetter(ledger, locationId, asOf, agreements) / zeroBalanceLetterRefusal(letter)
+                                                // everything to date as of one day; refused - never reworded - while a balance remains
+compareStatementLines / compareLetterAgreements / describeStatementPeriod(info) / statementFileName(info) / describeAgreementStatus(status)
+interface StatementLine { kind: INVOICE | PAYMENT_APPLIED | CREDIT_APPLIED | PAYMENT_ON_ACCOUNT | CREDIT_ON_ACCOUNT | PAYMENT_REFUNDED;
+                          date; at; description; reference; invoiceId; invoiceNumber; chargeCents; creditCents; pendingCents; balanceCents }
+interface StatementFigures { openingBalanceCents; chargesCents; creditsCents; pendingAppliedCents; closingBalanceCents; onAccountCents;
+                             pendingUnappliedCents; invoiceCount }
+interface LocationStatement extends StatementFigures { locationId; periodFrom; periodTo; lines; aging: AgingFigures; openInvoices: AgedInvoice[] }
+interface AccountStatement extends StatementFigures { customerId; periodFrom; periodTo; sections: AccountStatementSection[]; aging }
+interface ZeroBalanceLetter { locationId; asOf; openBalanceCents; onAccountCents; pendingUnappliedCents; invoiceCount; lastInvoice; agreements }
+interface StatementInfo { id; variant; customerId; locationId | null; periodFrom | null; periodTo; generatedAt; generatedByLabel; contentHash; mimeType }
+interface StatementGenerateResult<T> { statement: StatementInfo; data: T }
+interface StatementLedgerInput { invoices; payments; creditMemos; applications }   // the customer's rows; the summarizer scopes them
+
+// server/documents/types.ts + statement-pdf.ts (new)
+StatementDocumentContext                        // a union on variant: statementDate, customerName, billTo (the invoice's Bill To rule, Pass 11c),
+                                                //    branding, and the location + statement / the account statement / the location + letter
+renderStatementPdf(context)                     // pure, byte-deterministic (CreationDate / ModDate pinned to statementDate), a paginating table
+                                                //    helper that redraws its headings on each page; no HTML twin - renderInvoiceHtml has no consumer
+
+// shared/schema.ts + server/document-bootstrap.ts
+documents.statementVariant / customerId / locationId / periodFrom / periodTo / generatedByUserId / generatedByLabel
+                                                // nullable, null on an INVOICE row as invoiceId is null on a statement; ADD COLUMN IF NOT EXISTS
+                                                //    x7 + partial indexes on customer_id / location_id, guarded on statement_variant so the
+                                                //    effect prints once; no backfill (no STATEMENT row existed); no unique index
+
+// server/storage.ts
+StatementRefusedError(code, message, balanceDueCents)   // the letter's refusal -> 409 { code: LOCATION_HAS_BALANCE, message, balanceDueCents }
+statementLedgerForCustomerTx(reader, customerId)        // the customer's invoices (+ the first line's description as `summary`), payments, credit
+                                                        //    memos, and every application to its invoices (fenced to their location by the ledger)
+statementBillToTx(reader, location)                     // resolveBillingProfileForLocation + resolveInvoicePartiesTx, resolved now
+generateLocationStatement(locationId, period, actor) / generateAccountStatement(customerId, period, actor) / generateZeroBalanceLetter(locationId, actor)
+                                                        // each renders + inserts one documents row (kind STATEMENT) and answers { statement, data };
+                                                        //    undefined outside the org; the letter throws StatementRefusedError on a balance
+listStatementsByLocation(locationId) / listStatementsByCustomer(customerId) / getStatement(id) / getStatementDocument(id)
+                                                        // rows without their bytes, newest first; the document read is the row with them
+
+// Routes - the generates gated GENERATE_INVOICE (support+); the reads open like every document / ledger read
+POST /api/locations/:locationId/statements { periodFrom, periodTo }   // 201 { statement, data: LocationStatement }; 400 (bad day, from > to); 404
+POST /api/customers/:customerId/statements { periodFrom, periodTo }   // 201 { statement, data: AccountStatement }; 404
+POST /api/locations/:locationId/zero-balance-letter                   // 201 { statement, data: ZeroBalanceLetter }; 409 LOCATION_HAS_BALANCE; 404
+GET  /api/locations/:locationId/statements                            // StatementInfo[] - the location's own
+GET  /api/customers/:customerId/statements                            // StatementInfo[] - every statement for the customer, the account-wide ones included
+GET  /api/statements/:id                                              // StatementInfo; 404 for anything that is not a STATEMENT document of the org
+GET  /api/statements/:id/document[?download=1]                        // the stored bytes inline / as an attachment: statement-<to>.pdf,
+                                                                      //    account-statement-<to>.pdf, paid-in-full-letter-<to>.pdf
+
+// client
+components/statement-dialog.tsx                 // StatementDialog({ open, onOpenChange, customerId, customerLabel, scope }) - scope is
+                                                //    { kind: "location", locationId, locationLabel } (Location statement / Paid-in-full letter) or
+                                                //    { kind: "account", locationCount }; period month to date by default; the generated figures,
+                                                //    then Open PDF / Download; a 409 shows the refusal inline
+components/statement-document-actions.tsx       // statementDocumentUrl(statement, download); StatementDocumentActions({ statement, compact })
+components/location-ledger-panel.tsx            // "Statement" on the Balance card (GENERATE_INVOICE), `locationLabel` prop, the Statements card
+                                                //    (["/api/customers", id, "statements"] filtered to this location + locationId null)
+pages/customer-detail.tsx                       // "Statement" beside Add Location (GENERATE_INVOICE) -> the account statement
+```
+
+Behavior worth knowing before the next pass touches it:
+- **The balance model is the ledger's (D4 / D5), not a customer-account one.** The balance on a
+  statement is what is owed on issued invoices: it goes up when an invoice is issued and down when
+  money is APPLIED to one (a payment application or a credit application) and the payment is
+  confirmed - never when money is merely received. Money received and not applied is a
+  `PAYMENT_ON_ACCOUNT` line that moves nothing, and rides in the on-account figure beside the
+  balance, never netted (the Pass 14 rule). A pending payment's application is listed and marked
+  and does not count. The document's footer says all of this in the office's own words.
+- **The invariant the smoke test holds the pass to.** For a period ending today the closing
+  balance equals `GET /api/locations/:id/ledger-summary`'s open balance and the aging strip equals
+  `GET /api/customers/:id/aging`'s entry for the location (buckets, oldest, pending applied, on
+  account, pending unapplied), because both derive from the same rows the same way: unreleased
+  applications, confirmed counts, pending shows. The account statement's figures are the sections
+  summed and its strip is the aging read's rollup.
+- **Statuses are as of generation; dates place the rows.** An invoice is placed by `issuedAt`, an
+  application by `appliedAt`, a payment by `receivedAt`, a credit memo by `issuedAt`, a refund
+  by `refundedAt` - inclusive UTC days like every other date-only value. A past period's opening,
+  closing and aging are the figures as they stood at that period's end given today's knowledge of
+  each row (a check confirmed since is confirmed on it). A statement is never re-rendered: a
+  second request over an unmoved ledger is a second row with identical bytes (the hash proves
+  it), a request after the ledger moved is a new document, and the earlier one stays what it was.
+- **What is left out.** A DRAFT (not a receivable), a VOID (owes nothing; its applications were
+  released at void), a released application (excluded wherever it would have counted), a VOIDED
+  payment (recorded in error). A REFUNDED payment shows as received (on account until the refund)
+  and as a `PAYMENT_REFUNDED` line. An issued row with no `issuedAt` (none exists) is left out
+  rather than dated from a guess, the aging module's rule.
+- **The account statement is keyed on the customer**, as the aging rollup is: the canonical
+  Account (`accounts`, one per customer today) has no screen and no read of its own, and
+  `locations.accountId` selects the same rows as `locations.customerId`; the customer header is
+  the surface. A location-less issued invoice (none today; the two legacy rows are VOID) lands in a
+  trailing "Invoices with no location" section so the customer-wide figure is complete.
+- **The letter is refused, not reworded.** A paid-in-full letter for a location that owes anything
+  answers 409 `LOCATION_HAS_BALANCE` with the balance and the message; pending money applied to an
+  open invoice does not clear it (pending shows, confirmed counts). Money on account and a
+  pending unapplied payment do not block the letter and are stated in it. The agreements are
+  listed active first with their status label (`describeAgreementStatus` knows ACTIVE / CANCELLED
+  in the data and PAUSED / EXPIRED from canon §9), service type, start, next service and the day
+  a cancelled one ended.
+- **Identity lives on `documents`, not in a second table.** The STATEMENT kind had waited since
+  Pass 10 with `invoice_id` as the only identity column; seven nullable columns beside it give a
+  statement its own (variant, customer, location, period, who asked), the same org / hash /
+  bytes / created-at columns serve both kinds, and the list reads are one query. No unique index:
+  one row per generation. The Bill To is resolved at generation by the invoice's own rule (the
+  billing profile's address, else a location override's own, else the primary location's).
+- **The gate.** The three generates are `GENERATE_INVOICE` (support+): a statement is the office's
+  customer-facing billing document, the same act as "Add fee / adjustment", and no closer
+  permission exists (`SEND_INVOICE` is the sent stamp, which a statement does not carry until
+  delivery arrives with C6.3). The reads are open like every document and ledger read.
+- **Not built:** delivery (C6.3), a scheduled monthly statement (a later Settings toggle), a
+  preview that stores nothing, a Mark Sent stamp on statements, per-invoice line detail on the
+  statement (the first line's description and "+N more"), due-date aging (B20's toggle), an org
+  timezone (C5.5). Invoice documents, the nightly run, the Payments screen and the Reports page
+  are untouched.
+- **Verified 2026-09-25** (PORT=5001): `npm run check` clean; 60 checks driving
+  `shared/statements.ts` and `renderStatementPdf` directly (the period boundaries at 23:59:59.999
+  and 00:00:00, DRAFT / VOID / released / voided / refunded exclusions, the pending marking, the
+  running balance, a past and a later period, the account sections and rollup, the letter and its
+  refusal, the day validator, byte-identical renders, a 120-line statement paginating, the PDF
+  text decoded from pdfkit's hex glyph strings); boot 1 printed the migration's effect once (11
+  INVOICE rows untouched) with all 44 tables' counts unchanged; 66 API checks as the four roles on
+  a two-location fixture customer - invoices back-dated by SQL to 40 / 20 / 10 / 5 / 3 days (one
+  voided), a confirmed check applied 30 days ago (its application back-dated), a confirmed check
+  and a credit memo applied in the period, a pending cash payment applied, a confirmed check and a
+  pending cash payment on account; the location statement's opening $40, charges $250, credits
+  $100, pending $30, closing $190 equal to the ledger summary and its strip (Current $150, 31-60
+  $40, on account $25) equal to the aging read; the account statement equal to the two locations
+  summed and its strip equal to the rollup; a past period's opening $0 / closing $40 aged as it
+  stood then; a second generation a second row with the same hash; the bytes served inline and as
+  an attachment with the right names, hashing to the stored hash, the PDF text carrying the
+  figures and both location names; the lists per location and per customer; the technician 403 on
+  all three generates and 200 on every read, support 201, unauthenticated 401; from > to and an
+  impossible day 400, unknown ids 404, an INVOICE document 404 as a statement; the letter 409 at
+  the owing location naming $190.00 and 201 at the other once paid off, listing two SQL-inserted
+  agreements active first with the cancelled one's end date and the pending cash noted, the PDF
+  stating "Balance due: $0.00"; every fixture and all 8 stored statements deleted and 43 of 44
+  counts back at baseline (`session` up by the four logins); boot 2 printed only the serving line
+  with every count unchanged; a Vite 200 on the dialog, the actions component, the ledger panel,
+  the customer page and (under `/@fs/`) the shared module. **Nothing was rendered in a browser** -
+  the repo has no browser automation and this session had no browser - so the two Statement
+  buttons, the dialog, the Statements card and the three PDFs' layout reach the owner first.
 
 ---
 
