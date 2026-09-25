@@ -35,6 +35,7 @@ import {
 import type { Appointment, Customer, Location, Opportunity, Service, ServiceRecord, ServiceType, Technician } from "@shared/schema";
 import {
   describeAppointmentStatus,
+  isBoardPlacement,
   type AppointmentDispositionMode,
   type AppointmentDispositionOutcome,
   type AppointmentDispositionRequest,
@@ -204,8 +205,7 @@ function AppointmentSheet({
     assignedTechnicianId: string | null;
     scheduledDate: string;
     scheduledEndDate: string | null;
-    /** Omitted for a CANCELED appointment: its status is the disposition's, not the form's. */
-    status?: string;
+    status: string;
     lockTime: boolean;
     lockTechnician: boolean;
     notes: string | null;
@@ -233,7 +233,6 @@ function AppointmentSheet({
   // is null for agreement work and says nothing about coverage.
   const { data: visitBilling, isLoading: visitBillingLoading, isError: visitBillingError } = useVisitBillingSummary(open ? appointment?.id : null);
 
-  const isCanceled = appointment?.status === "CANCELED";
   const activeServices = linkedServices.filter((linked) => linked.status !== "COMPLETED" && linked.status !== "CANCELLED");
   const agreementServiceCount = activeServices.filter((linked) => !!linked.agreementId).length;
   const oneTimeServiceCount = activeServices.length - agreementServiceCount;
@@ -248,10 +247,22 @@ function AppointmentSheet({
     setLockTime(appointment.lockTime ?? false);
     setLockTechnician(appointment.lockTechnician ?? false);
     setNotes(appointment.notes || "");
+  }, [appointment]);
+
+  // Pass 27b (C4.2b): the two dialogs belong to the sheet's appointment. When
+  // it changes - another placement, or none once a disposition completes and
+  // the page closes the sheet - their state goes with it, so neither dialog
+  // outlives the sheet it was opened from. (The reset above returns early on
+  // null, which left a dialog open over an empty sheet.) Keyed on the id, not
+  // the row, so a refetch of the same placement cannot close a dialog
+  // mid-edit.
+  const appointmentId = appointment?.id ?? null;
+  useEffect(() => {
     setDisposition(null);
     setReasonCode("");
     setDispositionNotes("");
-  }, [appointment]);
+    setOpportunityChoice("CREATE");
+  }, [appointmentId]);
 
   const openDisposition = (mode: AppointmentDispositionMode) => {
     setReasonCode("");
@@ -325,31 +336,19 @@ function AppointmentSheet({
 
               <div className="space-y-2">
                 <label className="text-sm font-medium">Status</label>
-                {isCanceled ? (
-                  // Pass 27: CANCELED is the disposition's to write, never the
-                  // form's, so a cancelled placement shows its state and the
-                  // select is not offered.
-                  <div className="rounded-md border bg-muted/20 px-3 py-2 text-sm">
-                    <p className="font-medium">{describeAppointmentStatus(appointment)}</p>
-                    <p className="text-xs text-muted-foreground">
-                      {appointment.rescheduleRequested
-                        ? "Its services are back in the pending queue; place them on a new day and time from there."
-                        : appointment.cancelReason
-                          ? `Reason: ${appointment.cancelReason}`
-                          : "No reason was recorded."}
-                    </p>
-                  </div>
-                ) : (
-                  <select
-                    value={status}
-                    onChange={(event) => setStatus(event.target.value)}
-                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                  >
-                    <option value="SCHEDULED">Scheduled</option>
-                    <option value="IN_PROGRESS">In Progress</option>
-                    <option value="COMPLETED">Completed</option>
-                  </select>
-                )}
+                {/* Pass 27: CANCELED is the disposition's to write, never the
+                    form's. Since Pass 27b a cancelled placement is not a board
+                    card (isBoardPlacement), so the sheet never shows one and
+                    the select is always offered. */}
+                <select
+                  value={status}
+                  onChange={(event) => setStatus(event.target.value)}
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                >
+                  <option value="SCHEDULED">Scheduled</option>
+                  <option value="IN_PROGRESS">In Progress</option>
+                  <option value="COMPLETED">Completed</option>
+                </select>
               </div>
 
               <div className="space-y-3 rounded-lg border p-3">
@@ -375,23 +374,19 @@ function AppointmentSheet({
               </div>
 
               <div className="flex flex-wrap items-center justify-end gap-2">
-                {!isCanceled ? (
-                  <>
-                    <Button type="button" variant="destructive" onClick={() => openDisposition("CANCEL")} disabled={isSaving || isDispositioning}>
-                      Cancel appointment
-                    </Button>
-                    <Button type="button" variant="outline" onClick={() => openDisposition("RESCHEDULE")} disabled={isSaving || isDispositioning}>
-                      Reschedule
-                    </Button>
-                  </>
-                ) : null}
+                <Button type="button" variant="destructive" onClick={() => openDisposition("CANCEL")} disabled={isSaving || isDispositioning}>
+                  Cancel appointment
+                </Button>
+                <Button type="button" variant="outline" onClick={() => openDisposition("RESCHEDULE")} disabled={isSaving || isDispositioning}>
+                  Reschedule
+                </Button>
                 <Button variant="outline" onClick={() => onOpenChange(false)}>Close</Button>
                 <Button
                   onClick={() => onSave({
                     assignedTechnicianId: assignedTechnicianId || null,
                     scheduledDate: new Date(scheduledDate).toISOString(),
                     scheduledEndDate: scheduledEndDate ? new Date(scheduledEndDate).toISOString() : null,
-                    status: isCanceled ? undefined : status,
+                    status,
                     lockTime,
                     lockTechnician,
                     notes: notes.trim() || null,
@@ -676,12 +671,22 @@ export default function Schedule() {
     return { start, end };
   }, [boardDates, boardEndHour, boardStartHour, slotIntervalHours]);
 
+  // Pass 27b (C4.2b): what the board shows. A CANCELED placement - cancelled
+  // or rescheduled alike - is history, not a card (owner, 2026-09-25): its
+  // slot is free, and the location's Services and History tabs keep the
+  // record. One shared predicate, applied once here; the viewport, the slot
+  // map, the analytics and the card selection all derive from this list, so
+  // none of them can show what the others hide. The read itself stays
+  // unfiltered (the dashboard, the ticket review queue and the Services tab
+  // still need the row).
+  const boardAppointments = useMemo(() => (appointments ?? []).filter(isBoardPlacement), [appointments]);
+
   const viewportAppointments = useMemo(() => {
-    return (appointments ?? []).filter((appointment) => {
+    return boardAppointments.filter((appointment) => {
       const scheduled = new Date(appointment.scheduledDate);
       return scheduled >= viewportBounds.start && scheduled < viewportBounds.end;
     });
-  }, [appointments, viewportBounds.end, viewportBounds.start]);
+  }, [boardAppointments, viewportBounds.end, viewportBounds.start]);
 
   const visibleTechnicians = useMemo(() => {
     const base = (technicians ?? []).filter((technician) => technician.status === "ACTIVE");
@@ -708,8 +713,8 @@ export default function Schedule() {
   }, [slotHours, viewportAppointments]);
 
   const selectedService = useMemo(() => (pendingServices ?? []).find((service) => service.id === selectedServiceId) ?? null, [pendingServices, selectedServiceId]);
-  const selectedAppointment = useMemo(() => (appointments ?? []).find((appointment) => appointment.id === selectedAppointmentId) ?? null, [appointments, selectedAppointmentId]);
-  const editingAppointment = useMemo(() => (appointments ?? []).find((appointment) => appointment.id === editingAppointmentId) ?? null, [appointments, editingAppointmentId]);
+  const selectedAppointment = useMemo(() => boardAppointments.find((appointment) => appointment.id === selectedAppointmentId) ?? null, [boardAppointments, selectedAppointmentId]);
+  const editingAppointment = useMemo(() => boardAppointments.find((appointment) => appointment.id === editingAppointmentId) ?? null, [boardAppointments, editingAppointmentId]);
   const detailService = useMemo(() => (detailServiceId ? serviceById.get(detailServiceId) ?? null : null), [detailServiceId, serviceById]);
 
   const prefillServiceMutation = useMutation({
@@ -764,6 +769,21 @@ export default function Schedule() {
       setSelectedServiceId(null);
     }
   }, [params]);
+
+  // Pass 27b: a deep link (`?appointmentId=` from an invoice's "Open on
+  // schedule" or a payment's visit link) can name a placement that has since
+  // been cancelled or rescheduled. It is not a card any more, so say so
+  // rather than leave a selection with nothing to move.
+  useEffect(() => {
+    if (!selectedAppointmentId || !appointments) return;
+    const named = appointments.find((appointment) => appointment.id === selectedAppointmentId);
+    if (!named || isBoardPlacement(named)) return;
+    toast({
+      title: `Appointment ${describeAppointmentStatus(named).toLowerCase()}`,
+      description: "It is no longer on the dispatch board. The location's Services tab and History tab keep its record.",
+    });
+    setSelectedAppointmentId(null);
+  }, [appointments, selectedAppointmentId, toast]);
 
   const scheduleMutation = useMutation({
     mutationFn: async ({ service, technician, slotDate }: { service: Service; technician: Technician; slotDate: Date }) => {
@@ -1273,20 +1293,17 @@ export default function Schedule() {
                                 && linkedServices.every((service) => serviceRecordByServiceId.get(service.id)?.confirmed);
                               const isCompletedAppointment = appointment.status === "COMPLETED" && allTicketsFinalized;
                               const isPendingOfficeReview = anyTicketPosted && !allTicketsFinalized;
-                              const statusTone = appointment.status === "CANCELED"
-                                ? "border-red-600 bg-red-50 text-red-950"
-                                : isCompletedAppointment
-                                  ? "border-green-600 bg-green-100 text-green-950"
-                                  : isPendingOfficeReview || appointment.status === "IN_PROGRESS"
-                                    ? "border-yellow-500 bg-yellow-50 text-yellow-950"
-                                    : "border-blue-500 bg-blue-50 text-blue-950";
-                              const mutedTextTone = appointment.status === "CANCELED"
-                                ? "text-red-900"
-                                : isCompletedAppointment
-                                  ? "text-green-900"
-                                  : isPendingOfficeReview || appointment.status === "IN_PROGRESS"
-                                    ? "text-yellow-900"
-                                    : "text-blue-900";
+                              // Pass 27b: no red tone - a CANCELED placement is not a card (isBoardPlacement).
+                              const statusTone = isCompletedAppointment
+                                ? "border-green-600 bg-green-100 text-green-950"
+                                : isPendingOfficeReview || appointment.status === "IN_PROGRESS"
+                                  ? "border-yellow-500 bg-yellow-50 text-yellow-950"
+                                  : "border-blue-500 bg-blue-50 text-blue-950";
+                              const mutedTextTone = isCompletedAppointment
+                                ? "text-green-900"
+                                : isPendingOfficeReview || appointment.status === "IN_PROGRESS"
+                                  ? "text-yellow-900"
+                                  : "text-blue-900";
                               const locationHref = location ? `/customers/${appointment.customerId}?locationId=${location.id}` : `/customers/${appointment.customerId}`;
 
                               return (
@@ -1431,7 +1448,7 @@ export default function Schedule() {
               assignedTo: payload.assignedTechnicianId ? technicianById.get(payload.assignedTechnicianId)?.displayName || null : null,
               scheduledDate: payload.scheduledDate,
               scheduledEndDate: payload.scheduledEndDate,
-              ...(payload.status ? { status: payload.status } : {}),
+              status: payload.status,
               lockTime: payload.lockTime,
               lockTechnician: payload.lockTechnician,
               notes: payload.notes,
