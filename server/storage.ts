@@ -75,6 +75,19 @@ import { formatCents } from "@shared/money";
 import { buildBillingPlanSnapshot as buildSharedBillingPlanSnapshot, isScheduleBilledPlan } from "@shared/billing-plan";
 import { sortUsersByName, userDisplayName } from "@shared/users";
 import { taxonomyForSource, type OpportunityWorkType } from "@shared/opportunities";
+import {
+  APPOINTMENT_NOT_DISPOSITIONABLE,
+  CANCEL_DISPOSITION_REQUIRED,
+  DISPOSITION_REASON_NOT_ON_LIST,
+  DISPOSITION_REASON_REQUIRED,
+  opportunitySourceForDisposition,
+  type AppointmentDispositionMode,
+  type AppointmentDispositionOrigin,
+  type AppointmentDispositionOutcome,
+  type DispositionOpportunityChoice,
+  type DispositionOpportunityOutcome,
+  type DispositionServiceOutcome,
+} from "@shared/appointment-disposition";
 import { addDays, advanceAgreementDate, computeExpectedServiceCount } from "@shared/agreement-schedule";
 // Transitional re-export (Pass 7): the calendar arithmetic moved to
 // shared/agreement-schedule.ts so the client's billing-plan pill and the
@@ -426,22 +439,39 @@ export const DEFAULT_APPOINTMENT_CANCEL_REASONS = [
   "Other",
 ];
 
-export interface AppointmentCancelRescheduleInput {
+// Pass 27 (PLAN_ROADMAP_V2.md C4.2): the one cancel / reschedule path. The
+// vocabulary is shared/appointment-disposition.ts.
+export interface AppointmentDispositionInput {
   appointmentId: string;
-  reason: string;
+  mode: AppointmentDispositionMode;
+  // OFFICE is the board's route; FIELD is the technician alias - a handoff,
+  // not disposal (canon §9): every service returns to the queue whatever the
+  // mode, none is cancelled.
+  origin: AppointmentDispositionOrigin;
+  // Required for CANCEL, optional for RESCHEDULE (the technician's request
+  // carries one, the office's board reschedule does not); when given it must
+  // be on the settings list.
+  reasonCode?: string | null;
   notes?: string | null;
-  rescheduleRequested?: boolean;
+  opportunity: DispositionOpportunityChoice;
   // See CancelAgreementInput.voidDraftInvoices - same Q3 prompt, same
   // three-way meaning (undefined = ask, true = void, false = keep).
   voidDraftInvoices?: boolean;
-  actor?: AuditActor;
+  actor?: AuditActor | null;
 }
 
-export interface UpdateAppointmentOptions {
-  // The schedule screen cancels an appointment by PATCHing status: CANCELED
-  // through the generic update, so the Q3 prompt has to reach here too.
-  voidDraftInvoices?: boolean;
-  actor?: AuditActor | null;
+export interface AppointmentDispositionResult extends AppointmentDispositionOutcome {
+  appointment: Appointment;
+}
+
+// A disposition the input or the appointment's state forbids, and the status
+// PATCH's attempt to cancel. Routes answer `status` with { code, message } so
+// the client can tell the reasons apart.
+export class AppointmentDispositionError extends Error {
+  constructor(readonly status: 400 | 409, readonly code: string, message: string) {
+    super(message);
+    this.name = "AppointmentDispositionError";
+  }
 }
 
 export interface DraftInvoiceRef {
@@ -830,8 +860,10 @@ export interface IStorage {
   getAppointmentsByLocation(locationId: string): Promise<Appointment[]>;
   getAppointment(id: string): Promise<Appointment | undefined>;
   createAppointment(data: InsertAppointment): Promise<Appointment>;
-  updateAppointment(id: string, data: Partial<InsertAppointment>, options?: UpdateAppointmentOptions): Promise<Appointment | undefined>;
-  requestAppointmentCancelOrReschedule(input: AppointmentCancelRescheduleInput): Promise<Appointment | undefined>;
+  updateAppointment(id: string, data: Partial<InsertAppointment>): Promise<Appointment | undefined>;
+  // Pass 27 (C4.2): the one cancel / reschedule path; a status PATCH to
+  // CANCELED is refused by updateAppointment.
+  dispositionAppointment(input: AppointmentDispositionInput): Promise<AppointmentDispositionResult | undefined>;
   timeInAppointment(id: string): Promise<Appointment | undefined>;
   timeOutAppointment(id: string): Promise<Appointment | undefined>;
   getTechnicianWork(technicianId: string, date: string): Promise<TechnicianWorkVisit[]>;
@@ -1084,6 +1116,37 @@ function opportunityTaxonomyColumns(source: string, hasAgreement: boolean): { ca
   return { categoryKey: taxonomy.categoryKey, workType: taxonomy.workType };
 }
 
+// Pass 27: what a disposition's audit row records of the appointment and its
+// services - the fields the disposition can change rather than the whole
+// rows, so the History tab's diff reads as status / reason / flag / services.
+// Services are sorted by id so the before and after lists line up.
+function appointmentAuditSnapshot(appointment: Appointment, linkedServices: Service[]) {
+  return {
+    status: appointment.status,
+    assignedTechnicianId: appointment.assignedTechnicianId,
+    scheduledDate: appointment.scheduledDate,
+    cancelReason: appointment.cancelReason,
+    cancelNotes: appointment.cancelNotes,
+    cancelRequestedAt: appointment.cancelRequestedAt,
+    cancelRequestedByLabel: appointment.cancelRequestedByLabel,
+    rescheduleRequested: appointment.rescheduleRequested,
+    rescheduleRequestedAt: appointment.rescheduleRequestedAt,
+    services: [...linkedServices]
+      .sort((left, right) => left.id.localeCompare(right.id))
+      .map((service) => ({
+        id: service.id,
+        status: service.status,
+        appointmentId: service.appointmentId,
+        lastAppointmentId: service.lastAppointmentId,
+        assignedTechnicianId: service.assignedTechnicianId,
+        agreementId: service.agreementId,
+        dueDate: service.dueDate,
+        serviceWindowStart: service.serviceWindowStart,
+        serviceWindowEnd: service.serviceWindowEnd,
+      })),
+  };
+}
+
 // A user-typed term as a LIKE / ILIKE fragment: the wildcards and the escape
 // character are literal (Postgres's default escape is the backslash).
 function escapeLikePattern(value: string): string {
@@ -1188,6 +1251,11 @@ export class DatabaseStorage implements IStorage {
       .select({ id: opportunities.id })
       .from(opportunities)
       .where(and(eq(opportunities.orgId, this.orgId), eq(opportunities.locationId, locationId)));
+    // Appointments, for the cancel / reschedule dispositions (Pass 27).
+    const locationAppointments = await db
+      .select({ id: appointments.id })
+      .from(appointments)
+      .where(and(eq(appointments.orgId, this.orgId), eq(appointments.locationId, locationId)));
 
     const allRefs: Array<{ entityType: AuditEntityType; entityIds: string[] }> = [
       { entityType: "location", entityIds: [locationId] },
@@ -1199,6 +1267,7 @@ export class DatabaseStorage implements IStorage {
       { entityType: "credit_memo", entityIds: locationCredits.map((memo) => memo.id) },
       { entityType: "agreement", entityIds: locationAgreements.map((agreement) => agreement.id) },
       { entityType: "opportunity", entityIds: locationOpportunities.map((opportunity) => opportunity.id) },
+      { entityType: "appointment", entityIds: locationAppointments.map((appointment) => appointment.id) },
     ];
     const refs = allRefs.filter((ref) => ref.entityIds.length > 0);
 
@@ -1742,19 +1811,29 @@ export class DatabaseStorage implements IStorage {
     tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
     appointment: Appointment,
   ) {
-    const linkedServices = await this.getLinkedServicesForAppointmentTx(tx, appointment.id, appointment.serviceId);
+    // Pass 27 (C4.2): a CANCELED appointment's services were settled by the
+    // disposition (requeued or cancelled) and a COMPLETED one's by
+    // finalization - a later edit of its notes or time must not touch them.
+    // Before this pass the generic update cascaded CANCELLED from here (the
+    // board's reason-less cancel) and set every linked service SCHEDULED for
+    // any other status, a completed visit's finalized services included.
+    if (appointment.status === "CANCELED" || appointment.status === "COMPLETED") {
+      return;
+    }
+
+    const linkedServices = (await this.getLinkedServicesForAppointmentTx(tx, appointment.id, appointment.serviceId))
+      // A settled service keeps its status; a legacy representative that has
+      // since been placed on another appointment belongs to that visit.
+      .filter((service) => service.status !== "COMPLETED" && service.status !== "CANCELLED")
+      .filter((service) => !service.appointmentId || service.appointmentId === appointment.id);
     if (!linkedServices.length) {
       return;
     }
 
-    const nextStatus = appointment.status === "CANCELED"
-        ? "CANCELLED"
-        : "SCHEDULED";
-
     await tx
       .update(services)
       .set({
-        status: nextStatus,
+        status: "SCHEDULED",
         assignedTechnicianId: appointment.assignedTechnicianId || null,
         appointmentId: appointment.id,
         updatedAt: new Date(),
@@ -4068,18 +4147,19 @@ export class DatabaseStorage implements IStorage {
     return appointment;
   }
 
-  async updateAppointment(id: string, data: Partial<InsertAppointment>, options?: UpdateAppointmentOptions): Promise<Appointment | undefined> {
+  async updateAppointment(id: string, data: Partial<InsertAppointment>): Promise<Appointment | undefined> {
+    // Pass 27 (C4.2): CANCELED is written by dispositionAppointment() only -
+    // the reason, the requeue, the opportunity choice and the audit row live
+    // there. The board's old status PATCH cascaded every service to
+    // CANCELLED with none of them.
+    if (data.status === "CANCELED") {
+      throw new AppointmentDispositionError(409, CANCEL_DISPOSITION_REQUIRED, "Cancel or reschedule an appointment through its disposition, not a status change");
+    }
+
     return db.transaction(async (tx) => {
       const [existingAppointment] = await tx.select().from(appointments).where(and(eq(appointments.orgId, this.orgId), eq(appointments.id, id)));
       if (!existingAppointment) {
         return undefined;
-      }
-
-      // Q3: the schedule screen's "Cancel Service" is a status PATCH, which
-      // makes this the third appointment-cancel path alongside the two named
-      // ones below. A DRAFT invoice on the visit gets the same prompt here.
-      if (data.status === "CANCELED" && existingAppointment.status !== "CANCELED") {
-        await this.resolveDraftInvoicesOnCancelTx(tx, [existingAppointment.id], options?.voidDraftInvoices, options?.actor ?? null);
       }
 
       const [updatedAppointment] = await tx
@@ -4099,107 +4179,211 @@ export class DatabaseStorage implements IStorage {
     });
   }
 
-  async requestAppointmentCancelOrReschedule(input: AppointmentCancelRescheduleInput): Promise<Appointment | undefined> {
-    const reason = input.reason.trim();
-    if (!reason) {
-      throw new Error("Cancellation or reschedule reason is required");
+  // Pass 27 (PLAN_ROADMAP_V2.md C4.2 / B2): the one path off the board,
+  // grown from the technician's requestAppointmentCancelOrReschedule.
+  // RESCHEDULE requeues every service as it stands - dates kept, the visit
+  // is still due when it was due, only its placement is gone - with no
+  // reason required and, from the office, no opportunity. CANCEL requires a
+  // reason from the settings list, recycles agreement services to the queue
+  // with due date and window reset from the cancel date, cancels one-time
+  // services (the office path only: the field's cancel is a handoff and
+  // requeues them) and runs the opportunity choice. Both share the Q3
+  // draft-invoice prompt, the appointment shape (Q4 / D1a: CANCELED plus the
+  // flag, no fifth status) and one audit row carrying the appointment and
+  // its services before and after.
+  async dispositionAppointment(input: AppointmentDispositionInput): Promise<AppointmentDispositionResult | undefined> {
+    const reasonCode = input.reasonCode?.trim() || null;
+    if (input.mode === "CANCEL" && !reasonCode) {
+      throw new AppointmentDispositionError(400, DISPOSITION_REASON_REQUIRED, "A cancel reason from the settings list is required");
+    }
+    if (reasonCode) {
+      const reasons = await this.getAppointmentCancelReasons();
+      if (!reasons.includes(reasonCode)) {
+        throw new AppointmentDispositionError(400, DISPOSITION_REASON_NOT_ON_LIST, `"${reasonCode}" is not on the appointment cancel / reschedule reasons list`);
+      }
     }
 
     return db.transaction(async (tx) => {
       const [existingAppointment] = await tx.select().from(appointments).where(and(eq(appointments.orgId, this.orgId), eq(appointments.id, input.appointmentId)));
       if (!existingAppointment) return undefined;
+      if (existingAppointment.status === "CANCELED" || existingAppointment.status === "COMPLETED") {
+        const state = existingAppointment.status === "COMPLETED"
+          ? "completed"
+          : existingAppointment.rescheduleRequested ? "rescheduled and back in the queue" : "canceled";
+        throw new AppointmentDispositionError(
+          409,
+          APPOINTMENT_NOT_DISPOSITIONABLE,
+          `Appointment is already ${state} and cannot be ${input.mode === "CANCEL" ? "cancelled" : "rescheduled"}`,
+        );
+      }
 
-      // Q3: both the cancel and the reschedule branch set the appointment
-      // CANCELED (the services are requeued for a fresh one), so a DRAFT
-      // invoice on it needs a decision either way.
-      await this.resolveDraftInvoicesOnCancelTx(tx, [existingAppointment.id], input.voidDraftInvoices, input.actor ?? null);
+      const linkedBefore = await this.getLinkedServicesForAppointmentTx(tx, existingAppointment.id, existingAppointment.serviceId);
+
+      // Q3: both modes set the appointment CANCELED, so a DRAFT invoice on it
+      // needs a decision either way - asked before anything is written.
+      const draftInvoicesVoided = await this.resolveDraftInvoicesOnCancelTx(tx, [existingAppointment.id], input.voidDraftInvoices, input.actor ?? null);
 
       const now = new Date();
       const today = normalizeDateOnly(now)!;
       const notes = input.notes?.trim() || null;
-      const source = input.rescheduleRequested ? "APPOINTMENT_RESCHEDULE_REQUIRED" : "APPOINTMENT_CANCELLATION_REVIEW";
-      const actionLabel = input.rescheduleRequested ? "Reschedule requested" : "Appointment canceled";
+      const rescheduleRequested = input.mode === "RESCHEDULE";
 
       const [updatedAppointment] = await tx
         .update(appointments)
         .set({
           status: "CANCELED",
-          cancelReason: reason,
+          cancelReason: reasonCode,
           cancelNotes: notes,
           cancelRequestedAt: now,
           cancelRequestedByLabel: input.actor?.actorLabel || null,
-          rescheduleRequested: input.rescheduleRequested ?? false,
-          rescheduleRequestedAt: input.rescheduleRequested ? now : null,
+          rescheduleRequested,
+          rescheduleRequestedAt: rescheduleRequested ? now : null,
         })
         .where(and(eq(appointments.orgId, this.orgId), eq(appointments.id, existingAppointment.id)))
         .returning();
 
-      const linkedServices = await this.getLinkedServicesForAppointmentTx(tx, existingAppointment.id, existingAppointment.serviceId);
+      const serviceOutcomes: DispositionServiceOutcome[] = [];
+      const opportunityOutcomes: DispositionOpportunityOutcome[] = [];
+      const actionLabel = input.mode === "RESCHEDULE" ? "Reschedule requested" : "Appointment canceled";
 
-      for (const service of linkedServices) {
-        let serviceWindowStart: string | null | undefined = undefined;
-        let serviceWindowEnd: string | null | undefined = undefined;
-        let dueDate: string | null | undefined = service.dueDate ?? today;
-
-        if (service.agreementId) {
-          const [agreement] = await tx.select().from(agreements).where(and(eq(agreements.orgId, this.orgId), eq(agreements.id, service.agreementId)));
-          const windowDays = agreement?.serviceWindowDays && agreement.serviceWindowDays > 0 ? agreement.serviceWindowDays : null;
-          dueDate = today;
-          serviceWindowStart = today;
-          serviceWindowEnd = windowDays ? addDays(today, windowDays) : today;
+      for (const service of linkedBefore) {
+        // A settled service stays settled; a legacy representative since
+        // placed on another appointment belongs to that visit, not this one.
+        if (service.status === "COMPLETED" || service.status === "CANCELLED" || (service.appointmentId && service.appointmentId !== existingAppointment.id)) {
+          serviceOutcomes.push({ serviceId: service.id, agreementId: service.agreementId || null, effect: "SKIPPED", windowReset: false });
+          continue;
         }
 
-        await tx
-          .update(services)
-          .set({
-            status: "PENDING_SCHEDULING",
-            appointmentId: null,
-            assignedTechnicianId: null,
-            dueDate: dueDate as any,
-            serviceWindowStart: serviceWindowStart === undefined ? service.serviceWindowStart : serviceWindowStart as any,
-            serviceWindowEnd: serviceWindowEnd === undefined ? service.serviceWindowEnd : serviceWindowEnd as any,
-            updatedAt: now,
-          })
-          .where(and(eq(services.orgId, this.orgId), eq(services.id, service.id)));
+        const disposed = input.mode === "CANCEL" && input.origin === "OFFICE" && !service.agreementId;
+        let outcome: DispositionServiceOutcome;
+        if (disposed) {
+          // A one-time service the office cancels is done: CANCELLED, still
+          // linked to the visit it was cancelled from (its history); the
+          // win-back opportunity below is what keeps the customer visible.
+          await tx
+            .update(services)
+            .set({ status: "CANCELLED", lastAppointmentId: existingAppointment.id, updatedAt: now })
+            .where(and(eq(services.orgId, this.orgId), eq(services.id, service.id)));
+          outcome = { serviceId: service.id, agreementId: null, effect: "CANCELLED", windowReset: false };
+        } else {
+          const resetWindow = input.mode === "CANCEL" && !!service.agreementId;
+          let dueDate = service.dueDate ?? today;
+          let serviceWindowStart = service.serviceWindowStart;
+          let serviceWindowEnd = service.serviceWindowEnd;
+          if (resetWindow) {
+            const [agreement] = await tx.select().from(agreements).where(and(eq(agreements.orgId, this.orgId), eq(agreements.id, service.agreementId!)));
+            const windowDays = agreement?.serviceWindowDays && agreement.serviceWindowDays > 0 ? agreement.serviceWindowDays : null;
+            dueDate = today;
+            serviceWindowStart = today;
+            serviceWindowEnd = windowDays ? addDays(today, windowDays) : today;
+          }
+          await tx
+            .update(services)
+            .set({
+              status: "PENDING_SCHEDULING",
+              appointmentId: null,
+              assignedTechnicianId: null,
+              lastAppointmentId: existingAppointment.id,
+              dueDate,
+              serviceWindowStart,
+              serviceWindowEnd,
+              updatedAt: now,
+            })
+            .where(and(eq(services.orgId, this.orgId), eq(services.id, service.id)));
+          outcome = { serviceId: service.id, agreementId: service.agreementId || null, effect: "REQUEUED", windowReset: resetWindow };
+        }
+        serviceOutcomes.push(outcome);
+
+        if (input.opportunity === "NONE") continue;
 
         const [serviceType] = service.serviceTypeId
           ? await tx.select().from(serviceTypes).where(and(eq(serviceTypes.orgId, this.orgId), eq(serviceTypes.id, service.serviceTypeId)))
           : [undefined];
-        const [existingOpenOpportunity] = await tx
-          .select()
-          .from(opportunities)
-          .where(and(
-            eq(opportunities.orgId, this.orgId),
-            eq(opportunities.sourceServiceId, service.id),
-            eq(opportunities.source, source),
-            eq(opportunities.status, "OPEN"),
-          ));
+        const noteLine = [
+          `${actionLabel}: ${serviceType?.name || "Service"}`,
+          reasonCode ? `Reason: ${reasonCode}` : null,
+          notes ? `Notes: ${notes}` : null,
+          outcome.effect === "CANCELLED"
+            ? "One-time service cancelled - follow up to win the work back."
+            : service.agreementId
+              ? `Agreement service requeued for office scheduling${outcome.windowReset ? " with its service window reset from today" : ""}.`
+              : "Service returned to pending scheduling.",
+        ].filter(Boolean).join("\n");
 
-        if (!existingOpenOpportunity) {
-          await tx.insert(opportunities).values({
-            orgId: this.orgId,
-            locationId: service.locationId,
-            agreementId: service.agreementId || null,
-            sourceServiceId: service.id,
-            serviceTypeId: service.serviceTypeId || null,
-            opportunityType: input.rescheduleRequested ? "Appointment Reschedule" : "Canceled Appointment Review",
-            source,
-            // Pass 25: RESCHEDULE, the work type from the service being requeued.
-            ...opportunityTaxonomyColumns(source, !!service.agreementId),
-            dueDate: today,
-            nextActionDate: today,
-            status: "OPEN",
-            notes: [
-              `${actionLabel}: ${serviceType?.name || "Service"}`,
-              `Reason: ${reason}`,
-              notes ? `Notes: ${notes}` : null,
-              service.agreementId ? "Agreement service requeued for office scheduling." : "Service returned to pending scheduling.",
-            ].filter(Boolean).join("\n"),
-          });
+        if (input.opportunity === "UPDATE_EXISTING") {
+          // Re-date every open opportunity on the service, whatever its
+          // source: the office chose to keep following up on what it has.
+          const openOpportunities = await tx
+            .select()
+            .from(opportunities)
+            .where(and(eq(opportunities.orgId, this.orgId), eq(opportunities.sourceServiceId, service.id), eq(opportunities.status, "OPEN")));
+          if (openOpportunities.length) {
+            for (const openOpportunity of openOpportunities) {
+              await tx
+                .update(opportunities)
+                .set({
+                  dueDate: today,
+                  nextActionDate: today,
+                  notes: [openOpportunity.notes, noteLine].filter(Boolean).join("\n\n"),
+                  updatedAt: now,
+                })
+                .where(and(eq(opportunities.orgId, this.orgId), eq(opportunities.id, openOpportunity.id)));
+              opportunityOutcomes.push({ serviceId: service.id, opportunityId: openOpportunity.id, action: "UPDATED", categoryKey: openOpportunity.categoryKey });
+            }
+            continue;
+          }
+          // Nothing open to update: create one, so the choice never leaves
+          // the work invisible.
         }
+
+        const source = opportunitySourceForDisposition(input.mode, outcome.effect);
+        // Pass 25's one mapping, by the source this pass picked for the
+        // effect: RESCHEDULE for a requeued service, WINBACK for a cancelled
+        // one-time service; the work type from the service's agreement.
+        const taxonomy = opportunityTaxonomyColumns(source, !!service.agreementId);
+        const [created] = await tx.insert(opportunities).values({
+          orgId: this.orgId,
+          locationId: service.locationId,
+          agreementId: service.agreementId || null,
+          sourceServiceId: service.id,
+          serviceTypeId: service.serviceTypeId || null,
+          opportunityType: outcome.effect === "CANCELLED" ? "Win-back" : input.mode === "RESCHEDULE" ? "Appointment Reschedule" : "Canceled Appointment Review",
+          source,
+          ...taxonomy,
+          dueDate: today,
+          nextActionDate: today,
+          status: "OPEN",
+          notes: noteLine,
+        }).returning();
+        opportunityOutcomes.push({ serviceId: service.id, opportunityId: created.id, action: "CREATED", categoryKey: taxonomy.categoryKey });
       }
 
-      return updatedAppointment;
+      const linkedAfter = linkedBefore.length
+        ? await tx.select().from(services).where(and(eq(services.orgId, this.orgId), inArray(services.id, linkedBefore.map((service) => service.id))))
+        : [];
+
+      await this.recordAuditLogTx(tx, {
+        entityType: "appointment",
+        entityId: existingAppointment.id,
+        action: input.mode === "CANCEL" ? "appointment_cancelled" : "appointment_rescheduled",
+        actor: input.actor ?? null,
+        before: appointmentAuditSnapshot(existingAppointment, linkedBefore),
+        after: {
+          ...appointmentAuditSnapshot(updatedAppointment, linkedAfter),
+          disposition: {
+            mode: input.mode,
+            origin: input.origin,
+            reasonCode,
+            notes,
+            opportunity: input.opportunity,
+            services: serviceOutcomes,
+            opportunities: opportunityOutcomes,
+            draftInvoicesVoided,
+          },
+        },
+      });
+
+      return { appointment: updatedAppointment, mode: input.mode, services: serviceOutcomes, opportunities: opportunityOutcomes, draftInvoicesVoided };
     });
   }
 
@@ -5302,8 +5486,8 @@ export class DatabaseStorage implements IStorage {
       const linkedServices = await this.getLinkedServicesForAppointmentTx(db as any, appointment.id, appointment.serviceId);
       // No `length > 0` guard: an appointment with nothing active left on it is
       // orphaned, not half-finished. That happens when the visit is cancelled or
-      // rescheduled after a ticket was finalized - requestAppointmentCancelOrReschedule
-      // detaches every linked service (appointmentId: null) - and withholding
+      // rescheduled after a ticket was finalized - dispositionAppointment (Pass 27)
+      // detaches every active linked service (appointmentId: null) - and withholding
       // the finalized ticket would strand completed, billable work with no way
       // to invoice it from the UI. Generation treats the same case as billable
       // (its unfinalized check is vacuously satisfied), so eligibility has to
@@ -6937,19 +7121,20 @@ export class DatabaseStorage implements IStorage {
     return flagged;
   }
 
-  // Q3, shared by all three appointment-cancel paths. Undefined decision with
-  // drafts present throws so the caller can prompt; true voids them inside
-  // this same transaction (audit-logged like any void); false leaves them as
+  // Q3, shared by the two appointment-cancel paths (the disposition, both
+  // modes, and the agreement cancellation). Undefined decision with drafts
+  // present throws so the caller can prompt; true voids them inside this
+  // same transaction (audit-logged like any void); false leaves them as
   // DRAFTs on a cancelled visit - an explicit choice, visible on the invoice
-  // list, voidable later, never a silent orphan.
+  // list, voidable later, never a silent orphan. Returns how many were voided.
   private async resolveDraftInvoicesOnCancelTx(
     tx: DbTransaction,
     appointmentIds: string[],
     voidDraftInvoices: boolean | undefined,
     actor: AuditActor | null,
-  ): Promise<void> {
+  ): Promise<number> {
     if (!appointmentIds.length) {
-      return;
+      return 0;
     }
 
     const drafts = await tx
@@ -6957,7 +7142,7 @@ export class DatabaseStorage implements IStorage {
       .from(invoices)
       .where(and(eq(invoices.orgId, this.orgId), inArray(invoices.appointmentId, appointmentIds), eq(invoices.status, "DRAFT")));
     if (!drafts.length) {
-      return;
+      return 0;
     }
 
     if (voidDraftInvoices === undefined) {
@@ -6966,12 +7151,13 @@ export class DatabaseStorage implements IStorage {
       );
     }
     if (!voidDraftInvoices) {
-      return;
+      return 0;
     }
 
     for (const draft of drafts) {
       await this.voidInvoiceTx(tx, draft, actor);
     }
+    return drafts.length;
   }
 
   // The one place VOID is written. Idempotent: voiding a void is a no-op with

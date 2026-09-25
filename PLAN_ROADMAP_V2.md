@@ -116,10 +116,10 @@ are calibrated to Phase 1's: Pass 6 (four tables, routes, three dialogs) is the 
 |---|---|---|
 | Dispatch "Slot Interval" → rename "View Interval" | PARTIAL | control exists in the Window popover (`schedule.tsx:838-886`), options **1 h / 2 h only** (`:40`); it sets grid *column* width; state is session-only (`:430`, popover says so) |
 | Schedule (snap) interval 15 / 30 / 60 min, configured in Dispatch Board settings | ABSENT | placement snaps to the top of the slot hour (`buildSlotDate`, `:75`, `moveAppointmentToSlot`, `:679-707`); sheet start/end are free `datetime-local`; no dispatch section in `settings.tsx`; the only `app_settings` keys are `service_time_tracking_mode` and `appointment_cancel_reschedule_reasons` (`storage.ts:4324, 4341`) |
-| Moving an appointment on the board asks for confirmation | ABSENT | click the card, click a slot, it moves (`moveAppointmentToSlot`) — the accidental-reschedule risk the owner named |
-| Pending queue: name → location link, link to details | ABSENT | queue rows are select-for-placement buttons (`schedule.tsx:1067-1119`), name is plain text (`:1094`) |
-| Unschedule / reschedule to the queue (return a scheduled stop to pending) | ABSENT on the board — **but the mechanism exists** | the technician's `POST /api/appointments/:id/cancel-reschedule` → `requestAppointmentCancelOrReschedule` (`storage.ts:3637-3732`) marks the appointment CANCELED with `rescheduleRequested`, requeues services to `PENDING_SCHEDULING` (`:3690`), and creates an opportunity if none is open (`:3703-3732`) |
-| Board cancel: reason required from a settings list; opportunity prompt | ABSENT on the board; DONE on the technician path | board cancel is `PATCH /api/appointments/:id { status: CANCELED }` (`schedule.tsx:305-317`) → `updateAppointment` (`storage.ts:3606-3635`) which cascades every service to `CANCELLED` (`:1543-1555`), takes **no reason**, creates **no opportunity**. The settings-managed list `appointment_cancel_reschedule_reasons` (`settings.tsx:1885-1910`) is consumed only by `technician-work.tsx:426-433`. **Two divergent cancel paths.** |
+| Moving an appointment on the board asks for confirmation | DONE — Pass 27 (2026-09-25) | click the card, click a slot, and "Move to <technician>, <day time>?" holds the move until confirmed (`pendingMove` / `confirmPendingMove` in `schedule.tsx`). Was: it moved on the click (`moveAppointmentToSlot`) — the accidental-reschedule risk the owner named |
+| Pending queue: name → location link, link to details | ABSENT | queue rows are select-for-placement buttons (`schedule.tsx:1067-1119`), name is plain text (`:1094`). Owner review of 2026-09-25 (Pass 27): the queue needs the appointment / service details so a pending service can be cancelled without placing it first - the details link is C5.4 (Pass 36), the cancel itself is C4.3a (Pass 28) |
+| Unschedule / reschedule to the queue (return a scheduled stop to pending) | DONE — Pass 27 (2026-09-25) | **Reschedule** on the dispatch sheet → `POST /api/appointments/:id/disposition { mode: RESCHEDULE }` → `dispositionAppointment`: CANCELED + `rescheduleRequested`, no reason, no opportunity, every service back to `PENDING_SCHEDULING` with its dates kept and `lastAppointmentId` set; the technician's route is the same path with origin FIELD. See "Shipped in Pass 27" at the end of Part D. Was: only the technician's `requestAppointmentCancelOrReschedule` |
+| Board cancel: reason required from a settings list; opportunity prompt | DONE — Pass 27 (2026-09-25) | **Cancel appointment** on the dispatch sheet → `{ mode: CANCEL, reasonCode, opportunity: UPDATE_EXISTING \| CREATE \| NONE }`: the reason must be on `appointment_cancel_reschedule_reasons`, agreement services recycle with the window reset from today, one-time services are CANCELLED with a WINBACK opportunity; the status PATCH to CANCELED answers 409 `CANCEL_DISPOSITION_REQUIRED`. One path for the board and the field. Was: `PATCH { status: CANCELED }` → `updateAppointment` cascading every service to CANCELLED with no reason and no opportunity — two divergent cancel paths |
 | Smart Schedule / AUTO_ELIGIBLE pill | ABSENT | badge is the raw `schedulingMode` text (`schedule.tsx:1097`); no auto-schedule; no skills column on technicians/users, no required skills on service types, no lat/long on locations (`schema.ts:51-72, 148-172`) |
 | Opportunity type / category / assignee | DONE — Pass 25 (2026-09-24) | `categoryKey` (a key of the settings-managed `opportunity_categories`, five seeded keys and no others) + `workType` (AGREEMENT / ONE_TIME) on every row, stamped by source in `shared/opportunities.ts` and backfilled onto the 16 rows; the assignee on `assignedUserId` (a `users` FK, manual under `ASSIGN_OPPORTUNITY` support+, audit `update`), "My opportunities"; the list read filters on category, work type, assignee, source and location / zip in SQL. See "Shipped in Pass 25" at the end of Part D. Was: `status` is an enum (`routes.ts:288`); `opportunityType` is free text (per-service-type label or hardcoded strings, `storage.ts:1627, 3420, 3720`); `source` is hardcoded (`AGREEMENT_CONTACT_REQUIRED`, `AGREEMENT_CANCELLATION_RETENTION`, `AGREEMENT_INITIAL`, `APPOINTMENT_RESCHEDULE_REQUIRED`, `APPOINTMENT_CANCELLATION_REVIEW`, `NON_CONTRACT_FOLLOW_UP`); dispositions are settings-managed (`opportunity_dispositions`, `settings.tsx:704-740`); no assignee column |
 | Ticket: prompt to time in when opened without a Time In | ABSENT | no `timeInAt` read in `service-completion-dialog.tsx`; the only prompt is time-*out* after post under `PROMPT_FOR_TIMEOUT` (`:353`) |
@@ -136,7 +136,7 @@ are calibrated to Phase 1's: Pass 6 (four tables, routes, three dialogs) is the 
 | Appointment Details (tech): auto refresh after Time In / Out | DONE | `refreshWork()` invalidates on both mutations (`technician-work.tsx:128-190`). The note predates this or reflects a stale dev server (Pass 7.6's finding); re-verify after `npm run dev:full` restart. |
 | Appointment Details: change service type, add service, change duration, order instructions | ABSENT | tech modal is read-only (`:357-389`); service *type* changes only inside the ticket dialog for non-agreement work (`service-completion-dialog.tsx:466-482`); the dispatch sheet edits start/end/status/notes only (`schedule.tsx:220-320`) |
 | Service Time Tracking Mode | DONE | `AUTO_TIMEOUT_ON_TICKET_POST / PROMPT_FOR_TIMEOUT / MANUAL_TIMEOUT` (`storage.ts:272`, `settings.tsx:1860-1883`) |
-| Service-level cancel / return one service to pending | ABSENT | "Cancel Service" (`schedule.tsx:315`) cancels the whole appointment; `PATCH /api/services/:id` accepts `PENDING_SCHEDULING` (`routes.ts:175`) but no UI uses it that way |
+| Service-level cancel / return one service to pending | ABSENT | since Pass 27 the sheet's buttons are **Cancel appointment** and **Reschedule** and act on the whole visit, as they say; a disposition skips a COMPLETED or CANCELLED service but has no per-service form. `PATCH /api/services/:id` accepts `PENDING_SCHEDULING` but no UI uses it that way. C4.3a (Pass 28) |
 | Materials modeled as products with allowed methods / equipment / areas | DONE | `materialProducts` (`schema.ts:556-579`) |
 | Role profiles configurable in Settings | ABSENT | four fixed roles, matrix in `shared/permissions.ts:44-86`, one `can()` helper |
 | Technicians and users are one table | PARTIAL — Pass 12 | `technicians.userId` (nullable, one technician per user) bridges a technician profile to its login, set in Settings → Technicians; the merge itself is C5.7. Was: `technicians` (`schema.ts:160-172`) had no `userId`; the two were unlinked |
@@ -378,8 +378,9 @@ so every field action is a route and every screen is data from a read — no pag
 |---|---|---|---|---|
 | C4.1 (**Pass 25**) — **done** (`feature/phase-4-opportunity-taxonomy`, 2026-09-24; see "Shipped in Pass 25" at the end of Part D) | **Opportunity taxonomy, assignee and search** — `category` (settings-managed, seeded NEW_SALE / SERVICE_DUE / RESCHEDULE / WINBACK / RETENTION) + `workType` (AGREEMENT / ONE_TIME); `assignedToUserId` (a `users` FK, manual assign / reassign, "My opportunities"); migration maps the six hardcoded sources and the free-text types; the Opportunities screen filters on category, work type, status, assignee, source, and location / zip. | Opportunity Type/Category; ASSIGNED_TO; search open opportunities | — | — (owner: the five only) |
 | C4.1b (**Pass 26**) | **Opportunity assignment rules and zones** — Settings: `zones` (named zip-code lists, reusable later by dispatch and Smart Schedule) and `opportunity_assignment_rules` (category / work type / zone / source → user, ordered, first match wins); auto-assign at creation, unassigned when no rule matches; reassignment logged. | ASSIGNED_TO auto-assign by zones / zip / params | C4.1 | — |
-| C4.2 (**Pass 27**) | **Cancel and Reschedule, one path** (B2). New `POST /api/appointments/:id/disposition { mode: CANCEL \| RESCHEDULE, reasonCode?, opportunity: UPDATE_EXISTING \| CREATE \| NONE, voidDraftInvoices? }` built on `requestAppointmentCancelOrReschedule` (the technician's cancel-reschedule route becomes a thin alias that always creates the office-handoff opportunity). **RESCHEDULE**: services back to `PENDING_SCHEDULING`, no reason required, no policy, no opportunity when the office does it from the board. **CANCEL**: reason required from the settings list; agreement-generated services return to `PENDING_SCHEDULING` with `serviceWindowStart/End` reset from the cancel date and an opportunity created or assigned as the fallback; non-agreement services are `CANCELLED` with the opportunity prompt (category defaulted by path). Both keep the draft-invoice prompt. `PATCH /api/appointments/:id { status: CANCELED }` is refused with 409 `CANCEL_DISPOSITION_REQUIRED`; the sheet's status Select drops CANCELED and its "Cancel Service" button becomes **Cancel appointment** + **Reschedule**. **Board moves confirm on drop** ("Move to <slot>?"). The location's Services tab shows Scheduled / Pending / Rescheduling / Cancelled distinctly — also Q4's PENDING_SCHEDULING-vs-SCHEDULED gap. | Unschedule → Reschedule; cancel reason required; opportunity prompt; agreement services recycled; accidental moves; Services-tab clarity | C4.1 | — |
-| C4.3a (**Pass 28**) | **Appointment composition, server + dispatch sheet** (B13) — add a service to an appointment (new or from the pending queue), remove / cancel / return ONE service to pending (the last service prompts to reschedule the appointment), change a service's type (agreement work stays locked) and duration, appointment instructions (`appointments.notes`) editable; all through `getLinkedServicesForAppointmentTx`. UI on the dispatch sheet. | Appointment Details build-out; service-level cancel | C4.2 | — |
+| C4.2 (**Pass 27**) — **done** (`feature/phase-4-cancel-reschedule`, 2026-09-25; see "Shipped in Pass 27" at the end of Part D) | **Cancel and Reschedule, one path** (B2). New `POST /api/appointments/:id/disposition { mode: CANCEL \| RESCHEDULE, reasonCode?, opportunity: UPDATE_EXISTING \| CREATE \| NONE, voidDraftInvoices? }` built on `requestAppointmentCancelOrReschedule` (the technician's cancel-reschedule route becomes a thin alias that always creates the office-handoff opportunity). **RESCHEDULE**: services back to `PENDING_SCHEDULING`, no reason required, no policy, no opportunity when the office does it from the board. **CANCEL**: reason required from the settings list; agreement-generated services return to `PENDING_SCHEDULING` with `serviceWindowStart/End` reset from the cancel date and an opportunity created or assigned as the fallback; non-agreement services are `CANCELLED` with the opportunity prompt (category defaulted by path). Both keep the draft-invoice prompt. `PATCH /api/appointments/:id { status: CANCELED }` is refused with 409 `CANCEL_DISPOSITION_REQUIRED`; the sheet's status Select drops CANCELED and its "Cancel Service" button becomes **Cancel appointment** + **Reschedule**. **Board moves confirm on drop** ("Move to <slot>?"). The location's Services tab shows Scheduled / Pending / Rescheduling / Cancelled distinctly — also Q4's PENDING_SCHEDULING-vs-SCHEDULED gap. | Unschedule → Reschedule; cancel reason required; opportunity prompt; agreement services recycled; accidental moves; Services-tab clarity | C4.1 | — |
+| C4.2b (**Pass 27b**) | **Cancel and Reschedule, owner review** (live testing of 2026-09-25, Part E). (1) A CANCELED placement leaves the dispatch board - cancelled and rescheduled alike, so the slot is free for new work; it stays in the location's Services tab ("Was <date>", the reason) and History as the record. One shared predicate for "shows on the board", read by the board's viewport, slot map and analytics (`getTechnicianWork` already excludes CANCELED). (2) The Cancel appointment and Reschedule dialogs close when the disposition completes: the sheet resets on the appointment prop only while one is set, so the dialog stays open after the sheet closes. (3) Re-verify, with a fresh agreement service and a fresh one-time service, that the opportunity a CANCEL creates is OPEN until the recycled service is placed again (placement converts it, the pre-existing rule); the owner saw CONVERTED and attributed it to the agreement path. No new behavior otherwise. | Owner review of Pass 27 | C4.2 | — |
+| C4.3a (**Pass 28**) | **Appointment composition, server + dispatch sheet** (B13) — add a service to an appointment (new or from the pending queue), remove / cancel / return ONE service to pending (the last service prompts to reschedule the appointment), change a service's type (agreement work stays locked) and duration, appointment instructions (`appointments.notes`) editable; all through `getLinkedServicesForAppointmentTx`. UI on the dispatch sheet. **Also (owner review of 2026-09-25): cancelling a `PENDING_SCHEDULING` service outright**, from the pending queue and the location's Services tab, with the disposition's semantics - a reason from the settings list, the opportunity choice (WINBACK for a one-time service; an agreement service is recycled or, if the agreement itself is ending, that is the agreement workflow), an audit row on the service - because today the only way to cancel a pending service is to place it on the board and cancel the placement (the service form has no status control). | Appointment Details build-out; service-level cancel; cancel a pending service | C4.2 | — |
 | C4.3b (**Pass 29**) | **Appointment composition in the field** (B13) — the technician's appointment details: each service displayed, editable on click (type, for non-agreement work); **Add service** as a small button; adding extends the visit's duration and refuses an overlap with the technician's next stop; instructions editable only on services the technician added; an added non-agreement service is **flagged for office review** (owner). Same routes as C4.3a. | Add service in the field (tech-modal item 5) | C4.3a | — |
 | C4.4 (**Pass 30**) | **Technician preferences + crew** (B14). `technician_preferences` (`scopeType account \| location`, `technicianId`, `kind PREFERRED \| EXCLUDED`, note, created-by); editors in edit/add location and on the primary location with an "apply to all locations" checkbox that writes the account-scoped row; chip on the card. Dispatch: EXCLUDED is a **hard block** on placement (manager override with a reason, audit-logged), PREFERRED a "Prefers <tech>" hint on the queue row and the sheet. Crew: `appointment_technicians` (lead + support) — the comp basis D8 collects here; production entries stay single-technician until Phase 7's split allocation. | Preferred technician; EXCLUDE_TECH; apply across locations; crew | — | — |
 | C4.5 (**Pass 31**) | **Dispatch board settings.** Settings → Dispatch Board: **view interval** (the rename; keep 1 h / 2 h, add 30 min), **snap interval** 15 / 30 / 60 (`dispatch_snap_minutes`; drag placement and the sheet's time inputs round to it), default visible hours (the session override stays). | Schedule interval; View Interval | — | — |
@@ -437,7 +438,7 @@ routes Phases 3-4 leave behind.
 Pass 11a → 11b (Invoice modal) → **11c (invoice document parties) → 11d (down payment on the first
 visit's invoice)** → Pass 12 (Billing Plan required + sold-by) → Pass 16 (ticket lockdown) → Pass 13
 (Batch Invoice + Draft) → Pass 14 (aging) → Pass 25 (opportunity taxonomy) → Pass 27 (cancel /
-reschedule). The rest in phase order. 11c and 11d are inserted ahead of 12 (owner, 2026-09-21)
+reschedule) → **Pass 27b (its owner review, before Pass 15)**. The rest in phase order. 11c and 11d are inserted ahead of 12 (owner, 2026-09-21)
 because they are the money path the owner is live-testing now and both are small. Pass 16 is pulled
 forward because it is an integrity hole, not a feature; Passes 25 and 27 because the board's cancel
 path is the other divergence in daily use.
@@ -1407,6 +1408,155 @@ Behavior worth knowing before the next pass touches it:
 
 ---
 
+**Shipped in Pass 27** (`feature/phase-4-cancel-reschedule`, 2026-09-25) — the C4.2 row as built,
+plus what it found.
+
+```ts
+// shared/appointment-disposition.ts (new) - the one path's vocabulary, read by storage, routes and both client pages
+APPOINTMENT_DISPOSITION_MODES = ["CANCEL", "RESCHEDULE"]; DISPOSITION_OPPORTUNITY_CHOICES = ["UPDATE_EXISTING", "CREATE", "NONE"]; APPOINTMENT_DISPOSITION_ORIGINS = ["OFFICE", "FIELD"]
+AppointmentDispositionRequest { mode, reasonCode?, notes?, opportunity, voidDraftInvoices? }   // the route body
+AppointmentDispositionOutcome { mode, services: [{ serviceId, agreementId, effect: REQUEUED | CANCELLED | SKIPPED, windowReset }],
+                                opportunities: [{ serviceId, opportunityId, action: CREATED | UPDATED, categoryKey }], draftInvoicesVoided }
+CANCEL_DISPOSITION_REQUIRED / DISPOSITION_REASON_REQUIRED / DISPOSITION_REASON_NOT_ON_LIST / APPOINTMENT_NOT_DISPOSITIONABLE   // the error codes
+opportunitySourceForDisposition(mode, effect)   // CANCELLED -> APPOINTMENT_CANCELLATION_WINBACK; RESCHEDULE -> APPOINTMENT_RESCHEDULE_REQUIRED; CANCEL -> APPOINTMENT_CANCELLATION_REVIEW
+describeAppointmentStatus(appointment)          // CANCELED + rescheduleRequested -> "Rescheduled"; CANCELED -> "Canceled"; else Scheduled / In progress / Completed
+ServiceScheduleState = DRAFT | PENDING | RESCHEDULING | SCHEDULED | COMPLETED | CANCELLED; SERVICE_SCHEDULE_STATE_LABELS
+resolveServiceScheduleState(service, lastAppointment)   // PENDING_SCHEDULING whose last appointment is CANCELED with the flag -> RESCHEDULING, else PENDING
+
+// shared/opportunities.ts                     OPPORTUNITY_SOURCES += "APPOINTMENT_CANCELLATION_WINBACK" ("Cancelled service win-back"); taxonomyForSource(it) -> WINBACK / by agreement
+// shared/audit.ts                             AuditEntityType += "appointment"; AuditAction += "appointment_cancelled" | "appointment_rescheduled"
+// shared/schema.ts                            services.lastAppointmentId (references appointments.id); omitted from insertServiceSchema - the disposition's to write
+
+// server/service-scheduling-bootstrap.ts - bootstrapAppointmentDisposition(), guarded, quiet once done: services.last_appointment_id + index + appointments(id) FK;
+//   a one-shot backfill giving a pending, unlinked service its latest CANCELED appointment when that appointment names it as representative
+//   (per-row effect printed before the write; the dev DB had no such row)
+
+// server/storage.ts
+AppointmentDispositionInput { appointmentId, mode, origin, reasonCode?, notes?, opportunity, voidDraftInvoices?, actor? }
+AppointmentDispositionResult = AppointmentDispositionOutcome & { appointment }
+AppointmentDispositionError(status 400 | 409, code, message)
+dispositionAppointment(input)                  // replaces requestAppointmentCancelOrReschedule. One transaction: the reason checked against getAppointmentCancelReasons()
+                                               //   (CANCEL requires one; RESCHEDULE takes one only from the field); 409 on a CANCELED or COMPLETED appointment; the Q3 draft
+                                               //   prompt before any write; the appointment -> CANCELED + cancelReason + the flag + the actor's label; per linked service:
+                                               //   COMPLETED / CANCELLED or placed on another appointment -> SKIPPED; an office CANCEL of a non-agreement service -> CANCELLED
+                                               //   (appointmentId kept, lastAppointmentId set); otherwise -> PENDING_SCHEDULING with appointmentId / technician cleared and
+                                               //   lastAppointmentId set, and on CANCEL of an agreement service dueDate / serviceWindowStart / End reset from today by the
+                                               //   agreement's serviceWindowDays (RESCHEDULE keeps every date); the opportunity choice per touched service; one audit row
+updateAppointment(id, data)                    // the options argument is gone; data.status === "CANCELED" throws AppointmentDispositionError 409 CANCEL_DISPOSITION_REQUIRED
+syncServicesForAppointmentTx                   // a no-op for a CANCELED or COMPLETED appointment; skips settled services and a representative placed elsewhere; writes SCHEDULED only
+resolveDraftInvoicesOnCancelTx                 // returns the number of drafts voided
+getAuditLogsForLocation                        // + the location's appointments
+appointmentAuditSnapshot(appointment, services) // the before / after shape: status, technician, time, reason, notes, the stamps, the flag,
+                                               //   services [{ id, status, appointmentId, lastAppointmentId, assignedTechnicianId, agreementId, dueDate, serviceWindowStart, serviceWindowEnd }]
+
+// server/routes.ts
+POST  /api/appointments/:id/disposition        // appointmentDispositionSchema (strict), origin OFFICE; 400 / 409 { code, message }; 409 DRAFT_INVOICE_DECISION_REQUIRED; 404;
+                                               //   ungated like every appointment write (who may cancel is C5.6)
+POST  /api/appointments/:id/cancel-reschedule  // the technician alias, body unchanged: mode by rescheduleRequested, origin FIELD, reasonCode = reason, opportunity UPDATE_EXISTING
+PATCH /api/appointments/:id                    // updateAppointmentSchema = appointmentSchema.partial() (voidDraftInvoices gone); status CANCELED -> 409 CANCEL_DISPOSITION_REQUIRED
+
+// client
+pages/schedule.tsx                             // AppointmentSheet + linkedServices, cancelReasons, openOpportunityCount, onDisposition, isDispositioning; the status select without
+                                               //   CANCELED (a cancelled placement shows its state read-only; Save omits status); "Cancel Service" -> Cancel appointment (reason select
+                                               //   from the settings list, notes, opportunity radios defaulting to Update existing when one is open, else Create) + Reschedule (a
+                                               //   confirm); dispositionMutation with its own DraftInvoiceVoidPrompt; moveAppointmentToSlot -> pendingMove -> "Move to <technician>,
+                                               //   <day time>?" -> confirmPendingMove; the sheet badge and the hover card read describeAppointmentStatus
+pages/customer-detail.tsx                      // ServicesTab: scheduleByServiceId { state, lastAppointment, liveAppointment }; the Status badge by state (amber Rescheduling with
+                                               //   "Was <date>", red Cancelled with the reason, outline Pending scheduling); the date, Draft invoice and Schedule / Reschedule
+                                               //   read the live visit only; ServiceDetailModal + statusLabel
+```
+
+Behavior worth knowing before the next pass touches it:
+- **One path, two modes, one shape.** Both modes write `status CANCELED`, the actor's label, the
+  notes and `rescheduleRequested` (true for RESCHEDULE, false for CANCEL); `cancelReason` is what
+  was given - required for CANCEL, optional for RESCHEDULE - so a board reschedule carries none and
+  a technician's request keeps the reason the dialog required. The UI distinguishes on the flag:
+  `describeAppointmentStatus` says "Rescheduled" or "Canceled". No fifth status (Q4 / D1a).
+- **RESCHEDULE keeps every date; CANCEL resets an agreement service's window.** A reschedule takes
+  the placement off the board and nothing else - the visit is still due when it was due, so
+  `dueDate` and the window stay. A cancel of an agreement service resets `dueDate` and the window
+  from today by the agreement's `serviceWindowDays` (B2's refinement, so the visit is not silently
+  missed). Before this pass the technician path reset the window on both; a reschedule request from
+  the field now keeps the dates too. Say so if the owner wants the old behavior back.
+- **The field is a handoff, never disposal** (canon §9): the alias carries origin FIELD, and with it
+  every service returns to the queue whatever the mode - the technician's "Cancel Appointment"
+  requeues a one-time service where the office's CANCEL cancels it. The alias sends
+  UPDATE_EXISTING, which re-dates the open handoff opportunity or creates one when none is open, the
+  same dedup the old code had.
+- **The opportunity choice.** UPDATE_EXISTING re-dates every OPEN opportunity whose
+  `sourceServiceId` is the service, whatever its source (due and next action to today, the action
+  appended to its notes, category untouched) and creates one when none is open, so the choice never
+  leaves the work invisible. CREATE always inserts. NONE writes nothing. Placing a service on an
+  appointment already converts its open reschedule / cancel-review opportunities
+  (`createAppointment`, the representative service only - unchanged), so on a re-placed service
+  "Update existing" finds only opportunities of other sources (a contact-required or follow-up one);
+  the sheet counts the open ones on the visit's services and defaults the radio accordingly.
+- **WINBACK's source.** A one-time service the office cancels gets a seventh source,
+  `APPOINTMENT_CANCELLATION_WINBACK` -> WINBACK / ONE_TIME, rather than an exception to
+  `taxonomyForSource`: the same source (`APPOINTMENT_CANCELLATION_REVIEW`) on a field cancel
+  requeues the service and stays RESCHEDULE, so "category by path" is a source per path and the
+  Pass 25 invariant (one mapping for the migration and every writer) holds. The Opportunities
+  screen's source filter lists it.
+- **`services.lastAppointmentId`.** `appointmentId` is nulled on a requeue and
+  `appointments.serviceId` names one representative, so a sibling on a multi-service visit had no
+  way to say which appointment it came back from; the column is set on every service a disposition
+  touches and never cleared. The Services tab reads it for Rescheduling vs Pending scheduling; the
+  backfill covers only representatives (the dev DB had none to cover), so pre-pass siblings read
+  Pending scheduling. A client cannot write it (omitted from `insertServiceSchema`).
+- **Found on the way: the generic update's service sync.** `syncServicesForAppointmentTx` set
+  every linked service SCHEDULED for any appointment status but CANCELED - a completed visit's
+  finalized services included - and re-linked a representative that had since been placed
+  elsewhere; editing a cancelled appointment's notes would have re-linked and CANCELLED its requeued
+  services. It is now a no-op for CANCELED and COMPLETED appointments and skips settled or
+  elsewhere-placed services. The API still accepts `status: SCHEDULED` on a CANCELED row (nothing
+  in the UI sends it; the sheet no longer offers a way back).
+- **What a disposition skips.** A COMPLETED or CANCELLED service and a representative placed on
+  another appointment are left alone and reported SKIPPED. A service with a posted, unfinalized
+  ticket is still requeued like before - the per-service composition is C4.3a (Pass 28).
+- **Not built:** service-level cancel (C4.3a), an appointment cancellation policy (Phase 9), a
+  permission on the disposition (C5.6), un-cancelling from the sheet, assignment rules and zones
+  (Pass 26), the agreement cancellation workflow (untouched, its own cascade).
+- **Verified 2026-09-25** (PORT=5001): `npm run check` clean; boot 1 printed one line (the
+  column, its index and FK) and no backfill rows - none of the 4 pending services has an appointment
+  naming it - with 44 tables after; 121 API checks as the four roles: unauthenticated 401; a
+  fixture customer with an agreement service (window 7 days) and a one-time service placed through
+  the real routes on one visit, the manager's RESCHEDULE requeueing both siblings with no reason,
+  no opportunity, dates kept, `lastAppointmentId` set on both, the audit row with the manager's
+  label and both services in its snapshots, a second disposition 409, a notes edit of the
+  cancelled placement leaving the requeued services alone; CANCEL without a reason 400, "Bogus
+  reason" 400, an unknown mode / choice / extra key 400, an unknown id 404, nothing written by any
+  refusal; support's CANCEL of the agreement service resetting its window to today .. today + 7 and
+  falling back to CREATE (RESCHEDULE / AGREEMENT, the agreement carried, equal to
+  `taxonomyForSource`); the admin's UPDATE_EXISTING re-dating a seeded contact-required opportunity
+  and creating nothing (B's own having been converted by the re-placement); NONE creating nothing;
+  the manager's CREATE adding a row beside the open one; support's CANCEL of the one-time service
+  cancelling it (still linked, WINBACK / ONE_TIME, "Win-back", the source filter and the
+  by-location read carrying it); the technician alias: a reason off the list 400, a reschedule
+  request requeueing the one-time service with the reason kept, the handoff opportunity created,
+  the technician's audit row; the technician's cancel requeueing (not cancelling) the service and
+  creating a fresh handoff opportunity once the re-placement had converted the first; the status
+  PATCH to CANCELED 409 with the code, with and without the old `voidDraftInvoices` key, an
+  ordinary PATCH still 200; a DRAFT invoice on the visit: RESCHEDULE without a decision 409 listing
+  it and rolling back, with `voidDraftInvoices: true` voiding it (`draftInvoicesVoided` 1 in the
+  response and the audit row), CANCEL keeping it (0, still DRAFT); the location History read
+  listing the 10 appointment rows with all four actors and both actions; the services read carrying
+  `lastAppointmentId` and a client PATCH unable to write it; the shared state function answering
+  RESCHEDULING / PENDING / CANCELLED per scenario; every fixture deleted and all 44 tables back at
+  baseline with `session` up by the run's four logins; boot 2 printed only the serving line with
+  every count unchanged; Vite 200 on the two pages, the technician and Opportunities pages, the
+  audit card and, under `/@fs/`, the four shared modules. Nothing was rendered in a browser: the
+  two dialogs, the move confirmation, the read-only cancelled state and the Services-tab badges
+  reach the owner first.
+- **Owner's live test, 2026-09-25 (before merge):** five findings, recorded in Part E. Two are
+  defects of this pass and are Pass 27b (C4.2b): a CANCELED placement must leave the board, and the
+  two dialogs must close when the disposition completes. Two the owner passed once traced to the
+  agreement path: an agreement service returning to the queue on CANCEL (B2's own refinement), and
+  its opportunity reading CONVERTED after the recycled service was placed again (placement converts
+  it). One is roadmap: cancelling a `PENDING_SCHEDULING` service without placing it first is
+  added to C4.3a (Pass 28), the queue's details link stays C5.4 (Pass 36).
+
+---
+
 ## Part E — Decision log
 
 **Owner review of 2026-09-19** (answers to the questions the 2026-09-17 plan raised):
@@ -1468,3 +1618,14 @@ after the push - `gh pr create` against `main` with the pass's summary as the bo
 merges. When `gh` is not authenticated on the machine, the session says so and puts the PR title,
 body and compare link in its final message instead. Recorded in `AGENT_WORKING_AGREEMENT.md`,
 `CLAUDE.md` and `DEV_NOTES.md`; everything else in the working agreement is unchanged.
+
+**Owner's live-testing review of 2026-09-25** (Pass 27 on the dispatch board, before its merge;
+the docs were updated on the same branch and no code was changed in that session):
+
+| # | Finding | Answer |
+|---|---|---|
+| 1 | A cancelled or rescheduled appointment stays on the board as a red card | **Remove it from the board** - cancelled and rescheduled alike - so the slot is free for new work; the history stays visible on the service (the Services tab and the History tab). Pass 27b (C4.2b) |
+| 2 | A cancelled appointment's agreement service came back to the queue as PENDING_SCHEDULING; only a reschedule should requeue | **Passes** once traced: that is B2's own refinement for agreement-generated services (recycled with the window reset so the visit is not silently missed); a one-time service is cancelled, not requeued. No change |
+| 3 | The cancel's opportunity read CONVERTED, not OPEN, so it was not in the open list | **Passes**: the recycled agreement service was placed again, and placement converts the reschedule / cancel-review opportunity on it (the rule since before Pass 27). Pass 27b re-verifies with fresh services that the row is OPEN until then; it is filterable under CONVERTED |
+| 4 | Both dialogs (Cancel appointment, Reschedule) stay open after the choice is made | **Defect** - they must close when the disposition completes. Pass 27b (C4.2b) |
+| 5 | A PENDING_SCHEDULING service cannot be cancelled without placing it on the board first; the appointment details are needed from the queue | **Scheduled**: cancelling a pending service outright, from the queue and the Services tab, joins C4.3a (Pass 28); the queue's details link is C5.4 (Pass 36) |

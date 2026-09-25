@@ -5,7 +5,9 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { AlertDialog, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
@@ -30,7 +32,14 @@ import {
   Settings2,
   Users,
 } from "lucide-react";
-import type { Appointment, Customer, Location, Service, ServiceRecord, ServiceType, Technician } from "@shared/schema";
+import type { Appointment, Customer, Location, Opportunity, Service, ServiceRecord, ServiceType, Technician } from "@shared/schema";
+import {
+  describeAppointmentStatus,
+  type AppointmentDispositionMode,
+  type AppointmentDispositionOutcome,
+  type AppointmentDispositionRequest,
+  type DispositionOpportunityChoice,
+} from "@shared/appointment-disposition";
 
 const VIEW_OPTIONS = [
   { value: "day", label: "1 Day", step: 1 },
@@ -151,36 +160,60 @@ function getLocationAppointmentsQueryKey(locationId: string | null | undefined) 
   return ["/api/appointments/by-location", locationId || ""];
 }
 
+// Pass 27 (B2): the slot named in the board-move confirmation.
+function formatSlotLabel(date: Date) {
+  return `${date.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })} ${date.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}`;
+}
+
+function pluralize(count: number, noun: string, plural?: string) {
+  return `${count} ${count === 1 ? noun : plural ?? `${noun}s`}`;
+}
+
 function AppointmentSheet({
   appointment,
   service,
+  linkedServices,
   technicianOptions,
   serviceTypeName,
   customerLabel,
   locationLabel,
+  cancelReasons,
+  openOpportunityCount,
   open,
   onOpenChange,
   onSave,
+  onDisposition,
   isSaving,
+  isDispositioning,
 }: {
   appointment: Appointment | null;
   service: Service | null;
+  /** Every service on the visit, the representative included - what a disposition touches. */
+  linkedServices: Service[];
   technicianOptions: Technician[];
   serviceTypeName: string;
   customerLabel: string;
   locationLabel: string;
+  /** The settings list a cancel reason must come from. */
+  cancelReasons: string[];
+  /** Open opportunities already on the visit's services - what "Update existing" would re-date. */
+  openOpportunityCount: number;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSave: (payload: {
     assignedTechnicianId: string | null;
     scheduledDate: string;
     scheduledEndDate: string | null;
-    status: string;
+    /** Omitted for a CANCELED appointment: its status is the disposition's, not the form's. */
+    status?: string;
     lockTime: boolean;
     lockTechnician: boolean;
     notes: string | null;
   }) => void;
+  /** Pass 27 (C4.2): Cancel appointment / Reschedule - POST /api/appointments/:id/disposition. */
+  onDisposition: (payload: AppointmentDispositionRequest) => void;
   isSaving: boolean;
+  isDispositioning: boolean;
 }) {
   const [assignedTechnicianId, setAssignedTechnicianId] = useState<string>("");
   const [scheduledDate, setScheduledDate] = useState("");
@@ -189,10 +222,22 @@ function AppointmentSheet({
   const [lockTime, setLockTime] = useState(false);
   const [lockTechnician, setLockTechnician] = useState(false);
   const [notes, setNotes] = useState("");
+  // Pass 27 (C4.2): the two ways off the board. Cancel needs a reason from
+  // the settings list and the opportunity choice; Reschedule is a confirm.
+  const [disposition, setDisposition] = useState<AppointmentDispositionMode | null>(null);
+  const [reasonCode, setReasonCode] = useState("");
+  const [dispositionNotes, setDispositionNotes] = useState("");
+  const [opportunityChoice, setOpportunityChoice] = useState<DispositionOpportunityChoice>("CREATE");
   // D6: the visit's Price / COA / Due today per service and its due-today
   // sum, server-resolved - in place of the raw stamped service price, which
   // is null for agreement work and says nothing about coverage.
   const { data: visitBilling, isLoading: visitBillingLoading, isError: visitBillingError } = useVisitBillingSummary(open ? appointment?.id : null);
+
+  const isCanceled = appointment?.status === "CANCELED";
+  const activeServices = linkedServices.filter((linked) => linked.status !== "COMPLETED" && linked.status !== "CANCELLED");
+  const agreementServiceCount = activeServices.filter((linked) => !!linked.agreementId).length;
+  const oneTimeServiceCount = activeServices.length - agreementServiceCount;
+  const defaultOpportunityChoice: DispositionOpportunityChoice = openOpportunityCount > 0 ? "UPDATE_EXISTING" : "CREATE";
 
   useEffect(() => {
     if (!appointment) return;
@@ -203,140 +248,294 @@ function AppointmentSheet({
     setLockTime(appointment.lockTime ?? false);
     setLockTechnician(appointment.lockTechnician ?? false);
     setNotes(appointment.notes || "");
+    setDisposition(null);
+    setReasonCode("");
+    setDispositionNotes("");
   }, [appointment]);
 
+  const openDisposition = (mode: AppointmentDispositionMode) => {
+    setReasonCode("");
+    setDispositionNotes("");
+    setOpportunityChoice(defaultOpportunityChoice);
+    setDisposition(mode);
+  };
+
   return (
-    <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent side="right" className="w-full sm:max-w-lg">
-        <SheetHeader className="pr-8">
-          <SheetTitle>Appointment Details</SheetTitle>
-          <SheetDescription>
-            Manage scheduling attributes without leaving the dispatch board.
-          </SheetDescription>
-        </SheetHeader>
-        {appointment ? (
-          <div className="mt-6 space-y-5">
-            <div className="rounded-lg border bg-muted/20 p-3">
-              <div className="flex items-center justify-between gap-2">
-                <div>
-                  <p className="text-sm font-semibold">{customerLabel}</p>
-                  <p className="text-xs text-muted-foreground">{serviceTypeName}</p>
+    <>
+      <Sheet open={open} onOpenChange={onOpenChange}>
+        <SheetContent side="right" className="w-full sm:max-w-lg">
+          <SheetHeader className="pr-8">
+            <SheetTitle>Appointment Details</SheetTitle>
+            <SheetDescription>
+              Manage scheduling attributes without leaving the dispatch board.
+            </SheetDescription>
+          </SheetHeader>
+          {appointment ? (
+            <div className="mt-6 space-y-5">
+              <div className="rounded-lg border bg-muted/20 p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <p className="text-sm font-semibold">{customerLabel}</p>
+                    <p className="text-xs text-muted-foreground">{serviceTypeName}</p>
+                  </div>
+                  <Badge variant="outline">{describeAppointmentStatus(appointment)}</Badge>
                 </div>
-                <Badge variant="outline">{appointment.status}</Badge>
+                <p className="mt-2 text-xs text-muted-foreground">{locationLabel}</p>
+                <div className="mt-3">
+                  <VisitBillingRows summary={visitBilling} isLoading={visitBillingLoading} isError={visitBillingError} />
+                </div>
               </div>
-              <p className="mt-2 text-xs text-muted-foreground">{locationLabel}</p>
-              <div className="mt-3">
-                <VisitBillingRows summary={visitBilling} isLoading={visitBillingLoading} isError={visitBillingError} />
+
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Technician</label>
+                <select
+                  value={assignedTechnicianId}
+                  onChange={(event) => setAssignedTechnicianId(event.target.value)}
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                >
+                  <option value="">Unassigned</option>
+                  {technicianOptions.map((technician) => (
+                    <option key={technician.id} value={technician.id}>
+                      {technician.displayName} {technician.status !== "ACTIVE" ? `(${technician.status})` : ""}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">Scheduled Start</label>
+                  <input
+                    type="datetime-local"
+                    value={scheduledDate}
+                    onChange={(event) => setScheduledDate(event.target.value)}
+                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">Scheduled End</label>
+                  <input
+                    type="datetime-local"
+                    value={scheduledEndDate}
+                    onChange={(event) => setScheduledEndDate(event.target.value)}
+                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Status</label>
+                {isCanceled ? (
+                  // Pass 27: CANCELED is the disposition's to write, never the
+                  // form's, so a cancelled placement shows its state and the
+                  // select is not offered.
+                  <div className="rounded-md border bg-muted/20 px-3 py-2 text-sm">
+                    <p className="font-medium">{describeAppointmentStatus(appointment)}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {appointment.rescheduleRequested
+                        ? "Its services are back in the pending queue; place them on a new day and time from there."
+                        : appointment.cancelReason
+                          ? `Reason: ${appointment.cancelReason}`
+                          : "No reason was recorded."}
+                    </p>
+                  </div>
+                ) : (
+                  <select
+                    value={status}
+                    onChange={(event) => setStatus(event.target.value)}
+                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  >
+                    <option value="SCHEDULED">Scheduled</option>
+                    <option value="IN_PROGRESS">In Progress</option>
+                    <option value="COMPLETED">Completed</option>
+                  </select>
+                )}
+              </div>
+
+              <div className="space-y-3 rounded-lg border p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-medium">Lock Time</p>
+                    <p className="text-xs text-muted-foreground">Prevents board moves to a different time slot.</p>
+                  </div>
+                  <Switch checked={lockTime} onCheckedChange={setLockTime} />
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-medium">Lock Technician</p>
+                    <p className="text-xs text-muted-foreground">Prevents reassignment to another technician row.</p>
+                  </div>
+                  <Switch checked={lockTechnician} onCheckedChange={setLockTechnician} />
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Scheduling Notes</label>
+                <Textarea value={notes} onChange={(event) => setNotes(event.target.value)} rows={4} />
+              </div>
+
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                {!isCanceled ? (
+                  <>
+                    <Button type="button" variant="destructive" onClick={() => openDisposition("CANCEL")} disabled={isSaving || isDispositioning}>
+                      Cancel appointment
+                    </Button>
+                    <Button type="button" variant="outline" onClick={() => openDisposition("RESCHEDULE")} disabled={isSaving || isDispositioning}>
+                      Reschedule
+                    </Button>
+                  </>
+                ) : null}
+                <Button variant="outline" onClick={() => onOpenChange(false)}>Close</Button>
+                <Button
+                  onClick={() => onSave({
+                    assignedTechnicianId: assignedTechnicianId || null,
+                    scheduledDate: new Date(scheduledDate).toISOString(),
+                    scheduledEndDate: scheduledEndDate ? new Date(scheduledEndDate).toISOString() : null,
+                    status: isCanceled ? undefined : status,
+                    lockTime,
+                    lockTechnician,
+                    notes: notes.trim() || null,
+                  })}
+                  disabled={isSaving || !scheduledDate}
+                >
+                  Save Appointment
+                </Button>
               </div>
             </div>
+          ) : null}
+        </SheetContent>
+      </Sheet>
 
+      <Dialog open={disposition === "CANCEL"} onOpenChange={(next) => { if (!next) setDisposition(null); }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Cancel appointment</DialogTitle>
+            <DialogDescription>
+              The visit is cancelled with a reason. Agreement services return to the pending queue with their service window reset from today; one-time services are cancelled.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="rounded-md border bg-muted/20 px-3 py-2 text-sm">
+              {activeServices.length ? (
+                <>
+                  {agreementServiceCount > 0 ? <p>{pluralize(agreementServiceCount, "agreement service")} back to the queue, window reset from today.</p> : null}
+                  {oneTimeServiceCount > 0 ? <p>{pluralize(oneTimeServiceCount, "one-time service")} cancelled.</p> : null}
+                </>
+              ) : (
+                <p>No active services on this visit.</p>
+              )}
+            </div>
             <div className="space-y-2">
-              <label className="text-sm font-medium">Technician</label>
+              <Label htmlFor="disposition-reason">Reason</Label>
               <select
-                value={assignedTechnicianId}
-                onChange={(event) => setAssignedTechnicianId(event.target.value)}
+                id="disposition-reason"
+                value={reasonCode}
+                onChange={(event) => setReasonCode(event.target.value)}
                 className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
               >
-                <option value="">Unassigned</option>
-                {technicianOptions.map((technician) => (
-                  <option key={technician.id} value={technician.id}>
-                    {technician.displayName} {technician.status !== "ACTIVE" ? `(${technician.status})` : ""}
-                  </option>
+                <option value="">Select a reason</option>
+                {cancelReasons.map((reason) => (
+                  <option key={reason} value={reason}>{reason}</option>
                 ))}
               </select>
+              <p className="text-xs text-muted-foreground">From Settings, Appointment Cancel / Reschedule Reasons.</p>
             </div>
-
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div className="space-y-2">
-                <label className="text-sm font-medium">Scheduled Start</label>
-                <input
-                  type="datetime-local"
-                  value={scheduledDate}
-                  onChange={(event) => setScheduledDate(event.target.value)}
-                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                />
-              </div>
-              <div className="space-y-2">
-                <label className="text-sm font-medium">Scheduled End</label>
-                <input
-                  type="datetime-local"
-                  value={scheduledEndDate}
-                  onChange={(event) => setScheduledEndDate(event.target.value)}
-                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                />
-              </div>
-            </div>
-
             <div className="space-y-2">
-              <label className="text-sm font-medium">Status</label>
-              <select
-                value={status}
-                onChange={(event) => setStatus(event.target.value)}
-                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-              >
-                <option value="SCHEDULED">Scheduled</option>
-                <option value="IN_PROGRESS">In Progress</option>
-                <option value="COMPLETED">Completed</option>
-                <option value="CANCELED">Canceled</option>
-              </select>
+              <Label htmlFor="disposition-notes">Notes</Label>
+              <Textarea
+                id="disposition-notes"
+                value={dispositionNotes}
+                onChange={(event) => setDispositionNotes(event.target.value)}
+                rows={3}
+                placeholder="Customer context or office instructions."
+              />
             </div>
-
-            <div className="space-y-3 rounded-lg border p-3">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <p className="text-sm font-medium">Lock Time</p>
-                  <p className="text-xs text-muted-foreground">Prevents board moves to a different time slot.</p>
-                </div>
-                <Switch checked={lockTime} onCheckedChange={setLockTime} />
-              </div>
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <p className="text-sm font-medium">Lock Technician</p>
-                  <p className="text-xs text-muted-foreground">Prevents reassignment to another technician row.</p>
-                </div>
-                <Switch checked={lockTechnician} onCheckedChange={setLockTechnician} />
-              </div>
-            </div>
-
-            <div className="space-y-2">
-              <label className="text-sm font-medium">Scheduling Notes</label>
-              <Textarea value={notes} onChange={(event) => setNotes(event.target.value)} rows={4} />
-            </div>
-
-            <div className="flex items-center justify-end gap-2">
-              {status !== "CANCELED" ? (
-                <Button type="button" variant="destructive" onClick={() => onSave({
-                  assignedTechnicianId: assignedTechnicianId || null,
-                  scheduledDate: new Date(scheduledDate).toISOString(),
-                  scheduledEndDate: scheduledEndDate ? new Date(scheduledEndDate).toISOString() : null,
-                  status: "CANCELED",
-                  lockTime,
-                  lockTechnician,
-                  notes: notes.trim() || null,
-                })} disabled={isSaving || !scheduledDate}>
-                  Cancel Service
-                </Button>
-              ) : null}
-              <Button variant="outline" onClick={() => onOpenChange(false)}>Close</Button>
+            <fieldset className="space-y-2">
+              <legend className="text-sm font-medium">Opportunity</legend>
+              <label className="flex items-start gap-2 text-sm">
+                <input
+                  type="radio"
+                  name="disposition-opportunity"
+                  className="mt-1"
+                  checked={opportunityChoice === "UPDATE_EXISTING"}
+                  onChange={() => setOpportunityChoice("UPDATE_EXISTING")}
+                  disabled={openOpportunityCount === 0}
+                />
+                <span>
+                  <span className={openOpportunityCount === 0 ? "text-muted-foreground" : ""}>Update the open opportunity on the service</span>
+                  <span className="block text-xs text-muted-foreground">
+                    {openOpportunityCount > 0
+                      ? `Re-dates ${pluralize(openOpportunityCount, "open opportunity", "open opportunities")} to today.`
+                      : "None is open on this visit's services."}
+                  </span>
+                </span>
+              </label>
+              <label className="flex items-start gap-2 text-sm">
+                <input
+                  type="radio"
+                  name="disposition-opportunity"
+                  className="mt-1"
+                  checked={opportunityChoice === "CREATE"}
+                  onChange={() => setOpportunityChoice("CREATE")}
+                />
+                <span>
+                  Create a new opportunity
+                  <span className="block text-xs text-muted-foreground">Reschedule for a service back in the queue; Win-back for a cancelled one-time service.</span>
+                </span>
+              </label>
+              <label className="flex items-start gap-2 text-sm">
+                <input
+                  type="radio"
+                  name="disposition-opportunity"
+                  className="mt-1"
+                  checked={opportunityChoice === "NONE"}
+                  onChange={() => setOpportunityChoice("NONE")}
+                />
+                <span>
+                  No opportunity
+                  <span className="block text-xs text-muted-foreground">Nothing keeps this visit visible for follow-up.</span>
+                </span>
+              </label>
+            </fieldset>
+            <div className="flex justify-end gap-2">
+              <Button type="button" variant="outline" onClick={() => setDisposition(null)} disabled={isDispositioning}>Back</Button>
               <Button
-                onClick={() => onSave({
-                  assignedTechnicianId: assignedTechnicianId || null,
-                  scheduledDate: new Date(scheduledDate).toISOString(),
-                  scheduledEndDate: scheduledEndDate ? new Date(scheduledEndDate).toISOString() : null,
-                  status,
-                  lockTime,
-                  lockTechnician,
-                  notes: notes.trim() || null,
-                })}
-                disabled={isSaving || !scheduledDate}
+                type="button"
+                variant="destructive"
+                disabled={!reasonCode || isDispositioning}
+                onClick={() => onDisposition({ mode: "CANCEL", reasonCode, notes: dispositionNotes.trim() || null, opportunity: opportunityChoice })}
               >
-                Save Appointment
+                {isDispositioning ? "Cancelling..." : "Cancel appointment"}
               </Button>
             </div>
           </div>
-        ) : null}
-      </SheetContent>
-    </Sheet>
+        </DialogContent>
+      </Dialog>
+
+      <AlertDialog open={disposition === "RESCHEDULE"} onOpenChange={(next) => { if (!next) setDisposition(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Return this appointment to the queue?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {activeServices.length
+                ? `${pluralize(activeServices.length, "service")} ${activeServices.length === 1 ? "goes" : "go"} back to Pending scheduling`
+                : "The visit's services go back to Pending scheduling"}
+              {" "}for the office to place on a new day and time. No reason is recorded and no opportunity is created; the placement stays in history as rescheduled.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <Button type="button" variant="outline" onClick={() => setDisposition(null)} disabled={isDispositioning}>Back</Button>
+            <Button
+              type="button"
+              onClick={() => onDisposition({ mode: "RESCHEDULE", reasonCode: null, notes: null, opportunity: "NONE" })}
+              disabled={isDispositioning}
+            >
+              {isDispositioning ? "Returning..." : "Reschedule"}
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
   );
 }
 
@@ -438,6 +637,9 @@ export default function Schedule() {
   const { data: serviceRecords } = useQuery<ServiceRecord[]>({ queryKey: ["/api/service-records"] });
   const { data: pendingServices, isLoading: pendingLoading } = useQuery<Service[]>({ queryKey: ["/api/services/pending"] });
   const { data: serviceTypes } = useQuery<ServiceType[]>({ queryKey: ["/api/service-types"] });
+  // Pass 27: the sheet's Cancel appointment takes its reason from the
+  // settings list.
+  const { data: cancelReasonSettings } = useQuery<{ reasons: string[] }>({ queryKey: ["/api/settings/appointment-cancel-reasons"] });
   const { data: customers } = useQuery<Customer[]>({ queryKey: ["/api/customers"] });
   const { data: locations } = useQuery<Location[]>({ queryKey: ["/api/all-locations"] });
 
@@ -659,9 +861,6 @@ export default function Schedule() {
     onError: (error: Error) => toast({ title: "Unable to add service to visit", description: error.message, variant: "destructive" }),
   });
 
-  // Q3: a status change to CANCELED on a visit with a DRAFT invoice comes back
-  // 409; the prompt asks, and the same payload is resubmitted with the answer.
-  const [draftPrompt, setDraftPrompt] = useState<{ id: string; payload: Record<string, unknown>; drafts: DraftInvoiceRef[] } | null>(null);
   const updateAppointmentMutation = useMutation({
     mutationFn: async ({ id, payload }: { id: string; payload: Record<string, unknown> }) => {
       const response = await apiRequest("PATCH", `/api/appointments/${id}`, payload);
@@ -674,20 +873,68 @@ export default function Schedule() {
       queryClient.invalidateQueries({ queryKey: ["/api/invoices"] });
       queryClient.invalidateQueries({ queryKey: getLocationAppointmentsQueryKey(appointment.locationId) });
       queryClient.invalidateQueries({ queryKey: getLocationServicesQueryKey(appointment.locationId) });
-      setDraftPrompt(null);
       setSelectedAppointmentId(null);
       setEditingAppointmentId((current) => current === appointment.id ? null : current);
       toast({ title: "Appointment updated" });
     },
-    onError: (error: Error, variables) => {
-      const drafts = getDraftInvoiceDecisionRequired(error);
-      if (drafts) {
-        setDraftPrompt({ id: variables.id, payload: variables.payload, drafts });
-        return;
-      }
+    onError: (error: Error) => {
       toast({ title: "Unable to update appointment", description: getApiErrorMessage(error), variant: "destructive" });
     },
   });
+
+  // Pass 27 (C4.2): Cancel appointment / Reschedule from the sheet, one
+  // route. A DRAFT invoice on the visit comes back 409 (Q3); the prompt asks,
+  // and the same request is resent with the answer.
+  const [dispositionDraftPrompt, setDispositionDraftPrompt] = useState<{ id: string; payload: AppointmentDispositionRequest; drafts: DraftInvoiceRef[] } | null>(null);
+  const dispositionMutation = useMutation({
+    mutationFn: async ({ id, payload }: { id: string; payload: AppointmentDispositionRequest }) => {
+      const response = await apiRequest("POST", `/api/appointments/${id}/disposition`, payload);
+      return response.json() as Promise<AppointmentDispositionOutcome & { appointment: Appointment }>;
+    },
+    onSuccess: (result, variables) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/appointments"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/services"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/services/pending"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/invoices"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/opportunities"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/opportunities/by-location"] });
+      queryClient.invalidateQueries({ queryKey: getLocationAppointmentsQueryKey(result.appointment.locationId) });
+      queryClient.invalidateQueries({ queryKey: getLocationServicesQueryKey(result.appointment.locationId) });
+      setDispositionDraftPrompt(null);
+      setEditingAppointmentId((current) => current === variables.id ? null : current);
+      setSelectedAppointmentId((current) => current === variables.id ? null : current);
+      const requeued = result.services.filter((outcome) => outcome.effect === "REQUEUED").length;
+      const cancelled = result.services.filter((outcome) => outcome.effect === "CANCELLED").length;
+      const created = result.opportunities.filter((outcome) => outcome.action === "CREATED").length;
+      const updated = result.opportunities.filter((outcome) => outcome.action === "UPDATED").length;
+      toast({
+        title: result.mode === "CANCEL" ? "Appointment cancelled" : "Appointment returned to the queue",
+        description: [
+          requeued ? `${pluralize(requeued, "service")} back in the pending queue` : null,
+          cancelled ? `${pluralize(cancelled, "one-time service")} cancelled` : null,
+          created ? `${pluralize(created, "opportunity", "opportunities")} created` : null,
+          updated ? `${pluralize(updated, "open opportunity", "open opportunities")} re-dated` : null,
+          result.draftInvoicesVoided ? `${pluralize(result.draftInvoicesVoided, "draft invoice")} voided` : null,
+        ].filter(Boolean).join("; ") || undefined,
+      });
+    },
+    onError: (error: Error, variables) => {
+      const drafts = getDraftInvoiceDecisionRequired(error);
+      if (drafts) {
+        setDispositionDraftPrompt({ id: variables.id, payload: variables.payload, drafts });
+        return;
+      }
+      toast({
+        title: variables.payload.mode === "CANCEL" ? "Unable to cancel appointment" : "Unable to reschedule appointment",
+        description: getApiErrorMessage(error),
+        variant: "destructive",
+      });
+    },
+  });
+
+  // Pass 27 (B2): a board move is confirmed before it writes. Click a card,
+  // click a slot, and this holds the move until "Move" is pressed.
+  const [pendingMove, setPendingMove] = useState<{ appointment: Appointment; technician: Technician; slotDate: Date } | null>(null);
 
   const moveWindow = (direction: 1 | -1) => {
     setCurrentDate((prev) => addDays(prev, currentView.step * direction));
@@ -708,10 +955,21 @@ export default function Schedule() {
       return;
     }
 
+    if (!movingTechnician && !movingTime) {
+      return;
+    }
+
+    setPendingMove({ appointment, technician, slotDate });
+  };
+
+  const confirmPendingMove = () => {
+    if (!pendingMove) return;
+    const { appointment, technician, slotDate } = pendingMove;
     const linkedService = appointment.serviceId ? serviceById.get(appointment.serviceId) : null;
     const durationMinutes = getAppointmentDurationMinutes(appointment, linkedService || undefined);
     const scheduledEndDate = durationMinutes ? new Date(slotDate.getTime() + durationMinutes * 60 * 1000).toISOString() : null;
 
+    setPendingMove(null);
     updateAppointmentMutation.mutate({
       id: appointment.id,
       payload: {
@@ -782,6 +1040,23 @@ export default function Schedule() {
   }, [serviceById, servicesByAppointmentId, technicianById, viewportAppointments]);
 
   const editingAppointmentService = editingAppointment?.serviceId ? serviceById.get(editingAppointment.serviceId) ?? null : null;
+  // Pass 27: what the sheet's disposition touches, and whether an
+  // opportunity is already open on any of it (the "Update existing" choice).
+  const editingLinkedServices = useMemo(() => {
+    if (!editingAppointment) return [];
+    const linked = servicesByAppointmentId.get(editingAppointment.id) ?? [];
+    return editingAppointmentService && !linked.some((linkedService) => linkedService.id === editingAppointmentService.id)
+      ? [...linked, editingAppointmentService]
+      : linked;
+  }, [editingAppointment, editingAppointmentService, servicesByAppointmentId]);
+  const { data: editingLocationOpportunities } = useQuery<Opportunity[]>({
+    queryKey: ["/api/opportunities/by-location", editingAppointment?.locationId ?? ""],
+    enabled: !!editingAppointment?.locationId,
+  });
+  const editingOpenOpportunityCount = useMemo(() => {
+    const serviceIds = new Set(editingLinkedServices.map((linkedService) => linkedService.id));
+    return (editingLocationOpportunities ?? []).filter((opportunity) => opportunity.status === "OPEN" && !!opportunity.sourceServiceId && serviceIds.has(opportunity.sourceServiceId)).length;
+  }, [editingLinkedServices, editingLocationOpportunities]);
   const detailTechnicianName = detailService?.assignedTechnicianId ? technicianById.get(detailService.assignedTechnicianId)?.displayName || "" : "";
   const configSummary = `${getHourLabel(boardStartHour)} - ${getHourLabel(boardEndHour)} | ${slotIntervalHours}-hour slots`;
   const isLoading = techniciansLoading || appointmentsLoading || servicesLoading || pendingLoading || prefillServiceMutation.isPending;
@@ -1058,7 +1333,7 @@ export default function Schedule() {
                                         <div><p className="uppercase tracking-wide text-muted-foreground">Technician</p><p className="mt-1">{technicianName}</p></div>
                                         <div><p className="uppercase tracking-wide text-muted-foreground">Time</p><p className="mt-1">{new Date(appointment.scheduledDate).toLocaleString()}</p></div>
                                         <div><p className="uppercase tracking-wide text-muted-foreground">Duration</p><p className="mt-1">{durationMinutes ? `${durationMinutes} min` : "Not set"}</p></div>
-                                        <div><p className="uppercase tracking-wide text-muted-foreground">Status</p><p className="mt-1">{appointment.status}</p></div>
+                                        <div><p className="uppercase tracking-wide text-muted-foreground">Status</p><p className="mt-1">{describeAppointmentStatus(appointment)}</p></div>
                                         <div><p className="uppercase tracking-wide text-muted-foreground">Revenue</p><p className="mt-1">{formatCurrency(linkedServices.reduce((sum, service) => sum + (service.priceCents ?? 0), 0))}</p></div>
                                       </div>
                                       {siblingCount > 0 ? <div className="rounded-md border bg-muted/20 px-2 py-2 text-[11px]">This appointment includes {linkedServices.length} services in one visit.</div> : null}
@@ -1138,10 +1413,13 @@ export default function Schedule() {
       <AppointmentSheet
         appointment={editingAppointment}
         service={editingAppointmentService}
+        linkedServices={editingLinkedServices}
         technicianOptions={technicians ?? []}
         serviceTypeName={editingAppointment ? serviceTypeNameById.get(editingAppointment.serviceTypeId || editingAppointmentService?.serviceTypeId || "") || "Service" : "Service"}
         customerLabel={editingAppointment ? getCustomerLabel(customerById.get(editingAppointment.customerId), editingAppointment.locationId ? locationById.get(editingAppointment.locationId) : undefined) : "Location service"}
         locationLabel={editingAppointment?.locationId ? getLocationLabel(locationById.get(editingAppointment.locationId)) : "Location"}
+        cancelReasons={cancelReasonSettings?.reasons ?? []}
+        openOpportunityCount={editingOpenOpportunityCount}
         open={!!editingAppointment}
         onOpenChange={(open) => { if (!open) setEditingAppointmentId(null); }}
         onSave={(payload) => {
@@ -1153,27 +1431,51 @@ export default function Schedule() {
               assignedTo: payload.assignedTechnicianId ? technicianById.get(payload.assignedTechnicianId)?.displayName || null : null,
               scheduledDate: payload.scheduledDate,
               scheduledEndDate: payload.scheduledEndDate,
-              status: payload.status,
+              ...(payload.status ? { status: payload.status } : {}),
               lockTime: payload.lockTime,
               lockTechnician: payload.lockTechnician,
               notes: payload.notes,
             },
           });
         }}
+        onDisposition={(payload) => {
+          if (!editingAppointment) return;
+          dispositionMutation.mutate({ id: editingAppointment.id, payload });
+        }}
         isSaving={updateAppointmentMutation.isPending}
+        isDispositioning={dispositionMutation.isPending}
       />
 
       <InitialChargeDuePrompt due={initialChargePrompt?.due ?? null} onClose={closeInitialChargePrompt} />
 
       <DraftInvoiceVoidPrompt
-        drafts={draftPrompt?.drafts ?? null}
-        isPending={updateAppointmentMutation.isPending}
+        drafts={dispositionDraftPrompt?.drafts ?? null}
+        isPending={dispositionMutation.isPending}
         onDecide={(voidDraftInvoices) => {
-          if (!draftPrompt) return;
-          updateAppointmentMutation.mutate({ id: draftPrompt.id, payload: { ...draftPrompt.payload, voidDraftInvoices } });
+          if (!dispositionDraftPrompt) return;
+          dispositionMutation.mutate({ id: dispositionDraftPrompt.id, payload: { ...dispositionDraftPrompt.payload, voidDraftInvoices } });
         }}
-        onBack={() => setDraftPrompt(null)}
+        onBack={() => setDispositionDraftPrompt(null)}
       />
+
+      <AlertDialog open={!!pendingMove} onOpenChange={(open) => { if (!open) setPendingMove(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {pendingMove ? `Move to ${pendingMove.technician.displayName}, ${formatSlotLabel(pendingMove.slotDate)}?` : "Move appointment?"}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {pendingMove
+                ? `${getCustomerLabel(customerById.get(pendingMove.appointment.customerId), pendingMove.appointment.locationId ? locationById.get(pendingMove.appointment.locationId) : undefined)} - ${serviceTypeNameById.get(pendingMove.appointment.serviceTypeId || "") || "Service"}, now ${formatSlotLabel(new Date(pendingMove.appointment.scheduledDate))} with ${pendingMove.appointment.assignedTechnicianId ? technicianById.get(pendingMove.appointment.assignedTechnicianId)?.displayName || pendingMove.appointment.assignedTo || "an unnamed technician" : "no technician"}.`
+                : ""}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <Button type="button" variant="outline" onClick={() => setPendingMove(null)}>Keep it where it is</Button>
+            <Button type="button" onClick={confirmPendingMove} disabled={updateAppointmentMutation.isPending}>Move</Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <ServiceDetailDialog
         service={detailService}
