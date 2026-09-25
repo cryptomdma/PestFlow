@@ -16,10 +16,12 @@ feature) is merged (PR #81); Pass 13 (Batch Invoice on the Invoices screen + Dra
 visit, C2.3) is merged (PR #82); Pass 14 (Aging and balances on the customer screen, C2.4) is
 merged (PR #83); Pass 25 (Opportunity taxonomy, assignee and search, C4.1 - the first Phase 4
 pass, pulled forward by the recommended order) is merged (PR #84); Pass 27 (Cancel and Reschedule,
-one path, C4.2 - the other pulled-forward Phase 4 pass) is pushed, awaiting merge; **next pass:
-15, Statements** (C2.5 - the recommended order is exhausted, so the rest in phase order). The
-roadmap sequences every remaining item below; this file keeps the status pointer and, as its last
-section, the handoff prompt that starts the next session.
+one path, C4.2 - the other pulled-forward Phase 4 pass) is pushed, awaiting merge, with the
+owner's live-testing review of 2026-09-25 recorded on the same branch; **next pass: 27b, the
+review's two defects** (C4.2b), then Pass 15, Statements (C2.5 - the recommended order is then
+exhausted, so the rest in phase order). The roadmap sequences every remaining item below; this
+file keeps the status pointer and, as its last section, the handoff prompt that starts the next
+session.
 
 ## Status
 Pass 1 (`feature/phase-1-appointment-status-enum`, D1a) merged as PR #56.
@@ -703,19 +705,32 @@ cancellation policy (Phase 9), a permission on the disposition (C5.6), un-cancel
 sheet, Pass 26. **Restart `npm run dev:full` before manually testing - this pass changes server
 code and the schema, and the two dialogs, the move confirmation, the read-only cancelled state and
 the Services-tab badges have not been rendered by anyone yet.** Signatures and behavior are under
-"Shipped in Pass 27" at the end of `PLAN_ROADMAP_V2.md` Part D.
+"Shipped in Pass 27" at the end of `PLAN_ROADMAP_V2.md` Part D. **Owner's live test,
+2026-09-25, before merge** (Part E of the roadmap; docs updated on this branch, no code changed):
+(1) a cancelled or rescheduled placement must leave the board so the slot is free - the Services
+and History tabs keep the record - and (4) both dialogs must close when the disposition completes
+(the sheet resets its dialog state only while an appointment is set) - both defects, **Pass 27b**;
+(2) an agreement service returning to the queue on CANCEL and (3) its opportunity reading
+CONVERTED once the recycled service was placed again both pass as the agreement path's rules;
+(5) cancelling a `PENDING_SCHEDULING` service without placing it first is added to C4.3a
+(Pass 28), the queue's details link stays C5.4 (Pass 36).
 
-Next up: **Pass 15** — Statements (`PLAN_ROADMAP_V2.md` Phase 2 table, C2.5; B5, owner
-2026-09-19; Part E row 4): a location statement (period roll-up: opening balance, invoices,
-payments, credits, closing balance, aging strip), an account statement across every location of
-the account (the property-manager case) and a paid-in-full / zero-balance letter with agreement
-status for a home sale, through the existing document renderer pattern and stored like invoices
-(the `documents` table's STATEMENT kind has waited since Pass 10), Open / Download from the
-location Invoices tab and the customer header, on request only. The recommended order ended with
-Pass 27, so the rest runs in phase order: Pass 15 closes Phase 2, then Phase 3 from Pass 17 (C3.2),
-with Pass 26 (C4.1b) and Pass 28 (C4.3a) in Phase 4's turn. Branch from `origin/main` after
-confirming it contains Pass 27's merge. The handoff prompt for it is the last section of this
-file.
+Next up: **Pass 27b** — Cancel and Reschedule, owner review (`PLAN_ROADMAP_V2.md` Phase 4 table,
+C4.2b): CANCELED placements off the dispatch board through one shared "shows on the board"
+predicate, the two dialogs closing on completion, and a fresh re-verification that a CANCEL's
+opportunity stays OPEN until the recycled service is placed again. Small and first, because the
+board is what the owner is live-testing. Then **Pass 15**, Statements (C2.5; B5): a location
+statement (period roll-up: opening balance, invoices, payments, credits, closing balance, aging
+strip), an account statement across every location of the account (the property-manager case)
+and a paid-in-full / zero-balance letter with agreement status for a home sale, through the
+existing document renderer pattern and stored like invoices (the `documents` table's STATEMENT
+kind has waited since Pass 10), Open / Download from the location Invoices tab and the customer
+header, on request only; after it the rest runs in phase order - Phase 3 from Pass 17 (C3.2), with
+Pass 26 (C4.1b) and Pass 28 (C4.3a) in Phase 4's turn. Branch from `origin/main` after confirming
+it contains Pass 27's merge. The handoff prompt for Pass 27b is the last section of this file; the
+Pass 27b session writes Pass 15's (the C2.5 row and B5 carry the spec, and the ground truth for it
+- the invoice document layer, the ledger reads, `shared/aging.ts`, the customer screen's aging
+surfaces - is unchanged by 27b).
 
 Phase 1's ordered plan, impact analysis, conflict resolutions, and per-pass verification steps live in
 `PLAN_BILLING_V1_1_EXECUTION.md` — read it when a pass builds on a Phase 1 helper (its "Shipped in
@@ -948,98 +963,80 @@ pointer and that prompt.
 
 Replaced at the end of every pass (`AGENT_WORKING_AGREEMENT.md`, the end-of-pass step). The owner
 pastes it verbatim to start the next session; it is also the last thing in the finishing session's
-final message. Written 2026-09-25, after Pass 27 was pushed as `feature/phase-4-cancel-reschedule`.
+final message. Written 2026-09-25, after Pass 27 was pushed as `feature/phase-4-cancel-reschedule`
+and the owner's live-testing review of the same day was recorded on that branch.
 
 ```text
-Start Pass 15 — Statements
-(PLAN_ROADMAP_V2.md Phase 2 table, row C2.5; B5 in Part B - owner 2026-09-19: no invoice-terms
-change, but a statement is wanted for commercial locations, property managers (many locations,
-one payer) and a home sale (a paid-in-full / zero-balance letter with agreement status); Part E
-row 4). Read the CLAUDE.md docs in order first; CURRENT_FOCUS.md's last two entries (Pass 27 and
-"Next up") are the ones that matter.
+Start Pass 27b — Cancel and Reschedule, owner review
+(PLAN_ROADMAP_V2.md Phase 4 table, row C4.2b; the owner's live-testing review of 2026-09-25 in
+Part E, five findings: two defects of Pass 27 to fix here, two passed once traced to the agreement
+path, one scheduled elsewhere). Read the CLAUDE.md docs in order first; CURRENT_FOCUS.md's last two
+entries (Pass 27 with its review paragraph, and "Next up") are the ones that matter.
 
-Branch feature/phase-2-statements from origin/main. Confirm main contains the Pass 27 merge
-(feature/phase-4-cancel-reschedule, one commit) before branching.
+Branch feature/phase-4-cancel-reschedule-review from origin/main. Confirm main contains the Pass
+27 merge (feature/phase-4-cancel-reschedule: the code commit and the docs commit that recorded the
+review) before branching.
 
-The decisions are recorded (the C2.5 row; B5; canon §13 "aging is derived, by invoice date" and
-"the payments ledger", §14; D5 append-only; Pass 11c's Bill To rule - the profile's address, else
-a location override's own, else the primary location's, frozen when the document is made). Ground
-truth today (line numbers from origin/main at the Pass 27 merge; they drift, the names do not):
-the document layer is invoice-only. server/documents/types.ts:24 InvoiceDocumentContext is the
-one context; invoice-html.ts:18 renderInvoiceHtml and invoice-pdf.ts:15 renderInvoicePdf are pure
-renderers with no DB access; storage assembles the context in getInvoiceDocumentContext
-(server/storage.ts:9047 - Bill To from the frozen billingProfileSnapshot.billTo with the legacy
-fallback, the service location, the D5 rollups as of rendering, noChargeCoveredByAgreement),
-stores the PDF once in getOrCreateInvoiceDocument (:9140) in the documents table
-(shared/schema.ts:970 - kind text NOT NULL, commented "INVOICE | STATEMENT", invoiceId,
-contentHash, contentBase64, mimeType; server/document-bootstrap.ts:21's unique index on invoice_id
-WHERE kind = 'INVOICE' - the STATEMENT kind was anticipated in Pass 10 and never written; the dev
-DB holds 11 INVOICE documents), reads one back in getDocument (:9203), and serves it through GET
-/api/invoices/:id/document (routes.ts:2626) and /document-info (:2640); the client's
-InvoiceDocumentActions (client/src/components/invoice-document-actions.tsx:47, invoiceDocumentUrl
-:23) is Open PDF / Download / Mark Sent on every invoice row. The ledger a statement rolls up:
-getInvoicesByLocation (storage.ts:5160; invoices.issuedAt at shared/schema.ts:758 is the date an
-invoice became a receivable, null while DRAFT), getPaymentsByLocation (:7440), getCreditMemosByLocation
-(:7617), payment_applications / credit_applications (the applied money; a released application
-stays, flagged), getLocationLedgerSummary (:8524; GET /api/locations/:locationId/ledger-summary
-:2462 - the unapplied pool), getLocationBalancesByCustomer (:5169; /api/location-balances/:customerId
-:1175), and the aging: shared/aging.ts (summarizeAgingByLocation :296, rollupAging :256, agingAsOf
-:331; Current 0-30 / 31-60 / 61-90 / Over 90 days since invoiced, whole UTC days from issuedAt,
-on-account and pending shown beside and never netted) read by getCustomerAging (:5233; GET
-/api/customers/:id/aging :633) and getAgingReport (:5250; /api/reports/aging :2452), both open to
-every role like every read. Surfaces: the customer header's CustomerAgingChips
-(client/src/components/aging-strip.tsx:49, rendered at client/src/pages/customer-detail.tsx:3724),
-the location profile's LocationAgingStrip (:85; :3888), the location Invoices tab (:3905;
-InvoiceRowLedger rows :4016; LocationLedgerPanel :4012 - client/src/components/location-ledger-panel.tsx:453,
-the Balance card with Record Payment, Issue Credit Memo and Add fee / adjustment), the Reports
-page's Aging section (client/src/pages/reports.tsx:55). Agreements carry status ACTIVE | CANCELLED
-(20 / 5 on the dev DB) for the letter's agreement status. The dev DB holds 72 invoices (26 OPEN
-carrying $6,798.55 of balance, 42 PAID, 4 VOID; 2 legacy rows with no location), 19 payments (18
-CONFIRMED, $3,479.96; 1 VOIDED), no credit memos, 10 accounts of which 4 group more than one
-location (the property-manager case), 10 locations with an open balance, and 2 billing profiles,
-neither with an address, so Bill To falls to the primary location on every document until C5.2.
-Email delivery does not exist (C6.3): "send" is a sentAt stamp everywhere, and a statement gets no
-send at all in this pass.
+The decisions are recorded (Part E, 2026-09-25: a cancelled or rescheduled placement leaves the
+board, cancelled and rescheduled alike, and the service's history is the record; the dialogs
+close on completion; an agreement service recycling on CANCEL and its opportunity converting on
+re-placement both stand; cancelling a pending service outright is C4.3a, the queue's details link
+C5.4). Ground truth today (line numbers from origin/main at the Pass 27 merge; they drift, the
+names do not): the dispatch board shows every appointment the org has - GET /api/appointments ->
+getAppointments (server/storage.ts:4058) has no status filter, and client/src/pages/schedule.tsx
+narrows it only by time: viewportAppointments (:679) keeps every status inside the visible
+window, appointmentsByTechnicianAndSlot (:697) places them, the card paints a CANCELED one red
+(statusTone, :1276; describeAppointmentStatus says "Rescheduled" or "Canceled" on the hover card
+and the sheet badge), and analytics (:1014) counts it as a job. getTechnicianWork (:4437) already
+excludes CANCELED, so the field never sees one. The location's Services tab (customer-detail.tsx,
+ServicesTab's scheduleByServiceId) already tells Rescheduling ("Was <date>") and Cancelled (the
+reason) from the service's last appointment, and the History tab lists the disposition's audit
+rows, so the record survives the card. The two dialogs live inside AppointmentSheet
+(schedule.tsx: the Cancel appointment Dialog at :409, the Reschedule AlertDialog at :515, both
+opened by `disposition` state); the sheet's reset effect (:242-251) returns early when the
+appointment prop is null, and the page's dispositionMutation.onSuccess closes the sheet by
+setting editingAppointmentId to null - so `disposition` keeps its value and the dialog stays open
+over an empty sheet after a successful cancel or reschedule (a second click is a no-op:
+onDisposition returns when there is no editing appointment). createAppointment (storage.ts, the
+block after syncServicesForAppointmentTx) converts the OPEN APPOINTMENT_RESCHEDULE_REQUIRED /
+APPOINTMENT_CANCELLATION_REVIEW opportunities on the representative service when it is placed
+again - the rule the owner's third finding ran into. The dev DB holds 98 appointments, 16 of them
+CANCELED (5 with rescheduleRequested), plus whatever the owner's live test left.
 
-Build per C2.5: (1) a location statement - one location's period roll-up: the opening balance as
-of the period start, the period's issued invoices, confirmed payments and their applications
-(pending money shown beside, never counted - "pending shows, confirmed counts"), credit memos,
-the closing balance, and the aging strip as of the period end, assembled by storage into a
-StatementDocumentContext and rendered by pure HTML + PDF renderers beside the invoice ones (same
-branding, the Pass 11c Bill To rule for the party, the location as the service location), stored
-in documents with kind STATEMENT - a statement is an as-of snapshot, so one row per generation
-(say how you key it; no unique index on the invoice column applies); (2) an account statement -
-the same period across every location of the account, one payer, a section per location and an
-account total, the Bill To the primary location's; (3) a paid-in-full / zero-balance letter for a
-home sale - the location's zero balance as of a date with each agreement and its status, refused
-(or clearly marked) while a balance remains; (4) Open / Download on the location Invoices tab and
-from the customer header, on request only, with a period picker defaulting to the current month
-(a scheduled monthly statement is a later Settings toggle; delivery arrives with C6.3 - no Send
-button, no sentAt); (5) gate the generation like the invoice document reads are gated today (open
-to every authenticated role) unless you find a reason not to, and say whether generation writes an
-audit row (recommendation: it is a read of the ledger, the stored document is the record - no row).
-Not touched: email delivery (C6.3), a scheduled statement run, due-date aging (B20's later
-toggle), billing-profile addresses (C5.2), the invoice document itself, the ledger's writes.
+Build per C4.2b: (1) a CANCELED placement leaves the board - one shared predicate (a
+`isBoardPlacement(appointment)` or similar in shared/appointment-disposition.ts, false for
+CANCELED whatever the flag) read by viewportAppointments, the slot map and analytics, so the three
+cannot disagree and the smoke test can exercise it; keep the read as it is (the Services tab's
+by-location read and anything else still need the row) unless you find the board is its only
+consumer, and say which you did. The sheet's read-only "cancelled" state becomes unreachable from
+the board - remove it or keep it, and say which. The `?appointmentId=` selection from the
+Services tab already names only a live placement. (2) The dialogs close when the disposition
+completes: reset `disposition` (and the reason / notes / choice) whenever the appointment prop
+changes, null included, or close them from the mutation's success - one mechanism, not both.
+(3) Re-verify finding 3 with a fresh agreement service and a fresh one-time service through the
+real routes: the opportunity a CANCEL creates is OPEN (and on the Opportunities screen's default
+list) until the recycled service is placed again, at which point placement converts it with the
+"Rescheduled" disposition; the one-time service's WINBACK row is never converted by anything.
+State the rule in the shipped record. Not touched: cancelling a PENDING_SCHEDULING service
+outright (C4.3a, Pass 28), the queue's details link (C5.4), the disposition itself, the technician
+alias, the Services tab.
 
 Environment: Node 24.21.0, npm run dev:full (restart it before manually testing anything that
 changes server code), DEV_NOTES.md for the DB backup/restore and PowerShell traps, gh logged in so
 the session can open the PR. Verify on PORT=5001 as the previous passes did: npm run check; double
-boot (no migration is expected - if you add one for the documents table, boot 1 prints its effect
-and boot 2 prints only "serving on port 5001" with every table count unchanged); the pass's API
-smoke test as all four roles (a fixture customer with two locations under one account; invoices
-issued and paid inside and outside the period through the real routes, a PENDING payment applied
-and shown beside but not counted, a credit memo issued and applied; a location statement whose
-opening balance + period activity = closing balance and whose aging strip equals
-/api/customers/:id/aging for that location; an account statement whose total is the sum of its
-locations; a zero-balance letter refused or marked while a balance remains and listing every
-agreement with its status once it is zero; the PDF stored once per generation with kind STATEMENT
-and served by the document route; the two location-less legacy rows handled or excluded and said
-so; every fixture deleted and counts back at baseline) and a Vite 200 on every touched client
-module.
+boot (no migration is expected; both boots print only "serving on port 5001" with every table
+count unchanged); the pass's API smoke test as all four roles (a fixture customer with an
+agreement service and a one-time service placed through the real routes; the shared predicate
+false for a rescheduled and for a cancelled placement and true for SCHEDULED / IN_PROGRESS /
+COMPLETED; the CANCEL-created opportunities OPEN and listed by the open read; re-placing the
+recycled agreement service converts its row and leaves the one-time WINBACK row OPEN; every
+fixture deleted and counts back at baseline) and a Vite 200 on every touched client module; the
+dialog close is client behavior - state plainly that it was not rendered, or render it if you
+can.
 
 Working agreement as always: one pass, one branch, update CURRENT_FOCUS and the roadmap's pass
 table at the end, replace the handoff prompt at the end of CURRENT_FOCUS.md with the one for the
-next pass in the recommended order (PLAN_ROADMAP_V2.md, "Recommended immediate order": the rest in
-phase order after 15, so Pass 17, Reopen-reason pop-up, C3.2, unless I say otherwise), push, open
-the PR and stop. I merge.
+next pass in the recommended order (PLAN_ROADMAP_V2.md, "Recommended immediate order": Pass 15,
+Statements, C2.5, whose spec is its row and B5, unless I say otherwise), push, open the PR and
+stop. I merge.
 ```

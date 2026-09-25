@@ -834,6 +834,9 @@ One Appointment may contain multiple Services. Each linked Service remains indep
 
 An Appointment leaves the board only through the cancel / reschedule disposition (§9, Pass 27):
 `CANCELED` is never written by the generic update, and a board move is confirmed before it writes.
+A `CANCELED` placement - cancelled or rescheduled - is history, not a board card (owner,
+2026-09-25): it comes off the dispatch board so its slot is free, and it stays visible on the
+location's Services tab and History tab as the record of the visit that did not happen.
 
 Appointment timing is a scheduling/field-operations layer. Time In / Time Out is tracked on the Appointment because the visit may contain multiple Services. Duration supports future route analytics and billing review, but GPS capture is staged for later.
 
