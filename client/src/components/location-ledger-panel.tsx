@@ -28,6 +28,7 @@ import {
 } from "@shared/payments";
 import type { Agreement, CreditApplication, CreditMemo, Invoice, Payment, PaymentApplication } from "@shared/schema";
 import { RecordPaymentDialog } from "@/components/record-payment-dialog";
+import { AddFeeAdjustmentDialog } from "@/components/add-fee-adjustment-dialog";
 import { InvoiceStatusBadge, InvoiceStatusIcon } from "@/components/invoice-status-badge";
 import { DollarSign, ReceiptText } from "lucide-react";
 
@@ -36,7 +37,10 @@ import { DollarSign, ReceiptText } from "lucide-react";
 // credit memo at the location with the lifecycle acts each role may take
 // (confirm / apply / void / refund), then the invoice list - since Pass 11b
 // each row is data plus open, and the invoice modal carries the figures and
-// every act (PLAN_ROADMAP_V2.md C2.1b).
+// every act (PLAN_ROADMAP_V2.md C2.1b). The header's third action since Pass
+// 13 is "Add fee / adjustment" - the manual invoice's only home (B6 / C2.3),
+// here because the location is already known, so a location-less invoice can
+// never recur; the Invoices screen's New Invoice is gone.
 
 /** Mirrors InvoiceLedger (server/storage.ts). */
 export interface InvoiceLedgerResponse {
@@ -447,13 +451,19 @@ export function InvoiceRowLedger({ invoice, onOpen }: { invoice: Invoice; onOpen
 }
 
 export function LocationLedgerPanel({
+  customerId,
   locationId,
   invoices,
   agreements,
+  onOpenInvoice,
 }: {
+  /** The location's customer - a fee is billed to the location, and the server checks the location is theirs. */
+  customerId: string;
   locationId: string;
   invoices: Invoice[];
   agreements?: Agreement[];
+  /** Opens a just-issued fee invoice in the invoice modal. */
+  onOpenInvoice?: (invoiceId: string) => void;
 }) {
   const { toast } = useToast();
   const { user } = useAuth();
@@ -464,6 +474,7 @@ export function LocationLedgerPanel({
   const canVoid = can(role, PERMISSIONS.VOID_PAYMENT);
   const canRefund = can(role, PERMISSIONS.REFUND_PAYMENT);
   const canCredit = can(role, PERMISSIONS.ISSUE_CREDIT_MEMO);
+  const canAddFee = can(role, PERMISSIONS.GENERATE_INVOICE);
 
   const { data: summary } = useQuery<LocationLedgerSummary>({ queryKey: ["/api/locations", locationId, "ledger-summary"], enabled: !!locationId });
   const { data: locationPayments } = useQuery<Payment[]>({ queryKey: ["/api/payments/by-location", locationId], enabled: !!locationId });
@@ -480,6 +491,7 @@ export function LocationLedgerPanel({
 
   const [recordOpen, setRecordOpen] = useState(false);
   const [creditOpen, setCreditOpen] = useState(false);
+  const [feeOpen, setFeeOpen] = useState(false);
   const [applySource, setApplySource] = useState<{ kind: "payment" | "credit_memo"; id: string; label: string; unappliedCents: number } | null>(null);
   const [reasonAct, setReasonAct] = useState<{ kind: "void_payment" | "refund_payment" | "void_credit"; id: string; label: string } | null>(null);
 
@@ -519,6 +531,9 @@ export function LocationLedgerPanel({
               ) : null}
               {canCredit ? (
                 <Button size="sm" variant="outline" onClick={() => setCreditOpen(true)} data-testid="button-issue-credit-memo-open">Issue Credit Memo</Button>
+              ) : null}
+              {canAddFee ? (
+                <Button size="sm" variant="outline" onClick={() => setFeeOpen(true)} data-testid="button-add-fee-adjustment">Add fee / adjustment</Button>
               ) : null}
             </div>
           </div>
@@ -626,6 +641,13 @@ export function LocationLedgerPanel({
 
       <RecordPaymentDialog open={recordOpen} onOpenChange={setRecordOpen} locationId={locationId} agreements={agreements} />
       <IssueCreditMemoDialog open={creditOpen} onOpenChange={setCreditOpen} locationId={locationId} invoices={invoices} />
+      <AddFeeAdjustmentDialog
+        open={feeOpen}
+        onOpenChange={setFeeOpen}
+        customerId={customerId}
+        locationId={locationId}
+        onCreated={(invoice) => onOpenInvoice?.(invoice.id)}
+      />
       <ApplySourceDialog source={applySource} invoices={invoices} onOpenChange={(open) => !open && setApplySource(null)} />
       <ReasonDialog
         title={reasonCopy.title}

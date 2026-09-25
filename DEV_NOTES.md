@@ -4,6 +4,9 @@
 - Node 24.21.0 / npm 11 on Windows 11 (Node 22.12+ also works; Node 20 is end-of-life)
 - Docker Desktop running
 - Repo path: `C:\Dev\PestFlow` (not under OneDrive - see below)
+- `gh` (GitHub CLI) logged in once per machine (`gh auth login`), so a session can open the pass's
+  PR at the end (`AGENT_WORKING_AGREEMENT.md`). Unauthenticated, the session hands the owner the PR
+  title, body and compare link instead - it cannot run the login flow itself.
 
 ## Startup
 - First time on a machine: `docker compose up -d`, then `npm run db:push`, then `npm run dev`

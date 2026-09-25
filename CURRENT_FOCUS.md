@@ -12,8 +12,9 @@ visit's invoice) are merged (PRs #73, #74, #76, #78), as are the owner review of
 #75) and the dev-setup chore (PR #77); Pass 12 (Billing Plan required on every Agreement + sale
 attribution) is merged (PR #79); Pass 16 (ticket lockdown, D9, enforced server-side - the C3.1
 row of that document's Phase 3 table, pulled forward because it was an integrity hole, not a
-feature) is pushed, awaiting merge; **next pass: 13, Batch Invoice moves to the Invoices screen +
-Draft invoice for a visit** (C2.3, next in the recommended order). The roadmap sequences every
+feature) is merged (PR #81); Pass 13 (Batch Invoice on the Invoices screen + Draft invoice for a
+visit, C2.3) is pushed, awaiting merge; **next pass: 14, Aging and balances on the customer
+screen** (C2.4, next in the recommended order). The roadmap sequences every
 remaining item below; this file keeps the status pointer and, as its last section, the handoff
 prompt that starts the next session.
 
@@ -489,7 +490,7 @@ boot, and a server on pre-Pass-12 code still lets the form send a plan-less agre
 database now refuses.** Signatures and behavior are under "Shipped in Pass 12" at the end of
 `PLAN_ROADMAP_V2.md` Part D.
 
-Pass 16 (`feature/phase-3-ticket-lockdown`, 2026-09-23, C3.1) pushed, awaiting merge.
+Pass 16 (`feature/phase-3-ticket-lockdown`, 2026-09-23, C3.1) merged as PR #81.
 **Ticket lockdown (D9) is enforced server-side.** A defect fix, not a feature: `PATCH
 /api/service-records/:id` had no permission gate and no status guard, and a re-post through
 `completeService` overwrote a FINALIZED ticket and un-finalized it. Now the PATCH is gated by a
@@ -533,13 +534,60 @@ server code and a route's gate; the badge and link on Service History and the te
 relabelled button have not been rendered by anyone yet.** Signatures and behavior are under
 "Shipped in Pass 16" at the end of `PLAN_ROADMAP_V2.md` Part D.
 
-Next up: **Pass 13** — Batch Invoice moves to the Invoices screen + Draft invoice for a visit
-(`PLAN_ROADMAP_V2.md` Phase 2 table, C2.3): the batch dialog leaves Service Ticket Review for the
-Invoices screen with its range labelled "posted between", grouped by technician then service
-date, the technician filter passed to the preview and Send All kept; New Invoice is removed and
-the screen gains "Draft invoice for a visit"; the manual path survives only as "Add fee /
-adjustment" on the location ledger panel (owner, B6). Branch from `origin/main` after confirming
-it contains Pass 16's merge. The handoff prompt for it is the last section of this file.
+Pass 13 (`feature/phase-2-batch-invoice-and-draft`, 2026-09-24, C2.3) pushed, awaiting merge.
+**Batch Invoice lives on the Invoices screen, New Invoice is gone, and the manual invoice is "Add
+fee / adjustment" on the location's ledger.** The batch is an invoicing action, so it left the
+Service Ticket Review queue (button, dialog, queries and types removed; the queue's own filters
+untouched) for a dialog on the Invoices screen (`BatchInvoiceDialog`): "Posted from" / "Posted to"
+(the last 30 days by default) and a Technician selector (all technicians by default), with the copy
+saying **posted between** - the server has always filtered `postedAt` falling back to
+`serviceDate`, and now says so. The preview groups by **technician, then service date, then
+visit** (a "route" is a technician on a day; appointments carry no route columns), each visit
+listing its tickets (amount / Covered / Callback / Cannot bill) and, new, the **down payment
+generate will bill** - Pass 11d's INITIAL_CHARGE line, resolved read-only through
+`resolvePendingInitialChargesTx` for the agreements behind every finalized ticket of the visit and
+listed once per agreement on the first visit in the batch that would carry it; the old preview was
+silent about it. The technician filter goes to both `GET /api/invoices/batch-preview` and
+`POST /api/invoices/batch-generate` (`technicianId`, optional; the two parse one
+`BatchInvoiceFilters`), and it picks **visits**: a visit with one of that technician's tickets in
+the window is in, and once in it bills every finalized ticket on it, whoever posted them - the
+range boundary's existing rule. Generate's result rows (number, customer, total) open the invoice
+modal; Send All stays (`SEND_INVOICE`, still the `sentAt` stamp plus the pinned PDF). The batch's
+shapes and the grouping are one shared module, `shared/batch-invoice.ts`
+(`groupBatchInvoicePreview`, pure, exercised by the smoke test); the preview route answers
+`{ tickets, charges }` now instead of an array, and its only client was the dialog this pass
+removed. **New Invoice is removed** (owner, B6, answered twice on 2026-09-19): the screen's header
+carries **"Draft invoice for a visit"** instead - customer → location (primary by default) → that
+location's draftable visits (the Services tab's rule: scheduled or in progress, an active service,
+no non-void invoice; a finalized visit belongs to Ready to Bill) → Pass 4's
+`draft-for-appointment` route, the DRAFT opening in the modal, the server still refusing a
+cancelled or invoiced visit and returning the existing draft rather than a second. The manual
+invoice (one ADJUSTMENT line, no service behind it) survives only as **"Add fee / adjustment"** on
+the location ledger panel's Balance card, beside Record Payment and Issue Credit Memo, where the
+location is already known: description (required), amount, tax (typed, not computed), due date,
+notes, through the unchanged `POST /api/invoices` (`GENERATE_INVOICE`; the location still
+required, Pass 10) - and a **blank due date now defaults from the location's billing terms**
+(`createManualInvoice` falls back to `resolveInvoiceTermsForLocationTx`'s due date; null when no
+profile resolves, which is every location on the dev DB until C5.2), the default Pass 11c left for
+C2.3; the dialog's hint reads the resolved profile and says which. `LocationLedgerPanel` takes
+`customerId` (required) and `onOpenInvoice`, which the customer screen passes. No schema change,
+no migration. Also this pass, at the owner's request (2026-09-24): **every pass ends by opening its
+PR** after the push (`gh pr create`; the owner merges), recorded in `AGENT_WORKING_AGREEMENT.md`,
+`CLAUDE.md` and `DEV_NOTES.md` - everything else in the working agreement is unchanged. Not
+built: paging the preview, excluding one visit from a batch, delivery, a draft for a service with no
+appointment (no anchor, Pass 4's limit). **Restart `npm run dev:full` before manually testing -
+this pass changes server code and two routes' inputs, and the three dialogs and the ledger panel's
+third button have not been rendered by anyone yet.** Signatures and behavior are under "Shipped in
+Pass 13" at the end of `PLAN_ROADMAP_V2.md` Part D.
+
+Next up: **Pass 14** — Aging and balances on the customer screen (`PLAN_ROADMAP_V2.md` Phase 2
+table, C2.4): two derived reads (`GET /api/customers/:id/aging` per location plus the rollup,
+`GET /api/reports/aging` org-wide), buckets Current (0-30) / 31-60 / 61-90 / Over 90 **days since
+invoiced** (`issuedAt`, B20) over issued open balances, pending-applied and on-account shown beside
+and never netted; the customer-wide open balance, on-account figure and oldest bucket on the
+header card beside the primary-location chip, the location's strip below `LocationNotesPanel`,
+an Aging section on Reports. Nothing stored. Branch from `origin/main` after confirming it
+contains Pass 13's merge. The handoff prompt for it is the last section of this file.
 
 Phase 1's ordered plan, impact analysis, conflict resolutions, and per-pass verification steps live in
 `PLAN_BILLING_V1_1_EXECUTION.md` — read it when a pass builds on a Phase 1 helper (its "Shipped in
@@ -621,8 +669,11 @@ pointer and that prompt.
     "Cancel Service" button actually cancels the whole appointment (dev behavior rule 6). Confirmed in
     live testing: the wording still speaks of cancelling the appointment. Note that once a ticket is
     posted, remaining services on that appointment can be cancelled without disturbing the invoice.
-  - **Move Batch Invoice from Service Ticket Review to the Invoices screen** `[Roadmap: Pass 13, C2.3]` — it is an invoicing
-    action sitting on a review queue.
+  - ~~**Move Batch Invoice from Service Ticket Review to the Invoices screen**~~ **Done — Pass 13**
+    (`feature/phase-2-batch-invoice-and-draft`, 2026-09-24): it is an invoicing action, and it now sits on
+    the Invoices screen with its range labelled "posted between", grouped by technician then service
+    date, the technician filter on preview and generate, and the down payment generate will bill shown
+    in the preview.
   - **Field surcharge line.** `[Roadmap: Pass 23, C3.6]` Owner-specified 2026-09-13 in the Pass 5.5 review. A cleanout surcharge
     is not a term of the sale: the technician charges it at the initial service for what could not be
     seen at scheduling (larger home, conducive conditions), and it is *in addition to* the contract
@@ -767,77 +818,76 @@ pointer and that prompt.
 
 Replaced at the end of every pass (`AGENT_WORKING_AGREEMENT.md`, the end-of-pass step). The owner
 pastes it verbatim to start the next session; it is also the last thing in the finishing session's
-final message. Written 2026-09-23, after Pass 16 was pushed as `feature/phase-3-ticket-lockdown`.
+final message. Written 2026-09-24, after Pass 13 was pushed as `feature/phase-2-batch-invoice-and-draft`.
 
 ```text
-Start Pass 13 — Batch Invoice moves to the Invoices screen + Draft invoice for a visit
-(PLAN_ROADMAP_V2.md Phase 2 table, row C2.3; B6 in Part B with the owner's second review of
-2026-09-19 in Part E; A2's "Batch Invoice on the Invoices screen", "Batch by route / technician",
-"Batch date range labelled as posting date" and "'New Invoice' must link to an existing service"
-rows). Read the CLAUDE.md docs in order first; CURRENT_FOCUS.md's last two entries (Pass 16 and
-"Next up") are the ones that matter.
+Start Pass 14 — Aging and balances on the customer screen
+(PLAN_ROADMAP_V2.md Phase 2 table, row C2.4; B20 in Part B with the owner's answer in Part E; A1's
+"Aging report (current/30/60/90/90+)", "Customer-wide (all locations) balance in the header" and
+"Location balance below location notes" rows). Read the CLAUDE.md docs in order first;
+CURRENT_FOCUS.md's last two entries (Pass 13 and "Next up") are the ones that matter.
 
-Branch feature/phase-2-batch-invoice-and-draft from origin/main. Confirm main contains the Pass 16
-merge (feature/phase-3-ticket-lockdown, one commit) before branching.
+Branch feature/phase-2-aging-and-balances from origin/main. Confirm main contains the Pass 13
+merge (feature/phase-2-batch-invoice-and-draft, one commit) before branching.
 
-The decisions are recorded (B6, answered twice on 2026-09-19): New Invoice is removed from the
-Invoices screen; the screen gains "Draft invoice for a visit" (customer → location → un-invoiced
-appointment → createDraftInvoiceForAppointment, Pass 4's path); the manual invoice survives only as
-"Add fee / adjustment" on the location ledger panel, where the location is already known, and
-createManualInvoice keeps requiring a location (Pass 10). Batch Invoice is an invoicing action
-sitting on a review queue: it moves to the Invoices screen, its date range is labelled as what it
-filters on ("posted between" - the server filters postedAt falling back to serviceDate), results
-group by technician then service date (a "route" is technician × day; appointments carry no route
-columns), the technician filter is passed to the preview, Send All stays, and Service Ticket Review
-loses the button. Ground truth today (line numbers from origin/main at the Pass 16 merge; they
-drift, the names do not): the batch lives on Service Ticket Review - the button at
-client/src/pages/service-ticket-review.tsx:525-535 (GENERATE_INVOICE), the dialog at :799-816 with
-the bare "from through to" subtitle, the preview query at :463-464 (GET
-/api/invoices/batch-preview?dateFrom=&dateTo=, no technician), generate at :470, Send All at :484;
-the page's Technician filter at :352 is applied to the review queue only. Routes: server/routes.ts:2037
-(batch-preview), :2048 (batch-generate), :2059 (batch-send, SEND_INVOICE), :1959 (POST /api/invoices,
-the manual invoice, GENERATE_INVOICE), :1985 (POST /api/invoices/draft-for-appointment/:appointmentId).
-Storage: getBatchInvoicePreviewForDateRange (server/storage.ts:4999; rows typed BatchInvoicePreviewRow
-at :679 - the ticket plus billingLineType / billableAmountCents / billingNote),
-getServiceRecordsReadyForBillingInRange (:4985, the postedAt ?? serviceDate filter at :4988),
-batchGenerateInvoicesForDateRange (:5288, BatchGenerateResult at :685), batchSendInvoices (:5352),
-createManualInvoice (:5401, CreateManualInvoiceInput at :551), createDraftInvoiceForAppointment
-(:6219). The Invoices screen (client/src/pages/invoices.tsx) has InvoiceForm at :46 (the manual
-invoice, POST /api/invoices at :83) behind two "New Invoice" buttons at :280 and :345,
-ReadyToBillSection at :165, and rows that open InvoiceDetailDialog (Pass 11a); the location ledger
-panel (client/src/components/location-ledger-panel.tsx) has Record Payment and Issue Credit Memo in
-its header at :517-521 with their dialogs at :627-628, which is where "Add fee / adjustment"
-belongs; the Services tab's canDraftForVisit rule (customer-detail.tsx, next to the Draft invoice
-button) is the eligibility a visit needs for a draft. One known gap rides along from Pass 11d: the
-batch preview's per-ticket amounts do not show a pending down payment that generate will bill (the
-INITIAL_CHARGE line rides the visit invoice) - show it in the preview or say it is coming; do not
-leave it silent.
+The decisions are recorded (B20, owner 2026-09-19): aging is derived, never stored; age by invoice
+date (issuedAt, days since invoiced), buckets Current (0-30) / 31-60 / 61-90 / Over 90, labelled
+"days since invoiced"; a later Settings toggle can switch to due-date aging for Net-terms commercial
+accounts (not this pass); the customer-wide figure is a rollup and the balance still lives at the
+location (canon rule 1); money on account is shown beside the aged balance, never netted, and so is
+pending-applied money (pendingAppliedCents, "pending shows, confirmed counts"). Days are UTC
+calendar days like every other date-only value in the repo. Ground truth today (line numbers from
+origin/main at the Pass 13 merge; they drift, the names do not): nothing ages an invoice except
+isInvoiceOverdue (client/src/components/invoice-status-badge.tsx:13), a client-only due-date test
+feeding the Invoices screen's Overdue tile and the Reports page's Overdue count
+(client/src/pages/reports.tsx:206; that page has no tabs and no server read - five cards computed
+from GET /api/invoices, /api/customers, /api/appointments and /api/service-records at :18-21 - and
+there is no /api/reports route in server/routes.ts). The balance reads that exist:
+getLocationBalancesByCustomer (server/storage.ts:4742; LocationBalanceSummary at :168 - open,
+total invoiced, count and unapplied per location; route GET /api/location-balances/:customerId at
+server/routes.ts:1123) feeds only the customer screen's location switcher ("Open $X - $Y on
+account", client/src/pages/customer-detail.tsx:3687-3691); getLocationLedgerSummary
+(server/storage.ts:7985; LocationLedgerSummary in shared/payments.ts:390; route GET
+/api/locations/:locationId/ledger-summary at server/routes.ts:2292) feeds the ledger panel's
+Balance card (client/src/components/location-ledger-panel.tsx, the card whose header holds Record
+Payment / Issue Credit Memo / Add fee / adjustment). Invoices carry issuedAt (null while DRAFT),
+balanceDueCents, amountPaidCents and pendingAppliedCents (D5's stored rollups, recomputed under a
+row lock with every application); isInvoiceIssued (shared/invoice-status.ts:81) is the receivable
+test - a DRAFT or VOID owes nothing. The customer header card starts at customer-detail.tsx:3610
+(text-customer-name at :3615; no money on it today); the location profile card renders
+LocationNotesPanel (defined at :1418) at :3813, which is where the location's strip goes, below it.
+An aging row opens the invoice modal (InvoiceDetailDialog, Pass 11a; the customer screen's
+openInvoice and /customers/:id?locationId=&tab=invoices&invoiceId= deep link, Pass 11b).
 
-Build per C2.3: Batch Invoice on the Invoices screen (result rows open the invoice modal), the
-range labelled "posted between", the technician filter passed to batch-preview and batch-generate
-(a query / body field added server-side; all technicians stays the default), the preview grouped by
-technician then service date, Send All kept, the button and dialog removed from Service Ticket
-Review; New Invoice removed from the Invoices screen and replaced by "Draft invoice for a visit"
-(customer → location → that location's draftable appointments → the existing draft-for-appointment
-route, the created DRAFT opening in the modal); "Add fee / adjustment" on the location ledger panel
-through the existing POST /api/invoices with the panel's location fixed (description, amount, tax,
-due date, notes; the customer is the location's). No schema change and no migration are expected;
-if one turns out to be needed, stop and ask. The ticket lockdown (Pass 16), sale attribution and
-billing plans (Pass 12) are untouched.
+Build per C2.4: two derived reads - GET /api/customers/:id/aging (per location plus the rollup:
+per bucket the open balance over issued invoices with a balance, the pending-applied and on-account
+figures beside, the oldest non-empty bucket, and the invoices behind each bucket so a row can open
+the modal) and GET /api/reports/aging (org-wide: per customer and per location, the same buckets and
+totals) - both computed in storage from the invoices and the ledger's stored rollups, nothing
+stored, no schema change, no migration (if one turns out to be needed, stop and ask). Header card:
+the customer-wide open balance, the on-account figure and the oldest bucket beside the
+primary-location chip; location profile card: the location's aging strip below LocationNotesPanel,
+its bucket rows opening the modal; Reports: an Aging section fed by /api/reports/aging, each row
+linking to the customer screen, replacing nothing that exists. Decide the reads' gate against
+shared/permissions.ts (every invoice read is open to any authenticated role today; say what you
+chose and why). The Invoices screen's Overdue tile keeps its due-date meaning - do not conflate the
+two; say "days since invoiced" wherever a bucket is shown. Batch Invoice, the draft dialog and the
+fee dialog (Pass 13), the ticket lockdown (Pass 16), sale attribution and billing plans (Pass 12)
+are untouched.
 
 Environment: Node 24.21.0, npm run dev:full (restart it before manually testing anything that
-changes server code), DEV_NOTES.md for the DB backup/restore and PowerShell traps. Verify on
-PORT=5001 as the previous passes did: npm run check, double boot (both boots must print only
-"serving on port 5001" and every table count must be unchanged, since there is no migration), the
-pass's API smoke test as all four roles (batch-preview with and without a technician filter and
-the grouping the client renders from it, batch-generate over a range holding two technicians'
-visits, a draft for an un-invoiced appointment and a refusal for an already-invoiced one, an "Add
-fee / adjustment" invoice landing on the location's Invoices tab and in its balance,
-support / technician 403s where the gates say so) with fixtures deleted and counts back at
-baseline, and a Vite 200 on every touched client module.
+changes server code), DEV_NOTES.md for the DB backup/restore and PowerShell traps, gh logged in so
+the session can open the PR. Verify on PORT=5001 as the previous passes did: npm run check, double
+boot (both boots must print only "serving on port 5001" and every table count must be unchanged,
+since there is no migration), the pass's API smoke test as all four roles (fixture invoices issued
+into each bucket - set issuedAt by SQL after issuing, since every path stamps now - with a
+pending-applied payment and an on-account payment beside them, a DRAFT and a VOID excluded, a
+two-location customer rolling up while each location keeps its own figures, the org-wide report
+agreeing with the per-customer reads, and the gate you chose answering 403 where it should) with
+fixtures deleted and counts back at baseline, and a Vite 200 on every touched client module.
 
 Working agreement as always: one pass, one branch, update CURRENT_FOCUS and the roadmap's pass
 table at the end, replace the handoff prompt at the end of CURRENT_FOCUS.md with the one for Pass
-14 (Aging and balances on the customer screen, C2.4, next in the recommended order), push and
-stop. I merge.
+25 (Opportunity taxonomy, assignee and search, C4.1, next in the recommended order), push, open
+the PR and stop. I merge.
 ```

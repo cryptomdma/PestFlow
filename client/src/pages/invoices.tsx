@@ -1,20 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Link, useLocation, useSearch } from "wouter";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog";
 import {
   Select,
   SelectContent,
@@ -23,15 +14,20 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/hooks/use-auth";
 import { apiRequest, getApiErrorMessage, queryClient } from "@/lib/queryClient";
-import { dollarsToCents, formatCents } from "@shared/money";
+import { formatCents } from "@shared/money";
 import { isInvoiceIssued } from "@shared/invoice-status";
+import { can, PERMISSIONS } from "@shared/permissions";
 import { InvoiceDetailDialog } from "@/components/invoice-detail-dialog";
 import { InvoiceStatusBadge, InvoiceStatusIcon, isInvoiceOverdue } from "@/components/invoice-status-badge";
+import { BatchInvoiceDialog } from "@/components/batch-invoice-dialog";
+import { DraftInvoiceForVisitDialog } from "@/components/draft-invoice-for-visit-dialog";
 import {
-  Plus,
   Search,
   FileText,
+  FilePlus,
+  FileStack,
   CheckCircle,
   Clock,
   AlertCircle,
@@ -41,125 +37,6 @@ import type { Customer, Invoice, Location, ServiceRecord, ServiceType } from "@s
 
 function getLocationLabel(location: Location) {
   return [location.name, location.address].filter(Boolean).join(" - ");
-}
-
-function InvoiceForm({ onClose }: { onClose: () => void }) {
-  const { toast } = useToast();
-  const { data: customers } = useQuery<Customer[]>({ queryKey: ["/api/customers"] });
-
-  const [form, setForm] = useState({
-    customerId: "",
-    locationId: "",
-    description: "",
-    amount: "",
-    tax: "0",
-    dueDate: "",
-    notes: "",
-  });
-
-  // The location is the customer record (canon rule 1), so a manual invoice
-  // is billed to one of the customer's locations - required, defaulting to
-  // the primary. Without one the invoice showed on this list but on no
-  // location's Invoices tab and in no location balance.
-  const { data: customerLocations, isLoading: locationsLoading } = useQuery<Location[]>({
-    queryKey: ["/api/locations", form.customerId],
-    enabled: !!form.customerId,
-  });
-  useEffect(() => {
-    if (!customerLocations) return;
-    setForm((prev) => {
-      if (prev.locationId && customerLocations.some((location) => location.id === prev.locationId)) return prev;
-      const primary = customerLocations.find((location) => location.isPrimary) ?? customerLocations[0];
-      return { ...prev, locationId: primary?.id ?? "" };
-    });
-  }, [customerLocations]);
-
-  const amountCents = dollarsToCents(form.amount) ?? 0;
-  const taxCents = dollarsToCents(form.tax) ?? 0;
-  const totalAmountCents = amountCents + taxCents;
-
-  const mutation = useMutation({
-    mutationFn: (data: typeof form) =>
-      apiRequest("POST", "/api/invoices", {
-        customerId: data.customerId,
-        locationId: data.locationId,
-        description: data.description || null,
-        amountCents,
-        taxCents,
-        notes: data.notes || null,
-        dueDate: data.dueDate || null,
-      }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/invoices"] });
-      toast({ title: "Invoice created" });
-      onClose();
-    },
-    onError: (err: Error) => {
-      toast({ title: "Error", description: err.message, variant: "destructive" });
-    },
-  });
-
-  return (
-    <form onSubmit={(e) => { e.preventDefault(); mutation.mutate(form); }} className="space-y-4">
-      <div className="space-y-1.5">
-        <Label>Customer *</Label>
-        <Select value={form.customerId} onValueChange={(v) => setForm((p) => ({ ...p, customerId: v, locationId: "" }))}>
-          <SelectTrigger data-testid="select-inv-customer"><SelectValue placeholder="Select customer" /></SelectTrigger>
-          <SelectContent>{customers?.map((c) => <SelectItem key={c.id} value={c.id}>{c.firstName} {c.lastName}</SelectItem>)}</SelectContent>
-        </Select>
-      </div>
-      <div className="space-y-1.5">
-        <Label>Location *</Label>
-        <Select value={form.locationId} onValueChange={(v) => setForm((p) => ({ ...p, locationId: v }))} disabled={!form.customerId || locationsLoading}>
-          <SelectTrigger data-testid="select-inv-location">
-            <SelectValue placeholder={!form.customerId ? "Select a customer first" : locationsLoading ? "Loading locations..." : "Select location"} />
-          </SelectTrigger>
-          <SelectContent>
-            {customerLocations?.map((location) => (
-              <SelectItem key={location.id} value={location.id}>{getLocationLabel(location)}{location.isPrimary ? " (primary)" : ""}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        {form.customerId && customerLocations && customerLocations.length === 0 ? (
-          <p className="text-xs text-destructive">This customer has no location to bill. Add one on the customer screen first.</p>
-        ) : (
-          <p className="text-xs text-muted-foreground">The invoice lands on this location's Invoices tab and balance.</p>
-        )}
-      </div>
-      <div className="space-y-1.5">
-        <Label>Description</Label>
-        <Input placeholder="e.g., Cleanout fee, one-time treatment" value={form.description} onChange={(e) => setForm((p) => ({ ...p, description: e.target.value }))} />
-      </div>
-      <div className="grid grid-cols-3 gap-3">
-        <div className="space-y-1.5">
-          <Label>Amount *</Label>
-          <Input type="number" step="0.01" data-testid="input-amount" value={form.amount} onChange={(e) => setForm((p) => ({ ...p, amount: e.target.value }))} />
-        </div>
-        <div className="space-y-1.5">
-          <Label>Tax</Label>
-          <Input type="number" step="0.01" value={form.tax} onChange={(e) => setForm((p) => ({ ...p, tax: e.target.value }))} />
-        </div>
-        <div className="space-y-1.5">
-          <Label>Total</Label>
-          <Input value={formatCents(totalAmountCents)} disabled />
-        </div>
-      </div>
-      <div className="space-y-1.5">
-        <Label>Due Date</Label>
-        <Input type="date" data-testid="input-due-date" value={form.dueDate} onChange={(e) => setForm((p) => ({ ...p, dueDate: e.target.value }))} />
-      </div>
-      <div className="space-y-1.5">
-        <Label>Notes</Label>
-        <Textarea value={form.notes} onChange={(e) => setForm((p) => ({ ...p, notes: e.target.value }))} className="resize-none" />
-      </div>
-      <div className="flex justify-end gap-2">
-        <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
-        <Button type="submit" disabled={mutation.isPending || !form.customerId || !form.locationId || !form.amount} data-testid="button-save-invoice">
-          {mutation.isPending ? "Creating..." : "Create Invoice"}
-        </Button>
-      </div>
-    </form>
-  );
 }
 
 function ReadyToBillSection({ invoices }: { invoices?: Invoice[] }) {
@@ -191,7 +68,7 @@ function ReadyToBillSection({ invoices }: { invoices?: Invoice[] }) {
     <Card>
       <CardHeader>
         <CardTitle className="text-base font-semibold flex items-center gap-2"><ReceiptText className="h-4 w-4" /> Ready to Bill</CardTitle>
-        <p className="text-xs text-muted-foreground">Finalized service tickets awaiting an invoice. Tickets on the same appointment bill together as one visit invoice. Work on an agreement billed by its plan appears at $0; agreement work billed per visit is charged here. A visit that already has a draft invoice issues that draft.</p>
+        <p className="text-xs text-muted-foreground">Finalized service tickets awaiting an invoice. Tickets on the same appointment bill together as one visit invoice. Work on an agreement billed by its plan appears at $0; agreement work billed per visit is charged here. A visit that already has a draft invoice issues that draft. Batch Invoice generates these by posting window and technician.</p>
       </CardHeader>
       <CardContent className="space-y-2">
         {readyRecords.map((record) => {
@@ -230,10 +107,20 @@ function ReadyToBillSection({ invoices }: { invoices?: Invoice[] }) {
 // PLAN_ROADMAP_V2.md Part E, decision 1). The open invoice is the URL:
 // /invoices?invoiceId=<id> deep-links straight into the modal, and closing it
 // clears the parameter.
+//
+// The screen's two actions (Pass 13, C2.3): Batch Invoice - an invoicing
+// action, moved here from the Service Ticket Review queue - and "Draft invoice
+// for a visit", which replaces New Invoice (owner, B6): an invoice for work is
+// the visit's invoice, drafted before finalization and adopted by it. The
+// manual invoice survives only as "Add fee / adjustment" on the location's
+// ledger panel, where the location is already known.
 export default function Invoices() {
+  const { user } = useAuth();
+  const canInvoice = can(user?.role ?? "", PERMISSIONS.GENERATE_INVOICE);
   const [search, setSearch] = useState("");
   const [filterStatus, setFilterStatus] = useState("all");
-  const [dialogOpen, setDialogOpen] = useState(false);
+  const [batchOpen, setBatchOpen] = useState(false);
+  const [draftOpen, setDraftOpen] = useState(false);
   const searchString = useSearch();
   const [, navigate] = useLocation();
   const openInvoiceId = useMemo(() => new URLSearchParams(searchString).get("invoiceId"), [searchString]);
@@ -268,6 +155,17 @@ export default function Invoices() {
   // of the Open figure until the payments behind it are confirmed.
   const totalPendingAppliedCents = filtered.filter((i) => isInvoiceIssued(i.status)).reduce((s, i) => s + i.pendingAppliedCents, 0);
 
+  const actions = canInvoice ? (
+    <div className="flex items-center gap-2 flex-wrap">
+      <Button variant="outline" onClick={() => setDraftOpen(true)} data-testid="button-draft-invoice-for-visit">
+        <FilePlus className="h-4 w-4 mr-2" /> Draft invoice for a visit
+      </Button>
+      <Button onClick={() => setBatchOpen(true)} data-testid="button-batch-invoice">
+        <FileStack className="h-4 w-4 mr-2" /> Batch Invoice
+      </Button>
+    </div>
+  ) : null;
+
   return (
     <div className="p-6 space-y-6 max-w-7xl mx-auto">
       <div className="flex items-center justify-between flex-wrap gap-3">
@@ -275,15 +173,7 @@ export default function Invoices() {
           <h1 className="text-2xl font-bold tracking-tight" data-testid="text-page-title">Invoices</h1>
           <p className="text-muted-foreground text-sm mt-0.5">Track payments and billing</p>
         </div>
-        <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-          <DialogTrigger asChild>
-            <Button data-testid="button-new-invoice"><Plus className="h-4 w-4 mr-2" /> New Invoice</Button>
-          </DialogTrigger>
-          <DialogContent className="max-w-lg">
-            <DialogHeader><DialogTitle>Create Invoice</DialogTitle></DialogHeader>
-            <InvoiceForm onClose={() => setDialogOpen(false)} />
-          </DialogContent>
-        </Dialog>
+        {actions}
       </div>
 
       <div className="grid gap-4 md:grid-cols-3">
@@ -341,8 +231,12 @@ export default function Invoices() {
           <CardContent className="text-center py-12">
             <FileText className="h-12 w-12 mx-auto text-muted-foreground/30 mb-4" />
             <h3 className="text-lg font-semibold mb-1">No invoices found</h3>
-            <p className="text-sm text-muted-foreground mb-4">Create your first invoice</p>
-            <Button onClick={() => setDialogOpen(true)}><Plus className="h-4 w-4 mr-2" /> New Invoice</Button>
+            <p className="text-sm text-muted-foreground mb-4">
+              {search || filterStatus !== "all"
+                ? "Nothing matches this search and filter."
+                : "Invoices come from finalized visits (Ready to Bill, Batch Invoice), from a draft for a visit, and from fees added on a location's ledger."}
+            </p>
+            {!search && filterStatus === "all" ? actions : null}
           </CardContent>
         </Card>
       ) : (
@@ -425,6 +319,10 @@ export default function Invoices() {
           if (!next) closeInvoice();
         }}
       />
+      {/* Both stay mounted under the invoice modal: a result row or a new
+          draft opens the modal on top, and the batch's result list survives. */}
+      <BatchInvoiceDialog open={batchOpen} onOpenChange={setBatchOpen} onOpenInvoice={openInvoice} />
+      <DraftInvoiceForVisitDialog open={draftOpen} onOpenChange={setDraftOpen} onCreated={(invoice) => openInvoice(invoice.id)} />
     </div>
   );
 }

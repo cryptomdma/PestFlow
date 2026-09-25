@@ -1115,7 +1115,12 @@ invoices only — agreement revenue on schedule-billed plans still comes solely 
 * accountId
 * locationId nullable in the column, set by every writing path — a manual invoice is refused
   without one (rule 1: the location is the customer record; PLAN_BILLING_V1.1 Pass 10). Null only
-  on the two manual rows that predate that.
+  on the two manual rows that predate that. Since Pass 13 (PLAN_ROADMAP_V2.md B6 / C2.3) the manual
+  invoice is reachable only as **"Add fee / adjustment" on the location's ledger**, where the
+  location is given, for a charge with no visit behind it (a returned-check or late fee, a
+  re-inspection fee, a product sale, a cancellation fee); work performed is always the visit's
+  invoice - drafted for the visit before finalization (D3) or generated at it (D2) - so a
+  location-less row cannot recur.
 * appointmentId nullable — the billing anchor for visit work
 * serviceRecordId nullable — the fallback anchor for appointment-less work
 * billingProfileId nullable
@@ -1514,7 +1519,9 @@ Role-gated actions may include:
 * delete / void
 * confirm payment
 * send invoice
-* batch invoice
+* batch invoice — an action of the **Invoices screen** since Pass 13 (PLAN_ROADMAP_V2.md C2.3),
+  not of the review queue: it is invoicing, and it filters on the posting date ("posted between"),
+  grouped by technician then service date. The queue keeps finalize / reopen / edit.
 
 Service cards should be compact with expand-on-click behavior.
 
