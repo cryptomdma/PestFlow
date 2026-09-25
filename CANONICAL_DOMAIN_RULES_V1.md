@@ -516,6 +516,33 @@ Service or Appointment cancellation means one visit or Service is being canceled
 
 Technician route cancel/reschedule requests are an office handoff, not full disposal of the work. The historical Appointment may be marked canceled with a required configured reason, but linked Services should return to pending scheduling and an open Opportunity should notify office staff to reschedule/contact the customer. For agreement-generated Services, the Service should remain tied to the Agreement and be recycled into the scheduling queue rather than advancing recurrence until office finalization/completion rules say so.
 
+As built (Pass 27; PLAN_ROADMAP_V2.md C4.2 / B2, owner 2026-09-19; PLAN_BILLING_V1_1.md D8
+"Unschedule action"): an Appointment leaves the board through **one path**,
+`POST /api/appointments/:id/disposition`, with two modes and no fifth Appointment status (Q4 / D1a).
+
+* **RESCHEDULE** takes the placement off the board and returns every linked Service to
+  `PENDING_SCHEDULING` with its dates untouched - the visit is still due when it was due. No reason is
+  required, no policy fires, and the office creates no Opportunity.
+* **CANCEL** starts the cancel flow: a reason from the settings list
+  (`appointment_cancel_reschedule_reasons`) is required and one not on it is refused;
+  agreement-generated Services recycle to `PENDING_SCHEDULING` with `dueDate` /
+  `serviceWindowStart` / `serviceWindowEnd` reset from the cancel date by the Agreement's
+  `serviceWindowDays`, so the visit is not silently missed; one-time Services are `CANCELLED`; the
+  office chooses, per visit, to re-date the open Opportunity on each Service, to create one
+  (`RESCHEDULE` for a requeued Service, `WINBACK` for a cancelled one-time Service, the work type
+  from the Service's Agreement) or none.
+* Both write the same Appointment shape - `status CANCELED`, `rescheduleRequested` true for a
+  reschedule and false for a cancel, `cancelReason` null unless one was given - so the UI
+  distinguishes on the flag, never on the reason. Both keep the DRAFT-invoice prompt (§13), skip a
+  Service that is already COMPLETED or CANCELLED, stamp `lastAppointmentId` on every Service they
+  touch (§10) and write one audit row (§17, `appointment_cancelled` / `appointment_rescheduled`)
+  with the Appointment and its Services before and after.
+* The technician's cancel / reschedule route is the same path with a **FIELD** origin - the handoff
+  above, never disposal: every Service returns to the queue whatever the mode, and the
+  office-handoff Opportunity on each Service is re-dated or created.
+* A status change to `CANCELED` through the generic Appointment update is refused (409). A board
+  move confirms before it writes. Cancelling ONE Service on a multi-service Appointment is C4.3a.
+
 Do not flatten all cancellation scenarios into generic Opportunity logic.
 
 ### Terms, contracts, and versioning
@@ -684,6 +711,13 @@ A Service may exist before it is scheduled. Services are the queueable work unit
 * Manual and one-time Services may be created outside Agreements
 * Agreement-generated Services do not imply an Appointment exists
 * One Appointment may contain multiple Services
+* `appointmentId` is the current placement, nulled when the Service returns to the queue.
+  `lastAppointmentId` (Pass 27) is the placement the Service was last taken off by a cancel /
+  reschedule disposition, set on every Service the disposition touches and never cleared - a
+  sibling on a multi-service Appointment has no other link back, since `appointments.serviceId`
+  names one representative. It is what lets a pending Service read **Rescheduling** (its last
+  Appointment was CANCELED with `rescheduleRequested`) rather than **Pending scheduling**, and it
+  is the server's to write, never a client's.
 
 ### Pricing rule
 
@@ -797,6 +831,9 @@ Appointments should ideally be created from a selected location context so core 
 Appointments are scheduling placements. They are not the canonical work history object and should not be created by recurring agreement generation until work is actually placed on the board.
 
 One Appointment may contain multiple Services. Each linked Service remains independently visible and independently completed.
+
+An Appointment leaves the board only through the cancel / reschedule disposition (§9, Pass 27):
+`CANCELED` is never written by the generic update, and a board move is confirmed before it writes.
 
 Appointment timing is a scheduling/field-operations layer. Time In / Time Out is tracked on the Appointment because the visit may contain multiple Services. Duration supports future route analytics and billing review, but GPS capture is staged for later.
 
@@ -969,9 +1006,11 @@ Both are stamped at creation from the row's `source` by one shared function
 that mapped the pre-existing rows, so the two can never disagree: agreement contact-required and
 non-contract follow-up are `SERVICE_DUE`, an agreement's cancellation is `RETENTION`, a cancelled
 or reschedule-requested appointment is `RESCHEDULE` (work type by the service's agreement), an
-agreement's initial service is `NEW_SALE`. `WINBACK` has no automatic source until the cancel flow
-(C4.2) and is chosen by hand. `opportunityType` (free text) is the display label only —
-transitional, not an axis.
+agreement's initial service is `NEW_SALE`, and a one-time service the office cancels off an
+appointment is `WINBACK` (source `APPOINTMENT_CANCELLATION_WINBACK`, the cancel flow's own source
+since Pass 27 / C4.2 - the same review source on a field handoff requeues the service and stays
+`RESCHEDULE`); `WINBACK` can also be chosen by hand. `opportunityType` (free text) is the display
+label only - transitional, not an axis.
 
 An Opportunity may be **assigned** to one user (`assignedUserId`, a `users` FK; `assignedAt`
 stamped on every change, null when unassigned). Assigning, reassigning and unassigning need

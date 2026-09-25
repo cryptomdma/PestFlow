@@ -301,6 +301,7 @@ export async function bootstrapServiceSchedulingFoundation(): Promise<void> {
   await db.execute(sql`UPDATE opportunities SET next_action_date = COALESCE(next_action_date, due_date) WHERE next_action_date IS NULL`);
 
   await bootstrapOpportunityTaxonomy();
+  await bootstrapAppointmentDisposition();
 }
 
 interface UnmappedOpportunityRow {
@@ -437,4 +438,75 @@ async function bootstrapOpportunityTaxonomy(): Promise<void> {
     await db.execute(sql`ALTER TABLE opportunities ADD CONSTRAINT opportunities_assigned_user_id_fkey FOREIGN KEY (assigned_user_id) REFERENCES users(id)`);
     console.log("[service-scheduling-bootstrap] Pass 25: opportunities.assigned_user_id now references users(id).");
   }
+}
+
+interface RequeuedServiceRow {
+  service_id: string;
+  service_status: string;
+  appointment_id: string;
+  appointment_status: string;
+  reschedule_requested: boolean;
+  cancel_reason: string | null;
+  scheduled_date: string;
+}
+
+// Pass 27 (PLAN_ROADMAP_V2.md C4.2): services.last_appointment_id - the
+// placement a service was last taken off by a cancel / reschedule
+// disposition. Guarded and quiet once done:
+//   1. the column, its index and its appointments(id) FK (any FK on the
+//      column counts, whatever its name - db:push names drizzle's, this
+//      bootstrap names its own).
+//   2. a one-shot backfill for the rows the disposition never saw: a pending,
+//      unlinked service whose latest CANCELED appointment named it as its
+//      representative (appointments.service_id) gets that appointment, so
+//      the Services tab can already say Rescheduling for it. Siblings on a
+//      multi-service visit from before this pass have no link to recover
+//      and stay Pending scheduling; every service the disposition touches
+//      from now on carries it. The per-row effect is printed before the row
+//      is written; a row with the column set is never touched again.
+async function bootstrapAppointmentDisposition(): Promise<void> {
+  await db.execute(sql`ALTER TABLE services ADD COLUMN IF NOT EXISTS last_appointment_id varchar`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS services_last_appointment_id_idx ON services (last_appointment_id)`);
+  const lastAppointmentFk = await db.execute(sql`
+    SELECT 1
+    FROM pg_constraint c
+    JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey)
+    WHERE c.conrelid = 'services'::regclass AND c.contype = 'f' AND a.attname = 'last_appointment_id'
+  `);
+  if (!lastAppointmentFk.rows.length) {
+    await db.execute(sql`ALTER TABLE services ADD CONSTRAINT services_last_appointment_id_fkey FOREIGN KEY (last_appointment_id) REFERENCES appointments(id)`);
+    console.log("[service-scheduling-bootstrap] Pass 27: services.last_appointment_id added, indexed, and referencing appointments(id).");
+  }
+
+  const requeued = await db.execute(sql`
+    SELECT s.id AS service_id, s.status AS service_status,
+           a.id AS appointment_id, a.status AS appointment_status, a.reschedule_requested, a.cancel_reason, a.scheduled_date
+    FROM services s
+    JOIN LATERAL (
+      SELECT a.id, a.status, a.reschedule_requested, a.cancel_reason, a.scheduled_date
+      FROM appointments a
+      WHERE a.org_id = s.org_id AND a.service_id = s.id AND a.status = 'CANCELED'
+      ORDER BY a.scheduled_date DESC, a.created_at DESC
+      LIMIT 1
+    ) a ON true
+    WHERE s.last_appointment_id IS NULL AND s.appointment_id IS NULL AND s.status = 'PENDING_SCHEDULING'
+    ORDER BY s.created_at, s.id
+  `);
+  const rows = requeued.rows as unknown as RequeuedServiceRow[];
+  if (!rows.length) {
+    return;
+  }
+  console.log(
+    `[service-scheduling-bootstrap] Pass 27 pre-migration report: ${rows.length} pending, unlinked service(s) were taken off a CANCELED appointment before the disposition existed. ` +
+      `Each gets that appointment as last_appointment_id (the Services tab reads it for Rescheduling vs Pending scheduling); the per-row effect is printed before the row is written.`,
+  );
+  for (const row of rows) {
+    console.log(
+      `[service-scheduling-bootstrap]   service ${row.service_id}  ${row.service_status}  <- appointment ${row.appointment_id}  ` +
+        `${String(row.scheduled_date).slice(0, 10)}  ${row.appointment_status}  reschedule requested: ${row.reschedule_requested ? "yes" : "no"}  ` +
+        `reason: ${row.cancel_reason ?? "(none)"}  -> ${row.reschedule_requested ? "Rescheduling" : "Pending scheduling"}`,
+    );
+    await db.execute(sql`UPDATE services SET last_appointment_id = ${row.appointment_id} WHERE id = ${row.service_id} AND last_appointment_id IS NULL`);
+  }
+  console.log(`[service-scheduling-bootstrap] Pass 27: ${rows.length} service(s) given their last appointment this boot.`);
 }

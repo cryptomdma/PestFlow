@@ -22,7 +22,8 @@ import { OPPORTUNITY_ASSIGNEE_ME, OPPORTUNITY_ASSIGNEE_UNASSIGNED, OPPORTUNITY_W
 import { ZodError, z } from "zod";
 import type { Request } from "express";
 import { requirePermission } from "./auth";
-import { DraftInvoiceDecisionRequiredError, PrefinalizationIssueError, TicketLockedError } from "./storage";
+import { AppointmentDispositionError, DraftInvoiceDecisionRequiredError, PrefinalizationIssueError, TicketLockedError } from "./storage";
+import { APPOINTMENT_DISPOSITION_MODES, DISPOSITION_OPPORTUNITY_CHOICES } from "@shared/appointment-disposition";
 import { can, PERMISSIONS, type UserRole } from "@shared/permissions";
 import { INVOICE_ON_FINALIZE_MODES, normalizeInvoiceOnFinalizeMode } from "@shared/invoice-on-finalize";
 import {
@@ -227,11 +228,11 @@ export async function registerRoutes(
     // creators omit it. Present-but-invalid still fails validation.
     status: appointmentStatusSchema.optional(),
   });
-  // voidDraftInvoices is the Q3 answer, not an appointment column: stripped
-  // off before the row update and passed as an option (see the PATCH route).
-  const updateAppointmentSchema = appointmentSchema.partial().extend({
-    voidDraftInvoices: z.boolean().optional(),
-  });
+  // Pass 27 (C4.2): a status of CANCELED on the PATCH is refused by storage
+  // with 409 CANCEL_DISPOSITION_REQUIRED - cancelling is the disposition
+  // route's, with its reason, requeue, opportunity choice and audit row. The
+  // Q3 voidDraftInvoices answer left with it.
+  const updateAppointmentSchema = appointmentSchema.partial();
   const serviceRecordSchema = insertServiceRecordSchema.omit({ serviceDate: true }).extend({
     serviceDate: z.coerce.date(),
   }).superRefine((value, ctx) => {
@@ -303,6 +304,16 @@ export async function registerRoutes(
     rescheduleRequested: z.boolean().optional(),
     voidDraftInvoices: z.boolean().optional(),
   });
+  // Pass 27 (C4.2): the one cancel / reschedule path. Strict: the mode and
+  // the opportunity choice are always stated; the reason is required for
+  // CANCEL and checked against the settings list by storage.
+  const appointmentDispositionSchema = z.object({
+    mode: z.enum(APPOINTMENT_DISPOSITION_MODES),
+    reasonCode: z.string().trim().nullable().optional(),
+    notes: z.string().nullable().optional(),
+    opportunity: z.enum(DISPOSITION_OPPORTUNITY_CHOICES),
+    voidDraftInvoices: z.boolean().optional(),
+  }).strict();
   const reopenServiceRecordSchema = z.object({
     reason: z.string().trim().min(1, "Reopen reason is required"),
   });
@@ -401,6 +412,12 @@ export async function registerRoutes(
   // TICKET_FINALIZED ("reopen first"), 403 TICKET_IN_REVIEW (a technician's
   // re-post on a ticket the office holds).
   const respondTicketLocked = (res: any, err: TicketLockedError) =>
+    res.status(err.status).json({ message: err.message, code: err.code });
+  // Pass 27 (C4.2): a disposition the input or the appointment forbids - 400
+  // DISPOSITION_REASON_REQUIRED / DISPOSITION_REASON_NOT_ON_LIST, 409
+  // APPOINTMENT_NOT_DISPOSITIONABLE - and the status PATCH's 409
+  // CANCEL_DISPOSITION_REQUIRED.
+  const respondAppointmentDispositionError = (res: any, err: AppointmentDispositionError) =>
     res.status(err.status).json({ message: err.message, code: err.code });
   // D4: the initial charge block on agreements (actual) and templates
   // (default). The enums are the shared vocabulary; the cross-field rule - a
@@ -1733,18 +1750,18 @@ export async function registerRoutes(
 
   app.patch("/api/appointments/:id", async (req, res) => {
     try {
-      const { voidDraftInvoices, ...validated } = updateAppointmentSchema.parse(req.body);
+      const validated = updateAppointmentSchema.parse(req.body);
       const data = await req.storage.updateAppointment(req.params.id, {
         ...validated,
         scheduledDate: validated.scheduledDate,
         scheduledEndDate: validated.scheduledEndDate,
         generatedForDate: validated.generatedForDate === undefined ? undefined : toDateOnlyStringOrNull(validated.generatedForDate),
-      }, { voidDraftInvoices, actor: getAuditActor(req) });
+      });
       if (!data) return res.status(404).json({ message: "Appointment not found" });
       res.json(data);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
-      if (e instanceof DraftInvoiceDecisionRequiredError) return respondDraftInvoiceDecisionRequired(res, e);
+      if (e instanceof AppointmentDispositionError) return respondAppointmentDispositionError(res, e);
       res.status(400).json({ message: e.message });
     }
   });
@@ -1769,14 +1786,21 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/appointments/:id/cancel-reschedule", async (req, res) => {
+  // Pass 27 (C4.2): the one cancel / reschedule path. The board's Cancel
+  // appointment and Reschedule both post here; the technician's route below
+  // is an alias with origin FIELD. Ungated like the status PATCH it replaces
+  // and every other appointment write; who may cancel is C5.6's role
+  // profiles.
+  app.post("/api/appointments/:id/disposition", async (req, res) => {
     try {
-      const validated = appointmentCancelRescheduleSchema.parse(req.body);
-      const data = await req.storage.requestAppointmentCancelOrReschedule({
+      const validated = appointmentDispositionSchema.parse(req.body);
+      const data = await req.storage.dispositionAppointment({
         appointmentId: req.params.id,
-        reason: validated.reason,
-        notes: validated.notes,
-        rescheduleRequested: validated.rescheduleRequested,
+        mode: validated.mode,
+        origin: "OFFICE",
+        reasonCode: validated.reasonCode ?? null,
+        notes: validated.notes ?? null,
+        opportunity: validated.opportunity,
         voidDraftInvoices: validated.voidDraftInvoices,
         actor: getAuditActor(req),
       });
@@ -1785,6 +1809,37 @@ export async function registerRoutes(
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
       if (e instanceof DraftInvoiceDecisionRequiredError) return respondDraftInvoiceDecisionRequired(res, e);
+      if (e instanceof AppointmentDispositionError) return respondAppointmentDispositionError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  // The technician's cancel / reschedule request (canon §9: an office
+  // handoff, never disposal of the work) - since Pass 27 a thin alias of the
+  // disposition with origin FIELD: every service returns to the queue
+  // whatever the mode, and the open office-handoff opportunity on each
+  // service is re-dated, or created when none is open. The dialog and its
+  // body { reason, notes, rescheduleRequested, voidDraftInvoices } are
+  // unchanged.
+  app.post("/api/appointments/:id/cancel-reschedule", async (req, res) => {
+    try {
+      const validated = appointmentCancelRescheduleSchema.parse(req.body);
+      const data = await req.storage.dispositionAppointment({
+        appointmentId: req.params.id,
+        mode: validated.rescheduleRequested ? "RESCHEDULE" : "CANCEL",
+        origin: "FIELD",
+        reasonCode: validated.reason,
+        notes: validated.notes ?? null,
+        opportunity: "UPDATE_EXISTING",
+        voidDraftInvoices: validated.voidDraftInvoices,
+        actor: getAuditActor(req),
+      });
+      if (!data) return res.status(404).json({ message: "Appointment not found" });
+      res.json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      if (e instanceof DraftInvoiceDecisionRequiredError) return respondDraftInvoiceDecisionRequired(res, e);
+      if (e instanceof AppointmentDispositionError) return respondAppointmentDispositionError(res, e);
       res.status(400).json({ message: e.message });
     }
   });

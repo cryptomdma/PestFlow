@@ -187,6 +187,16 @@ export const services = pgTable("services", {
   customerId: varchar("customer_id").notNull().references(() => customers.id),
   locationId: varchar("location_id").notNull().references(() => locations.id),
   appointmentId: varchar("appointment_id").references(() => appointments.id),
+  // Pass 27 (PLAN_ROADMAP_V2.md C4.2): the placement this service was last
+  // taken off by a cancel / reschedule disposition, set on every service the
+  // disposition touches and never cleared. appointmentId is nulled on a
+  // requeue, and appointments.serviceId names only one representative
+  // service, so without this a sibling on a multi-service visit could not
+  // say which appointment it came back from. The location's Services tab
+  // reads it to tell Rescheduling (a pending service whose last appointment
+  // was CANCELED with rescheduleRequested) from Pending scheduling. Written
+  // by the disposition only - insertServiceSchema omits it.
+  lastAppointmentId: varchar("last_appointment_id").references(() => appointments.id),
   agreementId: varchar("agreement_id"),
   serviceTypeId: varchar("service_type_id").references(() => serviceTypes.id),
   dueDate: date("due_date"),
@@ -1085,7 +1095,8 @@ export const insertCustomerNoteSchema = createInsertSchema(customerNotes).omit({
 export const insertNoteRevisionSchema = createInsertSchema(noteRevisions).omit({ orgId: true, id: true, createdAt: true });
 export const insertServiceTypeSchema = createInsertSchema(serviceTypes).omit({ orgId: true, id: true });
 export const insertTechnicianSchema = createInsertSchema(technicians).omit({ orgId: true, id: true, createdAt: true, updatedAt: true });
-export const insertServiceSchema = createInsertSchema(services).omit({ orgId: true, id: true, createdAt: true, updatedAt: true });
+// lastAppointmentId is the disposition's to write (Pass 27), never a client's.
+export const insertServiceSchema = createInsertSchema(services).omit({ orgId: true, id: true, createdAt: true, updatedAt: true, lastAppointmentId: true });
 export const insertAppointmentSchema = createInsertSchema(appointments).omit({ orgId: true, id: true, createdAt: true });
 export const insertBillingPlanSchema = createInsertSchema(billingPlans).omit({ orgId: true, id: true, createdAt: true, updatedAt: true });
 export const insertAgreementCancellationPolicySchema = createInsertSchema(agreementCancellationPolicies).omit({ orgId: true, id: true, createdAt: true, updatedAt: true });

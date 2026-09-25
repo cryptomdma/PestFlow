@@ -62,13 +62,17 @@ export function describeOpportunityCategory(
 // decision record (D8, C4.1) counts it among the six; note that today it is
 // stamped only on appointments.source / services.source - no writer puts it
 // on an opportunity - so the mapping below is for completeness, not for any
-// row that exists.
+// row that exists. APPOINTMENT_CANCELLATION_WINBACK (Pass 27, C4.2) is the
+// seventh: the office cancelled an appointment and a one-time service with
+// it, so the work is lost unless the customer is won back - distinct from
+// APPOINTMENT_CANCELLATION_REVIEW, where the service went back to the queue.
 export const OPPORTUNITY_SOURCES = [
   "AGREEMENT_CONTACT_REQUIRED",
   "AGREEMENT_INITIAL",
   "AGREEMENT_CANCELLATION_RETENTION",
   "APPOINTMENT_RESCHEDULE_REQUIRED",
   "APPOINTMENT_CANCELLATION_REVIEW",
+  "APPOINTMENT_CANCELLATION_WINBACK",
   "NON_CONTRACT_FOLLOW_UP",
 ] as const;
 export type OpportunitySource = (typeof OPPORTUNITY_SOURCES)[number];
@@ -79,6 +83,7 @@ export const OPPORTUNITY_SOURCE_LABELS: Record<OpportunitySource, string> = {
   AGREEMENT_CANCELLATION_RETENTION: "Agreement cancellation",
   APPOINTMENT_RESCHEDULE_REQUIRED: "Reschedule requested",
   APPOINTMENT_CANCELLATION_REVIEW: "Canceled appointment review",
+  APPOINTMENT_CANCELLATION_WINBACK: "Cancelled service win-back",
   NON_CONTRACT_FOLLOW_UP: "Service follow-up",
 };
 
@@ -103,12 +108,14 @@ export interface OpportunityTaxonomy {
  *   AGREEMENT_CANCELLATION_RETENTION -> RETENTION   / AGREEMENT
  *   APPOINTMENT_RESCHEDULE_REQUIRED  -> RESCHEDULE  / by the source service's agreement
  *   APPOINTMENT_CANCELLATION_REVIEW  -> RESCHEDULE  / by the source service's agreement
+ *   APPOINTMENT_CANCELLATION_WINBACK -> WINBACK     / by the source service's agreement (ONE_TIME in practice:
+ *                                                     the disposition never cancels an agreement service)
  *   NON_CONTRACT_FOLLOW_UP           -> SERVICE_DUE / ONE_TIME
  *
- * WINBACK has no automatic source until Pass 27's cancel flow; it is chosen by
- * hand. `hasAgreement` is whether the opportunity (or its source service)
- * carries an agreement id; it decides the work type only where the source does
- * not.
+ * WINBACK's one automatic source is the cancel flow (Pass 27, C4.2): the
+ * office cancelling a one-time service off an appointment. `hasAgreement` is
+ * whether the opportunity (or its source service) carries an agreement id; it
+ * decides the work type only where the source does not.
  */
 export function taxonomyForSource(source: string | null | undefined, hasAgreement: boolean): OpportunityTaxonomy {
   switch (source) {
@@ -121,6 +128,8 @@ export function taxonomyForSource(source: string | null | undefined, hasAgreemen
     case "APPOINTMENT_RESCHEDULE_REQUIRED":
     case "APPOINTMENT_CANCELLATION_REVIEW":
       return { categoryKey: "RESCHEDULE", workType: hasAgreement ? "AGREEMENT" : "ONE_TIME", mapped: true };
+    case "APPOINTMENT_CANCELLATION_WINBACK":
+      return { categoryKey: "WINBACK", workType: hasAgreement ? "AGREEMENT" : "ONE_TIME", mapped: true };
     case "NON_CONTRACT_FOLLOW_UP":
       return { categoryKey: "SERVICE_DUE", workType: "ONE_TIME", mapped: true };
     default:

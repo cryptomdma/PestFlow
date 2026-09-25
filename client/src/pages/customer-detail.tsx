@@ -36,6 +36,7 @@ import { OpportunityConvertDialog } from "@/components/opportunity-convert-dialo
 import { OpportunityTaxonomyChips } from "@/components/opportunity-taxonomy-chips";
 import { ServiceCompletionDialog } from "@/components/service-completion-dialog";
 import { DraftInvoiceVoidPrompt, getDraftInvoiceDecisionRequired, type DraftInvoiceRef } from "@/components/draft-invoice-void-prompt";
+import { resolveServiceScheduleState, SERVICE_SCHEDULE_STATE_LABELS, type ServiceScheduleState } from "@shared/appointment-disposition";
 import { BillingPlanPill, useBillingPlanById } from "@/components/billing-plan-pill";
 import {
   InvoiceOnFinalizePrompt,
@@ -237,6 +238,20 @@ function getServiceDisplayDate(service: Service, appointment?: Appointment | nul
     label: formatDateOnly(service.dueDate),
     source: "due",
   };
+}
+
+// Pass 27 (C4.2): the Services tab's Status badge for a service with no
+// ticket yet, by its schedule state (shared/appointment-disposition.ts).
+function scheduleStateBadgeVariant(state: ServiceScheduleState): "default" | "secondary" | "outline" {
+  if (state === "COMPLETED") return "default";
+  if (state === "SCHEDULED") return "secondary";
+  return "outline";
+}
+
+function scheduleStateBadgeClass(state: ServiceScheduleState): string {
+  if (state === "RESCHEDULING") return "border-amber-400 bg-amber-50 text-amber-900";
+  if (state === "CANCELLED") return "border-red-300 bg-red-50 text-red-900";
+  return "";
 }
 
 function formatAgreementRecurrence(agreement: Agreement) {
@@ -2754,6 +2769,7 @@ function ServiceDetailModal({
   invoice,
   siblingServices,
   serviceTypeNameById,
+  statusLabel,
   onCompleteService,
   onFinalizeTicket,
   onReopenTicket,
@@ -2768,6 +2784,8 @@ function ServiceDetailModal({
   invoice?: Invoice | null;
   siblingServices?: Service[];
   serviceTypeNameById: Map<string, string>;
+  /** Pass 27: the schedule state's label (Scheduled / Pending scheduling / Rescheduling / Cancelled) in place of the raw status. */
+  statusLabel?: string;
   onCompleteService?: (service: Service) => void;
   onFinalizeTicket?: (serviceRecord: ServiceRecord) => void;
   onReopenTicket?: (serviceRecord: ServiceRecord) => void;
@@ -2781,7 +2799,7 @@ function ServiceDetailModal({
     <div className="space-y-4 text-sm">
       <div className="grid gap-3 sm:grid-cols-2">
         <div><p className="text-xs uppercase tracking-wide text-muted-foreground">Service Type</p><p className="mt-1 font-medium">{serviceTypeName}</p></div>
-        <div><p className="text-xs uppercase tracking-wide text-muted-foreground">Status</p><p className="mt-1">{service.status}</p></div>
+        <div><p className="text-xs uppercase tracking-wide text-muted-foreground">Status</p><p className="mt-1">{statusLabel ?? service.status}</p></div>
         <div><p className="text-xs uppercase tracking-wide text-muted-foreground">Service Date</p><p className="mt-1">{displayDate.label}</p></div>
         <div><p className="text-xs uppercase tracking-wide text-muted-foreground">Technician</p><p className="mt-1">{technicianName || "Unassigned"}</p></div>
         <div><p className="text-xs uppercase tracking-wide text-muted-foreground">Cost</p><p className="mt-1">{service.priceCents != null ? formatCurrency(centsToDollars(service.priceCents)) : "Not set"}</p></div>
@@ -2988,6 +3006,30 @@ function ServicesTab({
     return map;
   }, [services]);
 
+  // Pass 27 (C4.2, Q4's gap): what the Status column says for a service
+  // with no ticket yet. A pending service's "last appointment" is the
+  // placement it was taken off (services.lastAppointmentId, set by the
+  // disposition) or, for rows from before that column, the canceled
+  // appointment that named it as its representative. Scheduled / Pending
+  // scheduling / Rescheduling (back in the queue by a reschedule) /
+  // Cancelled are told apart, and the live visit - the one the date, the
+  // Draft invoice button and Reschedule refer to - is only a placement that
+  // still stands, never a cancelled one.
+  const scheduleByServiceId = useMemo(() => {
+    const map = new Map<string, { state: ServiceScheduleState; lastAppointment: Appointment | null; liveAppointment: Appointment | null }>();
+    for (const service of services ?? []) {
+      const linked = service.appointmentId ? appointmentsById.get(service.appointmentId) ?? null : null;
+      const lastAppointment = linked
+        ?? (service.lastAppointmentId ? appointmentsById.get(service.lastAppointmentId) ?? null : null)
+        ?? appointmentByServiceId.get(service.id)
+        ?? null;
+      const state = resolveServiceScheduleState(service, lastAppointment);
+      const liveAppointment = lastAppointment && lastAppointment.status !== "CANCELED" ? lastAppointment : null;
+      map.set(service.id, { state, lastAppointment, liveAppointment });
+    }
+    return map;
+  }, [appointmentByServiceId, appointmentsById, services]);
+
   const sortedServices = useMemo(() => {
     return [...(services ?? [])].sort((a, b) => {
       const appointmentA = appointmentByServiceId.get(a.id) ?? null;
@@ -3018,7 +3060,7 @@ function ServicesTab({
       serviceId: service.id,
       returnTo: `/customers/${customerId}?locationId=${locationId}`,
     });
-    const linkedAppointment = appointmentByServiceId.get(service.id);
+    const linkedAppointment = scheduleByServiceId.get(service.id)?.liveAppointment ?? null;
     if (linkedAppointment) {
       params.set("appointmentId", linkedAppointment.id);
     }
@@ -3113,7 +3155,10 @@ function ServicesTab({
             <span className="text-right">Actions</span>
           </div>
           {sortedServices.map((service) => {
-            const appointment = appointmentByServiceId.get(service.id) ?? null;
+            const schedule = scheduleByServiceId.get(service.id);
+            const appointment = schedule?.liveAppointment ?? null;
+            const lastAppointment = schedule?.lastAppointment ?? null;
+            const scheduleState = schedule?.state ?? resolveServiceScheduleState(service, null);
             const serviceRecord = serviceRecordByServiceId.get(service.id) ?? null;
             const invoice = invoiceByServiceId.get(service.id) ?? null;
             const displayDate = getServiceDisplayDate(service, appointment, serviceRecord);
@@ -3129,7 +3174,7 @@ function ServicesTab({
                   ? "Flagged for review"
                   : serviceRecord
                     ? "Posted"
-                    : service.status;
+                    : SERVICE_SCHEDULE_STATE_LABELS[scheduleState];
             const canDraftForVisit =
               canDraftInvoice && !invoice && !!appointment && appointment.status !== "CANCELED" && appointment.status !== "COMPLETED" && service.status !== "CANCELLED";
             return (
@@ -3152,7 +3197,18 @@ function ServicesTab({
                   ) : null}
                 </span>
                 <span>
-                  <Badge variant={serviceRecord?.confirmed ? "default" : "secondary"} className="text-[10px] uppercase tracking-wide">{serviceStatusLabel}</Badge>
+                  <Badge
+                    variant={serviceRecord?.confirmed ? "default" : serviceRecord ? "secondary" : scheduleStateBadgeVariant(scheduleState)}
+                    className={cn("text-[10px] uppercase tracking-wide", serviceRecord ? "" : scheduleStateBadgeClass(scheduleState))}
+                  >
+                    {serviceStatusLabel}
+                  </Badge>
+                  {!serviceRecord && scheduleState === "RESCHEDULING" && lastAppointment ? (
+                    <span className="mt-1 block text-xs text-muted-foreground">Was {formatDateTimeValue(lastAppointment.scheduledDate)}</span>
+                  ) : null}
+                  {!serviceRecord && scheduleState === "CANCELLED" && lastAppointment?.cancelReason ? (
+                    <span className="mt-1 block text-xs text-muted-foreground">{lastAppointment.cancelReason}</span>
+                  ) : null}
                 </span>
                 <span>{service.priceCents != null ? formatCurrency(centsToDollars(service.priceCents)) : "Not set"}</span>
                 <span className="truncate">{technicianName}</span>
@@ -3204,7 +3260,8 @@ function ServicesTab({
               service={detailService}
               serviceTypeName={serviceTypeNameById.get(detailService.serviceTypeId || "") || "Service"}
               technicianName={technicianNameById.get(detailService.assignedTechnicianId || "") || serviceRecordByServiceId.get(detailService.id)?.technicianName || "Unassigned"}
-              appointment={appointmentByServiceId.get(detailService.id) ?? null}
+              appointment={scheduleByServiceId.get(detailService.id)?.liveAppointment ?? null}
+              statusLabel={serviceRecordByServiceId.get(detailService.id) ? undefined : SERVICE_SCHEDULE_STATE_LABELS[scheduleByServiceId.get(detailService.id)?.state ?? resolveServiceScheduleState(detailService, null)]}
               serviceRecord={serviceRecordByServiceId.get(detailService.id) ?? null}
               productApplications={(() => {
                 const record = serviceRecordByServiceId.get(detailService.id);

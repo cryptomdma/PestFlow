@@ -17,7 +17,10 @@
  *  agreement's mutations join with C5.1a's non-financial coverage.
  *  `opportunity` joined in Pass 25 (C4.1) for the assignee, category and
  *  work-type changes the PATCH makes - an `update` naming the users before
- *  and after; dispositions and conversion keep their own activity trail. */
+ *  and after; dispositions and conversion keep their own activity trail.
+ *  `appointment` joined in Pass 27 (C4.2) for the cancel / reschedule
+ *  disposition: one row per disposition with the appointment and its
+ *  services before and after and what was done about follow-up. */
 export type AuditEntityType =
   | "customer"
   | "location"
@@ -28,7 +31,8 @@ export type AuditEntityType =
   | "payment"
   | "credit_memo"
   | "agreement"
-  | "opportunity";
+  | "opportunity"
+  | "appointment";
 
 /** One member per mutation in D7's Phase 1 scope list, plus the pre-existing
  *  `update` written by `updateLocationProfile()` (and, since Pass 8, by
@@ -40,7 +44,11 @@ export type AuditEntityType =
  *  `ticket_edited` (Pass 16, D9): a posted ticket changed after posting - the
  *  office's PATCH, or a re-post over an existing record (a technician's on a
  *  REOPENED ticket, the office's on one in review). The snapshots are the
- *  ticket row plus its product applications, so the materials diff too. */
+ *  ticket row plus its product applications, so the materials diff too.
+ *  `appointment_cancelled` / `appointment_rescheduled` (Pass 27, C4.2): the
+ *  two modes of the one disposition path - the same CANCELED row shape, the
+ *  flag telling them apart, the services requeued or cancelled and the
+ *  opportunity choice in the after snapshot's `disposition`. */
 export type AuditAction =
   | "update"
   | "invoice_drafted"
@@ -60,7 +68,9 @@ export type AuditAction =
   | "price_overridden"
   | "ticket_reopened"
   | "ticket_edited"
-  | "prefinalization_issue_override";
+  | "prefinalization_issue_override"
+  | "appointment_cancelled"
+  | "appointment_rescheduled";
 
 const ENTITY_TYPE_LABELS: Record<AuditEntityType, string> = {
   customer: "Customer",
@@ -73,6 +83,7 @@ const ENTITY_TYPE_LABELS: Record<AuditEntityType, string> = {
   credit_memo: "Credit memo",
   agreement: "Agreement",
   opportunity: "Opportunity",
+  appointment: "Appointment",
 };
 
 const ACTION_LABELS: Record<AuditAction, string> = {
@@ -95,6 +106,8 @@ const ACTION_LABELS: Record<AuditAction, string> = {
   ticket_reopened: "Ticket reopened",
   ticket_edited: "Ticket edited",
   prefinalization_issue_override: "Issued before finalization",
+  appointment_cancelled: "Appointment cancelled",
+  appointment_rescheduled: "Appointment rescheduled",
 };
 
 // Both take plain strings, not the unions: they render rows already in the
