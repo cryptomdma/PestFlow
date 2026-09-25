@@ -25,6 +25,11 @@ export function invalidateInvoiceViews() {
         || head.startsWith("/api/credit-memos")
         || head.startsWith("/api/locations")
         || head.startsWith("/api/location-balances")
+        // Pass 14: the customer screen's aging read and the Reports page's
+        // org-wide report are derived from the same ledger every act above
+        // moves, so they refresh with it.
+        || (head.startsWith("/api/customers") && query.queryKey.includes("aging"))
+        || head.startsWith("/api/reports")
         || head.startsWith("/api/agreements")
       );
     },

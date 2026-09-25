@@ -40,9 +40,9 @@ are calibrated to Phase 1's: Pass 6 (four tables, routes, three dialogs) is the 
 | … — Service Ticket Review list + modal | PARTIAL | plain text at `service-ticket-review.tsx:486, 538, 546`; only an "Open Location" button at `:648`; batch rows plain at `:695` |
 | … — Service History page / location Services tab | ABSENT | `services.tsx:386` plain span; Services tab has no customer column (`customer-detail.tsx:3054-3063`) |
 | … — invoice rows | ABSENT | customer and location are plain text on both invoice surfaces |
-| Aging report (current/30/60/90/90+) | ABSENT | only `isOverdue()` in `invoices.tsx:56` and an Overdue count in `reports.tsx:207`; V1 §1.4 says derived, never stored |
-| Customer-wide (all locations) balance in the header | ABSENT | header card `customer-detail.tsx:3538-3593` shows no money |
-| Location balance below location notes | ABSENT | balance only in the Ledger panel (`location-ledger-panel.tsx:494`); the location switcher shows per-location Open / on-account (`customer-detail.tsx:3617-3638`) from `getLocationBalancesByCustomer` (`storage.ts:4421`) |
+| Aging report (current/30/60/90/90+) | DONE — Pass 14 (2026-09-24) | `GET /api/reports/aging` behind the Reports page's Aging section, and `GET /api/customers/:id/aging` on the customer screen; buckets Current (0-30) / 31-60 / 61-90 / Over 90 **days since invoiced** (B20), derived in `shared/aging.ts` at read time, nothing stored. See "Shipped in Pass 14" at the end of Part D. Was: only `isOverdue()` in `invoices.tsx:56` (still the Overdue tile's due-date test, deliberately distinct) and an Overdue count in `reports.tsx:207` |
+| Customer-wide (all locations) balance in the header | DONE — Pass 14 (2026-09-24) | `CustomerAgingChips` beside the primary-location chip (`customer-detail.tsx:3661`): Open $X across all locations, the oldest bucket, on account, pending confirmation - a rollup of the locations; the balance still lives at each location. Was: the header card showed no money |
+| Location balance below location notes | DONE — Pass 14 (2026-09-24) | `LocationAgingStrip` under `LocationNotesPanel` in the profile grid's right column (`customer-detail.tsx:3822-3830`): the four buckets with the invoices behind each opening the modal, on account and pending beneath. The Ledger panel's Balance card and the switcher's Open / on-account line (`getLocationBalancesByCustomer`) are unchanged and agree with it (verified) |
 | Preferred technician (location + customer level) | ABSENT | no column, no UI anywhere |
 | "Make Primary" inside the contact modal | PARTIAL | inline button on the contact card (`customer-detail.tsx:3824-3835`); the add/edit dialog already has an `isPrimary` checkbox (`ContactForm`, `:340-360`) |
 | Customer/account history log for all changes | PARTIAL | `audit_logs` + History tab exist (Pass 2). Only `updateLocationProfile()` writes `customer` / `location` `update` rows (`storage.ts:2186-2222`). No `contact` / `account` / `agreement` / `appointment` entity in `shared/audit.ts`. No revert. |
@@ -349,7 +349,7 @@ by name; `CURRENT_FOCUS.md`'s unscheduled list points at them.
 | C2.1d (**Pass 11d**) — **done** (`feature/phase-2-down-payment-first-visit`, 2026-09-22; see "Shipped in Pass 11d" at the end of Part D; the open flag in Part E answered the same day) | **Down payment on the first visit's invoice** (owner correction 2026-09-21 under D4, `PLAN_BILLING_V1_1.md`). `createAgreement` stops calling `issueInitialChargeInvoiceTx` (`storage.ts:3252`); `POST /api/agreements/:id/issue-initial-charge` and its event stay as the explicit up-front path. A **live** event is an `INITIAL_CHARGE` billing event whose invoice is not VOID (or that has no invoice: settled outside the ledger). `buildVisitInvoiceLinesTx` (`storage.ts:5496`) appends, for each agreement behind the visit's services with `initialChargeType = DOWN_PAYMENT`, a resolvable amount (`resolveInitialChargeCents`) and no live event, an `INITIAL_CHARGE` line "Down payment - <agreement>" taxed as the standalone path taxes it; generation and `issueInvoiceTx` (never the draft) insert the event with `invoiceId` = the visit invoice, so a void of that invoice makes the event non-live and the corrected invoice carries the line again. `DOWN_PAYMENT` only (`CLEANOUT_SURCHARGE` / `PREPAY_FULL` leave in C3.6). `isFullyAgreementCovered` must not read a covered visit with a down-payment line as "No charge". `getVisitBillingSummary`'s un-invoiced branch prices the pending line as `BILLABLE` (Price / COA in D4's order / Due today) so the ticket, appointment details, collect step and review modal show it. `initialChargeCollectedBy` gets its reader: the office prompt at scheduling fires unless `TECH_AT_FIRST_SERVICE`; the technician's collect step shows a "Down payment $X" callout unless `OFFICE_AT_SIGNING`; both when null. **Office prompt**: appointment creation (`POST /api/appointments` and the schedule screen's placement) for a service on an agreement with a live-less down payment and no designated payment covering it returns `initialChargeDue: { agreementId, amountCents }`; the client asks "Collect the $X down payment now?" → `RecordPaymentDialog` with `designatedAgreementId` + `appointmentId` (split into 11e if the pass runs long — the routing and the technician's figures are the must-haves). Copy: `initial-charge-fields.tsx:106`; the agreement card's `AgreementInitialChargeStatus` → "Billed on the first visit's invoice" + "Issue up front instead", "Invoiced as INV-x (first visit)" once fired. **Migration** (`agreement-bootstrap.ts`, guarded, per-row effect printed before commit): the three `Daily Rodent Trapping` rows per the open flag in Part E. Canon §13 and the initial-charge canon corrected in the same PR. **Verify** (5001): `DOWN_PAYMENT` $100 on a plan-less agreement → no invoice at creation; the first visit's summary shows the `INITIAL_CHARGE` line `BILLABLE` $100 beside the service line at remaining ÷ expected; generate → both lines and the event on the visit invoice; the second visit's summary has no down-payment line; void the first invoice → the summary shows it again; the explicit button on a fresh agreement → standalone + event, second press refused; a schedule-billed agreement → $100 down + $0 covered, no "No charge" banner; appointment creation returns `initialChargeDue`, and not after a covering designated payment. | Down payment shares the visit's invoice; office prompt at scheduling; tech collects against it (owner, 2026-09-21) | C2.1c (the line's Bill To), Pass 6 | Open flag in Part E (the three unissued rows) |
 | C2.2 (**Pass 12**) — **done** (`feature/phase-2-billing-plan-required-sold-by`, 2026-09-23; see "Shipped in Pass 12" at the end of Part D) | **Billing Plan required on every Agreement + sale attribution.** Backfill the 11, `billingPlanId NOT NULL` + zod; `agreements.soldByUserId` — a `users` FK (owner: one identity table for techs and office), defaulting to the session user at creation, changed only under a new `ASSIGN_SALE_CREDIT` (manager+), audit `update`; template propagation untouched. `technicians` has no link to `users` today (`schema.ts:160-172`), so the same pass adds a nullable `technicians.userId` bridge; the full merge is C5.7. | Compensation basis (CURRENT_FOCUS) | — | Answered 2026-09-19: attach the billing plan named **Monthly Recurring** to all 11 — the 9 `Quarterly Control` rows (monthly billing for a quarterly program, the industry norm; the marked "Monthly" line in `notes` is deleted once attached) and the 2 Wildlife rows, whose term is already past its end, so Pass 3.5's attach rule starts no schedule and bills nothing. The 4 CANCELLED rows attach for the constraint only. The pass prints the per-row effect (`nextBillingDate` or the refusal) before committing. **Built as decided** (the DB had 5 CANCELLED rows, not 4; the 4 ACTIVE rows anchored on 2026-09-24, the Wildlife rows refused at their term end, nothing else asked). |
 | C2.3 (**Pass 13**) — **done** (`feature/phase-2-batch-invoice-and-draft`, 2026-09-24; see "Shipped in Pass 13" at the end of Part D) | **Batch Invoice moves to the Invoices screen**; range labelled "posted between"; group by technician then service date (a "route" is technician × day — `appointments` carry no route columns); technician filter passed to preview **and generate**; the preview shows the down payment generate will bill (the Pass 11d gap); Send All stays; Ticket Review loses the button. **New Invoice is removed** (owner); the screen gains **"Draft invoice for a visit"** (customer → location → un-invoiced appointment → `createDraftInvoiceForAppointment`); the manual path survives only as **"Add fee / adjustment"** on the location ledger panel (owner, B6); `createManualInvoice` keeps requiring a location and defaults a blank due date from the location's billing terms. | Move Batch Invoice (×2), batch by route/tech, sort by date, New Invoice → Draft | C2.1a (result rows open the modal) | — |
-| C2.4 (**Pass 14**) | **Aging and balances on the customer screen.** Derived reads: `GET /api/customers/:id/aging` (per location + rollup) and `GET /api/reports/aging` (org-wide); buckets **Current (0-30) / 31-60 / 61-90 / Over 90 days since invoiced** (`issuedAt`, B20) over issued open balances, pending-applied and on-account shown beside, never netted. Header card: the customer-wide open balance, on-account figure and oldest bucket sit beside the primary-location chip (`customer-detail.tsx:3538-3593`); location profile card: the location's strip below `LocationNotesPanel`; Reports: an Aging tab. Nothing stored; UTC days like every other date-only value. | Aging report, customer balance at top with primary location info, location balance below notes | C2.1a (bucket rows open the modal) | — |
+| C2.4 (**Pass 14**) — **done** (`feature/phase-2-aging-and-balances`, 2026-09-24; see "Shipped in Pass 14" at the end of Part D) | **Aging and balances on the customer screen.** Derived reads: `GET /api/customers/:id/aging` (per location + rollup) and `GET /api/reports/aging` (org-wide); buckets **Current (0-30) / 31-60 / 61-90 / Over 90 days since invoiced** (`issuedAt`, B20) over issued open balances, pending-applied and on-account shown beside, never netted. Header card: the customer-wide open balance, on-account figure and oldest bucket sit beside the primary-location chip; location profile card: the location's strip below `LocationNotesPanel`, its invoices opening the modal; Reports: an Aging **section** (the page has no tabs - owner's handoff of 2026-09-24), every row linking to the customer screen. Both reads open to any authenticated role, like every invoice read (the reasoning is in the shipped record). Nothing stored; UTC days like every other date-only value. | Aging report, customer balance at top with primary location info, location balance below notes | C2.1a (bucket rows open the modal) | — |
 | C2.5 (**Pass 15**) | **Statements.** Location statement (period roll-up: opening balance, invoices, payments, credits, closing balance, aging strip) and **account statement** (the same across every location of the account — the property-manager case) through the existing renderer, stored like invoices; a **paid-in-full / zero-balance letter** variant with agreement status for a home sale; Open / Download from the location Invoices tab and the customer header; on request only (a scheduled monthly statement is a later Settings toggle); delivery arrives with C6.3. | B5 (statements for commercial, property managers, home sale) | C2.4 | — |
 
 ### Phase 3 — Ticket integrity and the field workflow
@@ -1145,6 +1145,113 @@ Behavior worth knowing before the next pass touches it:
   count unchanged; a Vite 200 on the three pages, the three new dialogs, the ledger panel and (under
   `/@fs/`) the shared module. Nothing was rendered in a browser: the two dialogs and the third
   ledger button reach the owner first.
+
+---
+
+**Shipped in Pass 14** (`feature/phase-2-aging-and-balances`, 2026-09-24) — the C2.4 row as built,
+plus what it found.
+
+```ts
+// shared/aging.ts (new) - the aging's vocabulary and arithmetic, pure, read by the server and the client
+AGING_BUCKETS = ["CURRENT", "DAYS_31_60", "DAYS_61_90", "OVER_90"]; AGING_BUCKET_LABELS; AGING_BUCKET_RANGES
+AGING_BASIS_LABEL = "days since invoiced"       // said wherever a bucket is shown; never "past due"
+daysBetweenUtcDays(from, asOf)                  // whole UTC calendar days; negative when issued after asOf, which buckets as Current
+agingBucketForDays(days)                        // <= 30 CURRENT, <= 60 DAYS_31_60, <= 90 DAYS_61_90, else OVER_90
+ageInvoice(invoice, asOf)                       // AgedInvoice | null - null for a DRAFT / VOID (isInvoiceIssued), a zero balance, or no issuedAt (never guessed)
+summarizeAgingByLocation(invoices, sources, asOf) // -> LocationAging[] keyed by (customer, location): only locations with an aged balance or
+                                                //    unapplied money; a location-less invoice under its customer with locationId null; invoices oldest
+                                                //    first; largest open balance first, location-less last. Pure: the caller scopes the rows.
+rollupAging(parts) / mergeAgingFigures(into, part) // sums every figure, oldest bucket = the older of the two; nothing netted
+interface AgingFigures { openBalanceCents; buckets: Record<AgingBucket, number>; invoiceCount; oldestBucket: AgingBucket | null;
+                         pendingAppliedCents; onAccountCents; pendingUnappliedCents }
+interface LocationAging extends AgingFigures { customerId; locationId: string | null; invoices: AgedInvoice[] }
+interface CustomerAging { customerId; asOf: "YYYY-MM-DD" (UTC); rollup: AgingFigures; locations: LocationAging[] }
+interface AgingReport { asOf; totals: AgingFigures; customers: AgingReportCustomer[] }
+                                                // a customer: its figures + firstName / lastName / companyName + locations (name, address, isPrimary; primary first)
+
+// server/storage.ts
+getCustomerAging(customerId)                    // -> CustomerAging | undefined (outside the org): the customer's invoices with balanceDueCents > 0 plus
+                                                //    collectUnappliedSourcesTx over its payments and credit memos, through the shared summarizer
+getAgingReport()                                // -> AgingReport: the org's invoices with a balance and its whole unapplied pool, grouped per customer,
+                                                //    joined to customers / locations for names; customers largest open first, then on account, then name
+
+// Routes - both open reads, like every read in the file (see "The gate" below)
+GET /api/customers/:id/aging                    // 404 outside the org
+GET /api/reports/aging                          // the first /api/reports route
+
+// client
+components/aging-strip.tsx                      // CustomerAgingChips({ aging, locationCount }) - the header's chips (open across all locations, oldest
+                                                //    bucket, on account, pending confirmation; nothing until the read lands); LocationAgingStrip({ aging,
+                                                //    asOf, isLoading, onOpenInvoice }) - the four bucket rows, each invoice a button into the modal
+                                                //    (number, balance, days, its pending figure), on account / pending beneath; agingBucketToneClass,
+                                                //    describeAgingBucket
+pages/customer-detail.tsx                       // one query ["/api/customers", id, "aging"]; the chips after the Billing chip; the notes panel and the
+                                                //    strip stacked in the profile grid's right column
+pages/reports.tsx                               // AgingSection: five tiles (the four buckets + total open) and the customer / location table, rows
+                                                //    linking to /customers/:id and ?locationId=, a totals row; the five existing cards untouched
+lib/invalidate-invoice-views.ts                 // also ["/api/customers", id, "aging"] and /api/reports*, so both reads refresh with the ledger
+```
+
+Behavior worth knowing before the next pass touches it:
+- **Age is from `issuedAt`, in whole UTC calendar days.** An invoice issued at 23:59 UTC is one
+  day old at 00:01 UTC, the same arithmetic as the collections report's day key; the read's
+  `asOf` names the day it counted to. Current is 0-30, so an invoice issued today and one issued
+  30 days ago sit together; 31 opens the next bucket. `dueDate` is never read: the Invoices
+  screen's Overdue tile and the Reports page's Overdue count keep their due-date meaning, and the
+  copy on every aging surface says "days since invoiced" and "not days past due" so the two are
+  not confused. Due-date aging for Net-terms accounts is B20's later Settings toggle.
+- **What ages.** An issued invoice (`isInvoiceIssued` - never a DRAFT or a VOID) with
+  `balanceDueCents > 0`, read from D5's stored rollups; a PAID invoice drops out, a
+  PARTIALLY_PAID one ages its balance. Storage filters on the balance in SQL and the shared module
+  checks the status again, so a stray `issuedAt` on a DRAFT or a stray balance on a VOID cannot
+  leak in. An issued row with no `issuedAt` (none exists; every issuing path stamps it) is left out
+  rather than aged from `createdAt`.
+- **Nothing is netted.** Money on account is confirmed payments and issued credit memos with value
+  left to apply, at the location (what `getLocationBalancesByCustomer` and the ledger panel's
+  Balance card already show); pending money is listed twice over, as `pendingAppliedCents`
+  summed over the aged invoices (applied, awaiting confirmation - part of the open balance until
+  it counts) and `pendingUnappliedCents` (recorded, unconfirmed, unapplied). Each is a figure
+  beside the balance; none is subtracted. The smoke test checks the strip's three figures against
+  `/api/locations/:id/ledger-summary` and the switcher's read for every location.
+- **A location-less invoice is not hidden.** The two legacy manual rows (INV-000001, INV-000072 -
+  VOID today) would land under their customer as a `locationId: null` entry, "No location" on
+  the report, so the customer-wide figure is complete even when no location can claim the money.
+- **The report and the customer read cannot disagree.** Both go through
+  `summarizeAgingByLocation`; the report's customer entry is the same locations rolled up, and the
+  smoke test read every customer's own aging and matched it to the report row by row.
+- **The gate.** Both reads are open to any authenticated role, like every read route in
+  `server/routes.ts` and specifically like `/api/location-balances/:customerId`,
+  `/api/locations/:id/ledger-summary` and `GET /api/invoices`, which already hand every role the
+  same open and on-account figures this rearranges. A gate on the per-customer read would 403 the
+  header card while the location switcher one inch below still says "Open $X"; a gate on the
+  report would fence a total that `GET /api/invoices` already reveals. The RBAC matrix
+  (PLAN_BILLING_V1.md 0.3) gates cost / margin / LTV and not receivables, and the Pass 2 note that
+  "who may read financial history is a domain decision the decision record hasn't made" still
+  stands: that decision is C5.6's role profiles, where a read gate can be configured per org
+  rather than hardcoded per route.
+- **Not built:** due-date aging (the Settings toggle), an `asOf` query parameter (today's UTC day
+  only), aging by technician (V1 §1.4's "by tech"), a total-invoiced column, paging the report (it
+  lists every customer with a balance or money on account), statements (C2.5). Nothing on the
+  Invoices screen changed.
+- **Verified 2026-09-24** (PORT=5001): `npm run check` clean; 38 checks driving `shared/aging.ts`
+  directly (the boundaries -1 / 0 / 30 / 31 / 60 / 61 / 90 / 91 / 400, the UTC day arithmetic, the
+  six exclusions, the summarizer's grouping and ordering, the rollup); boot 1 printed only "serving
+  on port 5001" with all 43 tables' counts unchanged; 70 API checks as the four roles on a
+  two-location fixture customer - seven manual invoices at the primary location back-dated by SQL
+  to 0 / 30 / 31 / 60 / 61 / 90 / 91 days (Current $210, 31-60 $410, 61-90 $610, Over 90 $400, open
+  $1,630, oldest Over 90, each row's days and bucket exact, oldest first), a $30 pending check
+  applied to the 61-day invoice (pending applied $30, balance untouched), a confirmed $70 check and
+  a $15 credit memo on account ($85, never netted), $20 pending cash at the second location
+  (pending unapplied), one 45-day invoice there ($500, 31-60), a PAID invoice, a VOID and a DRAFT
+  created through draft-for-appointment all excluded, the rollup the two locations summed ($2,130,
+  8 invoices), every figure equal to the ledger summary and the switcher's read, the org-wide
+  report's row equal to the rollup and its totals equal to its customers summed, all 11 customers'
+  own reads equal to their report rows, the report's total open equal to the Invoices screen's Open
+  figure, unauthenticated 401, all four roles 200, an unknown customer 404; fixtures deleted and 42
+  of 43 counts back at baseline (`session` up by the four logins); boot 2 printed only the serving
+  line with every count unchanged; a Vite 200 on the two pages, the strip component, the
+  invalidation helper and (under `/@fs/`) the shared module. Nothing was rendered in a browser: the
+  chips, the strip and the Reports section reach the owner first.
 
 ---
 

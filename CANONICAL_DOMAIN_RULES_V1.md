@@ -1109,6 +1109,21 @@ invoices only — agreement revenue on schedule-billed plans still comes solely 
   the office collects before the visit is an unapplied Payment designated to the Agreement, not an
   Invoice.
 
+### Canonical rule — aging is derived, by invoice date (PLAN_ROADMAP_V2.md C2.4, B20)
+
+Accounts-receivable aging is computed at read time from the ledger's stored rollups and is never
+stored. An issued Invoice with a balance ages from its **invoice date** - `issuedAt`, the moment it
+became a receivable - in whole UTC calendar days, into **Current (0-30) / 31-60 / 61-90 / Over 90
+days since invoiced**. A DRAFT or VOID owes nothing and does not age; a paid Invoice drops out; a
+partially paid one ages its balance. This is not days past due: `dueDate` decides "overdue" on the
+Invoices screen and nowhere else, and a later Settings toggle may age Net-terms commercial accounts
+by due date instead. Money on account (unapplied confirmed payments and issued credit memos, at the
+Location, §14) and pending money are shown **beside** the aged balance and never netted against it.
+The customer-wide figure is a rollup of its Locations' figures; the balance itself lives at the
+Location (rule 1), and an Invoice with no Location is listed under its customer rather than hidden.
+The buckets, the day arithmetic and the rollup are one shared module, `shared/aging.ts`, read by
+the server's two reads and by the customer screen and the Reports page alike.
+
 ### Required fields
 
 * id

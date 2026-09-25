@@ -1,7 +1,10 @@
+import { Fragment } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { Link } from "wouter";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Table, TableBody, TableCell, TableFooter, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import {
   Users,
   DollarSign,
@@ -10,9 +13,135 @@ import {
   TrendingUp,
   BarChart3,
   PieChart,
+  Hourglass,
 } from "lucide-react";
 import { formatCents } from "@shared/money";
 import type { Customer, Appointment, Invoice, ServiceRecord } from "@shared/schema";
+import { AGING_BASIS_LABEL, AGING_BUCKET_LABELS, AGING_BUCKET_RANGES, AGING_BUCKETS, type AgingFigures, type AgingReport } from "@shared/aging";
+import { agingBucketToneClass } from "@/components/aging-strip";
+import { getApiErrorMessage } from "@/lib/queryClient";
+
+// Pass 14 (PLAN_ROADMAP_V2.md C2.4): the org-wide aging report, fed by
+// GET /api/reports/aging - per customer and per location, Current (0-30) /
+// 31-60 / 61-90 / Over 90 UTC calendar days since invoiced (B20), derived and
+// never stored. Every row links to the customer screen. The Overdue count in
+// the Invoice Summary card above keeps its due-date meaning; the two are not
+// the same question and the copy says so.
+function AgingCells({ figures, muted }: { figures: AgingFigures; muted?: boolean }) {
+  return (
+    <>
+      {AGING_BUCKETS.map((bucket) => (
+        <TableCell key={bucket} className={`py-2 text-right whitespace-nowrap tabular-nums ${figures.buckets[bucket] > 0 ? agingBucketToneClass(bucket) : "text-muted-foreground"}`}>
+          {formatCents(figures.buckets[bucket])}
+        </TableCell>
+      ))}
+      <TableCell className={`py-2 text-right whitespace-nowrap tabular-nums ${muted ? "" : "font-semibold"}`}>
+        <div>{formatCents(figures.openBalanceCents)}</div>
+        {figures.pendingAppliedCents > 0 ? <div className="text-xs font-normal text-muted-foreground">{formatCents(figures.pendingAppliedCents)} pending</div> : null}
+      </TableCell>
+      <TableCell className="py-2 text-right whitespace-nowrap tabular-nums pr-4">
+        <div className={figures.onAccountCents > 0 ? "" : "text-muted-foreground"}>{formatCents(figures.onAccountCents)}</div>
+        {figures.pendingUnappliedCents > 0 ? <div className="text-xs text-muted-foreground">+ {formatCents(figures.pendingUnappliedCents)} pending</div> : null}
+      </TableCell>
+    </>
+  );
+}
+
+function AgingSection() {
+  const { data, isLoading, isError, error } = useQuery<AgingReport>({ queryKey: ["/api/reports/aging"] });
+  return (
+    <Card data-testid="card-aging-report">
+      <CardHeader>
+        <CardTitle className="text-base font-semibold flex items-center gap-2"><Hourglass className="h-4 w-4" /> Aging</CardTitle>
+        <p className="text-sm text-muted-foreground">
+          Open balances by {AGING_BASIS_LABEL}{data ? `, as of ${data.asOf} (UTC)` : ""}: Current is 0-30 days since the invoice was issued, then 31-60, 61-90 and over 90.
+          This is not days past due - the Overdue figures here and on the Invoices screen are by due date. Money on account is shown beside the balance, never subtracted from it; pending money shows, confirmed money counts.
+        </p>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {isLoading ? (
+          <Skeleton className="h-48" />
+        ) : isError || !data ? (
+          <p className="text-sm text-destructive" data-testid="text-aging-error">The aging report could not be loaded: {getApiErrorMessage(error)}</p>
+        ) : (
+          <>
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+              {AGING_BUCKETS.map((bucket) => (
+                <div key={bucket} className="rounded-md border p-3" data-testid={`tile-aging-${bucket}`}>
+                  <p className="text-xs text-muted-foreground">{AGING_BUCKET_LABELS[bucket]} <span className="text-muted-foreground/80">({AGING_BUCKET_RANGES[bucket]})</span></p>
+                  <p className={`text-lg font-bold tabular-nums ${data.totals.buckets[bucket] > 0 ? agingBucketToneClass(bucket) : ""}`}>{formatCents(data.totals.buckets[bucket])}</p>
+                </div>
+              ))}
+              <div className="rounded-md border p-3 bg-muted/30" data-testid="tile-aging-total">
+                <p className="text-xs text-muted-foreground">Total open</p>
+                <p className="text-lg font-bold tabular-nums">{formatCents(data.totals.openBalanceCents)}</p>
+                <p className="text-xs text-muted-foreground">
+                  {data.totals.invoiceCount === 1 ? "1 invoice" : `${data.totals.invoiceCount} invoices`}, {data.customers.length === 1 ? "1 customer" : `${data.customers.length} customers`}
+                  {data.totals.onAccountCents > 0 ? ` · ${formatCents(data.totals.onAccountCents)} on account` : ""}
+                </p>
+              </div>
+            </div>
+            {data.customers.length === 0 ? (
+              <p className="text-sm text-muted-foreground py-6 text-center" data-testid="text-aging-empty">No open balances and nothing on account.</p>
+            ) : (
+              <div className="rounded-md border overflow-x-auto">
+                <Table data-testid="table-aging">
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="h-9 pl-4">Customer / location</TableHead>
+                      {AGING_BUCKETS.map((bucket) => (
+                        <TableHead key={bucket} className="h-9 text-right whitespace-nowrap">{AGING_BUCKET_LABELS[bucket]}</TableHead>
+                      ))}
+                      <TableHead className="h-9 text-right">Open</TableHead>
+                      <TableHead className="h-9 text-right pr-4">On account</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {data.customers.map((customer) => (
+                      <Fragment key={customer.customerId}>
+                        <TableRow className="bg-muted/20" data-testid={`row-aging-customer-${customer.customerId}`}>
+                          <TableCell className="py-2 pl-4">
+                            <Link href={`/customers/${customer.customerId}`} className="font-medium hover:underline" data-testid={`link-aging-customer-${customer.customerId}`}>
+                              {customer.firstName} {customer.lastName}
+                            </Link>
+                            {customer.companyName ? <span className="ml-1.5 text-xs text-muted-foreground">{customer.companyName}</span> : null}
+                            {customer.locations.length > 1 ? <span className="ml-1.5 text-xs text-muted-foreground">{customer.locations.length} locations</span> : null}
+                          </TableCell>
+                          <AgingCells figures={customer} />
+                        </TableRow>
+                        {customer.locations.map((location) => (
+                          <TableRow key={`${customer.customerId}:${location.locationId ?? "none"}`} data-testid={`row-aging-location-${location.locationId ?? "none"}`}>
+                            <TableCell className="py-2 pl-8">
+                              {location.locationId ? (
+                                <Link href={`/customers/${customer.customerId}?locationId=${location.locationId}`} className="hover:underline" data-testid={`link-aging-location-${location.locationId}`}>
+                                  {location.name}{location.isPrimary ? <span className="ml-1.5 text-xs text-muted-foreground">Primary</span> : null}
+                                </Link>
+                              ) : (
+                                <Link href={`/customers/${customer.customerId}`} className="text-muted-foreground hover:underline" data-testid={`link-aging-location-none-${customer.customerId}`}>No location</Link>
+                              )}
+                              {location.address ? <div className="text-xs text-muted-foreground">{location.address}</div> : null}
+                            </TableCell>
+                            <AgingCells figures={location} muted />
+                          </TableRow>
+                        ))}
+                      </Fragment>
+                    ))}
+                  </TableBody>
+                  <TableFooter>
+                    <TableRow data-testid="row-aging-totals">
+                      <TableCell className="py-2 pl-4">Total</TableCell>
+                      <AgingCells figures={data.totals} />
+                    </TableRow>
+                  </TableFooter>
+                </Table>
+              </div>
+            )}
+          </>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
 
 export default function Reports() {
   const { data: customers, isLoading: lc } = useQuery<Customer[]>({ queryKey: ["/api/customers"] });
@@ -211,6 +340,8 @@ export default function Reports() {
           </CardContent>
         </Card>
       </div>
+
+      <AgingSection />
     </div>
   );
 }
