@@ -111,6 +111,21 @@ export function describeAppointmentStatus(appointment: { status: string; resched
   }
 }
 
+// Pass 27b (PLAN_ROADMAP_V2.md C4.2b; the owner's live test of 2026-09-25):
+// a CANCELED placement - cancelled or rescheduled alike - is history, not a
+// board card. It comes off the dispatch board so the slot is free for new
+// work; the location's Services tab ("Was <date>", the reason) and History
+// tab keep the record. One predicate for "shows on the board", read by the
+// board's viewport, which its slot map, analytics and card selection derive
+// from, so no surface can show what another hides. The flag is not
+// consulted: a rescheduled placement is gone from the board exactly as a
+// cancelled one is. The field's day (getTechnicianWork) excludes CANCELED in
+// SQL; the appointments read itself stays unfiltered, since the Services
+// tab, the ticket review queue and the dashboard still need the row.
+export function isBoardPlacement(appointment: { status: string }): boolean {
+  return appointment.status !== "CANCELED";
+}
+
 // The location's Services tab (Q4's PENDING_SCHEDULING-vs-SCHEDULED gap):
 // a pending service taken off the board by a reschedule reads "Rescheduling",
 // one that was never placed (or was cancelled off a visit and recycled)

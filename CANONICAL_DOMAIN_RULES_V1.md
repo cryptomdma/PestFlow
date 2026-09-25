@@ -836,7 +836,12 @@ An Appointment leaves the board only through the cancel / reschedule disposition
 `CANCELED` is never written by the generic update, and a board move is confirmed before it writes.
 A `CANCELED` placement - cancelled or rescheduled - is history, not a board card (owner,
 2026-09-25): it comes off the dispatch board so its slot is free, and it stays visible on the
-location's Services tab and History tab as the record of the visit that did not happen.
+location's Services tab and History tab as the record of the visit that did not happen. That rule is
+one shared predicate, `isBoardPlacement()` in `shared/appointment-disposition.ts` (Pass 27b): false for
+`CANCELED` whatever the reschedule flag says, read by the dispatch board's viewport, which its slot
+map, analytics and card selection derive from; the technician's day (`getTechnicianWork`) excludes
+`CANCELED` in SQL. The appointments read itself stays unfiltered: the Services tab, the ticket review
+queue and the dashboard still need the row.
 
 Appointment timing is a scheduling/field-operations layer. Time In / Time Out is tracked on the Appointment because the visit may contain multiple Services. Duration supports future route analytics and billing review, but GPS capture is staged for later.
 
