@@ -35,6 +35,7 @@ const TABLES_REQUIRING_ORG_ID = [
   "app_settings",
   "opportunities",
   "opportunity_dispositions",
+  "opportunity_categories",
   "opportunity_activities",
   "product_applications",
   "material_products",

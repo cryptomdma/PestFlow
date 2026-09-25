@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import { db } from "./db";
+import { OPPORTUNITY_CATEGORY_SEED, taxonomyForSource } from "@shared/opportunities";
 
 export async function bootstrapServiceSchedulingFoundation(): Promise<void> {
   await db.execute(sql`
@@ -298,4 +299,142 @@ export async function bootstrapServiceSchedulingFoundation(): Promise<void> {
   `);
 
   await db.execute(sql`UPDATE opportunities SET next_action_date = COALESCE(next_action_date, due_date) WHERE next_action_date IS NULL`);
+
+  await bootstrapOpportunityTaxonomy();
+}
+
+interface UnmappedOpportunityRow {
+  id: string;
+  source: string;
+  opportunity_type: string | null;
+  status: string;
+  category_key: string | null;
+  work_type: string | null;
+  has_agreement: boolean;
+}
+
+// Pass 25 (PLAN_ROADMAP_V2.md C4.1; PLAN_BILLING_V1_1.md D8 "Opportunity
+// taxonomy"). Three guarded steps, each quiet once done, so the second boot
+// prints nothing:
+//   1. opportunity_categories - the settings-managed reason list, on the
+//      dispositions pattern but org-scoped from the start (unique on
+//      (org_id, key)), seeded per org with the five keys in
+//      shared/opportunities.ts and no others (owner, 2026-09-19). The rows a
+//      boot inserts are printed.
+//   2. opportunities.category_key / work_type - added nullable; every row
+//      without them is mapped from its source by the same taxonomyForSource()
+//      the runtime writers use (the two appointment sources take their work
+//      type from the source service's agreement), the per-row effect printed
+//      before the row is written, then SET NOT NULL once no row is left.
+//      opportunity_type is kept as the display label (transitional).
+//   3. assigned_user_id becomes a real users FK (added 2026-04-26 with no
+//      reader and no constraint; every row is null today), plus an index on
+//      it and on category_key for the queue's filters.
+async function bootstrapOpportunityTaxonomy(): Promise<void> {
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS opportunity_categories (
+      id varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+      org_id varchar NOT NULL,
+      key text NOT NULL,
+      label text NOT NULL,
+      is_active boolean NOT NULL DEFAULT true,
+      sort_order integer NOT NULL DEFAULT 0,
+      created_at timestamp NOT NULL DEFAULT now(),
+      updated_at timestamp NOT NULL DEFAULT now()
+    )
+  `);
+  await db.execute(sql`CREATE UNIQUE INDEX IF NOT EXISTS opportunity_categories_org_key_uidx ON opportunity_categories (org_id, key)`);
+
+  const orgRows = await db.execute(sql`SELECT id, name FROM organizations ORDER BY created_at, id`);
+  for (const org of orgRows.rows as Array<{ id: string; name: string }>) {
+    const inserted: string[] = [];
+    for (const seed of OPPORTUNITY_CATEGORY_SEED) {
+      const result = await db.execute(sql`
+        INSERT INTO opportunity_categories (org_id, key, label, sort_order)
+        VALUES (${org.id}, ${seed.key}, ${seed.label}, ${seed.sortOrder})
+        ON CONFLICT (org_id, key) DO NOTHING
+        RETURNING key
+      `);
+      if (result.rows.length) inserted.push(`${seed.key} "${seed.label}"`);
+    }
+    if (inserted.length) {
+      console.log(
+        `[service-scheduling-bootstrap] Pass 25: opportunity_categories seeded for org "${org.name}" (${org.id}) - ${inserted.length} row(s): ` +
+          `${inserted.join(", ")}. The five keys are the list; Settings edits labels, order and the active flag.`,
+      );
+    }
+  }
+
+  await db.execute(sql`ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS category_key text`);
+  await db.execute(sql`ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS work_type text`);
+
+  const unmapped = await db.execute(sql`
+    SELECT o.id, o.source, o.opportunity_type, o.status, o.category_key, o.work_type,
+           (o.agreement_id IS NOT NULL OR s.agreement_id IS NOT NULL) AS has_agreement
+    FROM opportunities o
+    LEFT JOIN services s ON s.id = o.source_service_id
+    WHERE o.category_key IS NULL OR o.work_type IS NULL
+    ORDER BY o.source, o.created_at, o.id
+  `);
+  const rows = unmapped.rows as unknown as UnmappedOpportunityRow[];
+  if (rows.length) {
+    console.log(
+      `[service-scheduling-bootstrap] Pass 25 pre-migration report: ${rows.length} opportunit${rows.length === 1 ? "y has" : "ies have"} no category / work type. ` +
+        `Each is mapped from its source by shared/opportunities.ts taxonomyForSource() - the per-row effect below is printed before the row is written; ` +
+        `opportunity_type is kept as the display label.`,
+    );
+    const perSource = new Map<string, Map<string, number>>();
+    for (const row of rows) {
+      const taxonomy = taxonomyForSource(row.source, row.has_agreement === true);
+      const categoryKey = row.category_key ?? taxonomy.categoryKey;
+      const workType = row.work_type ?? taxonomy.workType;
+      console.log(
+        `[service-scheduling-bootstrap]   ${row.id}  ${row.source}  "${row.opportunity_type ?? ""}"  ${row.status}  ` +
+          `${row.has_agreement ? "agreement" : "no agreement"}  -> ${categoryKey} / ${workType}${taxonomy.mapped ? "" : "  (source not in the mapping - SERVICE_DUE fallback)"}`,
+      );
+      await db.execute(sql`UPDATE opportunities SET category_key = ${categoryKey}, work_type = ${workType} WHERE id = ${row.id}`);
+      const effects = perSource.get(row.source) ?? new Map<string, number>();
+      const effect = `${categoryKey} / ${workType}`;
+      effects.set(effect, (effects.get(effect) ?? 0) + 1);
+      perSource.set(row.source, effects);
+    }
+    for (const [source, effects] of Array.from(perSource.entries())) {
+      const total = Array.from(effects.values()).reduce((sum: number, n: number) => sum + n, 0);
+      const detail = Array.from(effects.entries()).map(([effect, n]: [string, number]) => `${n} -> ${effect}`).join(", ");
+      console.log(`[service-scheduling-bootstrap]   ${source}: ${total} row(s) mapped (${detail})`);
+    }
+  }
+
+  const remaining = await db.execute(sql`SELECT count(*)::int AS n FROM opportunities WHERE category_key IS NULL OR work_type IS NULL`);
+  const remainingCount = Number((remaining.rows[0] as { n: number } | undefined)?.n ?? 0);
+  const columns = await db.execute(sql`
+    SELECT column_name, is_nullable FROM information_schema.columns
+    WHERE table_name = 'opportunities' AND column_name IN ('category_key', 'work_type')
+  `);
+  const nullable = (columns.rows as Array<{ column_name: string; is_nullable: string }>)
+    .filter((column) => column.is_nullable === "YES")
+    .map((column) => column.column_name);
+  if (remainingCount === 0 && nullable.length) {
+    for (const column of nullable) {
+      await db.execute(sql.raw(`ALTER TABLE opportunities ALTER COLUMN ${column} SET NOT NULL`));
+    }
+    console.log(`[service-scheduling-bootstrap] Pass 25: ${rows.length} row(s) mapped this boot; opportunities.category_key and opportunities.work_type are now NOT NULL.`);
+  } else if (remainingCount > 0) {
+    console.log(`[service-scheduling-bootstrap] Pass 25: ${remainingCount} opportunit(ies) still have no category / work type; the NOT NULL constraint waits.`);
+  }
+
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS opportunities_category_key_idx ON opportunities (category_key)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS opportunities_assigned_user_id_idx ON opportunities (assigned_user_id)`);
+  // Any FK on assigned_user_id counts, whatever its name: db:push names
+  // drizzle's, this bootstrap names its own.
+  const assigneeFk = await db.execute(sql`
+    SELECT 1
+    FROM pg_constraint c
+    JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey)
+    WHERE c.conrelid = 'opportunities'::regclass AND c.contype = 'f' AND a.attname = 'assigned_user_id'
+  `);
+  if (!assigneeFk.rows.length) {
+    await db.execute(sql`ALTER TABLE opportunities ADD CONSTRAINT opportunities_assigned_user_id_fkey FOREIGN KEY (assigned_user_id) REFERENCES users(id)`);
+    console.log("[service-scheduling-bootstrap] Pass 25: opportunities.assigned_user_id now references users(id).");
+  }
 }

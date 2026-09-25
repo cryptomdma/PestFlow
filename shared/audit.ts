@@ -14,7 +14,10 @@
  *  own `priceCents` (the ticket only reads it), so that is the row the
  *  before/after snapshot has to be of. `agreement` joined in Pass 12 for
  *  sale-credit changes (`soldByUserId`, an `update`); the rest of an
- *  agreement's mutations join with C5.1a's non-financial coverage. */
+ *  agreement's mutations join with C5.1a's non-financial coverage.
+ *  `opportunity` joined in Pass 25 (C4.1) for the assignee, category and
+ *  work-type changes the PATCH makes - an `update` naming the users before
+ *  and after; dispositions and conversion keep their own activity trail. */
 export type AuditEntityType =
   | "customer"
   | "location"
@@ -24,7 +27,8 @@ export type AuditEntityType =
   | "service_record"
   | "payment"
   | "credit_memo"
-  | "agreement";
+  | "agreement"
+  | "opportunity";
 
 /** One member per mutation in D7's Phase 1 scope list, plus the pre-existing
  *  `update` written by `updateLocationProfile()` (and, since Pass 8, by
@@ -68,6 +72,7 @@ const ENTITY_TYPE_LABELS: Record<AuditEntityType, string> = {
   payment: "Payment",
   credit_memo: "Credit memo",
   agreement: "Agreement",
+  opportunity: "Opportunity",
 };
 
 const ACTION_LABELS: Record<AuditAction, string> = {

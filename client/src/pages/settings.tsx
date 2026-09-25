@@ -32,7 +32,7 @@ import { can, PERMISSIONS } from "@shared/permissions";
 import { describeUserRole, selectableUsers, userDisplayName } from "@shared/users";
 import { INVOICE_ON_FINALIZE_MODES, describeInvoiceOnFinalizeMode, normalizeInvoiceOnFinalizeMode, type InvoiceOnFinalizeMode } from "@shared/invoice-on-finalize";
 import { Plus, Settings as SettingsIcon, Wrench, FileText, Users, ShieldCheck, FlaskConical, Bug, CreditCard, CalendarClock, Percent, Scale, Building2, Receipt } from "lucide-react";
-import type { AgreementCancellationPolicy, AgreementTemplate, BillingPlan, BillingProfileTemplate, MaterialProduct, OpportunityDisposition, Organization, ServiceType, TargetPest, TaxRate, TaxRule, Technician, UserSummary } from "@shared/schema";
+import type { AgreementCancellationPolicy, AgreementTemplate, BillingPlan, BillingProfileTemplate, MaterialProduct, OpportunityCategory, OpportunityDisposition, Organization, ServiceType, TargetPest, TaxRate, TaxRule, Technician, UserSummary } from "@shared/schema";
 
 function formatTemplateRecurrence(template: AgreementTemplate) {
   const interval = template.defaultRecurrenceInterval || 1;
@@ -702,6 +702,66 @@ function TaxRuleForm({ rule, onClose }: { rule?: TaxRule | null; onClose: () => 
   );
 }
 
+// Pass 25 (PLAN_ROADMAP_V2.md C4.1): the reason list behind an opportunity's
+// category. Label, order and the active flag only - the five keys are fixed
+// (owner, second review of 2026-09-19), so there is no key field, no Add and
+// no Delete; the server answers 405 to both.
+function OpportunityCategoryForm({ category, onClose }: { category: OpportunityCategory; onClose: () => void }) {
+  const { toast } = useToast();
+  const [form, setForm] = useState({
+    label: category.label,
+    isActive: category.isActive,
+    sortOrder: String(category.sortOrder),
+  });
+
+  const mutation = useMutation({
+    mutationFn: async (data: typeof form) => {
+      const payload = {
+        label: data.label.trim(),
+        isActive: data.isActive,
+        sortOrder: data.sortOrder.trim() ? parseInt(data.sortOrder, 10) : 0,
+      };
+      const response = await apiRequest("PATCH", `/api/opportunity-categories/${category.id}`, payload);
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ predicate: (query) => String(query.queryKey[0]).startsWith("/api/opportunity-categories") });
+      toast({ title: "Category updated" });
+      onClose();
+    },
+    onError: (err: Error) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+  });
+
+  return (
+    <form onSubmit={(e) => { e.preventDefault(); mutation.mutate(form); }} className="space-y-4">
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="space-y-1.5"><Label>Label</Label><Input value={form.label} onChange={(e) => setForm((prev) => ({ ...prev, label: e.target.value }))} data-testid="input-opportunity-category-label" /></div>
+        <div className="space-y-1.5"><Label>Key</Label><Input value={category.key} disabled title="Keys are fixed" /></div>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="space-y-1.5">
+          <Label>Active</Label>
+          <Select value={form.isActive ? "ACTIVE" : "INACTIVE"} onValueChange={(value) => setForm((prev) => ({ ...prev, isActive: value === "ACTIVE" }))}>
+            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="ACTIVE">Active</SelectItem>
+              <SelectItem value="INACTIVE">Inactive</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="space-y-1.5"><Label>Sort Order</Label><Input type="number" value={form.sortOrder} onChange={(e) => setForm((prev) => ({ ...prev, sortOrder: e.target.value }))} /></div>
+      </div>
+      <p className="text-xs text-muted-foreground">An inactive category stays on the opportunities that already carry it and can still be filtered on; it just cannot be chosen for another.</p>
+      <div className="flex justify-end gap-2">
+        <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
+        <Button type="submit" disabled={mutation.isPending || !form.label.trim()}>
+          {mutation.isPending ? "Saving..." : "Save Category"}
+        </Button>
+      </div>
+    </form>
+  );
+}
+
 function OpportunityDispositionForm({ disposition, onClose }: { disposition?: OpportunityDisposition | null; onClose: () => void }) {
   const { toast } = useToast();
   const isEditMode = !!disposition;
@@ -1258,6 +1318,8 @@ export default function Settings() {
   const [editingPolicy, setEditingPolicy] = useState<AgreementCancellationPolicy | null>(null);
   const [dispositionDialogOpen, setDispositionDialogOpen] = useState(false);
   const [editingDisposition, setEditingDisposition] = useState<OpportunityDisposition | null>(null);
+  const [categoryDialogOpen, setCategoryDialogOpen] = useState(false);
+  const [editingCategory, setEditingCategory] = useState<OpportunityCategory | null>(null);
   const [materialDialogOpen, setMaterialDialogOpen] = useState(false);
   const [editingMaterialProduct, setEditingMaterialProduct] = useState<MaterialProduct | null>(null);
   const [targetPestDialogOpen, setTargetPestDialogOpen] = useState(false);
@@ -1281,6 +1343,7 @@ export default function Settings() {
   const { data: agreementTemplates, isLoading: templatesLoading } = useQuery<AgreementTemplate[]>({ queryKey: ["/api/agreement-templates"] });
   const { data: cancellationPolicies, isLoading: policiesLoading } = useQuery<AgreementCancellationPolicy[]>({ queryKey: ["/api/agreement-cancellation-policies?includeInactive=true"] });
   const { data: opportunityDispositions, isLoading: dispositionsLoading } = useQuery<OpportunityDisposition[]>({ queryKey: ["/api/opportunity-dispositions?includeInactive=true"] });
+  const { data: opportunityCategories, isLoading: categoriesLoading } = useQuery<OpportunityCategory[]>({ queryKey: ["/api/opportunity-categories?includeInactive=true"] });
   const { data: billingProfileTemplates, isLoading: billingProfileTemplatesLoading } = useQuery<BillingProfileTemplate[]>({ queryKey: ["/api/billing-profile-templates?includeInactive=true"] });
   const { data: billingPlans, isLoading: billingPlansLoading } = useQuery<BillingPlan[]>({ queryKey: ["/api/billing-plans?includeInactive=true"] });
   const { data: taxRates, isLoading: taxRatesLoading } = useQuery<TaxRate[]>({ queryKey: ["/api/tax-rates?includeInactive=true"] });
@@ -1688,6 +1751,48 @@ export default function Settings() {
                     </p>
                   </div>
                   <Button variant="outline" size="sm" onClick={() => { setEditingMaterialProduct(product); setMaterialDialogOpen(true); }}>Edit</Button>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card data-testid="card-opportunity-categories">
+        <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
+          <CardTitle className="text-base font-semibold flex items-center gap-2"><SettingsIcon className="h-4 w-4" /> Opportunity Categories</CardTitle>
+          <Dialog open={categoryDialogOpen} onOpenChange={(open) => { setCategoryDialogOpen(open); if (!open) setEditingCategory(null); }}>
+            <DialogContent>
+              <DialogHeader><DialogTitle>Edit Opportunity Category</DialogTitle></DialogHeader>
+              {editingCategory ? <OpportunityCategoryForm category={editingCategory} onClose={() => { setCategoryDialogOpen(false); setEditingCategory(null); }} /> : null}
+            </DialogContent>
+          </Dialog>
+        </CardHeader>
+        <CardContent>
+          <p className="mb-3 text-xs text-muted-foreground">
+            The reason an opportunity exists, stamped from its source and changeable by hand on the Opportunities screen. Five fixed categories: edit the label, order and active flag; keys cannot be added or deleted.
+          </p>
+          {categoriesLoading ? (
+            <div className="space-y-2">{[1, 2, 3].map((i) => <Skeleton key={i} className="h-14" />)}</div>
+          ) : !opportunityCategories?.length ? (
+            <div className="text-center py-8">
+              <SettingsIcon className="h-8 w-8 mx-auto text-muted-foreground/30 mb-2" />
+              <p className="text-sm text-muted-foreground">No opportunity categories seeded - restart the server to run the bootstrap</p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {opportunityCategories.map((category) => (
+                <div key={category.id} className="flex items-center justify-between gap-3 rounded-md bg-muted/50 p-3" data-testid={`row-opportunity-category-${category.key}`}>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-sm font-medium">{category.label}</span>
+                      <Badge variant={category.isActive ? "secondary" : "outline"} className="text-xs">{category.isActive ? "Active" : "Inactive"}</Badge>
+                    </div>
+                    <p className="mt-0.5 text-xs text-muted-foreground">Key: {category.key} | Sort: {category.sortOrder}</p>
+                  </div>
+                  <Button variant="outline" size="sm" onClick={() => { setEditingCategory(category); setCategoryDialogOpen(true); }}>
+                    Edit
+                  </Button>
                 </div>
               ))}
             </div>

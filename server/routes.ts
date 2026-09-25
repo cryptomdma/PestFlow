@@ -14,11 +14,11 @@ import {
   insertTaxRateSchema,
   insertTaxRuleSchema,
   insertTaxExemptionCertificateSchema,
-  insertOpportunitySchema,
   insertOpportunityDispositionSchema,
   insertTargetPestSchema,
 } from "@shared/schema";
 import { normalizePhone } from "@shared/phone";
+import { OPPORTUNITY_ASSIGNEE_ME, OPPORTUNITY_ASSIGNEE_UNASSIGNED, OPPORTUNITY_WORK_TYPES } from "@shared/opportunities";
 import { ZodError, z } from "zod";
 import type { Request } from "express";
 import { requirePermission } from "./auth";
@@ -307,11 +307,30 @@ export async function registerRoutes(
     reason: z.string().trim().min(1, "Reopen reason is required"),
   });
   const opportunityStatusSchema = z.enum(["OPEN", "CONTACTED", "CONVERTED", "DISMISSED"]);
-  const opportunityUpdateSchema = insertOpportunitySchema.extend({
-    status: opportunityStatusSchema.optional(),
-    contactedAt: nullableDateSchema.optional(),
-    dismissedAt: nullableDateSchema.optional(),
-  }).partial();
+  // Pass 25 (C4.1), the Pass 16 pattern: the PATCH is content only and
+  // strict. It used to be insertOpportunitySchema.partial(), which let any
+  // authenticated client rewrite the identity columns (location, agreement,
+  // the source service and record, source), the lifecycle (status and the
+  // contacted / dismissed / converted stamps - dispositions and Convert own
+  // those) and, since April 2026, assignedUserId with no user check, no gate
+  // and no audit row. Now: the notes and the two dates, the two taxonomy
+  // axes, and the assignee - which the route gates (ASSIGN_OPPORTUNITY) and
+  // storage validates and logs.
+  const opportunityUpdateSchema = z.object({
+    notes: z.string().nullable().optional(),
+    dueDate: z.string().min(1).optional(),
+    nextActionDate: z.string().nullable().optional(),
+    categoryKey: z.string().trim().min(1).optional(),
+    workType: z.enum(OPPORTUNITY_WORK_TYPES).optional(),
+    assignedUserId: z.string().trim().min(1).nullable().optional(),
+  }).strict();
+  // Label, order and the active flag; the key is fixed. Strict, so a `key`
+  // (or anything else) is refused rather than dropped.
+  const opportunityCategoryUpdateSchema = z.object({
+    label: z.string().trim().min(1).optional(),
+    isActive: z.boolean().optional(),
+    sortOrder: z.number().int().optional(),
+  }).strict();
   const opportunityDispositionSchema = insertOpportunityDispositionSchema.extend({
     resultingStatus: opportunityStatusSchema,
   }).superRefine((value, ctx) => {
@@ -1249,12 +1268,34 @@ export async function registerRoutes(
     res.json(data);
   });
 
+  // Pass 25 (C4.1): the queue's search. `assignee` is a user id, "me" (the
+  // session user, resolved here so storage never sees the alias) or
+  // "unassigned"; `zip` is a prefix on the location's zip; `location` is
+  // free text over the location's name / address / city and its customer's
+  // name. "ALL" and an empty value mean "not filtered", as the status and
+  // service-type filters already read. An open read like every read here.
   app.get("/api/opportunities", async (req, res) => {
+    const text = (name: string) => {
+      const value = req.query[name];
+      const trimmed = typeof value === "string" ? value.trim() : "";
+      return trimmed && trimmed !== "ALL" ? trimmed : undefined;
+    };
+    const workType = text("workType");
+    if (workType && !(OPPORTUNITY_WORK_TYPES as ReadonlyArray<string>).includes(workType)) {
+      return res.status(400).json({ message: `workType must be one of ${OPPORTUNITY_WORK_TYPES.join(", ")}` });
+    }
+    const assignee = text("assignee");
     const data = await req.storage.getOpportunities({
-      status: typeof req.query.status === "string" && req.query.status !== "ALL" ? req.query.status : undefined,
-      dueFrom: typeof req.query.dueFrom === "string" ? req.query.dueFrom : undefined,
-      dueTo: typeof req.query.dueTo === "string" ? req.query.dueTo : undefined,
-      serviceTypeId: typeof req.query.serviceTypeId === "string" && req.query.serviceTypeId !== "ALL" ? req.query.serviceTypeId : undefined,
+      status: text("status"),
+      dueFrom: text("dueFrom"),
+      dueTo: text("dueTo"),
+      serviceTypeId: text("serviceTypeId"),
+      categoryKey: text("categoryKey"),
+      workType,
+      source: text("source"),
+      assignedUserId: assignee === OPPORTUNITY_ASSIGNEE_ME ? req.user!.id : assignee === OPPORTUNITY_ASSIGNEE_UNASSIGNED ? null : assignee,
+      zip: text("zip"),
+      location: text("location"),
     });
     res.json(data);
   });
@@ -1293,15 +1334,60 @@ export async function registerRoutes(
     }
   });
 
+  // Pass 25 (C4.1): the settings-managed category list. Read by everyone
+  // (the queue's filters and chips need it); edited on the dispositions
+  // pattern, which carries no gate today - who may edit reference data is
+  // C5.6's role profiles. No create and no delete: the five keys are the
+  // list (owner, second review of 2026-09-19), so POST and DELETE answer 405
+  // with the reason rather than falling through to the client catch-all.
+  app.get("/api/opportunity-categories", async (req, res) => {
+    const includeInactive = req.query.includeInactive === "true";
+    res.json(await req.storage.getOpportunityCategories(includeInactive));
+  });
+
+  app.patch("/api/opportunity-categories/:id", async (req, res) => {
+    try {
+      const validated = opportunityCategoryUpdateSchema.parse(req.body);
+      const data = await req.storage.updateOpportunityCategory(req.params.id, validated);
+      if (!data) return res.status(404).json({ message: "Opportunity category not found" });
+      res.json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/opportunity-categories", (_req, res) => {
+    res.status(405).json({
+      message: "Opportunity categories are a fixed list of five (NEW_SALE, SERVICE_DUE, RESCHEDULE, WINBACK, RETENTION); edit a label, its order or its active flag instead",
+    });
+  });
+
+  app.delete("/api/opportunity-categories/:id", (_req, res) => {
+    res.status(405).json({ message: "Opportunity categories cannot be deleted; deactivate the category instead" });
+  });
+
   app.get("/api/opportunities/:id/activities", async (req, res) => {
     const data = await req.storage.getOpportunityActivitiesByOpportunity(req.params.id);
     res.json(data);
   });
 
+  // Pass 25: content, the taxonomy and the assignee (opportunityUpdateSchema
+  // above). Assigning is the gate: a changed assignee needs
+  // ASSIGN_OPPORTUNITY (support+); an unchanged one sent back by a form is
+  // not an assignment - the Pass 12 sold-by rule. Storage validates the user
+  // and the category and writes the audit row when something actually moves.
   app.patch("/api/opportunities/:id", async (req, res) => {
     try {
       const validated = opportunityUpdateSchema.parse(req.body);
-      const data = await req.storage.updateOpportunity(req.params.id, validated);
+      if (validated.assignedUserId !== undefined) {
+        const existing = await req.storage.getOpportunity(req.params.id);
+        if (!existing) return res.status(404).json({ message: "Opportunity not found" });
+        if ((validated.assignedUserId ?? null) !== (existing.assignedUserId ?? null) && !can(req.user!.role, PERMISSIONS.ASSIGN_OPPORTUNITY)) {
+          return res.status(403).json({ message: "Only support, a manager or an admin can assign an opportunity" });
+        }
+      }
+      const data = await req.storage.updateOpportunity(req.params.id, validated, getAuditActor(req));
       if (!data) return res.status(404).json({ message: "Opportunity not found" });
       res.json(data);
     } catch (e: any) {

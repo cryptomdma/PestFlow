@@ -33,6 +33,7 @@ import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/
 import { OpportunityDispositionDialog } from "@/components/opportunity-disposition-dialog";
 import { OpportunityHistoryDialog } from "@/components/opportunity-history-dialog";
 import { OpportunityConvertDialog } from "@/components/opportunity-convert-dialog";
+import { OpportunityTaxonomyChips } from "@/components/opportunity-taxonomy-chips";
 import { ServiceCompletionDialog } from "@/components/service-completion-dialog";
 import { DraftInvoiceVoidPrompt, getDraftInvoiceDecisionRequired, type DraftInvoiceRef } from "@/components/draft-invoice-void-prompt";
 import { BillingPlanPill, useBillingPlanById } from "@/components/billing-plan-pill";
@@ -66,7 +67,7 @@ import {
   History,
   CreditCard, KeyRound, Ruler, ChevronUp, Check, Link2, Target,
 } from "lucide-react";
-import type { AuditLog, Customer, Contact, Location, Appointment, Invoice, Service, ServiceRecord, ProductApplication, Communication, CustomerNote, BillingPlan, BillingProfile, NoteRevision, Agreement, AgreementCancellationPolicy, AgreementTemplate, ServiceType, Technician, Opportunity, OpportunityDisposition } from "@shared/schema";
+import type { AuditLog, Customer, Contact, Location, Appointment, Invoice, Service, ServiceRecord, ProductApplication, Communication, CustomerNote, BillingPlan, BillingProfile, NoteRevision, Agreement, AgreementCancellationPolicy, AgreementTemplate, ServiceType, Technician, Opportunity, OpportunityCategory, OpportunityDisposition } from "@shared/schema";
 
 interface CustomerDetailCompatResponse {
   legacyCustomer: Customer;
@@ -3252,6 +3253,10 @@ function OpportunitiesTab({
   const { data: opportunities } = useQuery<Opportunity[]>({ queryKey: ["/api/opportunities/by-location", locationId], enabled: !!locationId });
   const { data: dispositions } = useQuery<OpportunityDisposition[]>({ queryKey: ["/api/opportunity-dispositions"] });
   const { data: serviceTypes } = useQuery<ServiceType[]>({ queryKey: ["/api/service-types"] });
+  // Pass 25 (C4.1): the taxonomy chips name the category and the assignee.
+  // Display only here; the Opportunities screen is where they change.
+  const { data: opportunityCategories } = useQuery<OpportunityCategory[]>({ queryKey: ["/api/opportunity-categories?includeInactive=true"] });
+  const { data: orgUsers } = useQuery<UserSummary[]>({ queryKey: ["/api/users"] });
   const [selectedOpportunity, setSelectedOpportunity] = useState<Opportunity | null>(null);
   const [selectedDispositionId, setSelectedDispositionId] = useState<string | null>(null);
   const [historyOpportunity, setHistoryOpportunity] = useState<Opportunity | null>(null);
@@ -3293,6 +3298,7 @@ function OpportunitiesTab({
                 <p className="font-medium">{opportunity.opportunityType || serviceTypeNameById.get(opportunity.serviceTypeId || "") || "Opportunity"}</p>
                 <Badge variant="outline">{opportunity.status}</Badge>
               </div>
+              <OpportunityTaxonomyChips className="mt-1.5" opportunity={opportunity} categories={opportunityCategories} users={orgUsers} />
               <p className="mt-1 text-sm text-muted-foreground">Next action {formatDateOnly(opportunity.nextActionDate || opportunity.dueDate)}</p>
               {opportunity.lastDispositionLabel ? <p className="mt-1 text-xs text-muted-foreground">Last disposition: {opportunity.lastDispositionLabel}</p> : null}
               {opportunity.notes ? <p className="mt-2 text-sm text-muted-foreground">{opportunity.notes}</p> : null}

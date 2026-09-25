@@ -953,6 +953,33 @@ Opportunities represent human follow-up/action work. They can come from:
 
 Opportunities are not Appointments and do not automatically schedule work. They may convert to or link to Services depending on their source.
 
+### Canonical rule — two axes and an assignee (PLAN_BILLING_V1.1 D8; PLAN_ROADMAP_V2.md B7 / C4.1, Pass 25)
+
+An Opportunity carries two required axes, never one mixed list:
+
+* `categoryKey` — the **reason** it exists: a key of the settings-managed `opportunity_categories`
+  list, seeded per org with `NEW_SALE`, `SERVICE_DUE`, `RESCHEDULE`, `WINBACK`, `RETENTION` and no
+  others (owner, 2026-09-19). Settings edits a category's label, order and active flag; nothing
+  creates or deletes a key. An inactive category stays on the rows that carry it and can be
+  filtered on; it can no longer be chosen.
+* `workType` — what the work would be if it converts: `AGREEMENT` or `ONE_TIME`.
+
+Both are stamped at creation from the row's `source` by one shared function
+(`shared/opportunities.ts` `taxonomyForSource`), used by every runtime writer and by the migration
+that mapped the pre-existing rows, so the two can never disagree: agreement contact-required and
+non-contract follow-up are `SERVICE_DUE`, an agreement's cancellation is `RETENTION`, a cancelled
+or reschedule-requested appointment is `RESCHEDULE` (work type by the service's agreement), an
+agreement's initial service is `NEW_SALE`. `WINBACK` has no automatic source until the cancel flow
+(C4.2) and is chosen by hand. `opportunityType` (free text) is the display label only —
+transitional, not an axis.
+
+An Opportunity may be **assigned** to one user (`assignedUserId`, a `users` FK; `assignedAt`
+stamped on every change, null when unassigned). Assigning, reassigning and unassigning need
+`ASSIGN_OPPORTUNITY` (support and above); a technician sees the queue and "My opportunities" but
+assigns nothing. Every assignee, category or work-type change is an audit `update` on the
+`opportunity` entity naming the users before and after. New opportunities are unassigned;
+auto-assignment by rules and zones is C4.1b.
+
 ## 13. Invoice
 
 ### Definition

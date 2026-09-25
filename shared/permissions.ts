@@ -33,6 +33,15 @@ export const PERMISSIONS = {
   // who a commission component will pay (Phase 7), so a technician or
   // support user records only their own sale.
   ASSIGN_SALE_CREDIT: "assign_sale_credit",
+  // PLAN_ROADMAP_V2.md C4.1 (Pass 25): assign, reassign or unassign an
+  // opportunity (opportunities.assignedUserId) - the office's dispatch of
+  // follow-up work to a sales rep, an office rep or a manager (B7). Support+.
+  // A technician is not in B7's list of assignees' managers: they see the
+  // queue like everyone (reads are open) and filter to "My opportunities",
+  // but do not hand work to themselves or anyone else. Auto-assignment by
+  // rules and zones (C4.1b) will write the same column under the system
+  // actor, not a person's permission.
+  ASSIGN_OPPORTUNITY: "assign_opportunity",
   // PLAN_BILLING_V1_1.md D5, the payments ledger. TAKE_PAYMENT_FIELD records
   // a payment (it posts PENDING); the rest are office actions on the ledger.
   TAKE_PAYMENT_FIELD: "take_payment_field",
@@ -75,6 +84,7 @@ const ROLE_PERMISSIONS: Record<UserRole, ReadonlySet<Permission>> = {
     PERMISSIONS.ADD_FIELD_SURCHARGE,
     PERMISSIONS.GENERATE_INVOICE,
     PERMISSIONS.SEND_INVOICE,
+    PERMISSIONS.ASSIGN_OPPORTUNITY,
     PERMISSIONS.TAKE_PAYMENT_FIELD,
     PERMISSIONS.APPLY_PAYMENT,
     PERMISSIONS.CONFIRM_PAYMENT,
@@ -94,6 +104,7 @@ const ROLE_PERMISSIONS: Record<UserRole, ReadonlySet<Permission>> = {
     PERMISSIONS.ISSUE_CREDIT_MEMO,
     PERMISSIONS.ASSIGN_INVOICE_LOCATION,
     PERMISSIONS.ASSIGN_SALE_CREDIT,
+    PERMISSIONS.ASSIGN_OPPORTUNITY,
     PERMISSIONS.TAKE_PAYMENT_FIELD,
     PERMISSIONS.APPLY_PAYMENT,
     PERMISSIONS.CONFIRM_PAYMENT,
