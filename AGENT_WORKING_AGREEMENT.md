@@ -7,7 +7,10 @@ entry points (`CLAUDE.md`, etc.) point here rather than duplicating these rules.
 
 - Execute ONE pass per session. A pass = one branch from the current plan doc
   (see CURRENT_FOCUS.md). Complete its verification steps, push the branch,
-  then STOP. Never begin the next pass in the same session.
+  **open its pull request** (owner, 2026-09-24: `gh pr create` against `main` with the pass's
+  summary as the body; when `gh` is not authenticated on the machine, say so and put the PR
+  title, body and compare link in the final message for the owner to open), then STOP. Never
+  begin the next pass in the same session.
 - Never run parallel write-agents on the same branch. Read-only Explore
   subagents may run freely.
 - Every pass ends with: npm run check, double-boot (bootstrap idempotency),
@@ -16,10 +19,11 @@ entry points (`CLAUDE.md`, etc.) point here rather than duplicating these rules.
   owner's start-of-session message, in full - the pass and its roadmap row, the branch name and
   the merge to confirm on main, the recorded decisions and any open flag, the ground truth with
   file:line citations, what to build and what not to touch, the environment and verification
-  steps, and this agreement's closing lines. It goes in two places: replacing the "Handoff prompt
+  steps, and this agreement's closing lines ("one pass, one branch, push, open the PR and stop. I
+  merge."). It goes in two places: replacing the "Handoff prompt
   for the next session" section at the end of `CURRENT_FOCUS.md`, in the same PR as the code, and
   as the last thing in the session's final message. The owner pastes it to start the next session.
-- The human merges PRs. Never merge, never push to main.
+- The agent opens the PR; the human merges it. Never merge, never push to main.
 
 ## Keeping docs current
 
@@ -80,3 +84,5 @@ A task is not done unless:
 - changed files are listed
 - known follow-up work is stated honestly
 - the handoff prompt for the next pass is written, in `CURRENT_FOCUS.md` and in the final message
+- the branch is pushed and its PR is open (or, when `gh` cannot authenticate, the PR title, body
+  and compare link are in the final message for the owner to open)

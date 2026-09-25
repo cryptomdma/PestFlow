@@ -3928,7 +3928,7 @@ export default function CustomerDetail() {
           </TabsContent>
 
           <TabsContent value="invoices" className="mt-4 space-y-3">
-            <LocationLedgerPanel locationId={activeLocationId} invoices={locationInvoices ?? []} agreements={locationAgreements} />
+            <LocationLedgerPanel customerId={customerId} locationId={activeLocationId} invoices={locationInvoices ?? []} agreements={locationAgreements} onOpenInvoice={openInvoice} />
             {!locationInvoices || locationInvoices.length === 0 ? (
               <Card><CardContent className="text-center py-8"><FileText className="h-8 w-8 mx-auto text-muted-foreground/30 mb-2" /><p className="text-sm text-muted-foreground">No invoices for this location</p></CardContent></Card>
             ) : [...locationInvoices].sort((a, b) => new Date(b.issuedAt ?? b.createdAt).getTime() - new Date(a.issuedAt ?? a.createdAt).getTime()).map((inv) => (

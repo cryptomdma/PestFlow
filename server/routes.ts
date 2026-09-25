@@ -1918,6 +1918,11 @@ export async function registerRoutes(
   });
 
   // Invoices
+  // The manual invoice - one ADJUSTMENT line, no service behind it. Since
+  // Pass 13 (PLAN_ROADMAP_V2.md B6 / C2.3) its only client is "Add fee /
+  // adjustment" on the location ledger panel, where the location is already
+  // known; the Invoices screen's New Invoice is gone, and a charge for work
+  // performed is a visit invoice (Draft invoice for a visit, or generation).
   const manualInvoiceSchema = z.object({
     customerId: z.string(),
     // Required (Pass 10): a manual invoice is billed to one of the
@@ -2026,18 +2031,25 @@ export async function registerRoutes(
     }
   });
 
-  // Batch Invoicing - PLAN_BILLING_V1.md §1.6.1: from the Ticket Review
-  // queue, filter finalized/billing-ready records over a date range ->
-  // preview -> generate -> optionally bulk-send.
-  const batchDateRangeSchema = z.object({
+  // Batch Invoicing - PLAN_BILLING_V1.md §1.6.1, on the Invoices screen
+  // since Pass 13 (PLAN_ROADMAP_V2.md C2.3; it is an invoicing action, not a
+  // review-queue one): finalized, billing-ready tickets POSTED inside the
+  // window - the server filters postedAt falling back to serviceDate, so the
+  // dialog says "posted between" - optionally one technician's, -> preview
+  // (grouped by technician then service date on the client) -> generate ->
+  // optionally bulk-send. Preview and generate parse the same filters
+  // (shared/batch-invoice.ts BatchInvoiceFilters): a query string on the GET,
+  // a body on the POST. No technician means every technician.
+  const batchInvoiceFiltersSchema = z.object({
     dateFrom: z.string().min(1),
     dateTo: z.string().min(1),
+    technicianId: z.string().min(1).optional(),
   });
 
   app.get("/api/invoices/batch-preview", requirePermission(PERMISSIONS.GENERATE_INVOICE), async (req, res) => {
     try {
-      const { dateFrom, dateTo } = batchDateRangeSchema.parse(req.query);
-      const data = await req.storage.getBatchInvoicePreviewForDateRange(dateFrom, dateTo);
+      const filters = batchInvoiceFiltersSchema.parse(req.query);
+      const data = await req.storage.getBatchInvoicePreviewForDateRange(filters);
       res.json(data);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
@@ -2047,8 +2059,8 @@ export async function registerRoutes(
 
   app.post("/api/invoices/batch-generate", requirePermission(PERMISSIONS.GENERATE_INVOICE), async (req, res) => {
     try {
-      const { dateFrom, dateTo } = batchDateRangeSchema.parse(req.body);
-      const data = await req.storage.batchGenerateInvoicesForDateRange(dateFrom, dateTo, getAuditActor(req));
+      const filters = batchInvoiceFiltersSchema.parse(req.body);
+      const data = await req.storage.batchGenerateInvoicesForDateRange(filters, getAuditActor(req));
       res.json(data);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);

@@ -21,8 +21,8 @@ V1's "Phase 3 — Comms" is **Phase 8**, "Phase 4+" is **Phase 9**. Where an old
 read Phase 6.
 
 **Pass discipline is unchanged** (`AGENT_WORKING_AGREEMENT.md`): one pass per session, one branch
-from `origin/main`, `npm run check` + double boot + the pass's smoke test before the push, never
-merge, never push to main. A pass that changes server code needs the owner's `npm run dev:full`
+from `origin/main`, `npm run check` + double boot + the pass's smoke test before the push, then the
+PR opened by the session (owner, 2026-09-24); never merged by it, never pushed to main. A pass that changes server code needs the owner's `npm run dev:full`
 restarted before manual testing. Every pass ends by writing the next pass's handoff prompt (the last
 section of `CURRENT_FOCUS.md`, and the session's final message; owner, 2026-09-23). Pass sizes below
 are calibrated to Phase 1's: Pass 6 (four tables, routes, three dialogs) is the ceiling.
@@ -91,16 +91,16 @@ are calibrated to Phase 1's: Pass 6 (four tables, routes, three dialogs) is the 
 | … card on file / process card | ABSENT (Phase 6) | route refuses CARD / ACH |
 | "Send to customer" — email | ABSENT | no transport anywhere; `nodemailer` appears only as a dead esbuild external (`script/build.ts:22`) |
 | … — print | ABSENT as an affordance, trivially available | the PDF opens in a new tab; no `window.print`, no print stylesheet |
-| Batch Invoice on the Invoices screen | ABSENT | lives on Ticket Review (`service-ticket-review.tsx:407-417, 666-755`) |
-| Batch by route / technician, grouped by date | ABSENT | date range only; the page's Technician filter is **not** passed to batch-preview (`:345-348`); `appointments` carry no route columns |
+| Batch Invoice on the Invoices screen | DONE — Pass 13 (2026-09-24) | `BatchInvoiceDialog` (`client/src/components/batch-invoice-dialog.tsx`) behind the Invoices screen's header button; result rows open the invoice modal; Send All kept; Service Ticket Review lost the button and dialog. See "Shipped in Pass 13" at the end of Part D. Was: lived on Ticket Review (`service-ticket-review.tsx:407-417, 666-755`) |
+| Batch by route / technician, grouped by date | DONE — Pass 13 (2026-09-24) | `technicianId` on `GET /api/invoices/batch-preview` and `POST /api/invoices/batch-generate` (`BatchInvoiceFilters`, `shared/batch-invoice.ts`); the preview groups technician → service date → visit (`groupBatchInvoicePreview`), a "route" being a technician on a day since `appointments` carry no route columns. Was: date range only; the page's Technician filter was not passed (`:345-348`) |
 | Batch auto-charges cards on file | ABSENT (Phase 6) | — |
-| Batch date range labelled as posting date | ABSENT | subtitle is bare "from through to" (`:672`); server filters `postedAt ?? serviceDate` (`storage.ts:4538`) |
+| Batch date range labelled as posting date | DONE — Pass 13 (2026-09-24) | the dialog's inputs are "Posted from" / "Posted to" and its copy says "posted between"; the server still filters `postedAt ?? serviceDate` (`getServiceRecordsReadyForBillingInRange`). Was: a bare "from through to" subtitle (`:672`) |
 | Appointment-based invoicing (one visit, one invoice) | DONE | D1 / Pass 3 |
 | Generate Invoice from the Ticket Review modal, generate-and-send | PARTIAL | the on-finalize prompt (Pass 5: Generate / Generate & Send / Later) is the only Generate on that page (`service-ticket-review.tsx:216`); a ticket finalized with "Later" or under `OFF` has no Generate on the modal afterwards — only Batch or the Invoices screen |
 | … "sends invoice / service report to customer" | PARTIAL | invoice = `sentAt` stamp + pinned PDF (Pass 10); no service report document exists |
 | Paid status derived; check deferred until cleared; cash paid only by a manager | DONE, by a different mechanism | status derives from confirmed applications; `payments.status = PENDING` and `pendingAppliedCents` carry "pending" — there is **no invoice-level PENDING status** and none is needed (see B4) |
 | "Invoices are not being created upon finalization" | DONE | Pass 5; under `PROMPT`, "Later" creates nothing by design |
-| "New Invoice" links to an existing service, pre-finalization, and becomes the visit's invoice | PARTIAL, under a different name | the capability is the **Draft invoice**, reachable only from the Services tab (Pass 4: appointment-anchored, adopted at finalization, never duplicated). The dialog called "New Invoice" is the *manual* invoice: one `ADJUSTMENT` line, no service reference possible (`routes.ts:1853-1861`, `storage.ts:4895-4952`). See B6. |
+| "New Invoice" links to an existing service, pre-finalization, and becomes the visit's invoice | DONE — Pass 13 (2026-09-24) | New Invoice is gone from the Invoices screen; **"Draft invoice for a visit"** (`draft-invoice-for-visit-dialog.tsx`: customer → location → draftable visit → Pass 4's `draft-for-appointment` route, the DRAFT opening in the modal) takes its place, and the manual invoice survives only as **"Add fee / adjustment"** on the location ledger panel (`add-fee-adjustment-dialog.tsx`, the location fixed, B6). Was: the capability existed only on the Services tab as Draft invoice, and "New Invoice" was the *manual* invoice (one `ADJUSTMENT` line, no service reference; `routes.ts:1853-1861`, `storage.ts:4895-4952`). |
 | Review modal: price/payment details, address, Next/Back | DONE | Pass 7.6 (`service-ticket-review.tsx:517-583`) |
 | Review modal: office Edit button (role-gated) | ABSENT | modal is read-only; footer is Open Location / Close / Reopen / Finalize (`:648-657`) |
 | Review modal: reopen reason as a pop-up with a settings list, "Other" requires text | ABSENT | inline free-text `Textarea` (`:643-646`); `reopenReason` is text, no code column, no settings key |
@@ -214,7 +214,9 @@ Invoices screen loses New Invoice and gains "Draft invoice for a visit"; the man
 only as **"Add fee / adjustment" on the location ledger panel**, where the location is already known,
 so a location-less row can never recur. **Owner (second review, 2026-09-19): keep it, as
 recommended.** C2.3 builds exactly that. Note the limit Pass 4 chose: a draft needs an appointment;
-an unscheduled service has no anchor.
+an unscheduled service has no anchor. **Built as Pass 13** (`feature/phase-2-batch-invoice-and-draft`,
+2026-09-24): the Invoices screen has "Draft invoice for a visit" and Batch Invoice, the ledger panel
+has "Add fee / adjustment", and New Invoice is gone.
 
 **B7. "Opportunity Type/Category: Agreement, One-time, Reschedule, Cancel/Win-back, Retention."** The
 list mixes two axes, which D8 already separated: `category` = reason (NEW_SALE, SERVICE_DUE,
@@ -346,7 +348,7 @@ by name; `CURRENT_FOCUS.md`'s unscheduled list points at them.
 | C2.1c (**Pass 11c**) — **done** (`feature/phase-2-invoice-document-parties`, 2026-09-21; see "Shipped in Pass 11c" at the end of Part D) | **Invoice document parties** (owner review 2026-09-21, item 1). The Bill To is decided at **issue** and frozen: `resolveInvoiceTermsForLocationTx` (`storage.ts:5463`) always writes a snapshot, growing the existing `billingProfileSnapshot` jsonb with `billTo: { name, address, source: PROFILE \| LOCATION_OVERRIDE \| PRIMARY_LOCATION }` and `serviceLocation: { name, address }`, `profileId` null when no profile resolved. Address rule: the profile's `billingAddress`, else (a location-override profile) that location's own address, else the customer's **primary location's** address; name: the profile's `billingName`, else today's customer-name order. `createManualInvoice` (`storage.ts:5045`, snapshot hardcoded null) and the schedule-driven path's inline duplicate of the snapshot (`~storage.ts:6141`) both call the resolver. `getInvoiceDocumentContext` reads the keys; the 45 legacy null-snapshot rows fall back at render (primary location for Bill To, the invoice's location for Service Location), marked transitional. `InvoiceDocumentContext` gains `serviceLocation`; the PDF and HTML print a third block. Client: `readBillingProfileSnapshot` (`shared/invoice-detail.ts`) reads the keys; the modal's Terms shows "Bill to … (primary location)" and the service location; "No billing profile was snapshotted" only for legacy rows. No migration. **Verify** (5001): a manual invoice at a non-primary location → `billTo.source = PRIMARY_LOCATION` with the primary's address and `serviceLocation` = that location; a `POST /api/billing-profiles` override row with an address → `PROFILE`; an override row without one → `LOCATION_OVERRIDE` with that location's own address; a legacy row's document still renders; the `/document` PDF is stored once; fixture profiles deleted in cleanup. | Bill To from the primary location; service location on the invoice (owner, 2026-09-21) | C2.1a | — |
 | C2.1d (**Pass 11d**) — **done** (`feature/phase-2-down-payment-first-visit`, 2026-09-22; see "Shipped in Pass 11d" at the end of Part D; the open flag in Part E answered the same day) | **Down payment on the first visit's invoice** (owner correction 2026-09-21 under D4, `PLAN_BILLING_V1_1.md`). `createAgreement` stops calling `issueInitialChargeInvoiceTx` (`storage.ts:3252`); `POST /api/agreements/:id/issue-initial-charge` and its event stay as the explicit up-front path. A **live** event is an `INITIAL_CHARGE` billing event whose invoice is not VOID (or that has no invoice: settled outside the ledger). `buildVisitInvoiceLinesTx` (`storage.ts:5496`) appends, for each agreement behind the visit's services with `initialChargeType = DOWN_PAYMENT`, a resolvable amount (`resolveInitialChargeCents`) and no live event, an `INITIAL_CHARGE` line "Down payment - <agreement>" taxed as the standalone path taxes it; generation and `issueInvoiceTx` (never the draft) insert the event with `invoiceId` = the visit invoice, so a void of that invoice makes the event non-live and the corrected invoice carries the line again. `DOWN_PAYMENT` only (`CLEANOUT_SURCHARGE` / `PREPAY_FULL` leave in C3.6). `isFullyAgreementCovered` must not read a covered visit with a down-payment line as "No charge". `getVisitBillingSummary`'s un-invoiced branch prices the pending line as `BILLABLE` (Price / COA in D4's order / Due today) so the ticket, appointment details, collect step and review modal show it. `initialChargeCollectedBy` gets its reader: the office prompt at scheduling fires unless `TECH_AT_FIRST_SERVICE`; the technician's collect step shows a "Down payment $X" callout unless `OFFICE_AT_SIGNING`; both when null. **Office prompt**: appointment creation (`POST /api/appointments` and the schedule screen's placement) for a service on an agreement with a live-less down payment and no designated payment covering it returns `initialChargeDue: { agreementId, amountCents }`; the client asks "Collect the $X down payment now?" → `RecordPaymentDialog` with `designatedAgreementId` + `appointmentId` (split into 11e if the pass runs long — the routing and the technician's figures are the must-haves). Copy: `initial-charge-fields.tsx:106`; the agreement card's `AgreementInitialChargeStatus` → "Billed on the first visit's invoice" + "Issue up front instead", "Invoiced as INV-x (first visit)" once fired. **Migration** (`agreement-bootstrap.ts`, guarded, per-row effect printed before commit): the three `Daily Rodent Trapping` rows per the open flag in Part E. Canon §13 and the initial-charge canon corrected in the same PR. **Verify** (5001): `DOWN_PAYMENT` $100 on a plan-less agreement → no invoice at creation; the first visit's summary shows the `INITIAL_CHARGE` line `BILLABLE` $100 beside the service line at remaining ÷ expected; generate → both lines and the event on the visit invoice; the second visit's summary has no down-payment line; void the first invoice → the summary shows it again; the explicit button on a fresh agreement → standalone + event, second press refused; a schedule-billed agreement → $100 down + $0 covered, no "No charge" banner; appointment creation returns `initialChargeDue`, and not after a covering designated payment. | Down payment shares the visit's invoice; office prompt at scheduling; tech collects against it (owner, 2026-09-21) | C2.1c (the line's Bill To), Pass 6 | Open flag in Part E (the three unissued rows) |
 | C2.2 (**Pass 12**) — **done** (`feature/phase-2-billing-plan-required-sold-by`, 2026-09-23; see "Shipped in Pass 12" at the end of Part D) | **Billing Plan required on every Agreement + sale attribution.** Backfill the 11, `billingPlanId NOT NULL` + zod; `agreements.soldByUserId` — a `users` FK (owner: one identity table for techs and office), defaulting to the session user at creation, changed only under a new `ASSIGN_SALE_CREDIT` (manager+), audit `update`; template propagation untouched. `technicians` has no link to `users` today (`schema.ts:160-172`), so the same pass adds a nullable `technicians.userId` bridge; the full merge is C5.7. | Compensation basis (CURRENT_FOCUS) | — | Answered 2026-09-19: attach the billing plan named **Monthly Recurring** to all 11 — the 9 `Quarterly Control` rows (monthly billing for a quarterly program, the industry norm; the marked "Monthly" line in `notes` is deleted once attached) and the 2 Wildlife rows, whose term is already past its end, so Pass 3.5's attach rule starts no schedule and bills nothing. The 4 CANCELLED rows attach for the constraint only. The pass prints the per-row effect (`nextBillingDate` or the refusal) before committing. **Built as decided** (the DB had 5 CANCELLED rows, not 4; the 4 ACTIVE rows anchored on 2026-09-24, the Wildlife rows refused at their term end, nothing else asked). |
-| C2.3 (**Pass 13**) | **Batch Invoice moves to the Invoices screen**; range labelled "posted between"; group by technician then service date (a "route" is technician × day — `appointments` carry no route columns); technician filter passed to preview; Send All stays; Ticket Review loses the button. **New Invoice is removed** (owner); the screen gains **"Draft invoice for a visit"** (customer → location → un-invoiced appointment → `createDraftInvoiceForAppointment`, `storage.ts:5618`); the manual path survives only as **"Add fee / adjustment"** on the location ledger panel (owner, B6); `createManualInvoice` keeps requiring a location. | Move Batch Invoice (×2), batch by route/tech, sort by date, New Invoice → Draft | C2.1a (result rows open the modal) | — |
+| C2.3 (**Pass 13**) — **done** (`feature/phase-2-batch-invoice-and-draft`, 2026-09-24; see "Shipped in Pass 13" at the end of Part D) | **Batch Invoice moves to the Invoices screen**; range labelled "posted between"; group by technician then service date (a "route" is technician × day — `appointments` carry no route columns); technician filter passed to preview **and generate**; the preview shows the down payment generate will bill (the Pass 11d gap); Send All stays; Ticket Review loses the button. **New Invoice is removed** (owner); the screen gains **"Draft invoice for a visit"** (customer → location → un-invoiced appointment → `createDraftInvoiceForAppointment`); the manual path survives only as **"Add fee / adjustment"** on the location ledger panel (owner, B6); `createManualInvoice` keeps requiring a location and defaults a blank due date from the location's billing terms. | Move Batch Invoice (×2), batch by route/tech, sort by date, New Invoice → Draft | C2.1a (result rows open the modal) | — |
 | C2.4 (**Pass 14**) | **Aging and balances on the customer screen.** Derived reads: `GET /api/customers/:id/aging` (per location + rollup) and `GET /api/reports/aging` (org-wide); buckets **Current (0-30) / 31-60 / 61-90 / Over 90 days since invoiced** (`issuedAt`, B20) over issued open balances, pending-applied and on-account shown beside, never netted. Header card: the customer-wide open balance, on-account figure and oldest bucket sit beside the primary-location chip (`customer-detail.tsx:3538-3593`); location profile card: the location's strip below `LocationNotesPanel`; Reports: an Aging tab. Nothing stored; UTC days like every other date-only value. | Aging report, customer balance at top with primary location info, location balance below notes | C2.1a (bucket rows open the modal) | — |
 | C2.5 (**Pass 15**) | **Statements.** Location statement (period roll-up: opening balance, invoices, payments, credits, closing balance, aging strip) and **account statement** (the same across every location of the account — the property-manager case) through the existing renderer, stored like invoices; a **paid-in-full / zero-balance letter** variant with agreement status for a home sale; Open / Download from the location Invoices tab and the customer header; on request only (a scheduled monthly statement is a later Settings toggle); delivery arrives with C6.3. | B5 (statements for commercial, property managers, home sale) | C2.4 | — |
 
@@ -1024,6 +1026,126 @@ Behavior worth knowing before the next pass touches it:
   shared module. Nothing was rendered in a browser: the lifecycle badge and the Review / Open ticket
   link on Service History and the technician view's relabelled button reach the owner first.
 
+**Shipped in Pass 13** (`feature/phase-2-batch-invoice-and-draft`, 2026-09-24) — the C2.3 row as
+built, plus what it found.
+
+```ts
+// shared/batch-invoice.ts (new) - the batch's shapes, read by the server and the Invoices screen
+export interface BatchInvoiceFilters { dateFrom: string; dateTo: string; technicianId?: string | null }
+                                   // a POSTING window (postedAt ?? serviceDate as a UTC day, inclusive); one technician or every one
+export interface BatchInvoicePreviewTicket extends ServiceRecord { billingLineType: "SERVICE" | "AGREEMENT_COVERED" | null; billableAmountCents; billingNote }
+export interface BatchInvoicePreviewCharge { appointmentId; serviceRecordId; agreementId; agreementName; description; amountCents; taxCents }
+                                   // a down payment the visit's invoice will carry (Pass 11d's INITIAL_CHARGE line), keyed to the visit's anchor
+export interface BatchInvoicePreview { tickets: BatchInvoicePreviewTicket[]; charges: BatchInvoicePreviewCharge[] }
+export interface BatchGenerateResult { totalEligible; totalVisits; invoiced[]; skipped[]; totalAmountCents }   // moved from storage, shape unchanged
+batchVisitKey(ticket)              // "appointment:<id>" | "serviceRecord:<id>" - D1's two anchors
+toUtcDay(value)                    // YYYY-MM-DD, the repo's date-only convention
+groupBatchInvoicePreview(preview, technicianLabel)
+                                   // -> { groups: [{ technicianId, technicianLabel, days: [{ serviceDate, visits: [{ key, appointmentId,
+                                   //    customerId, locationId, serviceDate, tickets, charges, amountCents }], amountCents }], ticketCount,
+                                   //    visitCount, amountCents }], ticketCount, visitCount, chargeCount, amountCents }   (pure; before tax)
+describeBatchTicketBilling(ticket) // { kind: AMOUNT | COVERED | CALLBACK | CANNOT_BILL, amountCents, note }
+
+// server/storage.ts (BatchInvoicePreviewRow is now an alias of BatchInvoicePreviewTicket)
+getServiceRecordsReadyForBillingInRange(filters)   // was (dateFrom, dateTo); technicianId filters service_records.technicianId
+getBatchInvoicePreviewForDateRange(filters)        // -> BatchInvoicePreview (was BatchInvoicePreviewRow[]): per-ticket billing as before, plus
+                                                   //    the charges: resolvePendingInitialChargesTx (read-only, no lock) over the agreements behind
+                                                   //    EVERY finalized ticket of each listed visit, one entry per agreement, on the first visit
+                                                   //    in the batch that would carry it
+batchGenerateInvoicesForDateRange(filters, actor)  // was (dateFrom, dateTo, actor); the technician filter picks the visits, a visit bills whole
+createManualInvoice(input)                         // dueDate: input.dueDate ?? terms.dueDate ?? null - blank means the location's billing terms
+
+// Routes
+GET  /api/invoices/batch-preview?dateFrom=&dateTo=&technicianId=   // batchInvoiceFiltersSchema (technicianId optional, non-empty); GENERATE_INVOICE
+POST /api/invoices/batch-generate { dateFrom, dateTo, technicianId? } // same schema, same gate
+POST /api/invoices/batch-send { invoiceIds }                          // unchanged; SEND_INVOICE
+POST /api/invoices                                                    // unchanged shape; its only client is now Add fee / adjustment
+POST /api/invoices/draft-for-appointment/:appointmentId               // unchanged; its second client is Draft invoice for a visit
+
+// client
+components/batch-invoice-dialog.tsx            // BatchInvoiceDialog({ open, onOpenChange, onOpenInvoice }): Posted from / Posted to (default: the last
+                                               // 30 days), Technician (All technicians default), the preview grouped technician -> service date ->
+                                               // visit with each visit's tickets and down-payment lines, "N tickets across M visits, with K down
+                                               // payments riding along, billable $X before tax", Generate M Invoices, then result rows (number,
+                                               // customer - location, total) that open the invoice modal, the skipped list, Send All (SEND_INVOICE)
+components/draft-invoice-for-visit-dialog.tsx  // DraftInvoiceForVisitDialog({ open, onOpenChange, onCreated }): customer -> location (primary
+                                               // default) -> that location's draftable visits (canDraftForVisit's rule: not CANCELED, not
+                                               // COMPLETED, an active service, no non-void invoice) -> POST draft-for-appointment -> onCreated
+components/add-fee-adjustment-dialog.tsx       // AddFeeAdjustmentDialog({ open, onOpenChange, customerId, locationId, onCreated }): description
+                                               // (required), amount (> 0), tax (typed, not computed), due date (blank = the location's terms, the
+                                               // hint reads GET /api/locations/:id/billing-profile), notes -> POST /api/invoices -> onCreated
+components/location-ledger-panel.tsx           // LocationLedgerPanel({ customerId, locationId, invoices, agreements?, onOpenInvoice? }) - customerId is
+                                               // new and required; the Balance card's third button is "Add fee / adjustment" (GENERATE_INVOICE)
+pages/invoices.tsx                             // InvoiceForm and both New Invoice buttons are gone; the header carries "Draft invoice for a visit"
+                                               // and "Batch Invoice" (GENERATE_INVOICE); both dialogs stay mounted under the invoice modal
+pages/service-ticket-review.tsx                // the Batch Invoice button, dialog, preview query, generate / send mutations and local types are
+                                               // gone; the queue's filters (including Technician) are untouched
+pages/customer-detail.tsx                      // passes customerId and openInvoice to the ledger panel
+```
+
+Behavior worth knowing before the next pass touches it:
+- **The window is a posting window; the grouping is by service date.** `getServiceRecordsReadyForBillingInRange`
+  keeps a ticket whose `postedAt` (falling back to `serviceDate`) lands on a UTC day inside
+  `dateFrom..dateTo` - unchanged since Phase 1, now said on the dialog ("posted between") - while
+  the preview groups each technician's tickets by the ticket's UTC service day, a "route" being a
+  technician on a day. A ticket posted on the 25th for work on the 24th is in a window that
+  contains the 25th and shows under the 24th.
+- **The technician filter chooses visits, not lines.** A visit is in the batch when one of its
+  finalized tickets is the named technician's and was posted in the window; once in, generation
+  bills every finalized ticket on it, whoever posted them and whenever - exactly how the range
+  boundary was already handled. The preview lists only the tickets that matched (so a
+  two-technician visit shows one ticket under a Tech A filter) and the dialog says so.
+- **The preview shows the deposit generate will bill.** For each listed visit the agreements behind
+  all of its finalized tickets go through `resolvePendingInitialChargesTx` without a lock, and the
+  first visit in the batch that would carry an agreement's down payment lists it as a charge; a
+  second visit of the same agreement lists nothing, because generate attaches the event to the
+  first invoice and the next finds it live. The visit's preview figure (service lines + charges)
+  matches the invoice's subtotal; the dialog's totals are **before tax**, generate's
+  `totalAmountCents` includes it. `groupBatchInvoicePreview` lists a visit's charges with its first
+  appearance only, so a visit split between two technicians never shows its deposit twice.
+- **`GET /api/invoices/batch-preview` answers an object now** (`{ tickets, charges }`), not an
+  array. The only client was the Service Ticket Review dialog this pass removed.
+- **A manual invoice's blank due date means the location's terms.** `createManualInvoice` falls
+  back to `resolveInvoiceTermsForLocationTx`'s `dueDate` (the resolved billing profile's
+  `invoiceTerms` from today; null when no profile resolves), the default Pass 11c left for C2.3.
+  A typed due date still wins. Every new invoice on the dev DB has no profile, so blank stays blank
+  until C5.2 (Pass 34) can give a location one.
+- **Draftable is the Services tab's rule, client-side; the server is the authority.** The draft
+  dialog lists a location's SCHEDULED / IN_PROGRESS visits with an active linked service and no
+  non-void invoice, sorted chronologically, and says how many others are already invoiced; a
+  COMPLETED, finalized visit belongs to Ready to Bill. `createDraftInvoiceForAppointment` still
+  refuses a cancelled or invoiced visit ("Appointment already has invoice INV-x") and returns the
+  existing DRAFT rather than a second, so a stale list cannot create a duplicate.
+- **Two dialogs under one modal.** Both the batch and the draft dialog stay mounted while the
+  invoice modal opens on top (`/invoices?invoiceId=`), so a result row or a new draft opens the
+  invoice and the batch's result list, with Send All, is still there when the modal closes.
+- **Not built:** paging the preview (the eligible list is the whole org's), excluding one visit from
+  a batch, delivery (Send All is still the `sentAt` stamp plus the pinned PDF, and its toast says
+  so), a draft for a service with no appointment (no anchor - Pass 4's limit, B6), a billing
+  profile the fee dialog could create (C5.2).
+- **Verified 2026-09-24** (PORT=5001): `npm run check` clean; boot 1 printed only "serving on port
+  5001" with all 43 tables' counts unchanged; 90 checks as the four roles - technician 403 on
+  batch-preview / batch-generate / batch-send / draft / the manual invoice, unauthenticated 401,
+  manager and admin 200, a missing date and an empty technicianId 400; the unfiltered preview with
+  two technicians' visits over two days plus a COD agreement visit carrying a $100 down payment
+  ($120 + $80 + ($400 - $100) / 4 = $75 service lines, the $100 charge on the right visit, named
+  after the agreement), the grouping from `groupBatchInvoicePreview` (Tech A: two days, $120 and
+  $75 + $100; Tech B: one day, $80; 3 tickets, 3 visits, 1 charge, $375 before tax; a synthetic
+  two-technician visit counting once with its charge listed once; an unassigned technician sorting
+  last), the Tech A / Tech B / unknown-technician filters and a window before the postings; generate
+  over the range (3 visits, 3 invoices, 0 skipped; the agreement visit's invoice carrying SERVICE
+  $75 + INITIAL_CHARGE $100 with the agreement's event pointed at it), the preview emptying and a
+  second generate invoicing nothing; a draft for a scheduled visit (201 DRAFT, the same draft
+  again, on the location's tab and outside its open balance) and 400 for an invoiced visit and an
+  unknown one; three fees on the ledger's path (no profile: no due date; a NET_30 profile: due in
+  30 days; a typed date kept; tax added; `invoice_issued` written; on the location's Invoices tab
+  and in its open balance) with another customer's location and a missing location refused; Send
+  All stamping the three and skipping the draft - every fixture deleted and 42 of 43 counts back
+  at baseline (`session` up by the four logins); boot 2 printed only the serving line with every
+  count unchanged; a Vite 200 on the three pages, the three new dialogs, the ledger panel and (under
+  `/@fs/`) the shared module. Nothing was rendered in a browser: the two dialogs and the third
+  ledger button reach the owner first.
+
 ---
 
 ## Part E — Decision log
@@ -1081,3 +1203,9 @@ the next pass - the owner's start-of-session message in full - into the last sec
 `CURRENT_FOCUS.md` (same PR as the code) and the session's final message. Recorded as an
 end-of-pass step in `AGENT_WORKING_AGREEMENT.md`; the first such prompt, for Pass 16, is in
 `CURRENT_FOCUS.md`.
+
+**Owner, 2026-09-24 (at the start of Pass 13):** every pass ends by **opening its pull request**
+after the push - `gh pr create` against `main` with the pass's summary as the body; the owner
+merges. When `gh` is not authenticated on the machine, the session says so and puts the PR title,
+body and compare link in its final message instead. Recorded in `AGENT_WORKING_AGREEMENT.md`,
+`CLAUDE.md` and `DEV_NOTES.md`; everything else in the working agreement is unchanged.

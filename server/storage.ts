@@ -80,6 +80,7 @@ import { addDays, advanceAgreementDate, computeExpectedServiceCount } from "@sha
 export { advanceAgreementDate, computeExpectedServiceCount };
 import type { VisitBillingSummary, VisitChargeBilling, VisitServiceBilling } from "@shared/visit-billing";
 import type { AppointmentInvoiceStatus, InvoiceBillToSnapshot, InvoiceDetail, InvoiceServiceLocationSnapshot } from "@shared/invoice-detail";
+import type { BatchGenerateResult, BatchInvoiceFilters, BatchInvoicePreview, BatchInvoicePreviewCharge, BatchInvoicePreviewTicket } from "@shared/batch-invoice";
 import {
   formatInitialChargeType,
   initialChargeFromTemplate,
@@ -665,30 +666,17 @@ export interface InitialChargeReceivableOutcome {
   message?: string;
 }
 
-// Reported per visit, not per ticket (PLAN_BILLING_V1_1_EXECUTION.md §2.3):
-// once invoices anchor on the appointment, two finalized tickets on one
-// appointment are one invoice, and a report that counted them separately would
-// tell the office "1 invoiced + 1 skipped: already invoiced" for what was, from
-// their side of the counter, a single visit. `totalEligible` still counts
-// tickets (what the preview lists); `totalVisits` is how many invoices the run
-// can produce at most.
-// A batch-preview row: the eligible ticket plus what it will actually bill,
-// resolved by the server. `billingLineType: null` means the ticket cannot be
-// billed as things stand and `billingNote` carries the reason - shown in the
-// preview rather than hidden, since generate would report the same reason.
-export interface BatchInvoicePreviewRow extends ServiceRecord {
-  billingLineType: "SERVICE" | "AGREEMENT_COVERED" | null;
-  billableAmountCents: number | null;
-  billingNote: string | null;
-}
-
-export interface BatchGenerateResult {
-  totalEligible: number;
-  totalVisits: number;
-  invoiced: Array<{ appointmentId: string | null; serviceRecordIds: string[]; invoiceId: string; invoiceNumber: string; totalAmountCents: number }>;
-  skipped: Array<{ appointmentId: string | null; serviceRecordIds: string[]; reason: string }>;
-  totalAmountCents: number;
-}
+// The batch's shapes (Pass 13, PLAN_ROADMAP_V2.md C2.3) live in
+// shared/batch-invoice.ts so the Invoices screen reads exactly what the
+// server writes: the filters (a POSTING window plus an optional technician),
+// the preview (each eligible ticket with what it will actually bill, resolved
+// here through the same code generation uses, plus the down payments the
+// visit invoices will carry) and the generate result. The result is reported
+// per visit, not per ticket (PLAN_BILLING_V1_1_EXECUTION.md §2.3): two
+// finalized tickets on one appointment are one invoice, so `totalEligible`
+// counts tickets and `totalVisits` is how many invoices the run can produce.
+export type BatchInvoicePreviewRow = BatchInvoicePreviewTicket;
+export type { BatchGenerateResult, BatchInvoiceFilters, BatchInvoicePreview, BatchInvoicePreviewCharge };
 
 export interface SaveScopedNoteInput {
   scope: "ACCOUNT" | "LOCATION";
@@ -844,14 +832,14 @@ export interface IStorage {
   /** Where one visit stands with invoicing (Pass 11b): its non-void invoice through either anchor, and whether every ticket is finalized. Undefined outside the org. */
   getAppointmentInvoiceStatus(appointmentId: string): Promise<AppointmentInvoiceStatus | undefined>;
   getServiceRecordsReadyForBilling(): Promise<ServiceRecord[]>;
-  getServiceRecordsReadyForBillingInRange(dateFrom: string, dateTo: string): Promise<ServiceRecord[]>;
-  getBatchInvoicePreviewForDateRange(dateFrom: string, dateTo: string): Promise<BatchInvoicePreviewRow[]>;
+  getServiceRecordsReadyForBillingInRange(filters: BatchInvoiceFilters): Promise<ServiceRecord[]>;
+  getBatchInvoicePreviewForDateRange(filters: BatchInvoiceFilters): Promise<BatchInvoicePreview>;
   createManualInvoice(input: CreateManualInvoiceInput): Promise<Invoice>;
   generateInvoiceFromServiceRecord(serviceRecordId: string, actor?: AuditActor | null): Promise<Invoice>;
   createDraftInvoiceForAppointment(appointmentId: string, actor?: AuditActor | null): Promise<Invoice>;
   issueInvoice(id: string, input: IssueInvoiceInput): Promise<Invoice | undefined>;
   generateScheduleDrivenInvoice(input: GenerateScheduleDrivenInvoiceInput): Promise<Invoice>;
-  batchGenerateInvoicesForDateRange(dateFrom: string, dateTo: string, actor?: AuditActor | null): Promise<BatchGenerateResult>;
+  batchGenerateInvoicesForDateRange(filters: BatchInvoiceFilters, actor?: AuditActor | null): Promise<BatchGenerateResult>;
   batchSendInvoices(invoiceIds: string[]): Promise<Invoice[]>;
   updateInvoice(id: string, data: Partial<InsertInvoice>, actor?: AuditActor | null): Promise<Invoice | undefined>;
   /** Pass 11b: put a location on an invoice that has none. Refuses a VOID invoice, one that already has a location, and another customer's location. Audit `update`. */
@@ -4982,11 +4970,17 @@ export class DatabaseStorage implements IStorage {
   // still be eligible when generate runs moments later (unless someone
   // else invoiced it in between, which generateInvoiceFromServiceRecord's
   // own idempotency check still catches).
-  async getServiceRecordsReadyForBillingInRange(dateFrom: string, dateTo: string): Promise<ServiceRecord[]> {
+  // The batch's slice of the ready-to-bill list: tickets whose POSTING day -
+  // postedAt, falling back to serviceDate, as a UTC calendar day - lands
+  // inside the window (which is why the dialog says "posted between"), and,
+  // when a technician is named (Pass 13), only that technician's tickets
+  // (service_records.technicianId, the ticket's own stamp).
+  async getServiceRecordsReadyForBillingInRange(filters: BatchInvoiceFilters): Promise<ServiceRecord[]> {
     const eligible = await this.getServiceRecordsReadyForBilling();
     return eligible.filter((record) => {
+      if (filters.technicianId && record.technicianId !== filters.technicianId) return false;
       const dateOnly = new Date(record.postedAt ?? record.serviceDate).toISOString().slice(0, 10);
-      return dateOnly >= dateFrom && dateOnly <= dateTo;
+      return dateOnly >= filters.dateFrom && dateOnly <= filters.dateTo;
     });
   }
 
@@ -4996,13 +4990,33 @@ export class DatabaseStorage implements IStorage {
   // the drift isScheduleBilledPlan exists to prevent, and a preview that says
   // "covered, $0" for a COD agreement ticket that then bills a real amount is
   // exactly the bug this pass fixed on the server.
-  async getBatchInvoicePreviewForDateRange(dateFrom: string, dateTo: string): Promise<BatchInvoicePreviewRow[]> {
-    const eligible = await this.getServiceRecordsReadyForBillingInRange(dateFrom, dateTo);
+  //
+  // Since Pass 13 the preview also carries the down payments the visit
+  // invoices will bill (Pass 11d's INITIAL_CHARGE line, which rides the
+  // agreement's first invoiced visit): per visit, the agreements behind EVERY
+  // finalized ticket on it - not only the tickets inside the window or the
+  // technician filter, because generation bills the whole visit - are run
+  // through resolvePendingInitialChargesTx, read-only (no lock). A deposit is
+  // listed once, on the first visit in the batch that would carry it, since
+  // generate attaches the event to that invoice and the next visit finds it
+  // live. Before this the preview's per-ticket amounts were silent about a
+  // deposit that generate then billed.
+  async getBatchInvoicePreviewForDateRange(filters: BatchInvoiceFilters): Promise<BatchInvoicePreview> {
+    const eligible = await this.getServiceRecordsReadyForBillingInRange(filters);
     if (!eligible.length) {
-      return [];
+      return { tickets: [], charges: [] };
     }
 
-    const serviceIds = eligible.map((record) => record.serviceId).filter((id): id is string => !!id);
+    // The whole visit for every listed ticket, the way batchGenerate groups it.
+    const allEligible = await this.getServiceRecordsReadyForBilling();
+    const listedAppointmentIds = new Set(eligible.map((record) => record.appointmentId).filter((id): id is string => !!id));
+    const visitRecords = allEligible.filter((record) => record.appointmentId && listedAppointmentIds.has(record.appointmentId));
+    const recordsInPlay = new Map<string, ServiceRecord>();
+    for (const record of [...eligible, ...visitRecords]) {
+      recordsInPlay.set(record.id, record);
+    }
+
+    const serviceIds = Array.from(recordsInPlay.values(), (record) => record.serviceId).filter((id): id is string => !!id);
     const eligibleServices = serviceIds.length
       ? await db.select().from(services).where(and(eq(services.orgId, this.orgId), inArray(services.id, serviceIds)))
       : [];
@@ -5012,7 +5026,7 @@ export class DatabaseStorage implements IStorage {
       eligibleServices.map((service) => service.agreementId).filter((id): id is string => !!id),
     );
 
-    const rows: BatchInvoicePreviewRow[] = [];
+    const tickets: BatchInvoicePreviewTicket[] = [];
     for (const record of eligible) {
       const service = record.serviceId ? serviceById.get(record.serviceId) : undefined;
       try {
@@ -5021,15 +5035,67 @@ export class DatabaseStorage implements IStorage {
           service,
           agreementContext: service?.agreementId ? agreementContextById.get(service.agreementId) : undefined,
         });
-        rows.push({ ...record, billingLineType: billing.lineType, billableAmountCents: billing.amountCents, billingNote: billing.coverageNote });
+        tickets.push({ ...record, billingLineType: billing.lineType, billableAmountCents: billing.amountCents, billingNote: billing.coverageNote });
       } catch (err: any) {
         // Preview must show the ticket that will fail, not hide it - generate
         // would report the same reason as a skip.
-        rows.push({ ...record, billingLineType: null, billableAmountCents: null, billingNote: err?.message ?? "Cannot be billed" });
+        tickets.push({ ...record, billingLineType: null, billableAmountCents: null, billingNote: err?.message ?? "Cannot be billed" });
       }
     }
 
-    return rows;
+    // Visits in the listed tickets' order - generate's order - each with the
+    // agreements behind all of its finalized tickets.
+    const visits = new Map<string, { appointmentId: string | null; serviceRecordId: string | null; locationId: string | null; agreementIds: Set<string> }>();
+    for (const record of eligible) {
+      const key = record.appointmentId ? `appointment:${record.appointmentId}` : `serviceRecord:${record.id}`;
+      if (visits.has(key)) continue;
+      const members = record.appointmentId ? Array.from(recordsInPlay.values()).filter((candidate) => candidate.appointmentId === record.appointmentId) : [record];
+      const agreementIds = new Set<string>();
+      for (const member of members) {
+        const service = member.serviceId ? serviceById.get(member.serviceId) : undefined;
+        if (service?.agreementId) agreementIds.add(service.agreementId);
+      }
+      visits.set(key, {
+        appointmentId: record.appointmentId ?? null,
+        serviceRecordId: record.appointmentId ? null : record.id,
+        locationId: record.locationId ?? null,
+        agreementIds,
+      });
+    }
+
+    const locationIds = Array.from(new Set(Array.from(visits.values(), (visit) => visit.locationId).filter((id): id is string => !!id)));
+    const locationRows = locationIds.length
+      ? await db.select().from(locations).where(and(eq(locations.orgId, this.orgId), inArray(locations.id, locationIds)))
+      : [];
+    const accountIdByLocationId = new Map(locationRows.map((location) => [location.id, location.accountId ?? null]));
+
+    const charges: BatchInvoicePreviewCharge[] = [];
+    const chargedAgreementIds = new Set<string>();
+    for (const visit of Array.from(visits.values())) {
+      const candidates = Array.from(visit.agreementIds)
+        .filter((agreementId) => !chargedAgreementIds.has(agreementId))
+        .map((agreementId) => agreementContextById.get(agreementId)?.agreement)
+        .filter((agreement): agreement is Agreement => !!agreement);
+      if (!candidates.length) continue;
+      const pending = await this.resolvePendingInitialChargesTx(db, {
+        agreements: candidates,
+        accountId: visit.locationId ? accountIdByLocationId.get(visit.locationId) ?? null : null,
+      });
+      for (const charge of pending) {
+        chargedAgreementIds.add(charge.agreement.id);
+        charges.push({
+          appointmentId: visit.appointmentId,
+          serviceRecordId: visit.serviceRecordId,
+          agreementId: charge.agreement.id,
+          agreementName: charge.agreement.agreementName,
+          description: charge.description,
+          amountCents: charge.amountCents,
+          taxCents: charge.taxDecision.taxCents,
+        });
+      }
+    }
+
+    return { tickets, charges };
   }
 
   // PLAN_BILLING_V1_1.md D6 - what the field sees about money on a visit:
@@ -5285,8 +5351,12 @@ export class DatabaseStorage implements IStorage {
   // left in getServiceRecordsReadyForBillingInRange to generate. One
   // visit's failure doesn't abort the batch; it's collected in `skipped`
   // with the reason so the office can see exactly what needs attention.
-  async batchGenerateInvoicesForDateRange(dateFrom: string, dateTo: string, actor?: AuditActor | null): Promise<BatchGenerateResult> {
-    const eligible = await this.getServiceRecordsReadyForBillingInRange(dateFrom, dateTo);
+  // The technician filter (Pass 13) picks which VISITS are in the batch -
+  // those with a ticket of that technician's posted in the window; a visit,
+  // once in, bills every finalized ticket on it, whoever posted them, exactly
+  // as the range boundary below is handled.
+  async batchGenerateInvoicesForDateRange(filters: BatchInvoiceFilters, actor?: AuditActor | null): Promise<BatchGenerateResult> {
+    const eligible = await this.getServiceRecordsReadyForBillingInRange(filters);
 
     // Group by billing anchor before looping (§2.3). Idempotency would stop the
     // second call for a shared appointment from duplicating anything, but it
@@ -5419,8 +5489,10 @@ export class DatabaseStorage implements IStorage {
       const totalAmountCents = input.amountCents + taxCents;
       const invoiceNumber = await this.getNextInvoiceNumber(tx);
       // The parties and profile terms are frozen here like on every other
-      // issuing path (Pass 11c); the manual path keeps its own due date (the
-      // office types it, or leaves it blank) and its own tax entry below.
+      // issuing path (Pass 11c). The office may type its own due date; left
+      // blank, the location's billing terms decide it (Pass 13, the default
+      // Pass 11c left for C2.3), and no resolved terms means no due date.
+      // The tax entry stays the office's own, below.
       const terms = await this.resolveInvoiceTermsForLocationTx(tx, location.id);
 
       const [invoice] = await tx
@@ -5444,7 +5516,7 @@ export class DatabaseStorage implements IStorage {
           status: deriveInvoiceStatus({ totalAmountCents }),
           balanceDueCents: totalAmountCents,
           issuedAt: new Date(),
-          dueDate: input.dueDate ?? null,
+          dueDate: input.dueDate ?? terms.dueDate ?? null,
           notes: input.notes?.trim() || null,
         })
         .returning();
