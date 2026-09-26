@@ -16,11 +16,12 @@ import {
   type LocationAging,
 } from "@shared/aging";
 
-// Aging on the customer screen (PLAN_ROADMAP_V2.md C2.4, Pass 14). Two
+// Aging on the customer screen (PLAN_ROADMAP_V2.md C2.4, Pass 14). Three
 // surfaces, one read (GET /api/customers/:id/aging): the header card's chips
-// carry the customer-wide rollup beside the primary-location chip, and the
-// location profile's strip, below the location notes, carries the selected
-// location's buckets with the invoices behind them, each opening the invoice
+// carry the customer-wide rollup beside the primary-location chip; the
+// Location Notes box carries the selected location's balance as one row
+// below the notes (owner, 2026-09-25); and the Invoices tab's strip carries
+// the buckets with the invoices behind them, each opening the invoice
 // modal. Every bucket is "days since invoiced" (B20) - never days past due;
 // the Invoices screen's Overdue tile keeps that meaning. Money on account and
 // pending money are shown beside the balance and never netted.
@@ -81,17 +82,59 @@ export function CustomerAgingChips({ aging, locationCount }: { aging: CustomerAg
   );
 }
 
-/** One location's aging strip. `aging` is null when the read listed nothing for the location: nothing owed, nothing on account. */
+/**
+ * The location's balance as one horizontal row (owner, 2026-09-25, after Pass 15): sits inside
+ * the Location Notes box, directly below the notes, so the profile grid stays short. Current is
+ * always shown; the other buckets only when something is owed in them; on account and pending
+ * follow. No invoice links here - the full strip with them lives on the Invoices tab.
+ */
+export function LocationAgingSummaryRow({ aging, asOf, isLoading }: { aging: LocationAging | null; asOf?: string; isLoading: boolean }) {
+  if (isLoading && !aging) {
+    return <Skeleton className="h-6 w-full" data-testid="row-location-aging-loading" />;
+  }
+  const figures: AgingFigures = aging ?? emptyAgingFigures();
+  const buckets = AGING_BUCKETS.filter((bucket) => bucket === "CURRENT" || figures.buckets[bucket] > 0);
+  const pendingCents = figures.pendingAppliedCents + figures.pendingUnappliedCents;
+  return (
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs" data-testid="row-location-aging" title={`Open balance by ${AGING_BASIS_LABEL}${asOf ? `, as of ${asOf}` : ""} - not days past due. Money on account is shown beside the balance, never subtracted from it.`}>
+      <span className="flex items-center gap-1 text-muted-foreground">
+        <ReceiptText className="h-3.5 w-3.5" /> Balance
+        <span className="ml-1 font-semibold tabular-nums text-foreground" data-testid="text-location-aging-open">{formatCents(figures.openBalanceCents)}</span>
+      </span>
+      {buckets.map((bucket) => (
+        <span key={bucket} className="flex items-center gap-1" data-testid={`chip-aging-bucket-${bucket}`}>
+          <span className={figures.buckets[bucket] > 0 ? agingBucketToneClass(bucket) || "text-foreground" : "text-muted-foreground"}>{AGING_BUCKET_LABELS[bucket]}</span>
+          <span className={`tabular-nums ${figures.buckets[bucket] > 0 ? "font-medium" : "text-muted-foreground"}`} data-testid={`text-aging-bucket-${bucket}`}>{formatCents(figures.buckets[bucket])}</span>
+        </span>
+      ))}
+      {figures.onAccountCents > 0 ? (
+        <span className="text-muted-foreground" data-testid="text-location-aging-on-account">
+          <span className="font-medium text-foreground tabular-nums">{formatCents(figures.onAccountCents)}</span> on account
+        </span>
+      ) : null}
+      {pendingCents > 0 ? (
+        <span className="text-muted-foreground" data-testid="text-location-aging-pending">
+          <span className="font-medium text-foreground tabular-nums">{formatCents(pendingCents)}</span> pending confirmation
+        </span>
+      ) : null}
+      <span className="text-[11px] text-muted-foreground">{AGING_BASIS_LABEL}</span>
+    </div>
+  );
+}
+
+/** One location's aging strip with the invoices behind each bucket - the Invoices tab's (moved there from the profile grid on the owner's note of 2026-09-25). `aging` is null when the read listed nothing for the location: nothing owed, nothing on account. */
 export function LocationAgingStrip({
   aging,
   asOf,
   isLoading,
   onOpenInvoice,
+  title = "Balance",
 }: {
   aging: LocationAging | null;
   asOf?: string;
   isLoading: boolean;
   onOpenInvoice: (invoiceId: string) => void;
+  title?: string;
 }) {
   const figures: AgingFigures = aging ?? emptyAgingFigures();
   const invoices = aging?.invoices ?? [];
@@ -100,7 +143,7 @@ export function LocationAgingStrip({
       <CardHeader className="pb-2">
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <CardTitle className="text-sm font-medium flex items-center gap-2">
-            <ReceiptText className="h-4 w-4" /> Balance
+            <ReceiptText className="h-4 w-4" /> {title}
           </CardTitle>
           {isLoading && !aging ? (
             <Skeleton className="h-6 w-20" />
