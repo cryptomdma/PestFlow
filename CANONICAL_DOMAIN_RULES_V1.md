@@ -730,9 +730,12 @@ flow** for agreement work — overriding it requires `ADJUST_PRICE_AGREEMENT`.
 
 A stamped `priceCents` therefore means one of exactly two things: a non-agreement
 Service's own price, or a deliberate override. Both outrank the derived amount.
-A price stamped or changed through the ticket flow is a financial mutation and is
-recorded in the audit log (§17) as `price_overridden` on the Service, with the row
-before and after (PLAN_BILLING_V1.1 D7).
+A price stamped or changed through the ticket flow - the technician's post, or the
+office's edit of a posted ticket (the review modal's Edit, Pass 18) - is a financial
+mutation and is recorded in the audit log (§17) as `price_overridden` on the Service,
+with the row before and after (PLAN_BILLING_V1.1 D7). The office's edit follows the
+post's rule: an agreement price needs `ADJUST_PRICE_AGREEMENT`, and without it the
+edit is refused, never silently dropped.
 
 ### Service designation and warranty callbacks (not yet modeled — roadmap)
 
@@ -917,9 +920,12 @@ recorded in the audit log (§17) as `ticket_edited`, the ticket row and its prod
 before and after; an edit that changes nothing writes nothing. "Finalized" is any of the three
 signals finalization sets and reopen clears — `ticketStatus = FINALIZED`, `confirmed`,
 `readyForBilling` — read through `shared/ticket-status.ts`, which the technician view reads too, so
-the field is never offered a post the server refuses. The Service's price lives on the Service and
-is stamped only by a post (`price_overridden`, §10); an office price edit is the review modal's
-Edit (C3.1b).
+the field is never offered a post the server refuses. The Service's price and type live on the
+Service: a post stamps them, and since Pass 18 (C3.1b) the review modal's **Edit** changes them
+through the same PATCH - under the post's rule (`ADJUST_PRICE_AGREEMENT` for an agreement price or
+type, refused 403 for anyone else; support edits everything else), logged `price_overridden` on the
+Service as a post's is (§10), in one transaction with the ticket's `ticket_edited`; the ticket's own
+type follows the Service's as a post copies it.
 
 Agreement-generated Services advance agreement recurrence when the generated Service is office-finalized. Non-agreement finalized Services may generate future Opportunities according to Service Type follow-up rules.
 

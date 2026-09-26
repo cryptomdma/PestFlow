@@ -9,12 +9,13 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth";
-import { apiRequest, queryClient } from "@/lib/queryClient";
+import { apiRequest, getApiErrorMessage, queryClient } from "@/lib/queryClient";
 import { dollarsToCents, centsToDollarString, formatCents } from "@shared/money";
 import { ServiceBillingBlock, VisitInitialChargeCallout, useVisitBillingSummary } from "@/components/visit-billing-summary";
 import { CollectPaymentDialog } from "@/components/collect-payment-dialog";
-import { can, PERMISSIONS } from "@shared/permissions";
+import { can, PERMISSIONS, rolesWithPermission } from "@shared/permissions";
 import { computeProductionValueCents } from "@shared/production-value";
+import { describeTicketLifecycle } from "@shared/ticket-status";
 import type { Agreement, Appointment, MaterialProduct, ProductApplication, Service, ServiceRecord, ServiceType, TargetPest, Technician } from "@shared/schema";
 
 interface MaterialLine {
@@ -44,6 +45,16 @@ interface ServiceCompletionDialogProps {
   defaultTechnicianId?: string | null;
   existingServiceRecord?: ServiceRecord | null;
   onCompleted?: () => void;
+  // Pass 18 (PLAN_ROADMAP_V2.md C3.1b; D9): "post" is the technician's flow -
+  // finish -> collect -> POST /api/services/:id/complete, the time-out prompt
+  // after, a local draft meanwhile. "office-edit" is the review modal's Edit
+  // on a posted ticket: the same fields and materials, seeded from
+  // existingServiceRecord (required), saved through the gated PATCH
+  // /api/service-records/:id (EDIT_TICKET) with the Service's price and type
+  // when this user may set them; no collect step, no time-out prompt, no
+  // local draft, and the technician and service date editable (the PATCH's
+  // content, which a post fixes at start). Defaults to "post".
+  mode?: "post" | "office-edit";
 }
 
 type DilutionOption = {
@@ -164,9 +175,11 @@ export function ServiceCompletionDialog({
   defaultTechnicianId,
   existingServiceRecord,
   onCompleted,
+  mode = "post",
 }: ServiceCompletionDialogProps) {
   const { toast } = useToast();
   const { user } = useAuth();
+  const isOfficeEdit = mode === "office-edit";
   const [technicianId, setTechnicianId] = useState("");
   const [serviceDate, setServiceDate] = useState(formatDateTimeLocalValue(new Date()));
   const [notes, setNotes] = useState("");
@@ -210,13 +223,18 @@ export function ServiceCompletionDialog({
     return technicians?.find((technician) => technician.id === technicianId) ?? null;
   }, [technicianId, technicians]);
 
-  const draftKey = getDraftKey(service?.id);
+  // The office's edit never reads or writes the technician's local draft: a
+  // stale draft on a shared browser must not seed a posted ticket's edit, and
+  // the edit must not overwrite what the technician is drafting.
+  const draftKey = isOfficeEdit ? null : getDraftKey(service?.id);
   const existingApplications = useMemo(() => {
     if (!existingServiceRecord) return [];
     return (productApplications ?? []).filter((application) => application.serviceRecordId === existingServiceRecord.id);
   }, [existingServiceRecord, productApplications]);
   const isAgreementGeneratedService = !!service && (!!service.agreementId || service.source === "AGREEMENT_GENERATED");
   const allowServiceOverride = !!service && (!isAgreementGeneratedService || can(user?.role ?? "", PERMISSIONS.ADJUST_PRICE_AGREEMENT));
+  // The locked price / type caption: the office is told who may (dev rule 6).
+  const agreementLockNote = isOfficeEdit ? `(agreement - ${rolesWithPermission(PERMISSIONS.ADJUST_PRICE_AGREEMENT).join(" or ")} only)` : "(agreement locked)";
   const computedProductionValueCents = useMemo(
     () => computeProductionValueCents(agreement?.priceCents, agreement?.expectedServiceCount),
     [agreement?.priceCents, agreement?.expectedServiceCount],
@@ -231,7 +249,9 @@ export function ServiceCompletionDialog({
 
   useEffect(() => {
     if (!open || !service) return;
-    const nextTechnicianId = existingServiceRecord?.technicianId || defaultTechnicianId || service.assignedTechnicianId || appointment?.assignedTechnicianId || "";
+    // An office edit seeds the technician from the ticket alone, so a save
+    // with nothing touched sends what the ticket already holds.
+    const nextTechnicianId = existingServiceRecord?.technicianId || (isOfficeEdit ? "" : defaultTechnicianId || service.assignedTechnicianId || appointment?.assignedTechnicianId || "");
     const nextServiceDate = formatDateTimeLocalValue(existingServiceRecord?.serviceDate ?? appointment?.scheduledDate ?? new Date());
     const cachedDraft = draftKey ? localStorage.getItem(draftKey) : null;
 
@@ -268,7 +288,7 @@ export function ServiceCompletionDialog({
     setTicketServiceTypeId(service.serviceTypeId || "");
     setTicketPrice(service.priceCents != null ? centsToDollarString(service.priceCents) : "");
     setMaterials(existingApplications.length ? existingApplications.map(materialFromApplication) : []);
-  }, [appointment?.assignedTechnicianId, appointment?.scheduledDate, defaultTechnicianId, draftKey, existingApplications, existingServiceRecord, open, service]);
+  }, [appointment?.assignedTechnicianId, appointment?.scheduledDate, defaultTechnicianId, draftKey, existingApplications, existingServiceRecord, isOfficeEdit, open, service]);
 
   // Agreement-generated services no longer carry a stamped price - prefill
   // the editable field with the live-computed production value once it's
@@ -302,6 +322,55 @@ export function ServiceCompletionDialog({
     }));
   }, [conditionsFound, deviceNotes, draftKey, followUpNotes, followUpRequired, materials, notes, open, recommendations, service, serviceDate, targetPests, technicianId, ticketPrice, ticketServiceTypeId]);
 
+  // The materials as the post and the office edit both send them (the
+  // PATCH's replace-all list is the post's shape).
+  const materialsPayload = () => materials
+    .filter((material) => material.productName.trim())
+    .map((material) => ({
+      materialProductId: material.materialProductId || null,
+      productName: material.productName,
+      epaRegNumber: material.epaRegNumber || null,
+      dilutionLabel: material.dilutionLabel || null,
+      dilutionRate: material.dilutionRate || null,
+      amountApplied: material.amountApplied || null,
+      unit: material.unit || null,
+      activeIngredientAmount: material.activeIngredientAmount || null,
+      applicationMethod: material.applicationMethod || null,
+      device: material.device || null,
+      applicationLocation: material.applicationLocation || null,
+      notes: material.notes || null,
+    }));
+
+  // The Service's type and price, under one rule for the post and the office
+  // edit: sent only when this user may override them (a manual service, or
+  // ADJUST_PRICE_AGREEMENT on an agreement-generated one - the server refuses
+  // them otherwise), and an agreement price only if it was deliberately
+  // changed from the live-computed default - otherwise left unstamped so
+  // production value keeps tracking the agreement (e.g. a later price edit)
+  // instead of freezing at whatever the computed value happened to be.
+  const serviceOverridePayload = () => ({
+    serviceTypeId: allowServiceOverride ? ticketServiceTypeId || null : undefined,
+    priceCents: !allowServiceOverride
+      ? undefined
+      : isAgreementGeneratedService && dollarsToCents(ticketPrice) === computedProductionValueCents
+        ? undefined
+        : dollarsToCents(ticketPrice),
+  });
+
+  const invalidateTicketViews = () => {
+    queryClient.invalidateQueries({ queryKey: ["/api/services"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/services/by-location"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/service-records"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/service-records/by-location"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/product-applications"] });
+    // Prefix-matches the visit billing summary too, so a price edit re-prices
+    // the visit wherever it is shown.
+    queryClient.invalidateQueries({ queryKey: ["/api/appointments"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/appointments/by-location"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/opportunities"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/opportunities/by-location"] });
+  };
+
   const completeMutation = useMutation({
     mutationFn: async () => {
       if (!service) throw new Error("Service is required");
@@ -310,17 +379,7 @@ export function ServiceCompletionDialog({
         appointmentId: appointment?.id ?? service.appointmentId ?? null,
         technicianId: technicianId || null,
         serviceDate,
-        serviceTypeId: allowServiceOverride ? ticketServiceTypeId || null : undefined,
-        // For an agreement-generated service, only stamp a price if it was
-        // deliberately changed from the live-computed default - otherwise
-        // leave it null so production value keeps tracking the agreement
-        // (e.g. a later price edit) instead of freezing at whatever the
-        // computed value happened to be when this ticket was submitted.
-        priceCents: !allowServiceOverride
-          ? undefined
-          : isAgreementGeneratedService && dollarsToCents(ticketPrice) === computedProductionValueCents
-            ? undefined
-            : dollarsToCents(ticketPrice),
+        ...serviceOverridePayload(),
         notes: [notes, deviceNotes ? `Device notes: ${deviceNotes}` : null].filter(Boolean).join("\n\n"),
         targetPests: targetPests.split(",").map((value) => value.trim()).filter(Boolean),
         areasServiced: derivedAreas || null,
@@ -329,22 +388,7 @@ export function ServiceCompletionDialog({
         followUpRequired,
         followUpNotes: followUpRequired ? followUpNotes : null,
         confirmed: false,
-        productApplications: materials
-          .filter((material) => material.productName.trim())
-          .map((material) => ({
-            materialProductId: material.materialProductId || null,
-            productName: material.productName,
-            epaRegNumber: material.epaRegNumber || null,
-            dilutionLabel: material.dilutionLabel || null,
-            dilutionRate: material.dilutionRate || null,
-            amountApplied: material.amountApplied || null,
-            unit: material.unit || null,
-            activeIngredientAmount: material.activeIngredientAmount || null,
-            applicationMethod: material.applicationMethod || null,
-            device: material.device || null,
-            applicationLocation: material.applicationLocation || null,
-            notes: material.notes || null,
-          })),
+        productApplications: materialsPayload(),
       });
       return response.json();
     },
@@ -354,20 +398,47 @@ export function ServiceCompletionDialog({
         await apiRequest("POST", `/api/appointments/${appointment.id}/time-out`, {});
       }
       toast({ title: "Service ticket posted", description: "Office review is pending." });
-      queryClient.invalidateQueries({ queryKey: ["/api/services"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/services/by-location"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/service-records"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/service-records/by-location"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/product-applications"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/appointments"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/appointments/by-location"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/opportunities"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/opportunities/by-location"] });
+      invalidateTicketViews();
       setCollectOpen(false);
       onCompleted?.();
       onOpenChange(false);
     },
     onError: (error: Error) => toast({ title: "Unable to post service ticket", description: error.message, variant: "destructive" }),
+  });
+
+  // Pass 18 (C3.1b): the office's save. The ticket's content through the
+  // gated PATCH, the Service's price / type with it when this user may set
+  // them; the server refuses a finalized ticket (409, "reopen first") and an
+  // agreement price from anyone without ADJUST_PRICE_AGREEMENT (403, naming
+  // who may), writes nothing for a save that changes nothing, and logs the
+  // rest as `ticket_edited` (the ticket) and `price_overridden` (the Service).
+  // No collect step and no time-out prompt: the visit already happened.
+  const officeEditMutation = useMutation({
+    mutationFn: async () => {
+      if (!service || !existingServiceRecord) throw new Error("A posted ticket is required");
+      const derivedAreas = uniqueValues(materials.map((material) => material.applicationLocation)).join(", ");
+      const response = await apiRequest("PATCH", `/api/service-records/${existingServiceRecord.id}`, {
+        technicianId: technicianId || null,
+        serviceDate,
+        ...serviceOverridePayload(),
+        notes: [notes, deviceNotes ? `Device notes: ${deviceNotes}` : null].filter(Boolean).join("\n\n"),
+        targetPests: targetPests.split(",").map((value) => value.trim()).filter(Boolean),
+        areasServiced: derivedAreas || null,
+        conditionsFound,
+        recommendations,
+        followUpRequired,
+        followUpNotes: followUpRequired ? followUpNotes : null,
+        productApplications: materialsPayload(),
+      });
+      return response.json();
+    },
+    onSuccess: () => {
+      toast({ title: "Service ticket updated", description: "The change is recorded in the ticket's history." });
+      invalidateTicketViews();
+      onCompleted?.();
+      onOpenChange(false);
+    },
+    onError: (error: Error) => toast({ title: "Unable to save the ticket", description: getApiErrorMessage(error), variant: "destructive" }),
   });
 
   const updateMaterial = (index: number, key: keyof MaterialLine, value: string) => {
@@ -428,7 +499,7 @@ export function ServiceCompletionDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[92vh] overflow-y-auto sm:max-w-2xl">
         <DialogHeader>
-          <DialogTitle>{existingServiceRecord ? "Service Ticket" : "Create Service Ticket"}</DialogTitle>
+          <DialogTitle>{isOfficeEdit ? "Edit Service Ticket" : existingServiceRecord ? "Service Ticket" : "Create Service Ticket"}</DialogTitle>
         </DialogHeader>
         {service && (
           <div className="space-y-5">
@@ -437,9 +508,9 @@ export function ServiceCompletionDialog({
                 <div>
                   <p className="font-medium">{serviceTypeName}</p>
                   {appointment?.scheduledDate && <p className="text-muted-foreground">Scheduled {new Date(appointment.scheduledDate).toLocaleString()}</p>}
-                  <p className="text-xs text-muted-foreground">Ticket drafts autosave locally on this device.</p>
+                  <p className="text-xs text-muted-foreground">{isOfficeEdit ? "A saved change is recorded in the ticket's history as Ticket edited." : "Ticket drafts autosave locally on this device."}</p>
                 </div>
-                <Badge variant="outline">Office review pending after post</Badge>
+                <Badge variant="outline" data-testid="badge-ticket-dialog-mode">{isOfficeEdit && existingServiceRecord ? `Office edit - ${describeTicketLifecycle(existingServiceRecord)}` : "Office review pending after post"}</Badge>
               </div>
               <div className="mt-3 border-t pt-3">
                 {visitAppointmentId ? (
@@ -456,13 +527,38 @@ export function ServiceCompletionDialog({
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="rounded-md border p-3">
                 <p className="text-xs uppercase tracking-wide text-muted-foreground">Technician</p>
-                <p className="mt-1 font-medium">{selectedTechnician?.displayName || "Unassigned"}</p>
-                {selectedTechnician?.licenseId && <p className="text-xs text-muted-foreground">License #{selectedTechnician.licenseId}</p>}
+                {isOfficeEdit ? (
+                  <>
+                    {/* The compliance snapshot (name, license) follows the technician chosen; the server re-copies it. */}
+                    <Select value={technicianId || "NONE"} onValueChange={(value) => setTechnicianId(value === "NONE" ? "" : value)}>
+                      <SelectTrigger className="mt-1" data-testid="select-edit-technician"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="NONE">Unassigned</SelectItem>
+                        {(technicians ?? []).map((technician) => <SelectItem key={technician.id} value={technician.id}>{technician.displayName}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                    <p className="mt-1 text-xs text-muted-foreground">{selectedTechnician?.licenseId ? `License #${selectedTechnician.licenseId} - copied onto the ticket with the name.` : "The name and license on the ticket follow the technician chosen."}</p>
+                  </>
+                ) : (
+                  <>
+                    <p className="mt-1 font-medium">{selectedTechnician?.displayName || "Unassigned"}</p>
+                    {selectedTechnician?.licenseId && <p className="text-xs text-muted-foreground">License #{selectedTechnician.licenseId}</p>}
+                  </>
+                )}
               </div>
               <div className="rounded-md border p-3">
                 <p className="text-xs uppercase tracking-wide text-muted-foreground">Service Date / Time</p>
-                <p className="mt-1 font-medium">{new Date(serviceDate).toLocaleString()}</p>
-                <p className="text-xs text-muted-foreground">Locked when ticket is started.</p>
+                {isOfficeEdit ? (
+                  <>
+                    <Input type="datetime-local" className="mt-1" value={serviceDate} onChange={(event) => setServiceDate(event.target.value)} data-testid="input-edit-service-date" />
+                    <p className="mt-1 text-xs text-muted-foreground">When the work was done.</p>
+                  </>
+                ) : (
+                  <>
+                    <p className="mt-1 font-medium">{new Date(serviceDate).toLocaleString()}</p>
+                    <p className="text-xs text-muted-foreground">Locked when ticket is started.</p>
+                  </>
+                )}
               </div>
             </div>
 
@@ -478,7 +574,7 @@ export function ServiceCompletionDialog({
                     </SelectContent>
                   </Select>
                 ) : (
-                  <div className="rounded-md border bg-muted/20 px-3 py-2 text-sm">{serviceTypeName} <span className="text-xs text-muted-foreground">(agreement locked)</span></div>
+                  <div className="rounded-md border bg-muted/20 px-3 py-2 text-sm">{serviceTypeName} <span className="text-xs text-muted-foreground">{agreementLockNote}</span></div>
                 )}
               </div>
               <div className="space-y-2">
@@ -486,7 +582,7 @@ export function ServiceCompletionDialog({
                 {allowServiceOverride ? (
                   <Input type="number" min="0" step="0.01" value={ticketPrice} onChange={(event) => setTicketPrice(event.target.value)} />
                 ) : (
-                  <div className="rounded-md border bg-muted/20 px-3 py-2 text-sm">{displayPriceCents != null ? formatCents(displayPriceCents) : "Not set"} <span className="text-xs text-muted-foreground">(agreement locked)</span></div>
+                  <div className="rounded-md border bg-muted/20 px-3 py-2 text-sm">{displayPriceCents != null ? formatCents(displayPriceCents) : "Not set"} <span className="text-xs text-muted-foreground">{agreementLockNote}</span></div>
                 )}
                 {serviceBilling?.designation === "PRODUCTION" && (
                   <p className="text-xs text-muted-foreground">Agreement-covered: not billed on this visit. The default shown is the visit's production value.</p>
@@ -701,17 +797,29 @@ export function ServiceCompletionDialog({
             </div>
 
             <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-              <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Close</Button>
-              <Button type="button" onClick={() => setCollectOpen(true)} disabled={completeMutation.isPending || !serviceDate} data-testid="button-finish-and-collect">
-                {completeMutation.isPending ? "Posting..." : "Finish & Collect"}
-              </Button>
+              {isOfficeEdit ? (
+                <>
+                  <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={officeEditMutation.isPending}>Cancel</Button>
+                  <Button type="button" onClick={() => officeEditMutation.mutate()} disabled={officeEditMutation.isPending || !serviceDate} data-testid="button-save-ticket-edit">
+                    {officeEditMutation.isPending ? "Saving..." : "Save Changes"}
+                  </Button>
+                </>
+              ) : (
+                <>
+                  <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Close</Button>
+                  <Button type="button" onClick={() => setCollectOpen(true)} disabled={completeMutation.isPending || !serviceDate} data-testid="button-finish-and-collect">
+                    {completeMutation.isPending ? "Posting..." : "Finish & Collect"}
+                  </Button>
+                </>
+              )}
             </div>
           </div>
         )}
       </DialogContent>
     </Dialog>
-    {service && (
+    {service && !isOfficeEdit && (
       <CollectPaymentDialog
+
         open={open && collectOpen}
         onOpenChange={setCollectOpen}
         appointmentId={visitAppointmentId}

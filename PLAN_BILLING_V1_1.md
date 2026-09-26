@@ -344,7 +344,10 @@ Decided now, built later, so they stop resurfacing as ambiguity:
   The price/payment and address blocks and Next/Back land in **Pass 7.6** (owner review of Pass 7.5,
   under D5). The reopen-reason dropdown shipped as **Pass 17** (`feature/phase-3-reopen-reason-popup`,
   2026-09-25, C3.2 - a pop-up over the `ticket_reopen_reasons` settings list, "Other" with the reason
-  typed out and gated `REOPEN_TICKET_OTHER`, manager+); the office edit button is Pass 18 (C3.1b).
+  typed out and gated `REOPEN_TICKET_OTHER`, manager+); the office edit button shipped as **Pass 18**
+  (`feature/phase-3-office-edit-ticket`, 2026-09-25, C3.1b): Edit on the review modal opens the
+  ticket dialog in an office-edit mode over the gated PATCH, the Service's price and type riding
+  along under the post's rule and logged `price_overridden`.
 
 ---
 
