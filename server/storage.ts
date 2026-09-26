@@ -346,6 +346,18 @@ export class TicketReopenError extends Error {
   }
 }
 
+// Pass 18 (PLAN_ROADMAP_V2.md C3.1b): an office edit the actor may not make -
+// 403 PRICE_ADJUSTMENT_FORBIDDEN when the body carries a price or type for an
+// agreement-generated service without ADJUST_PRICE_AGREEMENT (told who may,
+// the Pass 17 pattern), 400 SERVICE_NOT_FOUND when the ticket has no service
+// to price. Routes answer `status` with { code, message }.
+export class TicketEditError extends Error {
+  constructor(readonly status: 400 | 403, readonly code: string, message: string) {
+    super(message);
+    this.name = "TicketEditError";
+  }
+}
+
 export interface ReopenServiceRecordInput {
   id: string;
   /** A reason on the settings list, as written there, or OTHER. */
@@ -361,9 +373,13 @@ export interface ReopenServiceRecordInput {
 // EDIT_TICKET). Content only: the lifecycle columns (confirmed, ticketStatus,
 // the posted / finalized / reopened / flagged stamps, readyForBilling) belong
 // to post / finalize / reopen, and the identity columns (service, appointment,
-// customer, location) never move. The price lives on the Service and is
-// stamped only by a post (Pass 8's price_overridden); an office price edit is
-// C3.1b's. Materials are replace-all when sent, untouched when omitted.
+// customer, location) never move. Materials are replace-all when sent,
+// untouched when omitted. Since Pass 18 (C3.1b) the Service's price and type
+// ride along: applied to the Service under the post's rule (a manual service,
+// or ADJUST_PRICE_AGREEMENT on an agreement-generated one - 403 for anyone
+// else), the ticket's serviceTypeId following the Service's as a post copies
+// it, and a price that moved logged `price_overridden` on the Service exactly
+// as a post's is - in the one transaction with the ticket edit.
 export interface UpdateServiceRecordInput {
   serviceDate?: Date;
   technicianId?: string | null;
@@ -376,6 +392,12 @@ export interface UpdateServiceRecordInput {
   followUpNotes?: string | null;
   customerSignature?: boolean | null;
   productApplications?: Array<Omit<InsertProductApplication, "serviceRecordId">>;
+  /** The Service's type; null keeps the current one (the post's rule). */
+  serviceTypeId?: string | null;
+  /** The Service's stamped price; null clears the stamp (an agreement service back to its derived amount). */
+  priceCents?: number | null;
+  /** The session user's role (routes.ts) - a price or type on an agreement-generated service needs ADJUST_PRICE_AGREEMENT. */
+  actorRole?: UserRole;
   actor?: AuditActor | null;
 }
 
@@ -4602,7 +4624,10 @@ export class DatabaseStorage implements IStorage {
   // completed a Service without finalization. An edit that changes nothing
   // writes nothing (Pass 8's audit-only-on-change rule); one that does writes
   // `ticket_edited` with the ticket and its materials before and after, in
-  // the same transaction.
+  // the same transaction. Pass 18 (C3.1b): the Service's price and type come
+  // through here too, so the office's one save is one transaction - the
+  // Service written and `price_overridden` logged as a post does it, then
+  // the ticket.
   async updateServiceRecord(id: string, input: UpdateServiceRecordInput): Promise<ServiceRecord | undefined> {
     return db.transaction(async (tx) => {
       const [existingRecord] = await tx.select().from(serviceRecords).where(and(eq(serviceRecords.orgId, this.orgId), eq(serviceRecords.id, id)));
@@ -4612,6 +4637,34 @@ export class DatabaseStorage implements IStorage {
       if (isTicketFinalized(existingRecord)) {
         throw new TicketLockedError("TICKET_FINALIZED", 409, "This ticket is finalized. Reopen it before editing it.");
       }
+
+      // The Service's price and type (Pass 18), under the post's
+      // allowFieldServiceOverride rule and checked before anything is
+      // written: a body carrying either for an agreement-generated service
+      // without ADJUST_PRICE_AGREEMENT is refused whole, whatever the values,
+      // and told who may - support edits everything else on the ticket.
+      const wantsServiceOverride = input.serviceTypeId !== undefined || input.priceCents !== undefined;
+      let service: Service | undefined;
+      let nextServiceTypeId = existingRecord.serviceTypeId;
+      if (wantsServiceOverride) {
+        [service] = existingRecord.serviceId
+          ? await tx.select().from(services).where(and(eq(services.orgId, this.orgId), eq(services.id, existingRecord.serviceId)))
+          : [undefined];
+        if (!service) {
+          throw new TicketEditError(400, "SERVICE_NOT_FOUND", "This ticket is not linked to a service, so it has no price or type to change.");
+        }
+        const isAgreementGeneratedService = !!service.agreementId || service.source === "AGREEMENT_GENERATED";
+        if (isAgreementGeneratedService && !can(input.actorRole ?? "", PERMISSIONS.ADJUST_PRICE_AGREEMENT)) {
+          throw new TicketEditError(
+            403,
+            "PRICE_ADJUSTMENT_FORBIDDEN",
+            `This service's price and type are set by its agreement. Changing them needs a ${rolesWithPermission(PERMISSIONS.ADJUST_PRICE_AGREEMENT).join(" or ")}; everything else on the ticket can be edited.`,
+          );
+        }
+        nextServiceTypeId = input.serviceTypeId ?? service.serviceTypeId ?? null;
+      }
+      const nextPriceCents = service ? (input.priceCents === undefined ? service.priceCents : input.priceCents ?? null) : null;
+      const serviceChanged = !!service && (nextServiceTypeId !== service.serviceTypeId || nextPriceCents !== service.priceCents);
 
       const previousApplications = await tx
         .select()
@@ -4649,14 +4702,39 @@ export class DatabaseStorage implements IStorage {
         followUpRequired,
         followUpNotes: !followUpRequired ? null : input.followUpNotes === undefined ? existingRecord.followUpNotes : input.followUpNotes?.trim() || null,
         customerSignature: input.customerSignature === undefined ? existingRecord.customerSignature : input.customerSignature ?? false,
+        // The ticket's type is the Service's, copied at post; a type change
+        // on the Service follows onto the ticket the same way.
+        serviceTypeId: nextServiceTypeId,
       };
       const nextApplications = input.productApplications === undefined ? null : normalizeProductApplicationInputs(input.productApplications);
 
       const recordChanged = (Object.keys(nextFields) as Array<keyof typeof nextFields>).some((key) => !ticketFieldsEqual(nextFields[key], existingRecord[key]));
       const applicationsChanged = nextApplications !== null
         && !ticketFieldsEqual(nextApplications.map(snapshotProductApplication), previousApplications.map(snapshotProductApplication));
-      if (!recordChanged && !applicationsChanged) {
+      if (!recordChanged && !applicationsChanged && !serviceChanged) {
         return existingRecord;
+      }
+
+      if (service && serviceChanged) {
+        const [updatedService] = await tx
+          .update(services)
+          .set({ serviceTypeId: nextServiceTypeId, priceCents: nextPriceCents, updatedAt: new Date() })
+          .where(and(eq(services.orgId, this.orgId), eq(services.id, service.id)))
+          .returning();
+        // D7: the price is a financial mutation, logged as the post logs it -
+        // only when it moved, the Service row before and after so a type
+        // change made in the same save shows in the diff. A type-only change
+        // is the ticket's own `ticket_edited` diff (its serviceTypeId follows).
+        if (updatedService && updatedService.priceCents !== service.priceCents) {
+          await this.recordAuditLogTx(tx, {
+            entityType: "service",
+            entityId: service.id,
+            action: "price_overridden",
+            actor: input.actor,
+            before: service,
+            after: updatedService,
+          });
+        }
       }
 
       const [record] = recordChanged
@@ -4674,14 +4752,18 @@ export class DatabaseStorage implements IStorage {
           : [];
       }
 
-      await this.recordAuditLogTx(tx, {
-        entityType: "service_record",
-        entityId: record.id,
-        action: "ticket_edited",
-        actor: input.actor,
-        before: snapshotTicketForAudit(existingRecord, previousApplications),
-        after: snapshotTicketForAudit(record, applications),
-      });
+      // A price-only save writes the Service and `price_overridden` above and
+      // nothing here: the ticket did not change.
+      if (recordChanged || applicationsChanged) {
+        await this.recordAuditLogTx(tx, {
+          entityType: "service_record",
+          entityId: record.id,
+          action: "ticket_edited",
+          actor: input.actor,
+          before: snapshotTicketForAudit(existingRecord, previousApplications),
+          after: snapshotTicketForAudit(record, applications),
+        });
+      }
 
       if (record.serviceId && record.technicianId !== existingRecord.technicianId) {
         await tx

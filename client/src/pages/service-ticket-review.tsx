@@ -24,13 +24,15 @@ import { VisitBillingTable, useVisitBillingSummary } from "@/components/visit-bi
 import { InvoiceDetailDialog } from "@/components/invoice-detail-dialog";
 import { InvoiceStatusBadge } from "@/components/invoice-status-badge";
 import { ApplyLocationBalancePrompt } from "@/components/apply-location-balance-prompt";
+import { ServiceCompletionDialog } from "@/components/service-completion-dialog";
 import { resolveReviewNav, type ReviewNavStep } from "@/lib/review-queue-nav";
 import { formatCents } from "@shared/money";
 import { can, PERMISSIONS, rolesWithPermission } from "@shared/permissions";
 import { REOPEN_REASON_OTHER, REOPEN_REASON_OTHER_LABEL, describeReopenReason, isOtherReopenReason, type ReopenTicketRequest } from "@shared/ticket-reopen";
+import { isTicketFinalized } from "@shared/ticket-status";
 import { CASH_CONFIRM_NOTE, formatPaymentMethod, formatPaymentStatus, mayConfirmPayment, needsCashAuthority, paymentHoldsValue, type LocationLedgerSummary } from "@shared/payments";
 import type { AppointmentInvoiceStatus } from "@shared/invoice-detail";
-import { CheckCircle2, ChevronLeft, ChevronRight, ClipboardCheck, FileText, MapPin, RotateCcw } from "lucide-react";
+import { CheckCircle2, ChevronLeft, ChevronRight, ClipboardCheck, FileText, MapPin, Pencil, RotateCcw } from "lucide-react";
 import type { Appointment, Customer, Invoice, Location, Payment, ProductApplication, Service, ServiceRecord, ServiceType, Technician } from "@shared/schema";
 
 function formatDateInputValue(date: Date) {
@@ -364,6 +366,8 @@ export default function ServiceTicketReview() {
   const [navRecordIds, setNavRecordIds] = useState<string[]>([]);
   // Pass 17 (C3.2): the reopen reason is asked in a pop-up, not typed inline.
   const [reopenDialogOpen, setReopenDialogOpen] = useState(false);
+  // Pass 18 (C3.1b): the office edit, in the ticket dialog's office-edit mode.
+  const [editDialogOpen, setEditDialogOpen] = useState(false);
   // D2: the Generate / Generate & Send / Later prompt, opened when a
   // finalization completes its visit under the PROMPT setting.
   const [invoicePrompt, setInvoicePrompt] = useState<InvoiceOnFinalizePromptState | null>(null);
@@ -403,6 +407,11 @@ export default function ServiceTicketReview() {
   const selectedCustomer = selectedRecord ? customerById.get(selectedRecord.customerId) ?? null : null;
   const selectedMaterials = selectedRecord ? applicationsByRecordId.get(selectedRecord.id) ?? [] : [];
   const selectedReopen = selectedRecord ? describeReopenReason(selectedRecord) : null;
+  // Pass 18 (C3.1b): Edit is for EDIT_TICKET holders (support+); on a
+  // finalized ticket - any of the three signals, the lockdown's own read -
+  // it is disabled with "reopen first", never hidden (dev rule 6).
+  const canEditTicket = can(user?.role ?? "", PERMISSIONS.EDIT_TICKET);
+  const selectedTicketFinalized = selectedRecord ? isTicketFinalized(selectedRecord) : false;
   // D6's figures for the visit under review - the same read the ticket, the
   // appointment details and the collect dialog show, so the reviewer
   // finalizes against what the technician and the customer saw.
@@ -433,12 +442,14 @@ export default function ServiceTicketReview() {
   const openRecordFromQueue = (recordId: string) => {
     setNavRecordIds(filteredRecords.map((record) => record.id));
     setReopenDialogOpen(false);
+    setEditDialogOpen(false);
     setSelectedRecordId(recordId);
   };
   const closeReviewModal = () => {
     setSelectedRecordId(null);
     setNavRecordIds([]);
     setReopenDialogOpen(false);
+    setEditDialogOpen(false);
     // A deep-linked ticket leaves the URL with it, so a reload does not
     // reopen a ticket the reviewer just closed.
     if (requestedRecordId) {
@@ -478,6 +489,7 @@ export default function ServiceTicketReview() {
   const goToRecord = (step: ReviewNavStep | null) => {
     if (!step) return;
     setReopenDialogOpen(false);
+    setEditDialogOpen(false);
     setSelectedRecordId(step.id);
   };
 
@@ -784,6 +796,20 @@ export default function ServiceTicketReview() {
                 <Button type="button" variant="outline" onClick={() => selectedLocation && setLocation(`/customers/${selectedRecord.customerId}?locationId=${selectedLocation.id}`)}>Open Location</Button>
                 <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
                   <Button type="button" variant="outline" onClick={closeReviewModal}>Close</Button>
+                  {/* Pass 18 (C3.1b): the office edit - EDIT_TICKET holders only;
+                      a finalized ticket is disabled, not hidden, and says why. */}
+                  {canEditTicket ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => setEditDialogOpen(true)}
+                      disabled={selectedTicketFinalized || !selectedService}
+                      title={selectedTicketFinalized ? "This ticket is finalized. Reopen it before editing it." : !selectedService ? "The ticket's service could not be loaded." : "Edit the ticket's content, materials, price and type"}
+                      data-testid="button-edit-ticket"
+                    >
+                      <Pencil className="mr-1 h-4 w-4" /> {selectedTicketFinalized ? "Edit (reopen first)" : !selectedService ? "Edit (service unavailable)" : "Edit"}
+                    </Button>
+                  ) : null}
                   {/* Pass 17 (C3.2): the reason is asked in a pop-up, not typed inline. */}
                   <Button type="button" variant="secondary" onClick={() => setReopenDialogOpen(true)} disabled={reopenMutation.isPending} data-testid="button-reopen-ticket">
                     <RotateCcw className="mr-1 h-4 w-4" /> Reopen
@@ -819,6 +845,24 @@ export default function ServiceTicketReview() {
         isPending={reopenMutation.isPending}
         onSubmit={(body) => selectedRecord && reopenMutation.mutate({ id: selectedRecord.id, body })}
       />
+
+      {/* Pass 18 (C3.1b): the office edit - the ticket dialog in office-edit
+          mode, the fields and materials the technician posted seeded from the
+          selected record (its materials from the same /api/product-applications
+          read this page shows), saved through the gated PATCH. A save
+          invalidates the review data and leaves this modal on the ticket. */}
+      <ServiceCompletionDialog
+        mode="office-edit"
+        open={editDialogOpen && !!selectedRecord && !!selectedService}
+        onOpenChange={setEditDialogOpen}
+        service={selectedService}
+        appointment={selectedAppointment}
+        technicians={technicians}
+        serviceTypes={serviceTypes}
+        existingServiceRecord={selectedRecord}
+        onCompleted={invalidateReviewData}
+      />
+
 
       {/* Pass 11b: the visit's invoice, opened from the badge in the review
           modal. Page state rather than the URL: the page's one deep link is

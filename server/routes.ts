@@ -22,7 +22,7 @@ import { OPPORTUNITY_ASSIGNEE_ME, OPPORTUNITY_ASSIGNEE_UNASSIGNED, OPPORTUNITY_W
 import { ZodError, z } from "zod";
 import type { Request } from "express";
 import { requirePermission } from "./auth";
-import { AppointmentDispositionError, DraftInvoiceDecisionRequiredError, PrefinalizationIssueError, StatementRefusedError, TicketLockedError, TicketReopenError } from "./storage";
+import { AppointmentDispositionError, DraftInvoiceDecisionRequiredError, PrefinalizationIssueError, StatementRefusedError, TicketEditError, TicketLockedError, TicketReopenError } from "./storage";
 import { isUtcDay, statementFileName } from "@shared/statements";
 import { APPOINTMENT_DISPOSITION_MODES, DISPOSITION_OPPORTUNITY_CHOICES } from "@shared/appointment-disposition";
 import { can, PERMISSIONS, type UserRole } from "@shared/permissions";
@@ -247,7 +247,11 @@ export async function registerRoutes(
   // location) is refused, not silently written: `{ confirmed: true }` was the
   // pre-Phase-1 Service History "Confirm", which completed a Service without
   // finalization. Finalize and reopen are their own routes. Materials are
-  // replace-all when sent (the post's shape), untouched when omitted.
+  // replace-all when sent (the post's shape), untouched when omitted. Pass 18
+  // (C3.1b): the Service's type and price ride along in the post's shape,
+  // applied to the Service by storage under the post's rule (ADJUST_PRICE_AGREEMENT
+  // on an agreement-generated service, 403 otherwise) and the price logged
+  // `price_overridden` - never through the ungated PATCH /api/services/:id.
   const updateServiceRecordSchema = z.object({
     serviceDate: z.coerce.date().optional(),
     technicianId: z.string().nullable().optional(),
@@ -260,6 +264,8 @@ export async function registerRoutes(
     followUpNotes: z.string().nullable().optional(),
     customerSignature: z.boolean().nullable().optional(),
     productApplications: z.array(insertProductApplicationSchema.omit({ serviceRecordId: true })).optional(),
+    serviceTypeId: z.string().nullable().optional(),
+    priceCents: z.number().int().nullable().optional(),
   }).strict();
   const completeServiceSchema = z.object({
     appointmentId: z.string().nullable().optional(),
@@ -420,6 +426,11 @@ export async function registerRoutes(
   // TICKET_FINALIZED ("reopen first"), 403 TICKET_IN_REVIEW (a technician's
   // re-post on a ticket the office holds).
   const respondTicketLocked = (res: any, err: TicketLockedError) =>
+    res.status(err.status).json({ message: err.message, code: err.code });
+  // Pass 18 (C3.1b): an office edit the actor may not make - 403
+  // PRICE_ADJUSTMENT_FORBIDDEN (an agreement price or type without
+  // ADJUST_PRICE_AGREEMENT), 400 SERVICE_NOT_FOUND.
+  const respondTicketEditError = (res: any, err: TicketEditError) =>
     res.status(err.status).json({ message: err.message, code: err.code });
   // Pass 27 (C4.2): a disposition the input or the appointment forbids - 400
   // DISPOSITION_REASON_REQUIRED / DISPOSITION_REASON_NOT_ON_LIST, 409
@@ -1882,19 +1893,29 @@ export async function registerRoutes(
 
   // D9 (Pass 16): the office edit. EDIT_TICKET (support+); a FINALIZED
   // ticket answers 409 TICKET_FINALIZED; an edit that changes nothing writes
-  // nothing; one that does writes `ticket_edited`. The actor is the session's.
+  // nothing; one that does writes `ticket_edited`. Pass 18 (C3.1b): a price
+  // or type on an agreement-generated service needs ADJUST_PRICE_AGREEMENT
+  // (403 PRICE_ADJUSTMENT_FORBIDDEN, checked before anything is written); a
+  // price that moved is logged `price_overridden` on the Service. The actor
+  // and the role are the session's.
   app.patch("/api/service-records/:id", requirePermission(PERMISSIONS.EDIT_TICKET), async (req, res) => {
     try {
       const validated = updateServiceRecordSchema.parse(req.body);
-      const data = await req.storage.updateServiceRecord(req.params.id, { ...validated, actor: getAuditActor(req) });
+      const data = await req.storage.updateServiceRecord(req.params.id, {
+        ...validated,
+        actorRole: req.user!.role as UserRole,
+        actor: getAuditActor(req),
+      });
       if (!data) return res.status(404).json({ message: "Service record not found" });
       res.json(data);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
       if (e instanceof TicketLockedError) return respondTicketLocked(res, e);
+      if (e instanceof TicketEditError) return respondTicketEditError(res, e);
       res.status(400).json({ message: e.message });
     }
   });
+
 
   app.post("/api/service-records/:id/finalize", requirePermission(PERMISSIONS.FINALIZE_TICKET), async (req, res) => {
     try {

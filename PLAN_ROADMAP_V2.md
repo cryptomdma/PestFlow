@@ -102,7 +102,7 @@ are calibrated to Phase 1's: Pass 6 (four tables, routes, three dialogs) is the 
 | "Invoices are not being created upon finalization" | DONE | Pass 5; under `PROMPT`, "Later" creates nothing by design |
 | "New Invoice" links to an existing service, pre-finalization, and becomes the visit's invoice | DONE — Pass 13 (2026-09-24) | New Invoice is gone from the Invoices screen; **"Draft invoice for a visit"** (`draft-invoice-for-visit-dialog.tsx`: customer → location → draftable visit → Pass 4's `draft-for-appointment` route, the DRAFT opening in the modal) takes its place, and the manual invoice survives only as **"Add fee / adjustment"** on the location ledger panel (`add-fee-adjustment-dialog.tsx`, the location fixed, B6). Was: the capability existed only on the Services tab as Draft invoice, and "New Invoice" was the *manual* invoice (one `ADJUSTMENT` line, no service reference; `routes.ts:1853-1861`, `storage.ts:4895-4952`). |
 | Review modal: price/payment details, address, Next/Back | DONE | Pass 7.6 (`service-ticket-review.tsx:517-583`) |
-| Review modal: office Edit button (role-gated) | ABSENT | modal is read-only; footer is Open Location / Close / Reopen / Finalize (`:648-657`) |
+| Review modal: office Edit button (role-gated) | DONE — Pass 18 (2026-09-25) | was: modal read-only, footer Open Location / Close / Reopen / Finalize (`:648-657`). Now Edit (`EDIT_TICKET`; disabled "reopen first" on a finalized ticket) opens `service-completion-dialog.tsx` in `mode="office-edit"`, saved through the gated PATCH with the Service's price / type under the post's rule (see "Shipped in Pass 18" at the end of Part D) |
 | Review modal: reopen reason as a pop-up with a settings list, "Other" requires text | DONE — Pass 17 (2026-09-25) | was: inline free-text `Textarea` (`:643-646`), `reopenReason` text only, no code column, no settings key. Now `ReopenTicketDialog` over `ticket_reopen_reasons`, `reopenReasonCode` + text, Other gated by `REOPEN_TICKET_OTHER` (see "Shipped in Pass 17" at the end of Part D) |
 | Reopen must be role-authorized | DONE | `REOPEN_TICKET` support+ (`routes.ts:1669`), reason required, audit-logged (Pass 8) |
 | Fields immutable once posted / finalized (price, service date, collection data) | DONE — Pass 16 (2026-09-23) | was **NOT ENFORCED**: `PATCH /api/service-records/:id` had no permission gate and no status guard, `updateServiceRecord` blind-wrote (and completed the Service on `confirmed`), and `completeService` re-posted over a FINALIZED record and reset its stamps. Now the PATCH is `EDIT_TICKET` (support+), content-only and strict, 409 on FINALIZED; a re-post is refused on FINALIZED (anyone) and on a ticket in review without `EDIT_TICKET`; every accepted edit or re-post writes `ticket_edited`; the rules are `shared/ticket-status.ts`, read by the technician view too. See "Shipped in Pass 16" at the end of Part D. Payment records were already immutable (Pass 6). |
@@ -364,7 +364,7 @@ so every field action is a route and every screen is data from a read — no pag
 |---|---|---|---|---|
 | C3.1 (**Pass 16**) — **done** (`feature/phase-3-ticket-lockdown`, 2026-09-23; see "Shipped in Pass 16" at the end of Part D) | **Ticket lockdown (D9) enforced server-side.** `PATCH /api/service-records/:id` gated by a new `EDIT_TICKET` (support+) and refused on FINALIZED ("reopen first"); `completeService` refuses a re-post on a FINALIZED ticket, and a technician's re-post on a ticket already in office review (the office reopens; the technician re-posts a REOPENED one); every accepted edit writes `ticket_edited` (before/after, product applications included; payment records are already immutable and out of scope). The only UI change: `technician-work.tsx:477-485` stops passing a posted record into the ticket dialog. A defect fix, not a feature. | Immutable fields once posted | — | — |
 | C3.2 (**Pass 17**) — **done** (`feature/phase-3-reopen-reason-popup`, 2026-09-25; see "Shipped in Pass 17" at the end of Part D) | **Reopen-reason pop-up** with a settings list (`ticket_reopen_reasons`, the `app_settings` shape of `appointment_cancel_reschedule_reasons`), `reopenReasonCode` + text; "Other" requires text and `REOPEN_TICKET_OTHER` (manager+); the inline textarea leaves the modal; the modal closes on Finalize when the queue is exhausted. | Remove reopen reason from modal; pop-up; dropdown config; Other role-gated; close on finalize | — (after C3.1 only to avoid a footer merge conflict) | — |
-| C3.1b (**Pass 18**) | **Office Edit on the review modal** (D9): the role-gated Edit button opens `service-completion-dialog.tsx` in an `office-edit` mode (same fields, materials included) that submits through the gated PATCH instead of the post route; `ADJUST_PRICE_AGREEMENT` still guards an agreement price (support edits everything else); a FINALIZED ticket says "reopen first". Pass 16 built the PATCH content-only with materials as replace-all; the Service's price and type are not on it, so this unit adds the price edit (on the Service, logged `price_overridden` as a post's is). | Office edit button | C3.1, C3.2 | — |
+| C3.1b (**Pass 18**) — **done** (`feature/phase-3-office-edit-ticket`, 2026-09-25; see "Shipped in Pass 18" at the end of Part D) | **Office Edit on the review modal** (D9): the role-gated Edit button opens `service-completion-dialog.tsx` in an `office-edit` mode (same fields, materials included) that submits through the gated PATCH instead of the post route; `ADJUST_PRICE_AGREEMENT` still guards an agreement price (support edits everything else); a FINALIZED ticket says "reopen first". Pass 16 built the PATCH content-only with materials as replace-all; the Service's price and type are not on it, so this unit adds the price edit (on the Service, logged `price_overridden` as a post's is). | Office edit button | C3.1, C3.2 | — |
 | C3.3 (**Pass 19**) | **Technician ticket modal, money and instructions**: draft-price override on the billing-summary read (`?serviceId=&priceCents=`, priced server-side through `resolveServiceLineBillingTx` + tax), dollars.cents on blur, service instructions (agreement `serviceInstructions`, service notes, location notes) at the top, the **billing-plan pill** in the ticket header (the profile display waits for C5.2), **time-in prompt** on opening a ticket with no Time In (bypass allowed). Landing after Post unchanged (B1). | Tech modal items 1-4; time-in prompt; display billing plan | — | — |
 | C3.4a (**Pass 20**) | **Material units and application areas**: a settings-managed unit list (`material_units`) feeding a Unit dropdown, product `defaultUnit` migrated to pick from it; an org-level application-area list in Settings feeding products' allowed areas; application area multi-select per material line (`applicationAreas[]`, areas serviced still derived). | Unit dropdown; Application area multi-select | — | — |
 | C3.4b (**Pass 21**) | **Target pests, two levels** (B12): `productApplications.targetPests[]` per material row from the target-pest list (compliance); the ticket-level target pests stay on the ticket, selectable from a searchable multi-select placed in the Materials section, and are **selected ∪ every material's pests**; the summary line at the top of the ticket shows that union. | Target pests; pest per application | C3.4a | — |
@@ -1895,6 +1895,99 @@ Behavior worth knowing before the next pass touches it:
   (under `/@fs/`) the two shared modules. **Nothing was rendered in a browser** - the repo has no
   browser automation and this session had no browser - so the pop-up, its disabled Other option,
   the close-on-exhausted behaviour and the Settings card reach the owner first.
+
+---
+
+**Shipped in Pass 18** (`feature/phase-3-office-edit-ticket`, 2026-09-25) — the C3.1b row as
+built, plus what it found.
+
+```ts
+// server/storage.ts
+export class TicketEditError extends Error { status: 400 | 403; code: string }   // -> { code, message }; the TicketReopenError shape
+export interface UpdateServiceRecordInput { ...the Pass 16 content fields...;
+                                            serviceTypeId?: string | null;   // the Service's type; null keeps the current one (the post's rule)
+                                            priceCents?: number | null;      // the Service's stamped price; null clears the stamp
+                                            actorRole?: UserRole;            // the session's role (routes.ts)
+                                            actor? }
+updateServiceRecord(id, input)     // as Pass 16, plus: with serviceTypeId / priceCents on the body the Service is read; an agreement-
+                                   // generated one (agreementId, or source AGREEMENT_GENERATED) without can(actorRole,
+                                   // ADJUST_PRICE_AGREEMENT) -> TicketEditError 403 PRICE_ADJUSTMENT_FORBIDDEN naming "manager or admin",
+                                   // whole, whatever the values, before anything is written (after the 409 TICKET_FINALIZED check);
+                                   // a ticket with no service -> 400 SERVICE_NOT_FOUND. Then, in the one transaction: the Service
+                                   // UPDATEd when its type or price moved and `price_overridden` (entity service, the row before /
+                                   // after) when the PRICE moved - exactly completeService's block; the ticket's serviceTypeId set to
+                                   // the Service's; the ticket UPDATEd + materials replaced + `ticket_edited` only when the ticket or
+                                   // its materials changed. Nothing changed anywhere -> the existing row, no write, no audit row.
+
+// Routes
+PATCH /api/service-records/:id     // EDIT_TICKET; the strict body gains serviceTypeId (string | null) and priceCents (int | null);
+                                   // actorRole = the session's; 403 / 400 { code, message } from TicketEditError (respondTicketEditError)
+PATCH /api/services/:id            // untouched: ungated, unlogged, NOT the office price path
+
+// client/src/components/service-completion-dialog.tsx
+mode?: "post" | "office-edit"      // default "post" (technician-work.tsx and customer-detail.tsx pass none). office-edit: title "Edit
+                                   // Service Ticket"; the badge "Office edit - <describeTicketLifecycle>"; no local draft (draftKey null);
+                                   // the technician a Select and the service date a datetime-local (the PATCH's content); the locked
+                                   // price / type caption names who may (rolesWithPermission(ADJUST_PRICE_AGREEMENT)); Cancel / Save
+                                   // Changes; no CollectPaymentDialog, no time-out prompt; existingServiceRecord required
+materialsPayload() / serviceOverridePayload() / invalidateTicketViews()   // shared by completeMutation (its payload unchanged) and
+                                   // officeEditMutation: PATCH { technicianId, serviceDate, serviceTypeId?, priceCents?, notes,
+                                   // targetPests, areasServiced, conditionsFound, recommendations, followUpRequired, followUpNotes,
+                                   // productApplications } - the type and price only when allowServiceOverride, an agreement price
+                                   // only when changed from the computed default (the post's rule); errors via getApiErrorMessage
+
+// client/src/pages/service-ticket-review.tsx
+Edit (button-edit-ticket)          // between Close and Reopen; rendered for can(role, EDIT_TICKET) only; disabled with "Edit (reopen
+                                   // first)" + title when isTicketFinalized(selectedRecord) (shared/ticket-status.ts - all three
+                                   // signals), "Edit (service unavailable)" when the record's Service is not loaded; opens
+                                   // <ServiceCompletionDialog mode="office-edit"> on selectedRecord / selectedService /
+                                   // selectedAppointment with the page's technicians and serviceTypes, onCompleted = invalidateReviewData;
+                                   // editDialogOpen resets with the reopen pop-up on open / close / Next / Back
+```
+
+Behavior worth knowing before the next pass touches it:
+- **One route, one transaction.** The price edit rides the ticket PATCH rather than a route of its
+  own: the office's one save commits the Service and the ticket together or not at all, the gate
+  (`EDIT_TICKET`), the 409 on a finalized ticket and the audit story stay in one place, and no
+  second ungated price surface is opened. The generic `PATCH /api/services/:id` stays what it was.
+- **Refused whole, whatever the values.** A support user's body naming `priceCents` or
+  `serviceTypeId` for an agreement-generated service is 403 even if the values match what is
+  stored - the field is not theirs to send. The dialog never sends them for that user
+  (`allowServiceOverride`), so the order shows only at the API; a manager sending the stored price
+  is an unchanged edit and writes nothing.
+- **A price-only save logs `price_overridden` and no `ticket_edited`.** The ticket did not change.
+  A type change reaches both rows: the Service's `serviceTypeId` in `price_overridden` when the
+  price moved in the same save, and the ticket's own `serviceTypeId` in `ticket_edited` (it follows
+  the Service's as a post copies it) - so a type-only change is still logged, on the ticket.
+- **`priceCents: null` clears the stamp.** A manager can return an agreement service to its derived
+  amount; the post already meant null this way. The dialog cannot send null (an empty price box
+  parses to null and is sent as-is only when the user may override; an agreement price equal to the
+  computed default is not sent at all).
+- **The office edit seeds the technician from the ticket alone**, not from the service's or
+  appointment's assignee as a post does, so Save with nothing touched sends what the ticket holds
+  and writes nothing.
+- **Verified 2026-09-25** (PORT=5001): `npm run check` clean; boot 1 printed only the serving line
+  with all 44 table counts unchanged (no migration); 60 API / SQL assertions on boot 1 as the four
+  roles - a fixture customer and location, a manual service posted by the technician through the
+  real routes (no audit row on a first post at the stored price), technician PATCH 403, support's
+  unchanged edit 200 writing nothing, support's price + notes edit -> `price_overridden` (support,
+  15000 -> 17500) and `ticket_edited` with the notes, a type-only edit following onto the Service
+  and the ticket with no `price_overridden`, materials replace-all in the third `ticket_edited`,
+  `{ confirmed: true }` and a fractional price 400, an unknown id 404, finalize as support then
+  support and manager edits 409 `TICKET_FINALIZED` writing nothing, reopen as support ("Wrong
+  price") then a price edit 200 (17500 -> 20000, no `ticket_edited`); an agreement-generated
+  service (SQL agreement + service, posted by the technician, no stamp): support's price 403
+  `PRICE_ADJUSTMENT_FORBIDDEN` naming "manager or admin" and support's type-with-notes 403 whole,
+  both writing nothing, support's content edit 200, manager's price 200 (null -> 12345, no
+  `ticket_edited`), the same price again writing nothing, `null` clearing it (12345 -> null),
+  admin's price + type + notes in one save (three `price_overridden` rows, the type in the third's
+  Service diff, two `ticket_edited`), technician 403; the technician's re-post of the REOPENED
+  agreement ticket still ignoring its price and logging `ticket_edited`; every fixture deleted and
+  every table count back at the run's start (`session` up by the four logins); boot 2 printed only
+  the serving line with every count unchanged; a Vite 200 on the two touched client modules with
+  the new mode and buttons in the transforms. **Nothing was rendered in a browser** - the repo has
+  no browser automation and this session had no browser - so the Edit button, its disabled state,
+  the dialog's office-edit mode and its editable technician / date cards reach the owner first.
 
 ---
 
