@@ -48,6 +48,7 @@ import {
 } from "@/components/invoice-on-finalize-prompt";
 import { useAuth } from "@/hooks/use-auth";
 import { can, PERMISSIONS } from "@shared/permissions";
+import { formatReopenReason } from "@shared/ticket-reopen";
 import { selectableUsers, userDisplayName } from "@shared/users";
 import type { UserSummary } from "@shared/schema";
 import { formatPhoneDisplay } from "@shared/phone";
@@ -2847,7 +2848,7 @@ function ServiceDetailModal({
           {appointment && <p><span className="font-medium">Duration:</span> {formatDuration(appointment.durationMinutes)}</p>}
           {serviceRecord.finalizedAt && <p><span className="font-medium">Finalized:</span> {formatDateTimeValue(serviceRecord.finalizedAt)}{serviceRecord.finalizedByLabel ? ` by ${serviceRecord.finalizedByLabel}` : ""}</p>}
           {serviceRecord.reopenedAt && <p><span className="font-medium">Reopened:</span> {formatDateTimeValue(serviceRecord.reopenedAt)}{serviceRecord.reopenedByLabel ? ` by ${serviceRecord.reopenedByLabel}` : ""}</p>}
-          {serviceRecord.reopenReason && <p><span className="font-medium">Reopen Reason:</span> {serviceRecord.reopenReason}</p>}
+          {formatReopenReason(serviceRecord) && <p><span className="font-medium">Reopen Reason:</span> {formatReopenReason(serviceRecord)}</p>}
           {serviceRecord.flaggedAt && <p><span className="font-medium">Flagged for Review:</span> {serviceRecord.flagReason || "Visit invoiced before this ticket was finalized"} ({formatDateTimeValue(serviceRecord.flaggedAt)}{serviceRecord.flaggedByLabel ? ` by ${serviceRecord.flaggedByLabel}` : ""})</p>}
           <p><span className="font-medium">Billing Readiness:</span> {serviceRecord.readyForBilling ? "Ready for billing" : "Not billing-ready"}</p>
           {serviceRecord.notes && <p><span className="font-medium">Notes:</span> {serviceRecord.notes}</p>}

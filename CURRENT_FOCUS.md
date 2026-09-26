@@ -20,8 +20,9 @@ one path, C4.2 - the other pulled-forward Phase 4 pass) is merged (PR #85) with 
 live-testing review of 2026-09-25 recorded on the same branch; Pass 27b (that review's two
 defects, C4.2b) is merged (PR #86); Pass 15 (Statements, C2.5 - the last of the recommended
 immediate order) is merged (PR #87); Pass 15b (the location balance row inside the notes box,
-the owner's note of 2026-09-25) is pushed, awaiting merge; **next pass: 17, the reopen-reason pop-up** (C3.2 -
-the recommended order is exhausted, so the rest runs in phase order). The roadmap sequences every
+the owner's note of 2026-09-25) is merged (PR #88); Pass 17 (the reopen-reason pop-up, C3.2 - the
+first Phase 3 row in phase order, the recommended order being exhausted) is pushed, awaiting
+merge; **next pass: 18, the office Edit on the review modal** (C3.1b). The roadmap sequences every
 remaining item below; this file keeps the status pointer and, as its last section, the handoff
 prompt that starts the next session.
 
@@ -808,7 +809,7 @@ no browser.** Signatures and behavior are under "Shipped in Pass 15" at the end 
 `PLAN_ROADMAP_V2.md` Part D.
 
 Pass 15b (`feature/phase-2-aging-strip-placement`, 2026-09-25, owner's note after Pass 15 merged)
-pushed, awaiting merge. **The location balance rides inside the Location Notes box.** The owner's
+merged as PR #88. **The location balance rides inside the Location Notes box.** The owner's
 note: Pass 14's aging strip under the notes took too much vertical space. Now the notes box
 carries one horizontal row directly below the notes (`LocationAgingSummaryRow` in
 `aging-strip.tsx`, passed as the notes panel's `footer`): the open balance, then Current always
@@ -819,16 +820,58 @@ moved to the Invoices tab, under the ledger panel's Balance card and above the i
 the links live where invoices are. Same read, no server change, no migration. **Not rendered by
 anyone - the row's wrapping inside the notes box reaches the owner first.**
 
-Next up: **Pass 17** — the reopen-reason pop-up (`PLAN_ROADMAP_V2.md` Phase 3 table, C3.2; D9's
-"pop-up with settings-configured dropdown; Other requires text, role-gated", unscheduled since Pass
-7.6): a settings list `ticket_reopen_reasons` in the `app_settings` shape of
-`appointment_cancel_reschedule_reasons`, `reopenReasonCode` + text on the ticket, "Other"
-requiring text and a new `REOPEN_TICKET_OTHER` (manager+), the inline textarea leaving the review
-modal for a pop-up, and the modal closing on Finalize when the queue is exhausted. The recommended
-immediate order is exhausted with Pass 15; the rest runs in phase order (Pass 17 → 18 → ..., with
-Pass 26 (C4.1b) and Pass 28 (C4.3a) in Phase 4's turn). Branch from `origin/main` after confirming
-it contains Pass 15b's merge. The handoff prompt for Pass 17 is the last section of this file; the
-Pass 17 session writes Pass 18's (the C3.1b row carries the spec).
+Pass 17 (`feature/phase-3-reopen-reason-popup`, 2026-09-25, C3.2) pushed, awaiting merge.
+**The reopen reason is a pop-up over a settings list.** A reopen names a reason from the org's
+list - `ticket_reopen_reasons`, one `app_settings` row in the shape of
+`appointment_cancel_reschedule_reasons` (a JSON array of strings; no row reads as the eight
+defaults in `shared/ticket-reopen.ts`: Wrong price, Wrong service date, Wrong technician,
+Materials missing or incorrect, Notes incomplete, Customer dispute, Posted on the wrong service,
+Finalized in error) - or the fixed code `OTHER` with the reason typed out. "Other" is never a
+list entry: the server drops it from every save (an Other-only list is refused) and every read,
+and the pop-up offers it itself, last. The ticket carries `reopenReasonCode` (the list entry as
+written, or `OTHER`) and `reopenReason` (the text - required for Other, optional detail beside a
+listed reason); the technician's re-post clears the code with the other reopen stamps. **The
+route**, `POST /api/service-records/:id/reopen`, takes `{ reasonCode, reason? }` (strict - the
+old `{ reason }` body is a 400) and answers, before anything is written, 400
+`REOPEN_REASON_NOT_ON_LIST`, 400 `REOPEN_REASON_TEXT_REQUIRED` or 403 `REOPEN_OTHER_FORBIDDEN` -
+the new `REOPEN_TICKET_OTHER` (manager and admin; `REOPEN_TICKET` stays support+) is checked
+first, so a support user is told who may whatever they typed. The `ticket_reopened` audit row
+carries the code and the text through its before / after snapshots like any other column. **The
+list**: `GET / PATCH /api/settings/ticket-reopen-reasons` in the cancel list's shape, the GET open
+(the pop-up reads it) and the PATCH `MANAGE_SETTINGS` - the invoice-on-finalize convention, not
+the cancel list's ungated PATCH, which is left as it is; a **Ticket Reopen Reasons** card beside
+the cancel card on Settings edits it one reason per line, disabled for anyone but an admin. **The
+migration** (`service-scheduling-bootstrap.ts`, guarded on the column): `reopen_reason_code`
+nullable, the effect printed once - the dev DB's 4 reopened rows keep their free text with a null
+code, never guessed - and nothing on the second boot. **The review modal**: the inline textarea
+is gone; Reopen opens a small dialog (a Select fed by the list with Other last - disabled, not
+hidden, and labelled "(manager or admin only)" for a support user - a required text box that
+appears for Other, Cancel / Reopen); the Reopen Audit block prints the reason and the text (a
+legacy row its text alone); the Services tab's "Reopen Reason" line reads code - text. **Close on
+Finalize**: Finalize carries whether `resolveReviewNav` has a next step when it is pressed; with
+none - the last ticket of a run, a run of one, or a deep-linked ticket that was never in a run -
+the modal closes once the finalize is done, after the D2 prompt is answered (Generate, Generate &
+Send, Later or dismissed; D4's balance prompt lives inside the invoice prompt and outlives the
+modal) or at once when there is none; otherwise it stays on the ticket exactly as before, so Next
+still walks the run. Not touched: the finalize path itself, the technician's view, the location
+Services tab's Review ticket link, the office edit button (C3.1b, Pass 18), the disposition's own
+reasons list. **Restart `npm run dev:full` before manually testing - this pass adds routes and a
+migration (the migration already ran on the shared dev DB during this pass's verification boot; a
+server on the old code neither reads nor needs the column), and the pop-up, its disabled Other
+option, the close-on-exhausted behaviour and the Settings card have not been rendered by anyone:
+the repo has no browser automation and the session had no browser.** Signatures and behavior are
+under "Shipped in Pass 17" at the end of `PLAN_ROADMAP_V2.md` Part D.
+
+Next up: **Pass 18** — the office Edit on the review modal (`PLAN_ROADMAP_V2.md` Phase 3 table,
+C3.1b; D9's "role-gated office edit button", the last unscheduled piece of that note): the Edit
+button opens `service-completion-dialog.tsx` in an office-edit mode (same fields, materials
+included) that submits through Pass 16's gated `PATCH /api/service-records/:id` instead of the
+post route; `ADJUST_PRICE_AGREEMENT` still guards an agreement price (support edits everything
+else); a FINALIZED ticket says "reopen first"; the Service's price and type join the edit, logged
+`price_overridden` as a post's is. Phase order continues after it (Pass 19 → ..., with Pass 26
+(C4.1b) and Pass 28 (C4.3a) in Phase 4's turn). Branch from `origin/main` after confirming it
+contains Pass 17's merge. The handoff prompt for Pass 18 is the last section of this file; the
+Pass 18 session writes Pass 19's (the C3.3 row carries the spec).
 
 Phase 1's ordered plan, impact analysis, conflict resolutions, and per-pass verification steps live in
 `PLAN_BILLING_V1_1_EXECUTION.md` — read it when a pass builds on a Phase 1 helper (its "Shipped in
@@ -1061,98 +1104,92 @@ pointer and that prompt.
 
 Replaced at the end of every pass (`AGENT_WORKING_AGREEMENT.md`, the end-of-pass step). The owner
 pastes it verbatim to start the next session; it is also the last thing in the finishing session's
-final message. Written 2026-09-25, after Pass 15 was pushed as `feature/phase-2-statements`.
+final message. Written 2026-09-25, after Pass 17 was pushed as `feature/phase-3-reopen-reason-popup`.
 
 ```text
-Start Pass 17 — Reopen-reason pop-up
-(PLAN_ROADMAP_V2.md Phase 3 table, row C3.2; PLAN_BILLING_V1_1.md D9's "reopen-reason UX per
-notes: pop-up with settings-configured dropdown; Other requires text, role-gated", unscheduled
-since Pass 7.6. The recommended immediate order is exhausted; the rest runs in phase order, and
-this is the first open Phase 3 row after Pass 16.) Read the CLAUDE.md docs in order first;
-CURRENT_FOCUS.md's last two entries (Pass 15 and "Next up") are the ones that matter.
+Start Pass 18 — Office Edit on the review modal
+(PLAN_ROADMAP_V2.md Phase 3 table, row C3.1b; PLAN_BILLING_V1_1.md D9's "the role-gated office
+edit button", the last piece of that note, unscheduled since Pass 7.6. Phase order: the next open
+Phase 3 row after Pass 17.) Read the CLAUDE.md docs in order first; CURRENT_FOCUS.md's last two
+entries (Pass 17 and "Next up") are the ones that matter.
 
-Branch feature/phase-3-reopen-reason-popup from origin/main. Confirm main contains the Pass 15b
-merge (feature/phase-2-aging-strip-placement) before branching.
+Branch feature/phase-3-office-edit-ticket from origin/main. Confirm main contains the Pass 17
+merge (feature/phase-3-reopen-reason-popup) before branching.
 
-The decision is recorded (the C3.2 row; D9): a settings list ticket_reopen_reasons in the
-app_settings shape of appointment_cancel_reschedule_reasons; reopenReasonCode + text on the
-ticket; "Other" requires text and a new REOPEN_TICKET_OTHER (manager+); the inline textarea
-leaves the review modal for a pop-up; the modal closes on Finalize when the queue is exhausted.
-Ground truth today (line numbers from origin/main at the Pass 15 merge; they drift, the names do
-not):
-- The reopen path: POST /api/service-records/:id/reopen (routes.ts:1897, REOPEN_TICKET - support+
-  per shared/permissions.ts:81 / :95) parses reopenServiceRecordSchema (:318, { reason: string,
-  trimmed, min 1 }) and calls reopenServiceRecord (storage.ts:5020): one transaction that sets
-  confirmed false, ticketStatus REOPENED, reopenedAt / reopenedByUserId / reopenedByLabel,
-  reopenReason (the trimmed text) and readyForBilling false, then writes the audit row
-  ticket_reopened (service_record entity, before / after; :5047). The columns are
-  shared/schema.ts:501-504 (reopened_at, reopened_by_user_id, reopened_by_label, reopen_reason);
-  there is no reason-code column. Reopen clears the three "finalized" signals
-  shared/ticket-status.ts reads (isTicketFinalized :35), which is what re-admits the technician.
-- The settings-list shape to copy: appointment_cancel_reschedule_reasons is one app_settings row
-  (shared/schema.ts:509 - org_id + key primary key, value text) holding a JSON array of strings,
-  read by getAppointmentCancelReasons (storage.ts:5133, through normalizeAppointmentCancelReasons
-  :1084 with DEFAULT_APPOINTMENT_CANCEL_REASONS as the fallback when no row exists) and written by
-  setAppointmentCancelReasons (:5138 - trimmed, de-duplicated, at least one); the routes are GET /
-  PATCH /api/settings/appointment-cancel-reasons (routes.ts:1925 / :1930,
-  appointmentCancelReasonsSchema :296 - note that PATCH carries no permission gate, unlike
-  invoice-on-finalize at :1949 which is MANAGE_SETTINGS; decide which the new list gets and say
-  which); the Settings page edits it as one textarea, one reason per line ("Appointment Cancel /
-  Reschedule Reasons", settings.tsx:2021; state :1335, query :1352, mutation :1386). The
-  server-side "the reason must be on the list" check is dispositionAppointment's
-  (storage.ts:4240-4249: DISPOSITION_REASON_REQUIRED / DISPOSITION_REASON_NOT_ON_LIST from
-  shared/appointment-disposition.ts:79 / :81, answered as an AppointmentDispositionError 400 with
-  the code); the client dropdown fed by that list is the dispatch sheet's Cancel appointment
-  dialog (schedule.tsx:427; the list read at :637).
-- The review modal, client/src/pages/service-ticket-review.tsx: the inline "Reopen Reason"
-  Textarea (:683-684) sits above the footer, Reopen (:690, disabled until the text is non-empty)
-  beside Finalize (:693); reopenReason state (:286) is cleared by openRecordFromQueue (:349),
-  closeReviewModal (:354), goToRecord (:401) and the reopen mutation's success (:439);
-  reopenMutation (:432) posts { reason }. The finalize mutation (:415) invalidates, then either
-  opens the D2 invoice prompt or toasts, and leaves the modal open on the same ticket; Next / Back
-  walk a snapshot of the queue (navRecordIds; resolveReviewNav in
-  client/src/lib/review-queue-nav.ts:33, pure, the snapshot rule in the comment at :340-348), so
-  "the queue is exhausted" is resolveReviewNav answering no next step for the finalized ticket
-  (say whether a run of one - a deep-linked ticket - counts). The "Reopen Audit" block (:675-680)
-  shows the stamps and the free text. The audit renderer
-  (client/src/components/audit-log-entry-card.tsx) prints a service_record's before / after, so a
-  new column shows there like any other field.
-- Permissions: shared/permissions.ts - REOPEN_TICKET is support+; a new REOPEN_TICKET_OTHER goes
-  manager+ (the ADJUST_PRICE_AGREEMENT pattern); admin holds every permission.
+The decision is recorded (the C3.1b row; D9; canon §10 "lockdown after posting"): the role-gated
+Edit button on the review modal opens service-completion-dialog.tsx in an office-edit mode (same
+fields, materials included) that submits through the gated PATCH instead of the post route;
+ADJUST_PRICE_AGREEMENT still guards an agreement price (support edits everything else); a
+FINALIZED ticket says "reopen first"; Pass 16 built the PATCH content-only with materials as
+replace-all, and the Service's price and type are not on it, so this unit adds the price edit (on
+the Service, logged price_overridden as a post's is). Ground truth today (line numbers from
+origin/main at the Pass 17 merge; they drift, the names do not):
+- The edit path: PATCH /api/service-records/:id (routes.ts:1886, EDIT_TICKET - support+ per
+  shared/permissions.ts:88 / :103) parses updateServiceRecordSchema (:251 - strict: serviceDate,
+  technicianId, notes, targetPests, areasServiced, conditionsFound, recommendations,
+  followUpRequired, followUpNotes, customerSignature, productApplications; no price, no service
+  type) and calls updateServiceRecord (storage.ts:4606; UpdateServiceRecordInput :367): 409
+  TICKET_FINALIZED on a finalized ticket (TicketLockedError, respondTicketLocked routes.ts:415),
+  the existing row returned untouched when nothing changed, otherwise UPDATE + materials replaced
+  + one ticket_edited row (before / after = the row + content-only materials,
+  snapshotTicketForAudit); a technician change re-copies the name / license from the profile.
+  The whole shape is "Shipped in Pass 16" at the end of PLAN_ROADMAP_V2.md Part D.
+- The price path: a post (completeService, storage.ts:4740-4770) writes the price onto the
+  SERVICE (services.priceCents, and serviceTypeId) when allowFieldServiceOverride - a manual
+  service, or ADJUST_PRICE_AGREEMENT on an agreement-generated one - and logs price_overridden
+  (entity service, :4761-4763; shared/audit.ts:68 / :105). PATCH /api/services/:id
+  (routes.ts:1468, updateServiceSchema :213, ungated) is the generic service update and logs
+  nothing; do not route the office price edit through it unlogged. The ticket dialog prices
+  from service.priceCents (service-completion-dialog.tsx:224, :251, :269; allowServiceOverride
+  :219 reads ADJUST_PRICE_AGREEMENT for the field).
+- The dialog, client/src/components/service-completion-dialog.tsx (726 lines): props
+  ServiceCompletionDialogProps (:37; existingServiceRecord :45 - passed only for a REOPENED
+  record since Pass 16); the submit (:309) is POST /api/services/:id/complete with the fields,
+  priceCents when allowed (:319) and productApplications (:332), then the PROMPT_FOR_TIMEOUT
+  time-out (:353); the title reads "Service Ticket" / "Create Service Ticket" (:431); the
+  technician view opens it at technician-work.tsx:490 (completionContext). The materials rows
+  are the dialog's own state seeded from /api/product-applications (:189, :215-217).
+- The review modal, client/src/pages/service-ticket-review.tsx: the footer is Open Location |
+  Close / Reopen (:788, opens ReopenTicketDialog :274 - Pass 17) / Finalize (:791); the
+  ticket's lifecycle for the modal is statusLabel / statusBadgeVariant (:56 / :63) and
+  shared/ticket-status.ts (isTicketFinalized); the reviewer's role is useAuth + can (the
+  VisitCollectionsBlock pattern at :88); invalidateReviewData (:484) is what a successful edit
+  must call; the materials shown are applicationsByRecordId (from /api/product-applications).
+- Audit: ticket_edited (shared/audit.ts, Pass 16) for the ticket; price_overridden for the
+  Service's price; the History tab renders both through audit-log-entry-card.tsx.
 
-Build per C3.2: (1) the list - ticket_reopen_reasons in app_settings, a default list when no row
-exists (say which defaults), "Other" always offered last and never a stored entry (or stored - say
-which), GET / PATCH /api/settings/ticket-reopen-reasons in the cancel-reasons shape, a Settings
-card beside "Appointment Cancel / Reschedule Reasons" editing one reason per line; (2) the ticket
-- reopenReasonCode on service_records, a nullable text column added by a guarded migration in
-the bootstrap that owns service_records (its effect printed, idempotent on the second boot; the
-existing reopened rows keep their free text with a null code - never guessed), the reopen route
-taking { reasonCode, reason? }: a code on the list, or OTHER with required text, refused otherwise
-(400 with a code, the disposition's pattern), OTHER additionally gated by REOPEN_TICKET_OTHER (a
-support user reopening with Other is 403 with a message saying who may); the audit row and the
-Reopen Audit block carry both; (3) the pop-up - the inline textarea leaves the modal; Reopen opens
-a small dialog with a Select fed by the list, a text field that appears and is required for
-Other, Cancel / Reopen; the Other option is disabled, not hidden, with the reason, for anyone
-without REOPEN_TICKET_OTHER; (4) close on Finalize - when the finalize completes (after the D2
-prompt is answered, or at once when there is none) and resolveReviewNav has no next step for the
-run, the modal closes; otherwise it stays on the ticket exactly as today so Next still works. Not
-touched: the finalize path itself, the technician's view, the location Services tab's Review
-ticket link, the office edit button (C3.1b, Pass 18), the disposition's own reasons list.
+Build per C3.1b: (1) the dialog gains an office-edit mode - a prop (say mode: "post" |
+"office-edit", or an onSubmit override; say which) under which the same fields and materials
+submit through PATCH /api/service-records/:id (content) plus the price / type change through a
+logged path (2), the time-out prompt does not fire, the title says Edit Service Ticket, and the
+technician's post path is untouched; (2) the price edit on the Service: either a priceCents /
+serviceTypeId pair on the PATCH body that updateServiceRecord applies to the Service under the
+same allowFieldServiceOverride rule and logs price_overridden exactly as the post does (one
+transaction with the ticket edit), or a dedicated route - say which and why; support edits
+everything but an agreement price (403 with a message saying who may, the Pass 17 pattern);
+(3) the Edit button on the review modal, beside Reopen, shown to EDIT_TICKET holders only,
+disabled with "Reopen first" on a finalized ticket (dev rule 6: disabled, not hidden, with the
+reason), opening the dialog on the selected record with its materials; a successful edit
+invalidates the review data and stays on the ticket; (4) the technician view unchanged (it
+passes existingServiceRecord only for a REOPENED record). Not touched: the finalize and reopen
+paths, the disposition, the Services tab's link, the reopen pop-up (Pass 17), the field
+surcharge (C3.6).
 
-Environment: Node 24.21.0, npm run dev:full (restart it before manually testing - this pass adds
-routes and a migration), DEV_NOTES.md for the DB backup/restore and PowerShell traps, gh logged in
-so the session can open the PR. Verify on PORT=5001 as the previous passes did: npm run check;
-double boot (boot 1 prints the migration's effect, boot 2 only "serving on port 5001" with every
-table count unchanged); the pass's API smoke test as all four roles (a fixture ticket posted and
-finalized through the real routes; reopen with a listed code as support -> REOPENED with the code
-and the audit row; a code not on the list -> 400; Other without text -> 400; Other with text as
-support -> 403, as manager -> 200; the list read and PATCH, the defaults on an org with no row;
-the pre-existing reopened rows' null code untouched; every fixture deleted and counts back at
-baseline) and a Vite 200 on every touched client module; state plainly what was not rendered -
-the pop-up and the close-on-exhausted behavior cannot be exercised without a browser.
+Environment: Node 24.21.0, npm run dev:full (restart it before manually testing - this pass
+changes a route's body), DEV_NOTES.md for the DB backup/restore and PowerShell traps, gh logged
+in so the session can open the PR. Verify on PORT=5001 as the previous passes did: npm run
+check; double boot (no migration is expected - both boots print only "serving on port 5001" with
+every table count unchanged; if one is added, boot 1 prints its effect); the pass's API smoke
+test as all four roles (a fixture ticket posted through the real routes; the office PATCH with a
+price change as support on a manual service -> the Service's price changed and price_overridden
++ ticket_edited logged; the same on an agreement-generated service as support -> 403, as manager
+-> 200; a finalized ticket -> 409 TICKET_FINALIZED; the technician -> 403; an unchanged edit
+writes nothing; every fixture deleted and counts back at baseline) and a Vite 200 on every
+touched client module; state plainly what was not rendered - the Edit button, the dialog's
+office-edit mode and the disabled state cannot be exercised without a browser.
 
 Working agreement as always: one pass, one branch, update CURRENT_FOCUS and the roadmap's pass
 table at the end, replace the handoff prompt at the end of CURRENT_FOCUS.md with the one for the
-next pass (phase order: Pass 18, the office Edit on the review modal, C3.1b, whose spec is its
-row, unless I say otherwise), push, open the PR and stop. I merge.
+next pass (phase order: Pass 19, the technician ticket modal's money and instructions, C3.3,
+whose spec is its row, unless I say otherwise), push, open the PR and stop. I merge.
 ```

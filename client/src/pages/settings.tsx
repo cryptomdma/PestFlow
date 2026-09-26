@@ -1333,6 +1333,7 @@ export default function Settings() {
   const [taxRuleDialogOpen, setTaxRuleDialogOpen] = useState(false);
   const [editingTaxRule, setEditingTaxRule] = useState<TaxRule | null>(null);
   const [appointmentCancelReasonsText, setAppointmentCancelReasonsText] = useState("");
+  const [ticketReopenReasonsText, setTicketReopenReasonsText] = useState("");
   const { data: serviceTypes, isLoading } = useQuery<ServiceType[]>({ queryKey: ["/api/service-types"] });
   const { data: technicians, isLoading: techniciansLoading } = useQuery<Technician[]>({ queryKey: ["/api/technicians?includeInactive=true"] });
   // Pass 12: the technician rows name their linked user.
@@ -1361,6 +1362,14 @@ export default function Settings() {
       setAppointmentCancelReasonsText(appointmentCancelReasons.reasons.join("\n"));
     }
   }, [appointmentCancelReasons]);
+  // Pass 17 (C3.2): the review modal's reopen pop-up fills its dropdown from
+  // this list. Read by anyone; the PATCH is MANAGE_SETTINGS.
+  const { data: ticketReopenReasons } = useQuery<{ reasons: string[] }>({ queryKey: ["/api/settings/ticket-reopen-reasons"] });
+  useEffect(() => {
+    if (ticketReopenReasons?.reasons) {
+      setTicketReopenReasonsText(ticketReopenReasons.reasons.join("\n"));
+    }
+  }, [ticketReopenReasons]);
   const updateServiceTimeTrackingMutation = useMutation({
     mutationFn: async (mode: string) => {
       const response = await apiRequest("PATCH", "/api/settings/service-time-tracking", { mode });
@@ -1397,6 +1406,21 @@ export default function Settings() {
       toast({ title: "Appointment reasons updated" });
     },
     onError: (error: Error) => toast({ title: "Unable to update appointment reasons", description: error.message, variant: "destructive" }),
+  });
+  const updateTicketReopenReasonsMutation = useMutation({
+    mutationFn: async () => {
+      const reasons = ticketReopenReasonsText
+        .split(/\r?\n/)
+        .map((reason) => reason.trim())
+        .filter(Boolean);
+      const response = await apiRequest("PATCH", "/api/settings/ticket-reopen-reasons", { reasons });
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/settings/ticket-reopen-reasons"] });
+      toast({ title: "Ticket reopen reasons updated" });
+    },
+    onError: (error: Error) => toast({ title: "Unable to update ticket reopen reasons", description: error.message, variant: "destructive" }),
   });
 
   const openCreateTemplate = () => {
@@ -2039,6 +2063,42 @@ export default function Settings() {
             disabled={updateAppointmentCancelReasonsMutation.isPending || !appointmentCancelReasonsText.trim()}
           >
             {updateAppointmentCancelReasonsMutation.isPending ? "Saving..." : "Save Reasons"}
+          </Button>
+        </CardContent>
+      </Card>
+
+      {/* Pass 17 (C3.2): the reasons the office picks from when reopening a
+          ticket in Service Ticket Review. "Other" is the pop-up's own last
+          option (typed reason, manager+), never a line here - the server
+          drops it. The PATCH is MANAGE_SETTINGS, so the editor is disabled -
+          not hidden - for everyone else (dev behavior rule 6). */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base font-semibold flex items-center gap-2"><SettingsIcon className="h-4 w-4" /> Ticket Reopen Reasons</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="max-w-xl space-y-2">
+            <Label>Reasons</Label>
+            <Textarea
+              value={ticketReopenReasonsText}
+              onChange={(event) => setTicketReopenReasonsText(event.target.value)}
+              rows={8}
+              placeholder={"Wrong price\nWrong service date\nMaterials missing or incorrect"}
+              disabled={!canManageSettings}
+              data-testid="textarea-ticket-reopen-reasons"
+            />
+            <p className="text-xs text-muted-foreground">
+              One reason per line. The office picks one when reopening a posted or finalized ticket from Service Ticket Review. "Other" is always offered last there and needs the reason typed out (manager or admin); it is not a line on this list.
+            </p>
+            {!canManageSettings ? <p className="text-xs text-muted-foreground">Only an admin can change this list.</p> : null}
+          </div>
+          <Button
+            type="button"
+            onClick={() => updateTicketReopenReasonsMutation.mutate()}
+            disabled={!canManageSettings || updateTicketReopenReasonsMutation.isPending || !ticketReopenReasonsText.trim()}
+            data-testid="button-save-ticket-reopen-reasons"
+          >
+            {updateTicketReopenReasonsMutation.isPending ? "Saving..." : "Save Reasons"}
           </Button>
         </CardContent>
       </Card>

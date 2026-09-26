@@ -2,6 +2,13 @@ import { sql } from "drizzle-orm";
 import { db } from "./db";
 import { OPPORTUNITY_CATEGORY_SEED, taxonomyForSource } from "@shared/opportunities";
 
+async function columnExists(table: string, column: string): Promise<boolean> {
+  const result = await db.execute(
+    sql`SELECT 1 FROM information_schema.columns WHERE table_name = ${table} AND column_name = ${column}`,
+  );
+  return result.rows.length > 0;
+}
+
 export async function bootstrapServiceSchedulingFoundation(): Promise<void> {
   await db.execute(sql`
     CREATE TABLE IF NOT EXISTS technicians (
@@ -120,6 +127,20 @@ export async function bootstrapServiceSchedulingFoundation(): Promise<void> {
   await db.execute(sql`ALTER TABLE service_records ADD COLUMN IF NOT EXISTS flagged_by_user_id varchar`);
   await db.execute(sql`ALTER TABLE service_records ADD COLUMN IF NOT EXISTS flagged_by_label text`);
   await db.execute(sql`ALTER TABLE service_records ADD COLUMN IF NOT EXISTS flag_reason text`);
+  // Pass 17 (PLAN_ROADMAP_V2.md C3.2): the reopen reason's code beside its
+  // free text - a settings-list entry or OTHER (shared/ticket-reopen.ts).
+  // Guarded on the column so the effect prints once; the rows reopened
+  // before the list existed keep their text with a null code - never
+  // guessed - and the code is written only by the reopen route.
+  const hadReopenReasonCode = await columnExists("service_records", "reopen_reason_code");
+  await db.execute(sql`ALTER TABLE service_records ADD COLUMN IF NOT EXISTS reopen_reason_code text`);
+  if (!hadReopenReasonCode) {
+    const counted = await db.execute(sql`SELECT count(*)::int AS reopened FROM service_records WHERE reopened_at IS NOT NULL`);
+    const reopened = (counted.rows[0] as { reopened: number } | undefined)?.reopened ?? 0;
+    console.log(
+      `[service-scheduling-bootstrap] Pass 17: service_records gained reopen_reason_code (nullable text). ${reopened} previously reopened row(s) keep their free-text reopen_reason with a null code - nothing was backfilled or guessed; the code is written only by POST /api/service-records/:id/reopen from here on.`,
+    );
+  }
 
   await db.execute(sql`
     CREATE TABLE IF NOT EXISTS app_settings (

@@ -22,7 +22,7 @@ import { OPPORTUNITY_ASSIGNEE_ME, OPPORTUNITY_ASSIGNEE_UNASSIGNED, OPPORTUNITY_W
 import { ZodError, z } from "zod";
 import type { Request } from "express";
 import { requirePermission } from "./auth";
-import { AppointmentDispositionError, DraftInvoiceDecisionRequiredError, PrefinalizationIssueError, StatementRefusedError, TicketLockedError } from "./storage";
+import { AppointmentDispositionError, DraftInvoiceDecisionRequiredError, PrefinalizationIssueError, StatementRefusedError, TicketLockedError, TicketReopenError } from "./storage";
 import { isUtcDay, statementFileName } from "@shared/statements";
 import { APPOINTMENT_DISPOSITION_MODES, DISPOSITION_OPPORTUNITY_CHOICES } from "@shared/appointment-disposition";
 import { can, PERMISSIONS, type UserRole } from "@shared/permissions";
@@ -315,8 +315,15 @@ export async function registerRoutes(
     opportunity: z.enum(DISPOSITION_OPPORTUNITY_CHOICES),
     voidDraftInvoices: z.boolean().optional(),
   }).strict();
+  // Pass 17 (C3.2): a reason from the settings list, or OTHER with the
+  // reason typed - checked by storage (shared/ticket-reopen.ts). Strict: the
+  // old { reason } body is refused rather than read as free text.
   const reopenServiceRecordSchema = z.object({
-    reason: z.string().trim().min(1, "Reopen reason is required"),
+    reasonCode: z.string().trim().min(1, "A reopen reason is required"),
+    reason: z.string().trim().nullable().optional(),
+  }).strict();
+  const ticketReopenReasonsSchema = z.object({
+    reasons: z.array(z.string().trim().min(1)).min(1),
   });
   const opportunityStatusSchema = z.enum(["OPEN", "CONTACTED", "CONVERTED", "DISMISSED"]);
   // Pass 25 (C4.1), the Pass 16 pattern: the PATCH is content only and
@@ -419,6 +426,11 @@ export async function registerRoutes(
   // APPOINTMENT_NOT_DISPOSITIONABLE - and the status PATCH's 409
   // CANCEL_DISPOSITION_REQUIRED.
   const respondAppointmentDispositionError = (res: any, err: AppointmentDispositionError) =>
+    res.status(err.status).json({ message: err.message, code: err.code });
+  // Pass 17 (C3.2): a reopen the reason forbids - 400
+  // REOPEN_REASON_NOT_ON_LIST / REOPEN_REASON_TEXT_REQUIRED, 403
+  // REOPEN_OTHER_FORBIDDEN.
+  const respondTicketReopenError = (res: any, err: TicketReopenError) =>
     res.status(err.status).json({ message: err.message, code: err.code });
   // D4: the initial charge block on agreements (actual) and templates
   // (default). The enums are the shared vocabulary; the cross-field rule - a
@@ -1897,11 +1909,19 @@ export async function registerRoutes(
   app.post("/api/service-records/:id/reopen", requirePermission(PERMISSIONS.REOPEN_TICKET), async (req, res) => {
     try {
       const validated = reopenServiceRecordSchema.parse(req.body);
-      const data = await req.storage.reopenServiceRecord(req.params.id, validated.reason, getAuditActor(req));
+      const data = await req.storage.reopenServiceRecord({
+        id: req.params.id,
+        reasonCode: validated.reasonCode,
+        reason: validated.reason ?? null,
+        // The role and the actor are the session's, never the body's (D7).
+        actorRole: req.user!.role as UserRole,
+        actor: getAuditActor(req),
+      });
       if (!data) return res.status(404).json({ message: "Service record not found" });
       res.json(data);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
+      if (e instanceof TicketReopenError) return respondTicketReopenError(res, e);
       res.status(400).json({ message: e.message });
     }
   });
@@ -1931,6 +1951,27 @@ export async function registerRoutes(
     try {
       const validated = appointmentCancelReasonsSchema.parse(req.body);
       const data = await req.storage.setAppointmentCancelReasons(validated.reasons);
+      res.json({ reasons: JSON.parse(data.value) });
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  // Pass 17 (C3.2): the ticket reopen reasons list. Readable by anyone (the
+  // review modal's pop-up fills its dropdown from it); changing it decides
+  // what every reviewer may name, so the PATCH is MANAGE_SETTINGS like
+  // invoice-on-finalize. The appointment cancel list's ungated PATCH above
+  // predates that convention and is left as it is (the disposition owns it).
+  app.get("/api/settings/ticket-reopen-reasons", async (req, res) => {
+    const reasons = await req.storage.getTicketReopenReasons();
+    res.json({ reasons });
+  });
+
+  app.patch("/api/settings/ticket-reopen-reasons", requirePermission(PERMISSIONS.MANAGE_SETTINGS), async (req, res) => {
+    try {
+      const validated = ticketReopenReasonsSchema.parse(req.body);
+      const data = await req.storage.setTicketReopenReasons(validated.reasons);
       res.json({ reasons: JSON.parse(data.value) });
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);

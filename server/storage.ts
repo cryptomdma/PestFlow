@@ -85,8 +85,18 @@ import {
   type ZeroBalanceLetter,
   type ZeroBalanceLetterAgreement,
 } from "@shared/statements";
-import { can, PERMISSIONS, type UserRole } from "@shared/permissions";
+import { can, PERMISSIONS, rolesWithPermission, type UserRole } from "@shared/permissions";
 import { isTicketFinalized, isTicketInOfficeReview } from "@shared/ticket-status";
+import {
+  REOPEN_OTHER_FORBIDDEN,
+  REOPEN_REASON_NOT_ON_LIST,
+  REOPEN_REASON_OTHER,
+  REOPEN_REASON_TEXT_REQUIRED,
+  TICKET_REOPEN_REASONS_SETTING_KEY,
+  isOtherReopenReason,
+  normalizeTicketReopenReasons,
+  sanitizeTicketReopenReasons,
+} from "@shared/ticket-reopen";
 import { computeProductionValueCents } from "@shared/production-value";
 import { formatCents } from "@shared/money";
 import { buildBillingPlanSnapshot as buildSharedBillingPlanSnapshot, isScheduleBilledPlan } from "@shared/billing-plan";
@@ -323,6 +333,28 @@ export class TicketLockedError extends Error {
     super(message);
     this.name = "TicketLockedError";
   }
+}
+
+// Pass 17 (PLAN_ROADMAP_V2.md C3.2): a reopen the reason forbids - 400
+// REOPEN_REASON_NOT_ON_LIST / REOPEN_REASON_TEXT_REQUIRED, 403
+// REOPEN_OTHER_FORBIDDEN (shared/ticket-reopen.ts). Routes answer `status`
+// with { code, message } so the pop-up can tell the refusals apart.
+export class TicketReopenError extends Error {
+  constructor(readonly status: 400 | 403, readonly code: string, message: string) {
+    super(message);
+    this.name = "TicketReopenError";
+  }
+}
+
+export interface ReopenServiceRecordInput {
+  id: string;
+  /** A reason on the settings list, as written there, or OTHER. */
+  reasonCode: string;
+  /** Required for OTHER; optional detail beside a listed reason. */
+  reason?: string | null;
+  /** The session user's role (routes.ts) - OTHER needs REOPEN_TICKET_OTHER. */
+  actorRole: UserRole;
+  actor?: AuditActor | null;
 }
 
 // The office's edit of a posted ticket (PATCH /api/service-records/:id,
@@ -904,11 +936,13 @@ export interface IStorage {
   updateServiceRecord(id: string, input: UpdateServiceRecordInput): Promise<ServiceRecord | undefined>;
   completeService(input: CompleteServiceInput): Promise<CompleteServiceResult | undefined>;
   finalizeServiceRecord(id: string, actor?: AuditActor): Promise<FinalizeServiceRecordResult | undefined>;
-  reopenServiceRecord(id: string, reason: string, actor?: AuditActor): Promise<ServiceRecord | undefined>;
+  reopenServiceRecord(input: ReopenServiceRecordInput): Promise<ServiceRecord | undefined>;
   getServiceTimeTrackingMode(): Promise<ServiceTimeTrackingMode>;
   setServiceTimeTrackingMode(mode: ServiceTimeTrackingMode): Promise<AppSetting>;
   getAppointmentCancelReasons(): Promise<string[]>;
   setAppointmentCancelReasons(reasons: string[]): Promise<AppSetting>;
+  getTicketReopenReasons(): Promise<string[]>;
+  setTicketReopenReasons(reasons: string[]): Promise<AppSetting>;
   getInvoiceOnFinalizeMode(): Promise<InvoiceOnFinalizeMode>;
   setInvoiceOnFinalizeMode(mode: InvoiceOnFinalizeMode): Promise<AppSetting>;
 
@@ -4762,6 +4796,7 @@ export class DatabaseStorage implements IStorage {
         reopenedByUserId: null,
         reopenedByLabel: null,
         reopenReason: null,
+        reopenReasonCode: null,
         readyForBilling: false,
       };
       const technicianSnapshot = await this.resolveServiceRecordTechnicianSnapshot(tx, recordPayload, existingRecord);
@@ -5017,7 +5052,32 @@ export class DatabaseStorage implements IStorage {
     }
   }
 
-  async reopenServiceRecord(id: string, reason: string, actor?: AuditActor): Promise<ServiceRecord | undefined> {
+  // Pass 17 (C3.2): the reason is a settings-list entry or OTHER with the
+  // reason typed (shared/ticket-reopen.ts). Checked before the transaction,
+  // the permission first - a support user is told who may reopen with Other
+  // whatever they typed - then the text, then the list; each a coded 4xx.
+  // The stored code is the list entry as written, or OTHER; the text is
+  // required for OTHER and kept as optional detail beside a listed reason.
+  async reopenServiceRecord(input: ReopenServiceRecordInput): Promise<ServiceRecord | undefined> {
+    const { id, actor } = input;
+    const reasonCode = input.reasonCode.trim();
+    const reason = input.reason?.trim() || null;
+    const isOther = isOtherReopenReason(reasonCode);
+    if (isOther) {
+      if (!can(input.actorRole, PERMISSIONS.REOPEN_TICKET_OTHER)) {
+        const who = rolesWithPermission(PERMISSIONS.REOPEN_TICKET_OTHER).join(" or ");
+        throw new TicketReopenError(403, REOPEN_OTHER_FORBIDDEN, `Reopening with "Other" needs a ${who}. Pick a reason from the list, or ask one of them to reopen it.`);
+      }
+      if (!reason) {
+        throw new TicketReopenError(400, REOPEN_REASON_TEXT_REQUIRED, '"Other" needs the reason typed out');
+      }
+    } else {
+      const reasons = await this.getTicketReopenReasons();
+      if (!reasons.includes(reasonCode)) {
+        throw new TicketReopenError(400, REOPEN_REASON_NOT_ON_LIST, `"${reasonCode}" is not on the ticket reopen reasons list`);
+      }
+    }
+
     return db.transaction(async (tx) => {
       const [existingRecord] = await tx.select().from(serviceRecords).where(and(eq(serviceRecords.orgId, this.orgId), eq(serviceRecords.id, id)));
       if (!existingRecord) return undefined;
@@ -5030,7 +5090,8 @@ export class DatabaseStorage implements IStorage {
           reopenedAt: new Date(),
           reopenedByUserId: actor?.userId ?? null,
           reopenedByLabel: actor?.actorLabel ?? "Office",
-          reopenReason: reason.trim(),
+          reopenReason: reason,
+          reopenReasonCode: isOther ? REOPEN_REASON_OTHER : reasonCode,
           readyForBilling: false,
         })
         .where(and(eq(serviceRecords.orgId, this.orgId), eq(serviceRecords.id, id)))
@@ -5144,6 +5205,31 @@ export class DatabaseStorage implements IStorage {
     const [setting] = await db
       .insert(appSettings)
       .values({ orgId: this.orgId, key: "appointment_cancel_reschedule_reasons", value })
+      .onConflictDoUpdate({
+        target: [appSettings.orgId, appSettings.key],
+        set: { value, updatedAt: new Date() },
+      })
+      .returning();
+    return setting;
+  }
+
+  // Pass 17 (C3.2): the ticket reopen reasons list - one app_settings row in
+  // the cancel list's shape. No row reads as the defaults, and "Other" is
+  // never stored: the pop-up offers it itself, last (shared/ticket-reopen.ts).
+  async getTicketReopenReasons(): Promise<string[]> {
+    const [setting] = await db.select().from(appSettings).where(and(eq(appSettings.orgId, this.orgId), eq(appSettings.key, TICKET_REOPEN_REASONS_SETTING_KEY)));
+    return normalizeTicketReopenReasons(setting?.value);
+  }
+
+  async setTicketReopenReasons(reasons: string[]): Promise<AppSetting> {
+    const normalized = sanitizeTicketReopenReasons(reasons);
+    if (!normalized.length) {
+      throw new Error("At least one ticket reopen reason besides Other is required");
+    }
+    const value = JSON.stringify(normalized);
+    const [setting] = await db
+      .insert(appSettings)
+      .values({ orgId: this.orgId, key: TICKET_REOPEN_REASONS_SETTING_KEY, value })
       .onConflictDoUpdate({
         target: [appSettings.orgId, appSettings.key],
         set: { value, updatedAt: new Date() },

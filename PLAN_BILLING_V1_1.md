@@ -342,7 +342,9 @@ Decided now, built later, so they stop resurfacing as ambiguity:
   (role-gated). Review modal gains Next/Back ticket navigation, price/payment and address blocks, and
   the role-gated office edit button.
   The price/payment and address blocks and Next/Back land in **Pass 7.6** (owner review of Pass 7.5,
-  under D5). The reopen-reason dropdown and the office edit button are not yet scheduled.
+  under D5). The reopen-reason dropdown shipped as **Pass 17** (`feature/phase-3-reopen-reason-popup`,
+  2026-09-25, C3.2 - a pop-up over the `ticket_reopen_reasons` settings list, "Other" with the reason
+  typed out and gated `REOPEN_TICKET_OTHER`, manager+); the office edit button is Pass 18 (C3.1b).
 
 ---
 
