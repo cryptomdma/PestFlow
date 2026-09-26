@@ -121,7 +121,7 @@ import { addDays, advanceAgreementDate, computeExpectedServiceCount } from "@sha
 // nightly run compute a per-period amount the same way. server/jobs/billing-run.ts
 // and server/production-value-backfill.ts still import it from here.
 export { advanceAgreementDate, computeExpectedServiceCount };
-import type { VisitBillingSummary, VisitChargeBilling, VisitServiceBilling } from "@shared/visit-billing";
+import type { VisitBillingDraft, VisitBillingSummary, VisitChargeBilling, VisitServiceBilling } from "@shared/visit-billing";
 import type { AppointmentInvoiceStatus, InvoiceBillToSnapshot, InvoiceDetail, InvoiceServiceLocationSnapshot } from "@shared/invoice-detail";
 import type { BatchGenerateResult, BatchInvoiceFilters, BatchInvoicePreview, BatchInvoicePreviewCharge, BatchInvoicePreviewTicket } from "@shared/batch-invoice";
 import {
@@ -356,6 +356,26 @@ export class TicketEditError extends Error {
     super(message);
     this.name = "TicketEditError";
   }
+}
+
+// Pass 19 (PLAN_ROADMAP_V2.md C3.3): the billing-summary read was asked to
+// price a draft for a service that is not on the visit - 400
+// DRAFT_SERVICE_NOT_ON_VISIT (a stale ticket, never a silent no-op). Routes
+// answer `status` with { code, message }.
+export class VisitBillingDraftError extends Error {
+  constructor(readonly status: 400, readonly code: string, message: string) {
+    super(message);
+    this.name = "VisitBillingDraftError";
+  }
+}
+
+// Pass 19 (C3.3): the price typed on the technician's ticket but not yet
+// posted, priced on the read and written nowhere.
+export interface VisitBillingDraftInput {
+  serviceId: string;
+  priceCents: number;
+  /** The session's role: the post's rule (ADJUST_PRICE_AGREEMENT) decides whether an agreement-generated service is re-priced. */
+  actorRole: UserRole | string;
 }
 
 export interface ReopenServiceRecordInput {
@@ -949,7 +969,8 @@ export interface IStorage {
   timeOutAppointment(id: string): Promise<Appointment | undefined>;
   getTechnicianWork(technicianId: string, date: string): Promise<TechnicianWorkVisit[]>;
   // D6: Price / COA applied / Due today for one visit, per service and summed.
-  getVisitBillingSummary(appointmentId: string): Promise<VisitBillingSummary | undefined>;
+  // Pass 19: with a draft, that service is priced at the draft price (nothing written).
+  getVisitBillingSummary(appointmentId: string, draft?: VisitBillingDraftInput | null): Promise<VisitBillingSummary | undefined>;
 
   getServiceRecords(): Promise<ServiceRecord[]>;
   getServiceRecordsByLocation(locationId: string): Promise<ServiceRecord[]>;
@@ -5863,7 +5884,19 @@ export class DatabaseStorage implements IStorage {
   //
   // COA is payment application. Nothing here touches a price: priceCents is
   // the line amount, and the COA figures only reduce what is left to collect.
-  async getVisitBillingSummary(appointmentId: string): Promise<VisitBillingSummary | undefined> {
+  //
+  // Pass 19 (C3.3): `draft` is the price typed on the technician's ticket
+  // and not yet posted. It reaches resolveServiceLineBillingTx as the
+  // Service's priceCents and nothing else changes - the same branches (COD,
+  // a plan the nightly run does not bill, a covered plan that stays $0
+  // whatever is stamped) and the same tax call price it, so there is no
+  // second pricing path and nothing is written. It is subject to the post's
+  // rule: an agreement-generated service is re-priced only for a role that
+  // may stamp it (ADJUST_PRICE_AGREEMENT), and a draft the role may not apply
+  // is IGNORED, not refused - the figures preview what Post will produce, and
+  // completeService ignores that price too. An issued invoice's figures are
+  // the invoice's and are never re-priced. `draft` on the result says which.
+  async getVisitBillingSummary(appointmentId: string, draft?: VisitBillingDraftInput | null): Promise<VisitBillingSummary | undefined> {
     const group = await this.getAppointmentBillingGroupTx(db as any, appointmentId);
     if (!group) {
       return undefined;
@@ -5879,6 +5912,31 @@ export class DatabaseStorage implements IStorage {
 
     const invoice = await this.findInvoiceForVisitTx(db as any, appointment.id, records.map((record) => record.id));
     const invoiced = !!invoice && isInvoiceIssued(invoice.status);
+
+    let draftEcho: VisitBillingDraft | null = null;
+    if (draft) {
+      const draftService = visitServices.find((service) => service.id === draft.serviceId);
+      if (!draftService) {
+        throw new VisitBillingDraftError(400, "DRAFT_SERVICE_NOT_ON_VISIT", "That service is not on this visit's billing, so its draft price cannot be priced here.");
+      }
+      const isAgreementGeneratedService = !!draftService.agreementId || draftService.source === "AGREEMENT_GENERATED";
+      const mayReprice = !isAgreementGeneratedService || can(draft.actorRole, PERMISSIONS.ADJUST_PRICE_AGREEMENT);
+      draftEcho = invoice && invoiced
+        ? {
+          serviceId: draft.serviceId,
+          priceCents: draft.priceCents,
+          applied: false,
+          note: `The visit is invoiced (${invoice.invoiceNumber}): the figures are the invoice's, and a price difference is a correction on the invoice.`,
+        }
+        : !mayReprice
+          ? {
+            serviceId: draft.serviceId,
+            priceCents: draft.priceCents,
+            applied: false,
+            note: `Agreement price is locked - ${rolesWithPermission(PERMISSIONS.ADJUST_PRICE_AGREEMENT).join(" or ")} may re-price it; the stored figures stand.`,
+          }
+          : { serviceId: draft.serviceId, priceCents: draft.priceCents, applied: true, note: null };
+    }
 
     const baseLine = (service: Service): Pick<VisitServiceBilling, "serviceId" | "serviceRecordId" | "serviceTypeName" | "agreementId"> => ({
       serviceId: service.id,
@@ -5991,10 +6049,15 @@ export class DatabaseStorage implements IStorage {
 
       for (const service of visitServices) {
         const record = recordByServiceId.get(service.id);
+        // The draft price (Pass 19) is the Service's price for this pricing
+        // and nothing more; the resolver decides what it means.
+        const pricedService = draftEcho?.applied && service.id === draftEcho.serviceId
+          ? { ...service, priceCents: draftEcho.priceCents }
+          : service;
         try {
           const billing = await this.resolveServiceLineBillingTx(db as any, {
             record,
-            service,
+            service: pricedService,
             agreementContext: service.agreementId ? agreementContextById.get(service.agreementId) : undefined,
           });
           const taxCents = billing.lineType === "AGREEMENT_COVERED"
@@ -6019,6 +6082,16 @@ export class DatabaseStorage implements IStorage {
           // Show the service that generation will refuse, with its reason,
           // rather than a $0 the technician would read as "nothing to collect".
           lines.push(unresolved(service, err?.message ?? "Cannot be billed"));
+        }
+      }
+
+      // A draft handed to the resolver on a covered visit stays $0 (the
+      // resolver's rule, as at Post): say so rather than let "applied" read
+      // as "billed".
+      if (draftEcho?.applied) {
+        const draftLine = lines.find((line) => line.serviceId === draftEcho?.serviceId);
+        if (draftLine?.designation === "PRODUCTION") {
+          draftEcho = { ...draftEcho, note: "Covered by agreement: the price is recorded at Post, but this visit bills $0 for the service." };
         }
       }
 
@@ -6088,6 +6161,7 @@ export class DatabaseStorage implements IStorage {
         }
         : null,
       invoiced,
+      draft: draftEcho,
       services: lines,
       charges,
       totals,

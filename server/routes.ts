@@ -22,7 +22,7 @@ import { OPPORTUNITY_ASSIGNEE_ME, OPPORTUNITY_ASSIGNEE_UNASSIGNED, OPPORTUNITY_W
 import { ZodError, z } from "zod";
 import type { Request } from "express";
 import { requirePermission } from "./auth";
-import { AppointmentDispositionError, DraftInvoiceDecisionRequiredError, PrefinalizationIssueError, StatementRefusedError, TicketEditError, TicketLockedError, TicketReopenError } from "./storage";
+import { AppointmentDispositionError, DraftInvoiceDecisionRequiredError, PrefinalizationIssueError, StatementRefusedError, TicketEditError, TicketLockedError, TicketReopenError, VisitBillingDraftError } from "./storage";
 import { isUtcDay, statementFileName } from "@shared/statements";
 import { APPOINTMENT_DISPOSITION_MODES, DISPOSITION_OPPORTUNITY_CHOICES } from "@shared/appointment-disposition";
 import { can, PERMISSIONS, type UserRole } from "@shared/permissions";
@@ -1746,11 +1746,47 @@ export async function registerRoutes(
   // with each service's BILLABLE vs PRODUCTION designation - resolved server-
   // side through the same code that prices the visit invoice. A read like
   // every other read; the technician's ticket and the dispatch board both use it.
+  //
+  // Pass 19 (PLAN_ROADMAP_V2.md C3.3): ?serviceId=&priceCents= - together or
+  // not at all - prices THAT service at the draft price the technician has
+  // typed but not posted, through the same resolver and tax engine, writing
+  // nothing. The post's rule applies with the session's role: an agreement
+  // price the role may not stamp is ignored and echoed as such in `draft`
+  // (never refused - the read previews what Post will do, and Post ignores it
+  // too); a service not on the visit is 400 DRAFT_SERVICE_NOT_ON_VISIT.
+  // priceCents is whole cents, digits only, so an empty or fractional value
+  // is a 400 rather than a $0 preview.
+  const billingSummaryQuerySchema = z
+    .object({
+      serviceId: z.string().min(1).optional(),
+      priceCents: z
+        .string()
+        .regex(/^\d+$/, "priceCents must be a whole number of cents")
+        .transform((value) => Number(value))
+        .refine((value) => Number.isSafeInteger(value), "priceCents is out of range")
+        .optional(),
+    })
+    .superRefine((value, ctx) => {
+      if ((value.serviceId === undefined) !== (value.priceCents === undefined)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["priceCents"], message: "serviceId and priceCents go together" });
+      }
+    });
   app.get("/api/appointments/:id/billing-summary", async (req, res) => {
-    const data = await req.storage.getVisitBillingSummary(req.params.id);
-    if (!data) return res.status(404).json({ message: "Appointment not found" });
-    res.json(data);
+    try {
+      const query = billingSummaryQuerySchema.parse(req.query);
+      const draft = query.serviceId !== undefined && query.priceCents !== undefined
+        ? { serviceId: query.serviceId, priceCents: query.priceCents, actorRole: req.user!.role as UserRole }
+        : null;
+      const data = await req.storage.getVisitBillingSummary(req.params.id, draft);
+      if (!data) return res.status(404).json({ message: "Appointment not found" });
+      res.json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      if (e instanceof VisitBillingDraftError) return res.status(e.status).json({ code: e.code, message: e.message });
+      res.status(400).json({ message: e.message });
+    }
   });
+
 
   app.post("/api/appointments", async (req, res) => {
     try {
