@@ -19,7 +19,8 @@ pass, pulled forward by the recommended order) is merged (PR #84); Pass 27 (Canc
 one path, C4.2 - the other pulled-forward Phase 4 pass) is merged (PR #85) with the owner's
 live-testing review of 2026-09-25 recorded on the same branch; Pass 27b (that review's two
 defects, C4.2b) is merged (PR #86); Pass 15 (Statements, C2.5 - the last of the recommended
-immediate order) is pushed, awaiting merge; **next pass: 17, the reopen-reason pop-up** (C3.2 -
+immediate order) is merged (PR #87); Pass 15b (the location balance row inside the notes box,
+the owner's note of 2026-09-25) is pushed, awaiting merge; **next pass: 17, the reopen-reason pop-up** (C3.2 -
 the recommended order is exhausted, so the rest runs in phase order). The roadmap sequences every
 remaining item below; this file keeps the status pointer and, as its last section, the handoff
 prompt that starts the next session.
@@ -747,7 +748,7 @@ the board without its red cards, the two dialogs closing on completion and the d
 not been rendered by anyone: the repo has no browser automation and the session had no browser.**
 Signatures and behavior are under "Shipped in Pass 27b" at the end of `PLAN_ROADMAP_V2.md` Part D.
 
-Pass 15 (`feature/phase-2-statements`, 2026-09-25, C2.5) pushed, awaiting merge.
+Pass 15 (`feature/phase-2-statements`, 2026-09-25, C2.5) merged as PR #87.
 **Statements.** Three customer-facing documents through the invoice document's pattern - storage
 assembles the context, the renderer is pure and byte-deterministic, the bytes are stored - all on
 request, none on a schedule. A **location statement** (`POST /api/locations/:id/statements
@@ -806,6 +807,18 @@ layout have not been rendered by anyone: the repo has no browser automation and 
 no browser.** Signatures and behavior are under "Shipped in Pass 15" at the end of
 `PLAN_ROADMAP_V2.md` Part D.
 
+Pass 15b (`feature/phase-2-aging-strip-placement`, 2026-09-25, owner's note after Pass 15 merged)
+pushed, awaiting merge. **The location balance rides inside the Location Notes box.** The owner's
+note: Pass 14's aging strip under the notes took too much vertical space. Now the notes box
+carries one horizontal row directly below the notes (`LocationAgingSummaryRow` in
+`aging-strip.tsx`, passed as the notes panel's `footer`): the open balance, then Current always
+and the other buckets only when something is owed in them, then on account and pending when
+non-zero, with "days since invoiced" as the caption - no invoice links. The full strip with the
+invoices behind each bucket (`LocationAgingStrip`, now titled "Balance by days since invoiced")
+moved to the Invoices tab, under the ledger panel's Balance card and above the invoice rows, so
+the links live where invoices are. Same read, no server change, no migration. **Not rendered by
+anyone - the row's wrapping inside the notes box reaches the owner first.**
+
 Next up: **Pass 17** — the reopen-reason pop-up (`PLAN_ROADMAP_V2.md` Phase 3 table, C3.2; D9's
 "pop-up with settings-configured dropdown; Other requires text, role-gated", unscheduled since Pass
 7.6): a settings list `ticket_reopen_reasons` in the `app_settings` shape of
@@ -814,7 +827,7 @@ requiring text and a new `REOPEN_TICKET_OTHER` (manager+), the inline textarea l
 modal for a pop-up, and the modal closing on Finalize when the queue is exhausted. The recommended
 immediate order is exhausted with Pass 15; the rest runs in phase order (Pass 17 → 18 → ..., with
 Pass 26 (C4.1b) and Pass 28 (C4.3a) in Phase 4's turn). Branch from `origin/main` after confirming
-it contains Pass 15's merge. The handoff prompt for Pass 17 is the last section of this file; the
+it contains Pass 15b's merge. The handoff prompt for Pass 17 is the last section of this file; the
 Pass 17 session writes Pass 18's (the C3.1b row carries the spec).
 
 Phase 1's ordered plan, impact analysis, conflict resolutions, and per-pass verification steps live in
@@ -1058,8 +1071,8 @@ since Pass 7.6. The recommended immediate order is exhausted; the rest runs in p
 this is the first open Phase 3 row after Pass 16.) Read the CLAUDE.md docs in order first;
 CURRENT_FOCUS.md's last two entries (Pass 15 and "Next up") are the ones that matter.
 
-Branch feature/phase-3-reopen-reason-popup from origin/main. Confirm main contains the Pass 15
-merge (feature/phase-2-statements) before branching.
+Branch feature/phase-3-reopen-reason-popup from origin/main. Confirm main contains the Pass 15b
+merge (feature/phase-2-aging-strip-placement) before branching.
 
 The decision is recorded (the C3.2 row; D9): a settings list ticket_reopen_reasons in the
 app_settings shape of appointment_cancel_reschedule_reasons; reopenReasonCode + text on the

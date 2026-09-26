@@ -60,7 +60,7 @@ import { InitialChargeDuePrompt, type WithInitialChargeDue } from "@/components/
 import { InvoiceRowLedger, LocationLedgerPanel } from "@/components/location-ledger-panel";
 import { InvoiceDetailDialog } from "@/components/invoice-detail-dialog";
 import { StatementDialog } from "@/components/statement-dialog";
-import { CustomerAgingChips, LocationAgingStrip } from "@/components/aging-strip";
+import { CustomerAgingChips, LocationAgingStrip, LocationAgingSummaryRow } from "@/components/aging-strip";
 import type { CustomerAging } from "@shared/aging";
 import { InvoiceStatusBadge } from "@/components/invoice-status-badge";
 import {
@@ -1437,14 +1437,17 @@ function CustomerNotesPanel({
 function LocationNotesPanel({
   customerId,
   locationId,
+  footer,
 }: {
   customerId: string;
   locationId: string;
+  /** Below the notes, inside the box - the location's balance row (owner, 2026-09-25). */
+  footer?: ReactNode;
 }) {
   const { data: locationNotes } = useQuery<CustomerNote[]>({ queryKey: ["/api/notes/location", locationId] });
 
   return (
-    <Card className="h-full">
+    <Card className="h-full flex flex-col">
       <SingleNoteSection
         title="Location Notes"
         scope="LOCATION"
@@ -1458,6 +1461,7 @@ function LocationNotesPanel({
         expandedBodyClassName="h-[7.5rem]"
         footerReserveClassName="min-h-[3.5rem]"
       />
+      {footer ? <div className="border-t px-4 py-2.5 mt-auto" data-testid="footer-location-notes">{footer}</div> : null}
     </Card>
   );
 }
@@ -3904,18 +3908,20 @@ export default function CustomerDetail() {
               </CardContent>
             </Card>
 
-            <div className="flex flex-col gap-4">
-              <div className="flex-1 min-h-0">
-                <LocationNotesPanel customerId={customerId} locationId={activeLocationId} />
-              </div>
-              {/* Pass 14 (C2.4): the location's balance by days since invoiced, below its notes; a bucket's invoices open the modal. */}
-              <LocationAgingStrip
-                aging={customerAging?.locations.find((entry) => entry.locationId === activeLocationId) ?? null}
-                asOf={customerAging?.asOf}
-                isLoading={customerAgingLoading}
-                onOpenInvoice={openInvoice}
-              />
-            </div>
+            {/* The location's balance by days since invoiced rides inside the notes box as one row
+                (owner, 2026-09-25): Current always, the other buckets only when owed, no invoice
+                links - the full strip with them is on the Invoices tab. */}
+            <LocationNotesPanel
+              customerId={customerId}
+              locationId={activeLocationId}
+              footer={
+                <LocationAgingSummaryRow
+                  aging={customerAging?.locations.find((entry) => entry.locationId === activeLocationId) ?? null}
+                  asOf={customerAging?.asOf}
+                  isLoading={customerAgingLoading}
+                />
+              }
+            />
           </div>
         )}
 
@@ -4034,6 +4040,14 @@ export default function CustomerDetail() {
 
           <TabsContent value="invoices" className="mt-4 space-y-3">
             <LocationLedgerPanel customerId={customerId} locationId={activeLocationId} locationLabel={activeLocationLabel} invoices={locationInvoices ?? []} agreements={locationAgreements} onOpenInvoice={openInvoice} />
+            {/* Pass 14's strip with the invoices behind each bucket, here since the owner's note of 2026-09-25. */}
+            <LocationAgingStrip
+              title="Balance by days since invoiced"
+              aging={customerAging?.locations.find((entry) => entry.locationId === activeLocationId) ?? null}
+              asOf={customerAging?.asOf}
+              isLoading={customerAgingLoading}
+              onOpenInvoice={openInvoice}
+            />
             {!locationInvoices || locationInvoices.length === 0 ? (
               <Card><CardContent className="text-center py-8"><FileText className="h-8 w-8 mx-auto text-muted-foreground/30 mb-2" /><p className="text-sm text-muted-foreground">No invoices for this location</p></CardContent></Card>
             ) : [...locationInvoices].sort((a, b) => new Date(b.issuedAt ?? b.createdAt).getTime() - new Date(a.issuedAt ?? a.createdAt).getTime()).map((inv) => (
