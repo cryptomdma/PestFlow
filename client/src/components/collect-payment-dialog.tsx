@@ -10,7 +10,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth";
 import { apiRequest, getApiErrorMessage } from "@/lib/queryClient";
 import { invalidateInvoiceViews } from "@/lib/invalidate-invoice-views";
-import { VisitBillingRows, VisitInitialChargeCallout, useVisitBillingSummary } from "@/components/visit-billing-summary";
+import { VisitBillingRows, VisitInitialChargeCallout, useVisitBillingSummary, type VisitBillingDraftPrice } from "@/components/visit-billing-summary";
 import type { RecordPaymentResponse } from "@/components/record-payment-dialog";
 import { can, PERMISSIONS } from "@shared/permissions";
 import { centsToDollarString, dollarsToCents, formatCents } from "@shared/money";
@@ -51,6 +51,12 @@ interface CollectPaymentDialogProps {
   /** Ticket flow: the step after collecting. When given, the dialog ends with "Post Service Ticket" and this runs it. */
   onPostTicket?: () => void;
   postingTicket?: boolean;
+  /**
+   * Pass 19 (C3.3): the ticket's unposted price, when the technician has
+   * changed it. The summary here is read with it, so this step prices and
+   * defaults to what Post will stamp rather than the stored amount.
+   */
+  draftPrice?: VisitBillingDraftPrice | null;
 }
 
 export function CollectPaymentDialog({
@@ -61,11 +67,12 @@ export function CollectPaymentDialog({
   designatedAgreementId,
   onPostTicket,
   postingTicket = false,
+  draftPrice = null,
 }: CollectPaymentDialogProps) {
   const { toast } = useToast();
   const { user } = useAuth();
   const canCollect = can(user?.role ?? "", PERMISSIONS.TAKE_PAYMENT_FIELD);
-  const { data: summary, isLoading, isError } = useVisitBillingSummary(open ? appointmentId : null);
+  const { data: summary, isLoading, isError } = useVisitBillingSummary(open ? appointmentId : null, draftPrice);
   const { data: designatedAgreement } = useQuery<Agreement>({
     queryKey: [`/api/agreements/${designatedAgreementId}`],
     enabled: open && !!designatedAgreementId,

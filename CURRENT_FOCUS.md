@@ -22,8 +22,9 @@ defects, C4.2b) is merged (PR #86); Pass 15 (Statements, C2.5 - the last of the 
 immediate order) is merged (PR #87); Pass 15b (the location balance row inside the notes box,
 the owner's note of 2026-09-25) is merged (PR #88); Pass 17 (the reopen-reason pop-up, C3.2 - the
 first Phase 3 row in phase order, the recommended order being exhausted) is merged (PR #89); Pass
-18 (the office Edit on the review modal, C3.1b) is pushed, awaiting merge; **next pass: 19, the
-technician ticket modal's money and instructions** (C3.3). The roadmap sequences every
+18 (the office Edit on the review modal, C3.1b) is merged (PR #90); Pass 19 (the technician
+ticket modal's money and instructions, C3.3) is pushed, awaiting merge; **next pass: 20, material
+units and application areas** (C3.4a). The roadmap sequences every
 remaining item below; this file keeps the status pointer and, as its last section, the handoff
 prompt that starts the next session.
 
@@ -863,7 +864,7 @@ option, the close-on-exhausted behaviour and the Settings card have not been ren
 the repo has no browser automation and the session had no browser.** Signatures and behavior are
 under "Shipped in Pass 17" at the end of `PLAN_ROADMAP_V2.md` Part D.
 
-Pass 18 (`feature/phase-3-office-edit-ticket`, 2026-09-25, C3.1b) pushed, awaiting merge.
+Pass 18 (`feature/phase-3-office-edit-ticket`, 2026-09-25, C3.1b) merged as PR #90.
 **The office edits a posted ticket from the review modal.** An **Edit** button sits between
 Close and Reopen in the modal's footer, for `EDIT_TICKET` holders only (support+); on a finalized
 ticket - any of the three signals `isTicketFinalized` reads - it is disabled, not hidden, and
@@ -902,18 +903,64 @@ office-edit mode and its editable technician / date cards have not been rendered
 repo has no browser automation and the session had no browser.** Signatures and behavior are
 under "Shipped in Pass 18" at the end of `PLAN_ROADMAP_V2.md` Part D.
 
-Next up: **Pass 19** — the technician ticket modal's money and instructions
-(`PLAN_ROADMAP_V2.md` Phase 3 table, C3.3; the "Technician ticket modal — owner notes" entry
-below, items 1-4): the draft price drives the Price / tax / Due today block and the collect step
-at once, priced server-side through a `?serviceId=&priceCents=` override on the billing-summary
-read (the same resolver and tax engine as the visit invoice, never a second pricing path in the
-browser; nothing written); dollars.cents on blur; the agreement's service instructions, the
-service's notes and the location's notes at the top of the open ticket; the billing-plan pill
-in the ticket header; a time-in prompt when a ticket opens on a visit with no Time In, bypass
-allowed; landing after Post unchanged (B1). Phase order continues after it (Pass 20, C3.4a → ...,
-with Pass 26 (C4.1b) and Pass 28 (C4.3a) in Phase 4's turn). Branch from `origin/main` after
-confirming it contains Pass 18's merge. The handoff prompt for Pass 19 is the last section of
-this file; the Pass 19 session writes Pass 20's (the C3.4a row carries the spec).
+Pass 19 (`feature/phase-3-tech-ticket-money-instructions`, 2026-09-25, C3.3) pushed, awaiting merge.
+**The price typed on the ticket drives the figures, priced by the server.** `GET
+/api/appointments/:id/billing-summary?serviceId=&priceCents=` (together or not at all) prices THAT
+service at the draft price through the same `resolveServiceLineBillingTx` and `resolveTaxDecision`
+the visit invoice uses - the draft reaches the resolver as the Service's `priceCents` and nothing
+else changes, so the same branches price it (a COD service at the draft; an agreement on a plan the
+run does not bill at the draft; a covered plan still $0 whatever is typed) and there is no second
+pricing path - and writes nothing: the stored price still changes only at Post (Pass 8's
+`price_overridden`), no audit row. **The post's rule, with the session's role**: an
+agreement-generated service is re-priced only for `ADJUST_PRICE_AGREEMENT` (manager+); a draft the
+role may not apply is **ignored, not refused** - echoed in the summary's new `draft` field
+(`{ serviceId, priceCents, applied, note }`, the note naming "manager or admin") - because the read
+previews what Post will produce and `completeService` ignores that price too; a refusal would blank
+the ticket's billing block for a case the dialog never sends. An issued invoice's figures are the
+invoice's and are never re-priced (echoed with the invoice number). A `serviceId` not on the visit
+is 400 `DRAFT_SERVICE_NOT_ON_VISIT`; `priceCents` is digits only (an empty or fractional value is a
+400, never a $0 preview); one param without the other is a 400. **The dialog**
+(`service-completion-dialog.tsx`, both modes - the header block is shared): the price box commits
+on blur, formatted to dollars.cents (`commitPrice`), and the committed value becomes the draft
+under exactly `serviceOverridePayload`'s rule (only when this user may set the price, only when it
+differs from the stored price, never an agreement service's computed default), so the figures
+preview what Post will stamp; the draft rides the summary query key's last segment as the query
+string (`visitBillingSummaryQueryKey(id, draft)`, so the `["/api/appointments"]` prefix
+invalidations still reach it, and the same visit's last figures stay on screen while the re-read
+is in flight); `CollectPaymentDialog` takes the same `draftPrice`, so **Finish & Collect shows and
+defaults to the new amount**; the billing block says what its figures are priced at ("Priced at
+the ticket's $X - not posted yet", or why the draft is not applied). **Instructions** near the top
+of the open ticket: the agreement's `serviceInstructions`, the service's `notes` and the location's
+`notes`, each labelled, absent when empty; the location comes in as a new `location` prop from the
+technician view (its work read already carries it), and a caller without one (the review modal's
+office edit, the Services tab's post) falls back to the customer's locations read
+(`GET /api/locations/:customerId`, the row this service sits at). **The billing-plan pill** (D6's
+`BillingPlanPill`; `useBillingPlanById` now takes `enabled`) sits under the mode badge in the header
+for an agreement service; the billing-profile display waits for C5.2. **Time in now?** lives in
+the technician view (`technician-work.tsx`), in front of the ticket's open: an `AlertDialog` when
+the appointment has no `timeInAt` - "Time in and open" posts the existing
+`POST /api/appointments/:id/time-in` and opens the ticket on the stamped appointment, "Open
+without timing in" opens it anyway (bypass allowed), Escape opens nothing; a failed time-in toasts
+and still opens the ticket. The technician view is the one surface that opens the post mode from a
+visit, so the office-edit mode never sees the prompt. The open appointment-details sheet now
+follows the day's read (`detailVisit` derived from `visits` by appointment id over the selected
+snapshot), so a Time In / Time Out recorded from the sheet or the prompt shows without reopening
+it. Landing after Post unchanged (B1). Not touched: the post route's body and price stamping (Pass
+8), the office-edit save (Pass 18), finalize / reopen, the field surcharge (C3.6), add-a-service
+from the field (C4.3b), the tax engine's rules. No schema change, no migration. **Restart `npm run
+dev:full` before manually testing - this pass changes a read's query and the technician's modal;
+the re-pricing on blur, the instructions block, the pill and the time-in prompt have not been
+rendered by anyone: the repo has no browser automation and the session had no browser.**
+Signatures and behavior are under "Shipped in Pass 19" at the end of `PLAN_ROADMAP_V2.md` Part D.
+
+Next up: **Pass 20** — material units and application areas (`PLAN_ROADMAP_V2.md` Phase 3 table,
+C3.4a): a settings-managed unit list (`material_units`) feeding a Unit dropdown on the material
+line, product `defaultUnit` migrated to pick from it; an org-level application-area list in
+Settings feeding products' allowed areas; an application-area multi-select per material line
+(`applicationAreas[]`, areas serviced still derived). Phase order continues after it (Pass 21,
+C3.4b → ..., with Pass 26 (C4.1b) and Pass 28 (C4.3a) in Phase 4's turn). Branch from
+`origin/main` after confirming it contains Pass 19's merge. The handoff prompt for Pass 20 is the
+last section of this file; the Pass 20 session writes Pass 21's (the C3.4b row carries the spec).
 
 Phase 1's ordered plan, impact analysis, conflict resolutions, and per-pass verification steps live in
 `PLAN_BILLING_V1_1_EXECUTION.md` — read it when a pass builds on a Phase 1 helper (its "Shipped in
@@ -1016,7 +1063,7 @@ pointer and that prompt.
     migrated or dropped. Sequence after Pass 6, since the line is an invoice line and the credit wants
     the payments ledger's collection record. Whether the *comp* for that line is production or
     commission is a comp-plan question (§1.6.2), not this unit's.
-  - **Technician ticket modal — owner notes (2026-09-16, after Pass 8).** `[Roadmap: items 1-4 Pass 19, C3.3; item 5 Pass 29, C4.3b; item 6 Phase 9, with sale attribution in Pass 12]` Six items on the field
+  - **Technician ticket modal — owner notes (2026-09-16, after Pass 8).** `[Roadmap: items 1-4 built as Pass 19, C3.3 (2026-09-25); item 5 Pass 29, C4.3b; item 6 Phase 9, with sale attribution in Pass 12]` Six items on the field
     ticket. None was built by Pass 8 (which only *logged* the price override) and none is
     scheduled; together they are one technician-view pass, to be planned after Pass 9. What
     exists today, and the gap:
@@ -1146,108 +1193,105 @@ pointer and that prompt.
 
 Replaced at the end of every pass (`AGENT_WORKING_AGREEMENT.md`, the end-of-pass step). The owner
 pastes it verbatim to start the next session; it is also the last thing in the finishing session's
-final message. Written 2026-09-25, after Pass 18 was pushed as `feature/phase-3-office-edit-ticket`.
+final message. Written 2026-09-25, after Pass 19 was pushed as
+`feature/phase-3-tech-ticket-money-instructions`.
 
 ```text
-Start Pass 19 — Technician ticket modal, money and instructions
-(PLAN_ROADMAP_V2.md Phase 3 table, row C3.3; CURRENT_FOCUS.md's "Technician ticket modal — owner
-notes (2026-09-16, after Pass 8)" entry, items 1-4, plus the row's time-in prompt and billing-plan
-pill. Phase order: the next open Phase 3 row after Pass 18.) Read the CLAUDE.md docs in order
-first; CURRENT_FOCUS.md's last two entries (Pass 18 and "Next up") are the ones that matter.
+Start Pass 20 — Material units and application areas
+(PLAN_ROADMAP_V2.md Phase 3 table, row C3.4a. Phase order: the next open Phase 3 row after Pass
+19.) Read the CLAUDE.md docs in order first; CURRENT_FOCUS.md's last two entries (Pass 19 and
+"Next up") are the ones that matter.
 
-Branch feature/phase-3-tech-ticket-money-instructions from origin/main. Confirm main contains
-the Pass 18 merge (feature/phase-3-office-edit-ticket) before branching.
+Branch feature/phase-3-material-units-areas from origin/main. Confirm main contains the Pass 19
+merge (feature/phase-3-tech-ticket-money-instructions) before branching.
 
-The decision is recorded (the C3.3 row; PLAN_BILLING_V1_1.md D8's "Technician ticket modal (owner
-notes, 2026-09-16)"; B1 keeps the landing after Post; B13's design rule - every field action is a
-route and every screen is data from a read, the field being a PWA today and a native app later):
-the price typed on the ticket drives the Price / tax / Due today block and the collect step at
-once, on leaving the price box, priced server-side through the same resolver and tax engine as
-the visit invoice - never a second pricing path in the browser; tax is the tax engine's answer,
-display-only; the stored price still changes only at Post (Pass 8's price_overridden);
-dollars.cents on blur; the agreement's service instructions, the service's notes and the
-location's notes inside the open ticket near the top; the billing-plan pill in the ticket header
-(the billing-profile display waits for C5.2); a time-in prompt when a ticket opens on a visit
-with no Time In, bypass allowed. Ground truth today (line numbers from origin/main at the Pass 18
-merge; they drift, the names do not):
-- The read: GET /api/appointments/:id/billing-summary (routes.ts:1749 - no query, no body) ->
-  getVisitBillingSummary (storage.ts:5866): getAppointmentBillingGroupTx, then per service
-  resolveServiceLineBillingTx (storage.ts:6515, private; { record, service, agreementContext } ->
-  { lineType, amountCents, coverageNote }; a non-agreement service prices from
-  service.priceCents and throws "Service has no price set" on null) and the line's tax from
-  resolveTaxDecision (storage.ts:6308, the org's active tax_rates / tax_rules; the un-invoiced
-  branch is :5995-6005, taxCents 0 on an AGREEMENT_COVERED line), then COA from the location's
-  unapplied pool. Shape: shared/visit-billing.ts VisitServiceBilling (:25 - serviceId,
-  designation BILLABLE | PRODUCTION, priceCents, taxCents, coaAppliedCents, dueTodayCents) and
-  VisitBillingSummary (:102 - services, charges, totals, invoice, invoiced). Nothing in it reads a
-  client-supplied price.
-- The dialog, client/src/components/service-completion-dialog.tsx (since Pass 18 it has a mode
-  prop, "post" | "office-edit" (:57); the technician's path is "post" and the office-edit path
-  shares every field and the header, so a header change shows in both modes):
-  useVisitBillingSummary(open ? visitAppointmentId : null) (:215; hook and key in
-  visit-billing-summary.tsx:23-27); ServiceBillingBlock in the header card (:518; the component
-  visit-billing-summary.tsx:145) beside serviceTypeName / Scheduled (:509-510); the price box is
-  a bare number Input (:583) over ticketPrice (:195, a string; dollarsToCents /
-  centsToDollarString in shared/money.ts), isAgreementGeneratedService / allowServiceOverride
-  (:234-235) and displayPriceCents (:242); the agreement is already loaded (useQuery
-  /api/agreements/:id, :208); no location is passed in; the collect step is CollectPaymentDialog
-  (:821, post mode only) and prices from the same summary read; the PROMPT_FOR_TIMEOUT time-out
-  prompt is a window.confirm in completeMutation's onSuccess (:397); officeEditMutation (:416)
-  is Pass 18's and is not touched.
-- The technician view, client/src/pages/technician-work.tsx: Time In is POST
-  /api/appointments/:id/time-in (:149, the mutation; the button :315-318 in the appointment
-  details sheet, shown when !appointment.timeInAt); the ticket opens at :394 (setCompletionContext
-  with { service, appointment }) and the dialog is rendered at :490 (no location prop; the visit
-  is a TechnicianWorkVisit, storage.ts:656 - appointment, customer, location, services); the
-  sheet shows Appointment Notes (:355-359, appointments.notes - B13's "order instructions"),
-  Location Notes (:361-365, locations.notes) and each service's notes (:376, services.notes) -
-  the ticket modal shows none of the three and never the agreement's instructions.
-- Data: agreements.serviceInstructions (shared/schema.ts:391, defaulted from
-  agreementTemplates.defaultInstructions :455 by the agreement form, customer-detail.tsx:368),
-  services.notes (:213), locations.notes (:69). The billing-plan pill:
-  client/src/components/billing-plan-pill.tsx (BillingPlanPill :21, useBillingPlanById :15), on
-  the agreement card and the location screen since D6.
-- Settings: GET /api/settings/service-time-tracking (routes.ts:1950) - the mode the dialog
-  already reads for the time-out prompt.
+The decision is recorded (the C3.4a row: a settings-managed unit list (material_units) feeding a
+Unit dropdown, product defaultUnit migrated to pick from it; an org-level application-area list in
+Settings feeding products' allowed areas; application area multi-select per material line
+(applicationAreas[], areas serviced still derived); canon §12 "Materials support" - Product
+Application rows are product-driven, areas serviced derive from structured application areas, no
+duplicate freeform area field; B13's rule - every field action is a route and every screen is
+data from a read; B12 / C3.4b (Pass 21) puts target pests per material row NEXT, so leave the
+material line's shape room for it). Ground truth today (line numbers from origin/main at the Pass
+19 merge; they drift, the names do not):
+- Data: material_products (shared/schema.ts:633) carries allowedApplicationAreas text[] (:645),
+  defaultUnit text (:649), defaultApplicationArea text (:650), allowedApplicationMethods /
+  allowedEquipment text[] (:643-644) and allowTechnicianOverride (:651); product_applications
+  (:615) carries unit text (:625) and ONE applicationLocation text (:629) per row;
+  service_records.areasServiced text (:476) is derived by the dialog from the rows'
+  applicationLocation (uniqueValues(...).join(", ")) on the post and on the office edit. The
+  tables are created in server/service-scheduling-bootstrap.ts (:171-196 - CREATE TABLE IF NOT
+  EXISTS material_products with allowed_application_areas :182 and default_unit :186; the
+  product_applications.material_product_id column :196); the migration convention is a guarded
+  ALTER in a *-bootstrap.ts with the per-row effect printed once (PROJECT_MAP.md). The dev DB
+  today: 4 products (default units each / gal / each / Each - note the casing drift - and allowed
+  areas such as Exterior / Interior / Garage / Attic / Crawl Space / Interior Baseboards /
+  Exterior Perimeter / Yard); 45 product_applications whose unit is null, each, Each or gal and
+  whose application_location is free text (Attic, Exterior, Exterior Perimeter, "Exterior
+  perimeter, 3ft up/3ft out", "(1) Roof, (1) Attic", "Kitchen equipment bases, wall voids behind
+  prep areas", ...).
+- The settings-list pattern to copy is Pass 17's: shared/ticket-reopen.ts (the key constant, the
+  defaults, the sanitize / normalize helpers), storage.ts getTicketReopenReasons /
+  setTicketReopenReasons (:5322-5340 - one app_settings row, a JSON array of strings, upsert on
+  (org_id, key)), routes.ts GET / PATCH /api/settings/ticket-reopen-reasons (:2023-2036, the GET
+  open and the PATCH MANAGE_SETTINGS), the Settings card (settings.tsx:2070-2105, a textarea one
+  entry per line, disabled - not hidden - for anyone but an admin). Material products: GET / POST
+  / PATCH /api/material-products (routes.ts:2059-2076, ungated), storage.ts:5238-5250; the product
+  form is MaterialProductForm (settings.tsx:222) with Allowed Areas a comma-separated Input (:297)
+  and Default Unit a free Input (:302); the Material Products card is at :1745.
+- The material line: client/src/components/service-completion-dialog.tsx - MaterialLine (:22, unit
+  and applicationLocation strings), the Unit free Input (:814-815, placeholder "oz, gal, lb"), the
+  Application Area Select over the product's allowedApplicationAreas or a free Input when the
+  product has none (:842-851; areaOptions :751), selectProduct seeding unit from
+  product.defaultUnit and applicationLocation from product.defaultApplicationArea (:546-549),
+  materialsPayload (:370-384) sending unit and applicationLocation, derivedAreas (:438 the post,
+  :480 the office edit), the collapsed summary line (:760). The post body:
+  completeServiceSchema.productApplications = insertProductApplicationSchema minus serviceRecordId
+  (routes.ts:266; the PATCH's :285); storage normalizeProductApplicationInputs (:426) and
+  snapshotProductApplication (:458 - the ticket_edited diff's shape). The review modal prints each
+  material's unit and applicationLocation (service-ticket-review.tsx:775).
 
-Build per C3.3: (1) the draft-price override on the read - GET
-/api/appointments/:id/billing-summary?serviceId=&priceCents= prices THAT service at the draft
-price through resolveServiceLineBillingTx and resolveTaxDecision and writes nothing (say how the
-override reaches the resolver without a second pricing path); the override is subject to the
-post's rule - an agreement-generated service without ADJUST_PRICE_AGREEMENT is not re-priced
-(say whether the read ignores the override or refuses it, and why); a serviceId not on the visit
-is a 400; the dialog re-reads on leaving the price box and the collect step prices from the same
-read, so Finish & Collect shows and defaults to the new amount; (2) dollars.cents: the price box
-formats to two decimals on blur; (3) an instructions block near the top of the open ticket: the
-agreement's serviceInstructions, the service's notes and the location's notes, each labelled,
-absent when empty - the location comes in as a prop from the technician view (or a read; say
-which); (4) the BillingPlanPill in the ticket header for an agreement service (the profile
-display waits for C5.2); (5) the time-in prompt: a ticket opened on an appointment with no
-timeInAt asks "Time in now?" - Yes posts through the existing time-in route and the view
-refreshes, No opens the ticket anyway (bypass allowed) - post mode only; (6) landing after Post
-unchanged (B1). Not touched: the post route's body and price stamping (Pass 8), the office-edit
-mode's save (Pass 18), finalize / reopen, the field surcharge (C3.6), add-a-service from the
-field (C4.3b), the tax engine's rules.
+Build per C3.4a: (1) material_units - a settings-managed list in the reopen-reasons shape (one
+app_settings row, a shared module with the defaults - propose them, e.g. oz, fl oz, gal, lb, g,
+mL, L, each - GET open, PATCH MANAGE_SETTINGS, a Settings card), the product form's Default Unit
+becoming a Select over it and the material line's Unit a Select over it (a unit already on a row
+that is not on the list is still shown, never dropped); the migration normalizes
+material_products.default_unit and product_applications.unit to the list's spelling where the
+match is case-insensitive (Each -> each) and prints the per-row effect once, leaving anything it
+cannot match untouched and reported; (2) an org-level application-area list in Settings
+(application_areas, the same shape) feeding the product form's Allowed Areas (a multi-select over
+the org list instead of comma-separated free text; values already on a product and not on the list
+are kept and shown); (3) applicationAreas[] on product_applications - a text[] column beside the
+existing applicationLocation, the material line's Application Area becoming a multi-select over
+the product's allowed areas (the org list when the product has none), areasServiced still derived
+(the union of every row's areas, in order), the review modal and the collapsed summary printing
+the list; the migration copies each existing applicationLocation into applicationAreas as a
+one-element array and prints the count; applicationLocation stays as the transitional single
+value, written as the first area and marked so (dev rule 4), until C3.4b decides its fate; (4)
+B13: every list is a read and every save a route - nothing page-only. Say plainly what a unit or
+area typed outside the lists does (refused, or kept and flagged) and why. Not touched: target
+pests (C3.4b), the post's price / type path (Passes 8, 18, 19), the tax engine, the service report
+(C3.5).
 
-Environment: Node 24.21.0, npm run dev:full (restart it before manually testing - this pass
-changes a read's query and the technician's modal), DEV_NOTES.md for the DB backup/restore and
-PowerShell traps, gh logged in so the session can open the PR. Verify on PORT=5001 as the
-previous passes did: npm run check; double boot (no migration is expected - both boots print
-only "serving on port 5001" with every table count unchanged; if one is added, boot 1 prints its
-effect); the pass's API smoke test as all four roles (a fixture visit - customer, location, a
-manual service and an agreement-generated one placed on an appointment through the real routes;
-the billing-summary read with ?serviceId=&priceCents= as the technician on the manual service ->
-priceCents, taxCents and dueTodayCents follow the draft while the stored price is unchanged and
-no audit row is written; on the agreement service as the technician -> the stored figures
-(ignored or refused, as decided), as manager -> the draft; a serviceId not on the visit -> 400;
-the tax equals the engine's answer for the org's active rate; the time-in route still stamps
-timeInAt once; every fixture deleted and counts back at baseline) and a Vite 200 on every
-touched client module; state plainly what was not rendered - the re-pricing on blur, the
-instructions block, the pill and the time-in prompt cannot be exercised without a browser.
+Environment: Node 24.21.0, npm run dev:full (restart it before manually testing - this pass adds
+a migration and routes), DEV_NOTES.md for the DB backup/restore and PowerShell traps, gh logged in
+so the session can open the PR. Verify on PORT=5001 as the previous passes did: npm run check;
+double boot (boot 1 prints the migration's per-row effect - the unit normalizations and the
+applicationAreas backfill count - and boot 2 prints only "serving on port 5001" with every table
+count unchanged); the pass's API smoke test as all four roles (the two lists' GET / PATCH and
+their gating; a fixture product created through POST /api/material-products with a unit from the
+list and allowed areas from the org list; a ticket posted through the real routes with two
+material rows carrying applicationAreas[] -> areasServiced derived as their union and the rows'
+unit on the list; an office edit replacing the rows (Pass 16's replace-all) -> ticket_edited's
+before / after carrying applicationAreas; a unit or area outside the lists handled as decided;
+every fixture deleted and counts back at baseline; snapshot the two app_settings rows before the
+run and restore or delete them in the cleanup) and a Vite 200 on every touched client module;
+state plainly what was not rendered - the Selects, the multi-selects and the Settings cards cannot
+be exercised without a browser.
 
 Working agreement as always: one pass, one branch, update CURRENT_FOCUS and the roadmap's pass
 table at the end, replace the handoff prompt at the end of CURRENT_FOCUS.md with the one for the
-next pass (phase order: Pass 20, material units and application areas, C3.4a, whose spec is its
-row, unless I say otherwise), push, open the PR and stop. I merge.
+next pass (phase order: Pass 21, target pests at two levels, C3.4b, whose spec is its row, unless
+I say otherwise), push, open the PR and stop. I merge.
 ```
 

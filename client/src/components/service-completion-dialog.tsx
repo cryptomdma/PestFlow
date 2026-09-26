@@ -11,12 +11,13 @@ import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth";
 import { apiRequest, getApiErrorMessage, queryClient } from "@/lib/queryClient";
 import { dollarsToCents, centsToDollarString, formatCents } from "@shared/money";
-import { ServiceBillingBlock, VisitInitialChargeCallout, useVisitBillingSummary } from "@/components/visit-billing-summary";
+import { ServiceBillingBlock, VisitInitialChargeCallout, useVisitBillingSummary, type VisitBillingDraftPrice } from "@/components/visit-billing-summary";
 import { CollectPaymentDialog } from "@/components/collect-payment-dialog";
+import { BillingPlanPill, useBillingPlanById } from "@/components/billing-plan-pill";
 import { can, PERMISSIONS, rolesWithPermission } from "@shared/permissions";
 import { computeProductionValueCents } from "@shared/production-value";
 import { describeTicketLifecycle } from "@shared/ticket-status";
-import type { Agreement, Appointment, MaterialProduct, ProductApplication, Service, ServiceRecord, ServiceType, TargetPest, Technician } from "@shared/schema";
+import type { Agreement, Appointment, Location, MaterialProduct, ProductApplication, Service, ServiceRecord, ServiceType, TargetPest, Technician } from "@shared/schema";
 
 interface MaterialLine {
   key: string;
@@ -55,6 +56,11 @@ interface ServiceCompletionDialogProps {
   // local draft, and the technician and service date editable (the PATCH's
   // content, which a post fixes at start). Defaults to "post".
   mode?: "post" | "office-edit";
+  // Pass 19 (PLAN_ROADMAP_V2.md C3.3): the visit's location, for its notes in
+  // the instructions block. The technician view passes it from its work
+  // read; a caller without one (the review modal, the Services tab) leaves
+  // it out and the dialog reads the customer's locations instead.
+  location?: Location | null;
 }
 
 type DilutionOption = {
@@ -176,6 +182,7 @@ export function ServiceCompletionDialog({
   existingServiceRecord,
   onCompleted,
   mode = "post",
+  location = null,
 }: ServiceCompletionDialogProps) {
   const { toast } = useToast();
   const { user } = useAuth();
@@ -193,6 +200,10 @@ export function ServiceCompletionDialog({
   const [targetPestSearch, setTargetPestSearch] = useState("");
   const [ticketServiceTypeId, setTicketServiceTypeId] = useState("");
   const [ticketPrice, setTicketPrice] = useState("");
+  // Pass 19 (C3.3): the price as last COMMITTED - seeded with the box, then
+  // set when the technician leaves the box - so the billing block and the
+  // collect step re-read at the draft price on blur, never on every keystroke.
+  const [committedPrice, setCommittedPrice] = useState("");
   // D8: finish -> collect -> post. "Finish & Collect" opens the collection
   // step; "Post Service Ticket" lives there. Office finalization owns
   // "complete", so neither button says it.
@@ -208,12 +219,20 @@ export function ServiceCompletionDialog({
     queryKey: [`/api/agreements/${service?.agreementId}`],
     enabled: !!service?.agreementId,
   });
+  // Pass 19 (C3.3): D6's billing-plan pill on the ticket header for an
+  // agreement service (the billing-profile display waits for C5.2).
+  const { planById: billingPlanById, isLoading: billingPlansLoading } = useBillingPlanById(open && !!service?.agreementId);
+  // The location's notes for the instructions block when no location was
+  // passed in: the customer's locations read, the row this service sits at.
+  const { data: customerLocations } = useQuery<Location[]>({
+    queryKey: [`/api/locations/${service?.customerId}`],
+    enabled: open && !location && !!service?.customerId,
+  });
+  const resolvedLocation = location ?? customerLocations?.find((row) => row.id === service?.locationId) ?? null;
   // D6: what this service bills and what is due today, resolved by the
   // server through the same code that prices the visit invoice - not from
   // the agreement row above, which cannot say whether its plan covers the visit.
   const visitAppointmentId = appointment?.id ?? service?.appointmentId ?? null;
-  const { data: visitBilling, isLoading: visitBillingLoading, isError: visitBillingError } = useVisitBillingSummary(open ? visitAppointmentId : null);
-  const serviceBilling = visitBilling?.services.find((line) => line.serviceId === service?.id) ?? null;
 
   const serviceTypeName = useMemo(() => {
     return serviceTypes?.find((serviceType) => serviceType.id === ticketServiceTypeId || serviceType.id === service?.serviceTypeId)?.name ?? "Service";
@@ -240,6 +259,22 @@ export function ServiceCompletionDialog({
     [agreement?.priceCents, agreement?.expectedServiceCount],
   );
   const displayPriceCents = service?.priceCents ?? computedProductionValueCents;
+  // Pass 19 (C3.3): the draft price the billing read is asked to price -
+  // the rule of serviceOverridePayload below, so the figures preview exactly
+  // what Post will stamp: only when this user may set the price, only once
+  // the committed value differs from what is stored, and for an agreement
+  // service never the computed default (which the post leaves unstamped).
+  // Null means "the stored figures", the read as it was before this pass.
+  const draftPrice = useMemo<VisitBillingDraftPrice | null>(() => {
+    if (!service || !allowServiceOverride) return null;
+    const cents = dollarsToCents(committedPrice);
+    if (cents == null || cents < 0) return null;
+    if (cents === service.priceCents) return null;
+    if (isAgreementGeneratedService && cents === computedProductionValueCents) return null;
+    return { serviceId: service.id, priceCents: cents };
+  }, [allowServiceOverride, committedPrice, computedProductionValueCents, isAgreementGeneratedService, service]);
+  const { data: visitBilling, isLoading: visitBillingLoading, isError: visitBillingError } = useVisitBillingSummary(open ? visitAppointmentId : null, draftPrice);
+  const serviceBilling = visitBilling?.services.find((line) => line.serviceId === service?.id) ?? null;
   const selectedTargetPests = useMemo(() => targetPests.split(",").map((value) => value.trim()).filter(Boolean), [targetPests]);
   const targetPestOptions = useMemo(() => {
     const configured = (configuredTargetPests ?? []).map((pest) => pest.label);
@@ -268,7 +303,9 @@ export function ServiceCompletionDialog({
         setFollowUpNotes(parsed.followUpNotes || "");
         setDeviceNotes(parsed.deviceNotes || "");
         setTicketServiceTypeId(parsed.ticketServiceTypeId || service.serviceTypeId || "");
-        setTicketPrice(parsed.ticketPrice ?? (service.priceCents != null ? centsToDollarString(service.priceCents) : ""));
+        const restoredPrice: string = parsed.ticketPrice ?? (service.priceCents != null ? centsToDollarString(service.priceCents) : "");
+        setTicketPrice(restoredPrice);
+        setCommittedPrice(restoredPrice);
         setMaterials(Array.isArray(parsed.materials) && parsed.materials.length ? parsed.materials : [emptyMaterial()]);
         return;
       } catch {
@@ -286,7 +323,9 @@ export function ServiceCompletionDialog({
     setFollowUpNotes(existingServiceRecord?.followUpNotes || "");
     setDeviceNotes("");
     setTicketServiceTypeId(service.serviceTypeId || "");
-    setTicketPrice(service.priceCents != null ? centsToDollarString(service.priceCents) : "");
+    const seededPrice = service.priceCents != null ? centsToDollarString(service.priceCents) : "";
+    setTicketPrice(seededPrice);
+    setCommittedPrice(seededPrice);
     setMaterials(existingApplications.length ? existingApplications.map(materialFromApplication) : []);
   }, [appointment?.assignedTechnicianId, appointment?.scheduledDate, defaultTechnicianId, draftKey, existingApplications, existingServiceRecord, isOfficeEdit, open, service]);
 
@@ -297,6 +336,7 @@ export function ServiceCompletionDialog({
   useEffect(() => {
     if (!open || !service || service.priceCents != null || ticketPrice.trim() !== "" || computedProductionValueCents == null) return;
     setTicketPrice(centsToDollarString(computedProductionValueCents));
+    setCommittedPrice(centsToDollarString(computedProductionValueCents));
   }, [open, service, ticketPrice, computedProductionValueCents]);
 
   useEffect(() => {
@@ -356,6 +396,27 @@ export function ServiceCompletionDialog({
         ? undefined
         : dollarsToCents(ticketPrice),
   });
+
+  // Pass 19 (C3.3): on leaving the price box - dollars.cents formatting, and
+  // the committed value the billing read prices from. An empty or unparsable
+  // box commits as empty (the stored figures).
+  const commitPrice = () => {
+    const cents = dollarsToCents(ticketPrice);
+    const formatted = cents == null || cents < 0 ? "" : centsToDollarString(cents);
+    if (formatted !== ticketPrice) setTicketPrice(formatted);
+    setCommittedPrice(formatted);
+  };
+
+  // Pass 19 (C3.3): what the technician is told before the work - the
+  // agreement's service instructions (defaulted from its template), the
+  // service's own notes and the location's notes - each labelled, absent
+  // when empty. Read from rows the dialog already has or reads; never typed
+  // here (instructions are edited where they live).
+  const instructions = [
+    { label: "Agreement instructions", text: agreement?.serviceInstructions ?? "" },
+    { label: "Service notes", text: service?.notes ?? "" },
+    { label: "Location notes", text: resolvedLocation?.notes ?? "" },
+  ].filter((entry) => entry.text.trim().length > 0);
 
   const invalidateTicketViews = () => {
     queryClient.invalidateQueries({ queryKey: ["/api/services"] });
@@ -510,7 +571,13 @@ export function ServiceCompletionDialog({
                   {appointment?.scheduledDate && <p className="text-muted-foreground">Scheduled {new Date(appointment.scheduledDate).toLocaleString()}</p>}
                   <p className="text-xs text-muted-foreground">{isOfficeEdit ? "A saved change is recorded in the ticket's history as Ticket edited." : "Ticket drafts autosave locally on this device."}</p>
                 </div>
-                <Badge variant="outline" data-testid="badge-ticket-dialog-mode">{isOfficeEdit && existingServiceRecord ? `Office edit - ${describeTicketLifecycle(existingServiceRecord)}` : "Office review pending after post"}</Badge>
+                <div className="flex flex-col items-end gap-1">
+                  <Badge variant="outline" data-testid="badge-ticket-dialog-mode">{isOfficeEdit && existingServiceRecord ? `Office edit - ${describeTicketLifecycle(existingServiceRecord)}` : "Office review pending after post"}</Badge>
+                  {/* Pass 19: D6's billing-plan pill - plans attach to agreements, so only an agreement service shows one. */}
+                  {agreement && !billingPlansLoading && (
+                    <BillingPlanPill agreement={agreement} plan={agreement.billingPlanId ? billingPlanById.get(agreement.billingPlanId) : null} />
+                  )}
+                </div>
               </div>
               <div className="mt-3 border-t pt-3">
                 {visitAppointmentId ? (
@@ -523,6 +590,18 @@ export function ServiceCompletionDialog({
                 )}
               </div>
             </div>
+
+            {instructions.length > 0 && (
+              <div className="space-y-2 rounded-lg border p-3" data-testid="block-ticket-instructions">
+                <p className="text-xs uppercase tracking-wide text-muted-foreground">Instructions</p>
+                {instructions.map((entry) => (
+                  <div key={entry.label}>
+                    <p className="text-xs font-medium text-muted-foreground">{entry.label}</p>
+                    <p className="mt-0.5 whitespace-pre-wrap text-sm">{entry.text}</p>
+                  </div>
+                ))}
+              </div>
+            )}
 
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="rounded-md border p-3">
@@ -580,7 +659,7 @@ export function ServiceCompletionDialog({
               <div className="space-y-2">
                 <Label>Service Price</Label>
                 {allowServiceOverride ? (
-                  <Input type="number" min="0" step="0.01" value={ticketPrice} onChange={(event) => setTicketPrice(event.target.value)} />
+                  <Input type="number" inputMode="decimal" min="0" step="0.01" value={ticketPrice} onChange={(event) => setTicketPrice(event.target.value)} onBlur={commitPrice} data-testid="input-ticket-price" />
                 ) : (
                   <div className="rounded-md border bg-muted/20 px-3 py-2 text-sm">{displayPriceCents != null ? formatCents(displayPriceCents) : "Not set"} <span className="text-xs text-muted-foreground">{agreementLockNote}</span></div>
                 )}
@@ -827,6 +906,7 @@ export function ServiceCompletionDialog({
         designatedAgreementId={service.agreementId ?? null}
         onPostTicket={() => completeMutation.mutate()}
         postingTicket={completeMutation.isPending}
+        draftPrice={draftPrice}
       />
     )}
     </>

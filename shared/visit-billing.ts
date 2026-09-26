@@ -99,6 +99,24 @@ export interface VisitBillingInvoiceRef {
   balanceDueCents: number;
 }
 
+/**
+ * Pass 19 (PLAN_ROADMAP_V2.md C3.3): the price typed on the technician's
+ * ticket but not yet posted. The read prices it server-side through the same
+ * resolver and tax engine as the visit invoice (GET
+ * /api/appointments/:id/billing-summary?serviceId=&priceCents=) and writes
+ * nothing - the stored price still changes only at Post (Pass 8's
+ * `price_overridden`). Echoed here so the ticket can say what its figures are
+ * priced at: `applied` false means the stored figures stand, and `note` says
+ * why (an agreement price the role may not re-price - the post's rule - or a
+ * visit already invoiced, whose figures are the invoice's).
+ */
+export interface VisitBillingDraft {
+  serviceId: string;
+  priceCents: number;
+  applied: boolean;
+  note: string | null;
+}
+
 export interface VisitBillingSummary {
   appointmentId: string;
   locationId: string | null;
@@ -110,6 +128,8 @@ export interface VisitBillingSummary {
    * or no invoice: the figures are what generation would produce now.
    */
   invoiced: boolean;
+  /** The draft price this read was asked to price (Pass 19), or null when it carried none. */
+  draft: VisitBillingDraft | null;
   services: VisitServiceBilling[];
   /** Charges on the visit that are not services: the pending or invoiced down payment (Pass 11d). Counted in totals. */
   charges: VisitChargeBilling[];

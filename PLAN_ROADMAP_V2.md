@@ -365,7 +365,7 @@ so every field action is a route and every screen is data from a read — no pag
 | C3.1 (**Pass 16**) — **done** (`feature/phase-3-ticket-lockdown`, 2026-09-23; see "Shipped in Pass 16" at the end of Part D) | **Ticket lockdown (D9) enforced server-side.** `PATCH /api/service-records/:id` gated by a new `EDIT_TICKET` (support+) and refused on FINALIZED ("reopen first"); `completeService` refuses a re-post on a FINALIZED ticket, and a technician's re-post on a ticket already in office review (the office reopens; the technician re-posts a REOPENED one); every accepted edit writes `ticket_edited` (before/after, product applications included; payment records are already immutable and out of scope). The only UI change: `technician-work.tsx:477-485` stops passing a posted record into the ticket dialog. A defect fix, not a feature. | Immutable fields once posted | — | — |
 | C3.2 (**Pass 17**) — **done** (`feature/phase-3-reopen-reason-popup`, 2026-09-25; see "Shipped in Pass 17" at the end of Part D) | **Reopen-reason pop-up** with a settings list (`ticket_reopen_reasons`, the `app_settings` shape of `appointment_cancel_reschedule_reasons`), `reopenReasonCode` + text; "Other" requires text and `REOPEN_TICKET_OTHER` (manager+); the inline textarea leaves the modal; the modal closes on Finalize when the queue is exhausted. | Remove reopen reason from modal; pop-up; dropdown config; Other role-gated; close on finalize | — (after C3.1 only to avoid a footer merge conflict) | — |
 | C3.1b (**Pass 18**) — **done** (`feature/phase-3-office-edit-ticket`, 2026-09-25; see "Shipped in Pass 18" at the end of Part D) | **Office Edit on the review modal** (D9): the role-gated Edit button opens `service-completion-dialog.tsx` in an `office-edit` mode (same fields, materials included) that submits through the gated PATCH instead of the post route; `ADJUST_PRICE_AGREEMENT` still guards an agreement price (support edits everything else); a FINALIZED ticket says "reopen first". Pass 16 built the PATCH content-only with materials as replace-all; the Service's price and type are not on it, so this unit adds the price edit (on the Service, logged `price_overridden` as a post's is). | Office edit button | C3.1, C3.2 | — |
-| C3.3 (**Pass 19**) | **Technician ticket modal, money and instructions**: draft-price override on the billing-summary read (`?serviceId=&priceCents=`, priced server-side through `resolveServiceLineBillingTx` + tax), dollars.cents on blur, service instructions (agreement `serviceInstructions`, service notes, location notes) at the top, the **billing-plan pill** in the ticket header (the profile display waits for C5.2), **time-in prompt** on opening a ticket with no Time In (bypass allowed). Landing after Post unchanged (B1). | Tech modal items 1-4; time-in prompt; display billing plan | — | — |
+| C3.3 (**Pass 19**) — **done** (`feature/phase-3-tech-ticket-money-instructions`, 2026-09-25; see "Shipped in Pass 19" at the end of Part D) | **Technician ticket modal, money and instructions**: draft-price override on the billing-summary read (`?serviceId=&priceCents=`, priced server-side through `resolveServiceLineBillingTx` + tax), dollars.cents on blur, service instructions (agreement `serviceInstructions`, service notes, location notes) at the top, the **billing-plan pill** in the ticket header (the profile display waits for C5.2), **time-in prompt** on opening a ticket with no Time In (bypass allowed). Landing after Post unchanged (B1). | Tech modal items 1-4; time-in prompt; display billing plan | — | — |
 | C3.4a (**Pass 20**) | **Material units and application areas**: a settings-managed unit list (`material_units`) feeding a Unit dropdown, product `defaultUnit` migrated to pick from it; an org-level application-area list in Settings feeding products' allowed areas; application area multi-select per material line (`applicationAreas[]`, areas serviced still derived). | Unit dropdown; Application area multi-select | — | — |
 | C3.4b (**Pass 21**) | **Target pests, two levels** (B12): `productApplications.targetPests[]` per material row from the target-pest list (compliance); the ticket-level target pests stay on the ticket, selectable from a searchable multi-select placed in the Materials section, and are **selected ∪ every material's pests**; the summary line at the top of the ticket shows that union. | Target pests; pest per application | C3.4a | — |
 | C3.5 (**Pass 22**) | **Service report document** — customer-facing summary of a posted/finalized ticket (technician + license, date, services, pests, materials, notes, recommendations, signature placeholder) through the document renderer, stored like invoices; Open / Download on the review modal and the Services tab, Preview in the collect step. **Settings toggle "Attach service report to visit invoices"** (B11): when on, a visit-anchored invoice's PDF appends the report(s) for its lines; schedule-driven and manual invoices have no visit and append nothing. Both documents stay separately openable. | "Preview/print/save/send service summary"; "sends invoice / service report" | — | — |
@@ -1988,6 +1988,111 @@ Behavior worth knowing before the next pass touches it:
   the new mode and buttons in the transforms. **Nothing was rendered in a browser** - the repo has
   no browser automation and this session had no browser - so the Edit button, its disabled state,
   the dialog's office-edit mode and its editable technician / date cards reach the owner first.
+
+**Shipped in Pass 19** (`feature/phase-3-tech-ticket-money-instructions`, 2026-09-25) — the C3.3
+row as built, plus what it found.
+
+```ts
+// shared/visit-billing.ts
+export interface VisitBillingDraft { serviceId: string; priceCents: number; applied: boolean; note: string | null }
+VisitBillingSummary.draft: VisitBillingDraft | null   // the draft the read was asked to price, or null when it carried none
+
+// server/storage.ts
+export class VisitBillingDraftError extends Error { status: 400; code: string }   // -> { code, message }; the TicketEditError shape
+export interface VisitBillingDraftInput { serviceId: string; priceCents: number; actorRole: UserRole | string }
+getVisitBillingSummary(appointmentId, draft?)   // as before, plus: the draft's service must be on the visit's billing (400
+                                                // DRAFT_SERVICE_NOT_ON_VISIT, a CANCELLED service included); an agreement-
+                                                // generated service (agreementId, or source AGREEMENT_GENERATED) is re-priced
+                                                // only for can(actorRole, ADJUST_PRICE_AGREEMENT) - otherwise applied: false,
+                                                // the note naming "manager or admin"; an ISSUED invoice -> applied: false, the
+                                                // note naming the invoice. Applied: that service goes to
+                                                // resolveServiceLineBillingTx as { ...service, priceCents: draft.priceCents }
+                                                // and resolveTaxDecision prices its amount exactly as before; a covered plan
+                                                // stays $0 and the note says so. Nothing written, no audit row.
+
+// Routes
+GET /api/appointments/:id/billing-summary?serviceId=&priceCents=   // the open read as before; both params or neither (400);
+                                                // priceCents digits only and a safe integer (400 otherwise - "" is not $0);
+                                                // actorRole = the session's; 400 { code, message } from VisitBillingDraftError
+
+// client/src/components/visit-billing-summary.tsx
+export interface VisitBillingDraftPrice { serviceId: string; priceCents: number }
+visitBillingSummaryQueryKey(appointmentId, draft?)   // ["/api/appointments", id, "billing-summary?serviceId=..&priceCents=.."]
+useVisitBillingSummary(appointmentId, draft?)        // placeholderData keeps the SAME visit's previous figures while a new
+                                                     // draft's read is in flight; another visit's are never shown
+ServiceBillingBlock                                  // full mode prints the draft caption for its service (text-service-draft-price-<id>)
+
+// client/src/components/collect-payment-dialog.tsx
+draftPrice?: VisitBillingDraftPrice | null           // read with the summary, so the default amount is the draft's due today
+
+// client/src/components/billing-plan-pill.tsx
+useBillingPlanById(enabled = true)                   // the dialog reads the plans only for an open agreement ticket
+
+// client/src/components/service-completion-dialog.tsx
+location?: Location | null                           // the visit's location for the instructions block; absent -> the row at
+                                                     // service.locationId from GET /api/locations/:customerId
+committedPrice / commitPrice()                       // onBlur of the price box (input-ticket-price): dollars.cents, and the
+                                                     // value the draft derives from
+draftPrice                                           // serviceOverridePayload's rule: allowServiceOverride, != service.priceCents,
+                                                     // and for an agreement service != computedProductionValueCents; else null
+instructions                                         // [Agreement instructions, Service notes, Location notes] minus the empty
+                                                     // ones (block-ticket-instructions), between the header card and the
+                                                     // technician / date grid
+<BillingPlanPill>                                    // under the mode badge once `agreement` and the plans have loaded
+
+// client/src/pages/technician-work.tsx
+selectedVisit / detailVisit                          // the clicked snapshot, and the live row from `visits` by appointment id
+completionContext.location                           // passed to the dialog as `location`
+openTicket(service, appointment, location)           // no timeInAt -> the prompt; otherwise opens the ticket
+openTicketWithoutTimeIn() / timeInAndOpenTicket()    // the prompt's two buttons (button-time-in-prompt-skip / -yes); Yes posts
+                                                     // POST /api/appointments/:id/time-in through timeInMutation.mutateAsync
+                                                     // (refreshWork runs on success) and opens on the returned appointment
+```
+
+Behavior worth knowing before the next pass touches it:
+- **Ignored, not refused.** A technician's (or support's) draft on an agreement-generated service
+  answers 200 with the stored figures and `draft.applied: false`. The read is a preview of what
+  Post will produce, and `completeService` ignores that price too; a 403 would blank the ticket's
+  billing block for a case the dialog never sends (its price box is read-only for that user). The
+  office edit's PATCH keeps its 403 - a write is a different question.
+- **The draft is the Service's price and nothing more.** No arithmetic in the route or the client:
+  the resolver's own branches decide what the draft means, which is why a covered plan stays $0
+  (as it does at Post) and why a plan the run does not bill prices the draft over the derived
+  amount exactly as a stamped price would.
+- **The dialog's draft rule is the post's rule**, deliberately - a manual service whose box still
+  shows the stored price sends nothing (the figures are the stored figures, as before this pass),
+  and an agreement service at the computed default sends nothing because the post would leave it
+  unstamped; so the first render of every ticket is unchanged and the caption appears only when
+  the technician has changed the price.
+- **Both modes re-price.** The header block is shared, so the office-edit mode's price box drives
+  the figures the same way (server-side, under the same rule); its save (Pass 18) is untouched. On
+  an invoiced visit the read says the figures are the invoice's.
+- **The prompt is the technician view's.** It sits in front of the ticket's open, where Time In
+  means something, and never in the dialog: the office-edit mode and the Services tab's office
+  post never ask. The rule is the sheet's own (`!appointment.timeInAt`, whatever the status).
+- **Verified 2026-09-25** (PORT=5001): `npm run check` clean; boot 1 printed only the serving line
+  with all 44 table counts unchanged (no migration); 50 API / SQL assertions on boot 1 as the four
+  roles - a fixture customer and location, a manual service at $150.00 and an agreement-generated
+  service on the COD (Per Service) plan ($400 over 4 visits) placed on one appointment through
+  `POST /api/appointments` and `PATCH /api/services/:id`; the plain read (both lines, tax = the
+  org's default 8.25% rate rounded per line, `draft: null`); the technician's draft on the manual
+  service ($250.00 -> price, tax and due today follow, the other line untouched, totals follow,
+  the stored price still 15000, no audit row, `applied: true`), a $0 draft, support's draft
+  applying too; the technician's and support's draft on the agreement service ignored with the
+  "manager or admin" note, the manager's and admin's applied ($999.00 + tax), stored prices
+  unchanged (null, 15000) and no audit row after every read; a serviceId not on the visit 400
+  `DRAFT_SERVICE_NOT_ON_VISIT`, one param without the other 400, priceCents abc / 1.5 / -1 / ""
+  400, an unknown appointment 404, no session 401; the time-in route stamping once (a second
+  call keeps the first `timeInAt`, status IN_PROGRESS); then both tickets posted by the technician
+  and finalized by support, the invoice generated by the manager, and the manager's draft on the
+  invoiced visit ignored with the invoice number in the note, the line the invoice's; every
+  fixture (invoice, line items, billing events, production entries included) deleted and every
+  table count back at the run's start (`session` up by the four logins); boot 2 printed only the
+  serving line with every count unchanged; Vite 200 on the five touched client modules and
+  `shared/visit-billing.ts` with the new symbols in the transforms. **Nothing was rendered in a
+  browser** - the repo has no browser automation and this session had no browser - so the
+  re-pricing on blur, the dollars.cents formatting, the draft caption, the instructions block, the
+  pill, the time-in prompt and the live sheet reach the owner first.
 
 ---
 
