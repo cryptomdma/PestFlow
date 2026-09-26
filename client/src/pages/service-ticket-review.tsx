@@ -4,7 +4,7 @@ import { useLocation, useSearch } from "wouter";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -26,7 +26,8 @@ import { InvoiceStatusBadge } from "@/components/invoice-status-badge";
 import { ApplyLocationBalancePrompt } from "@/components/apply-location-balance-prompt";
 import { resolveReviewNav, type ReviewNavStep } from "@/lib/review-queue-nav";
 import { formatCents } from "@shared/money";
-import { can, PERMISSIONS } from "@shared/permissions";
+import { can, PERMISSIONS, rolesWithPermission } from "@shared/permissions";
+import { REOPEN_REASON_OTHER, REOPEN_REASON_OTHER_LABEL, describeReopenReason, isOtherReopenReason, type ReopenTicketRequest } from "@shared/ticket-reopen";
 import { CASH_CONFIRM_NOTE, formatPaymentMethod, formatPaymentStatus, mayConfirmPayment, needsCashAuthority, paymentHoldsValue, type LocationLedgerSummary } from "@shared/payments";
 import type { AppointmentInvoiceStatus } from "@shared/invoice-detail";
 import { CheckCircle2, ChevronLeft, ChevronRight, ClipboardCheck, FileText, MapPin, RotateCcw } from "lucide-react";
@@ -264,6 +265,84 @@ function VisitInvoiceBlock({ appointmentId, serviceRecordId, onOpenInvoice }: { 
   );
 }
 
+// Pass 17 (PLAN_ROADMAP_V2.md C3.2; D9): the reopen reason as a pop-up. The
+// dropdown is the settings list (GET /api/settings/ticket-reopen-reasons)
+// with Other always last; Other needs the reason typed and
+// REOPEN_TICKET_OTHER (manager+), so for anyone else it is disabled - not
+// hidden - and says who may. The server checks the same three things
+// (shared/ticket-reopen.ts); what this dialog refuses is only a courtesy.
+function ReopenTicketDialog({ open, onOpenChange, onSubmit, isPending }: { open: boolean; onOpenChange: (open: boolean) => void; onSubmit: (body: ReopenTicketRequest) => void; isPending: boolean }) {
+  const { user } = useAuth();
+  const canOther = can(user?.role ?? "", PERMISSIONS.REOPEN_TICKET_OTHER);
+  const whoMayOther = rolesWithPermission(PERMISSIONS.REOPEN_TICKET_OTHER).join(" or ");
+  const { data: reasonSettings, isLoading, isError } = useQuery<{ reasons: string[] }>({ queryKey: ["/api/settings/ticket-reopen-reasons"], enabled: open });
+  const reasons = reasonSettings?.reasons ?? [];
+  const [reasonCode, setReasonCode] = useState("");
+  const [text, setText] = useState("");
+  // A fresh pop-up per reopen: nothing chosen for one ticket carries to the next.
+  useEffect(() => {
+    if (open) {
+      setReasonCode("");
+      setText("");
+    }
+  }, [open]);
+  const isOther = isOtherReopenReason(reasonCode);
+  const canSubmit = !!reasonCode && (!isOther || (canOther && !!text.trim())) && !isPending;
+
+  return (
+    <Dialog open={open} onOpenChange={(next) => { if (!isPending) onOpenChange(next); }}>
+      <DialogContent className="sm:max-w-md" data-testid="dialog-reopen-ticket">
+        <DialogHeader>
+          <DialogTitle>Reopen this ticket?</DialogTitle>
+          <DialogDescription>
+            The ticket goes back to the technician to correct and re-post, and leaves the billing-ready list until it is finalized again. The reason is recorded on the ticket and in its history.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div className="space-y-2">
+            <Label htmlFor="reopen-reason-code">Reason</Label>
+            <Select value={reasonCode} onValueChange={setReasonCode} disabled={isLoading}>
+              <SelectTrigger id="reopen-reason-code" data-testid="select-reopen-reason">
+                <SelectValue placeholder={isLoading ? "Loading reasons..." : "Select a reason"} />
+              </SelectTrigger>
+              <SelectContent>
+                {reasons.map((reason) => <SelectItem key={reason} value={reason}>{reason}</SelectItem>)}
+                <SelectItem value={REOPEN_REASON_OTHER} disabled={!canOther} data-testid="option-reopen-other">
+                  {canOther ? REOPEN_REASON_OTHER_LABEL : REOPEN_REASON_OTHER_LABEL + " (" + whoMayOther + " only)"}
+                </SelectItem>
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">
+              {isError ? "The reasons list could not be loaded; only Other is offered. " : "From Settings, Ticket Reopen Reasons. "}
+              {canOther ? "Other needs the reason typed out." : "Other is for a " + whoMayOther + "."}
+            </p>
+          </div>
+          {isOther ? (
+            <div className="space-y-2">
+              <Label htmlFor="reopen-reason-text">Reason (required)</Label>
+              <Textarea
+                id="reopen-reason-text"
+                value={text}
+                onChange={(event) => setText(event.target.value)}
+                rows={3}
+                placeholder="What is wrong with the ticket and what the technician should correct."
+                autoFocus
+                data-testid="textarea-reopen-reason"
+              />
+            </div>
+          ) : null}
+        </div>
+        <DialogFooter className="flex-col-reverse gap-2 sm:flex-row">
+          <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={isPending}>Cancel</Button>
+          <Button type="button" variant="secondary" onClick={() => onSubmit({ reasonCode, reason: isOther ? text.trim() : null })} disabled={!canSubmit} data-testid="button-reopen-confirm">
+            <RotateCcw className="mr-1 h-4 w-4" /> {isPending ? "Reopening..." : "Reopen"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export default function ServiceTicketReview() {
   const { toast } = useToast();
   const { user } = useAuth();
@@ -283,10 +362,14 @@ export default function ServiceTicketReview() {
   // The review run: the queue as it stood when a ticket was opened from it.
   // Held so Next / Back survive a ticket leaving the live filter.
   const [navRecordIds, setNavRecordIds] = useState<string[]>([]);
-  const [reopenReason, setReopenReason] = useState("");
+  // Pass 17 (C3.2): the reopen reason is asked in a pop-up, not typed inline.
+  const [reopenDialogOpen, setReopenDialogOpen] = useState(false);
   // D2: the Generate / Generate & Send / Later prompt, opened when a
   // finalization completes its visit under the PROMPT setting.
   const [invoicePrompt, setInvoicePrompt] = useState<InvoiceOnFinalizePromptState | null>(null);
+  // Pass 17 (C3.2): a finalize with nothing left in the run closes the modal
+  // once it is done - at once, or after the D2 prompt is answered.
+  const closeReviewAfterPromptRef = useRef(false);
 
   const { data: serviceRecords } = useQuery<ServiceRecord[]>({ queryKey: ["/api/service-records"] });
   const { data: services } = useQuery<Service[]>({ queryKey: ["/api/services"] });
@@ -319,6 +402,7 @@ export default function ServiceTicketReview() {
   const selectedLocation = selectedRecord?.locationId ? locationById.get(selectedRecord.locationId) ?? null : null;
   const selectedCustomer = selectedRecord ? customerById.get(selectedRecord.customerId) ?? null : null;
   const selectedMaterials = selectedRecord ? applicationsByRecordId.get(selectedRecord.id) ?? [] : [];
+  const selectedReopen = selectedRecord ? describeReopenReason(selectedRecord) : null;
   // D6's figures for the visit under review - the same read the ticket, the
   // appointment details and the collect dialog show, so the reviewer
   // finalizes against what the technician and the customer saw.
@@ -348,13 +432,13 @@ export default function ServiceTicketReview() {
   // keeps the run intact until the modal is closed.
   const openRecordFromQueue = (recordId: string) => {
     setNavRecordIds(filteredRecords.map((record) => record.id));
-    setReopenReason("");
+    setReopenDialogOpen(false);
     setSelectedRecordId(recordId);
   };
   const closeReviewModal = () => {
     setSelectedRecordId(null);
     setNavRecordIds([]);
-    setReopenReason("");
+    setReopenDialogOpen(false);
     // A deep-linked ticket leaves the URL with it, so a reload does not
     // reopen a ticket the reviewer just closed.
     if (requestedRecordId) {
@@ -393,7 +477,7 @@ export default function ServiceTicketReview() {
   const { index: selectedIndex, total: navTotal, previous: previousStep, next: nextStep } = resolveReviewNav(navRecordIds, selectedRecordId, liveRecordIds);
   const goToRecord = (step: ReviewNavStep | null) => {
     if (!step) return;
-    setReopenReason("");
+    setReopenDialogOpen(false);
     setSelectedRecordId(step.id);
   };
 
@@ -408,12 +492,19 @@ export default function ServiceTicketReview() {
     queryClient.invalidateQueries({ queryKey: ["/api/invoices/by-appointment"] });
   };
 
+  // Pass 17 (C3.2): Finalize carries whether anything follows in the run -
+  // resolveReviewNav's next step, read when the button is pressed. With
+  // nothing left, the modal closes once the finalize is done: after the D2
+  // prompt is answered, or at once when there is none. A run of one and a
+  // deep-linked ticket (index -1, no run) both count as nothing left.
+  // Otherwise the modal stays on the ticket exactly as before, so Next
+  // still walks the run.
   const finalizeMutation = useMutation({
-    mutationFn: async (id: string) => {
+    mutationFn: async ({ id }: { id: string; closeWhenDone: boolean }) => {
       const response = await apiRequest("POST", `/api/service-records/${id}/finalize`, {});
       return response.json() as Promise<FinalizeServiceRecordResponse>;
     },
-    onSuccess: (result) => {
+    onSuccess: (result, { closeWhenDone }) => {
       invalidateReviewData();
       // The finalization that completes a visit reports what it did about the
       // invoice (D2): under PROMPT we ask; under AUTO_DRAFT / OFF / an
@@ -421,25 +512,30 @@ export default function ServiceTicketReview() {
       if (result.invoicing) invalidateInvoiceViews();
       const prompt = getInvoiceOnFinalizePrompt(result);
       if (prompt) {
+        closeReviewAfterPromptRef.current = closeWhenDone;
         setInvoicePrompt(prompt);
         return;
       }
       toast(describeFinalizeResult(result));
+      if (closeWhenDone) closeReviewModal();
     },
     onError: (error: Error) => toast({ title: "Unable to finalize ticket", description: error.message, variant: "destructive" }),
   });
 
+  // Pass 17 (C3.2): { reasonCode, reason? } from the pop-up; the server's
+  // coded refusals (not on the list, Other without text, Other without the
+  // permission) come back as its message.
   const reopenMutation = useMutation({
-    mutationFn: async ({ id, reason }: { id: string; reason: string }) => {
-      const response = await apiRequest("POST", `/api/service-records/${id}/reopen`, { reason });
+    mutationFn: async ({ id, body }: { id: string; body: ReopenTicketRequest }) => {
+      const response = await apiRequest("POST", `/api/service-records/${id}/reopen`, body);
       return response.json();
     },
     onSuccess: () => {
       toast({ title: "Service ticket reopened", description: "Technician edits are available again." });
-      setReopenReason("");
+      setReopenDialogOpen(false);
       invalidateReviewData();
     },
-    onError: (error: Error) => toast({ title: "Unable to reopen ticket", description: error.message, variant: "destructive" }),
+    onError: (error: Error) => toast({ title: "Unable to reopen ticket", description: getApiErrorMessage(error), variant: "destructive" }),
   });
 
   return (
@@ -673,24 +769,26 @@ export default function ServiceTicketReview() {
                 )}
               </div>
               {selectedRecord.reopenedAt ? (
-                <div className="rounded-md border p-3 text-sm">
+                <div className="rounded-md border p-3 text-sm" data-testid="block-reopen-audit">
                   <p className="font-medium">Reopen Audit</p>
                   <p className="text-muted-foreground">Reopened {new Date(selectedRecord.reopenedAt).toLocaleString()} by {selectedRecord.reopenedByLabel || "Office"}</p>
-                  <p className="mt-1 whitespace-pre-wrap">{selectedRecord.reopenReason}</p>
+                  {/* Pass 17: the settings-list reason (or Other) and the
+                      typed text; a row reopened before the list existed
+                      shows its text alone. */}
+                  {selectedReopen?.label ? <p className="mt-1">Reason: <span className="font-medium">{selectedReopen.label}</span></p> : null}
+                  {selectedReopen?.text ? <p className="mt-1 whitespace-pre-wrap">{selectedReopen.text}</p> : null}
+                  {!selectedReopen?.label && !selectedReopen?.text ? <p className="mt-1 text-muted-foreground">No reason recorded.</p> : null}
                 </div>
               ) : null}
-              <div className="space-y-2">
-                <Label>Reopen Reason</Label>
-                <Textarea value={reopenReason} onChange={(event) => setReopenReason(event.target.value)} placeholder="Required if reopening a posted/finalized ticket" />
-              </div>
               <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-between">
                 <Button type="button" variant="outline" onClick={() => selectedLocation && setLocation(`/customers/${selectedRecord.customerId}?locationId=${selectedLocation.id}`)}>Open Location</Button>
                 <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
                   <Button type="button" variant="outline" onClick={closeReviewModal}>Close</Button>
-                  <Button type="button" variant="secondary" onClick={() => reopenMutation.mutate({ id: selectedRecord.id, reason: reopenReason })} disabled={reopenMutation.isPending || !reopenReason.trim()}>
+                  {/* Pass 17 (C3.2): the reason is asked in a pop-up, not typed inline. */}
+                  <Button type="button" variant="secondary" onClick={() => setReopenDialogOpen(true)} disabled={reopenMutation.isPending} data-testid="button-reopen-ticket">
                     <RotateCcw className="mr-1 h-4 w-4" /> Reopen
                   </Button>
-                  <Button type="button" onClick={() => finalizeMutation.mutate(selectedRecord.id)} disabled={finalizeMutation.isPending || !!selectedRecord.confirmed}>
+                  <Button type="button" onClick={() => finalizeMutation.mutate({ id: selectedRecord.id, closeWhenDone: !nextStep })} disabled={finalizeMutation.isPending || !!selectedRecord.confirmed} data-testid="button-finalize-ticket">
                     <CheckCircle2 className="mr-1 h-4 w-4" /> Finalize
                   </Button>
                 </div>
@@ -700,7 +798,27 @@ export default function ServiceTicketReview() {
         </DialogContent>
       </Dialog>
 
-      <InvoiceOnFinalizePrompt prompt={invoicePrompt} onClose={() => setInvoicePrompt(null)} />
+      <InvoiceOnFinalizePrompt
+        prompt={invoicePrompt}
+        onClose={() => {
+          setInvoicePrompt(null);
+          // Pass 17: the prompt answered (Generate, Generate & Send, Later or
+          // dismissed) is the finalize done; close if nothing followed in the
+          // run. D4's balance prompt lives inside the invoice prompt and
+          // outlives this modal.
+          if (closeReviewAfterPromptRef.current) {
+            closeReviewAfterPromptRef.current = false;
+            closeReviewModal();
+          }
+        }}
+      />
+
+      <ReopenTicketDialog
+        open={reopenDialogOpen && !!selectedRecord}
+        onOpenChange={setReopenDialogOpen}
+        isPending={reopenMutation.isPending}
+        onSubmit={(body) => selectedRecord && reopenMutation.mutate({ id: selectedRecord.id, body })}
+      />
 
       {/* Pass 11b: the visit's invoice, opened from the badge in the review
           modal. Page state rather than the URL: the page's one deep link is

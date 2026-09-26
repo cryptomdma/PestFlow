@@ -103,7 +103,7 @@ are calibrated to Phase 1's: Pass 6 (four tables, routes, three dialogs) is the 
 | "New Invoice" links to an existing service, pre-finalization, and becomes the visit's invoice | DONE — Pass 13 (2026-09-24) | New Invoice is gone from the Invoices screen; **"Draft invoice for a visit"** (`draft-invoice-for-visit-dialog.tsx`: customer → location → draftable visit → Pass 4's `draft-for-appointment` route, the DRAFT opening in the modal) takes its place, and the manual invoice survives only as **"Add fee / adjustment"** on the location ledger panel (`add-fee-adjustment-dialog.tsx`, the location fixed, B6). Was: the capability existed only on the Services tab as Draft invoice, and "New Invoice" was the *manual* invoice (one `ADJUSTMENT` line, no service reference; `routes.ts:1853-1861`, `storage.ts:4895-4952`). |
 | Review modal: price/payment details, address, Next/Back | DONE | Pass 7.6 (`service-ticket-review.tsx:517-583`) |
 | Review modal: office Edit button (role-gated) | ABSENT | modal is read-only; footer is Open Location / Close / Reopen / Finalize (`:648-657`) |
-| Review modal: reopen reason as a pop-up with a settings list, "Other" requires text | ABSENT | inline free-text `Textarea` (`:643-646`); `reopenReason` is text, no code column, no settings key |
+| Review modal: reopen reason as a pop-up with a settings list, "Other" requires text | DONE — Pass 17 (2026-09-25) | was: inline free-text `Textarea` (`:643-646`), `reopenReason` text only, no code column, no settings key. Now `ReopenTicketDialog` over `ticket_reopen_reasons`, `reopenReasonCode` + text, Other gated by `REOPEN_TICKET_OTHER` (see "Shipped in Pass 17" at the end of Part D) |
 | Reopen must be role-authorized | DONE | `REOPEN_TICKET` support+ (`routes.ts:1669`), reason required, audit-logged (Pass 8) |
 | Fields immutable once posted / finalized (price, service date, collection data) | DONE — Pass 16 (2026-09-23) | was **NOT ENFORCED**: `PATCH /api/service-records/:id` had no permission gate and no status guard, `updateServiceRecord` blind-wrote (and completed the Service on `confirmed`), and `completeService` re-posted over a FINALIZED record and reset its stamps. Now the PATCH is `EDIT_TICKET` (support+), content-only and strict, 409 on FINALIZED; a re-post is refused on FINALIZED (anyone) and on a ticket in review without `EDIT_TICKET`; every accepted edit or re-post writes `ticket_edited`; the rules are `shared/ticket-status.ts`, read by the technician view too. See "Shipped in Pass 16" at the end of Part D. Payment records were already immutable (Pass 6). |
 | Technician ticket: add a second service / surcharge line / Generate Proposal | ABSENT | none in `service-completion-dialog.tsx`; `ADD_FIELD_SURCHARGE` permission exists (`permissions.ts:9`) with no UI; `lineType: "SURCHARGE"` exists in schema |
@@ -363,7 +363,7 @@ so every field action is a route and every screen is data from a read — no pag
 | # | Unit | Notes covered | Depends on | Open decision |
 |---|---|---|---|---|
 | C3.1 (**Pass 16**) — **done** (`feature/phase-3-ticket-lockdown`, 2026-09-23; see "Shipped in Pass 16" at the end of Part D) | **Ticket lockdown (D9) enforced server-side.** `PATCH /api/service-records/:id` gated by a new `EDIT_TICKET` (support+) and refused on FINALIZED ("reopen first"); `completeService` refuses a re-post on a FINALIZED ticket, and a technician's re-post on a ticket already in office review (the office reopens; the technician re-posts a REOPENED one); every accepted edit writes `ticket_edited` (before/after, product applications included; payment records are already immutable and out of scope). The only UI change: `technician-work.tsx:477-485` stops passing a posted record into the ticket dialog. A defect fix, not a feature. | Immutable fields once posted | — | — |
-| C3.2 (**Pass 17**) | **Reopen-reason pop-up** with a settings list (`ticket_reopen_reasons`, the `app_settings` shape of `appointment_cancel_reschedule_reasons`), `reopenReasonCode` + text; "Other" requires text and `REOPEN_TICKET_OTHER` (manager+); the inline textarea leaves the modal; the modal closes on Finalize when the queue is exhausted. | Remove reopen reason from modal; pop-up; dropdown config; Other role-gated; close on finalize | — (after C3.1 only to avoid a footer merge conflict) | — |
+| C3.2 (**Pass 17**) — **done** (`feature/phase-3-reopen-reason-popup`, 2026-09-25; see "Shipped in Pass 17" at the end of Part D) | **Reopen-reason pop-up** with a settings list (`ticket_reopen_reasons`, the `app_settings` shape of `appointment_cancel_reschedule_reasons`), `reopenReasonCode` + text; "Other" requires text and `REOPEN_TICKET_OTHER` (manager+); the inline textarea leaves the modal; the modal closes on Finalize when the queue is exhausted. | Remove reopen reason from modal; pop-up; dropdown config; Other role-gated; close on finalize | — (after C3.1 only to avoid a footer merge conflict) | — |
 | C3.1b (**Pass 18**) | **Office Edit on the review modal** (D9): the role-gated Edit button opens `service-completion-dialog.tsx` in an `office-edit` mode (same fields, materials included) that submits through the gated PATCH instead of the post route; `ADJUST_PRICE_AGREEMENT` still guards an agreement price (support edits everything else); a FINALIZED ticket says "reopen first". Pass 16 built the PATCH content-only with materials as replace-all; the Service's price and type are not on it, so this unit adds the price edit (on the Service, logged `price_overridden` as a post's is). | Office edit button | C3.1, C3.2 | — |
 | C3.3 (**Pass 19**) | **Technician ticket modal, money and instructions**: draft-price override on the billing-summary read (`?serviceId=&priceCents=`, priced server-side through `resolveServiceLineBillingTx` + tax), dollars.cents on blur, service instructions (agreement `serviceInstructions`, service notes, location notes) at the top, the **billing-plan pill** in the ticket header (the profile display waits for C5.2), **time-in prompt** on opening a ticket with no Time In (bypass allowed). Landing after Post unchanged (B1). | Tech modal items 1-4; time-in prompt; display billing plan | — | — |
 | C3.4a (**Pass 20**) | **Material units and application areas**: a settings-managed unit list (`material_units`) feeding a Unit dropdown, product `defaultUnit` migrated to pick from it; an org-level application-area list in Settings feeding products' allowed areas; application area multi-select per material line (`applicationAreas[]`, areas serviced still derived). | Unit dropdown; Application area multi-select | — | — |
@@ -1794,6 +1794,107 @@ Behavior worth knowing before the next pass touches it:
   the customer page and (under `/@fs/`) the shared module. **Nothing was rendered in a browser** -
   the repo has no browser automation and this session had no browser - so the two Statement
   buttons, the dialog, the Statements card and the three PDFs' layout reach the owner first.
+
+**Shipped in Pass 17** (`feature/phase-3-reopen-reason-popup`, 2026-09-25) — the C3.2 row as
+built, plus what it found.
+
+```ts
+// shared/ticket-reopen.ts (new) - the reopen reason's vocabulary, pure, read by the server, the pop-up, Settings and the Services tab
+TICKET_REOPEN_REASONS_SETTING_KEY = "ticket_reopen_reasons"; REOPEN_REASON_OTHER = "OTHER"; REOPEN_REASON_OTHER_LABEL = "Other"
+DEFAULT_TICKET_REOPEN_REASONS                   // Wrong price, Wrong service date, Wrong technician, Materials missing or incorrect,
+                                                //    Notes incomplete, Customer dispute, Posted on the wrong service, Finalized in error -
+                                                //    the read when no row exists
+REOPEN_REASON_NOT_ON_LIST / REOPEN_REASON_TEXT_REQUIRED (400); REOPEN_OTHER_FORBIDDEN (403)   // the route's codes
+interface ReopenTicketRequest { reasonCode: string; reason?: string | null }                 // the route's body
+isOtherReopenReason(code)                       // case-insensitive OTHER
+sanitizeTicketReopenReasons(list)               // trim, drop nameless, de-duplicate (the first wins), drop any "Other" / "OTHER"
+normalizeTicketReopenReasons(value)             // the stored row -> list: a JSON array (or newline / comma text); nothing usable -> the defaults
+describeReopenReason(record) -> { label, text } // Other for OTHER, the entry as written, null on a legacy row; the text beside it
+formatReopenReason(record) -> string | null     // "Wrong price", "Other - typed", the legacy text alone, or null
+
+// shared/permissions.ts
+REOPEN_TICKET_OTHER = "reopen_ticket_other"     // manager, admin (REOPEN_TICKET unchanged: support+)
+rolesWithPermission(permission) -> UserRole[]   // least to most privileged - the refusal's "needs a manager or admin"
+
+// shared/schema.ts + server/service-scheduling-bootstrap.ts
+serviceRecords.reopenReasonCode                 // text, nullable; ADD COLUMN IF NOT EXISTS guarded on the column so the effect prints once;
+                                                //    no backfill - the dev DB's 4 reopened rows keep their text with a null code
+
+// server/storage.ts
+TicketReopenError(status: 400 | 403, code, message)          // -> { code, message }
+interface ReopenServiceRecordInput { id; reasonCode; reason?; actorRole; actor? }
+reopenServiceRecord(input)                      // IStorage; before the transaction: OTHER -> REOPEN_TICKET_OTHER (403) then the text (400);
+                                                //    else the list (400); then as before (confirmed false, REOPENED, the stamps, readyForBilling
+                                                //    false, the service back to SCHEDULED, the appointment rolled back from COMPLETED) with
+                                                //    reopenReason = the trimmed text or null and reopenReasonCode = OTHER or the entry as
+                                                //    written; one ticket_reopened row, before / after
+completeService(input)                          // the post's reset of the reopen stamps now clears reopenReasonCode too
+getTicketReopenReasons() / setTicketReopenReasons(reasons)   // the cancel list's pair over the (org_id, key) row; no row -> the defaults; the
+                                                //    save sanitizes and refuses an empty result ("At least one ... besides Other")
+
+// Routes
+POST  /api/service-records/:id/reopen { reasonCode, reason? }   // REOPEN_TICKET; strict (the old { reason } body is 400); 400 / 403 with the
+                                                                //    codes above; 404; the role and the actor are the session's
+GET   /api/settings/ticket-reopen-reasons -> { reasons }        // open (the pop-up reads it)
+PATCH /api/settings/ticket-reopen-reasons { reasons: string[] } // MANAGE_SETTINGS (admin) - the invoice-on-finalize convention; the cancel
+                                                                //    list's ungated PATCH is left as it is
+
+// client
+pages/service-ticket-review.tsx                 // ReopenTicketDialog (a Select of the list + Other last, disabled with "(manager or admin
+                                                //    only)" without REOPEN_TICKET_OTHER; a required Textarea for Other; Cancel / Reopen); the
+                                                //    inline textarea is gone; finalizeMutation takes { id, closeWhenDone: !nextStep } and closes
+                                                //    the modal when done (after the D2 prompt's onClose, or at once); the Reopen Audit block
+                                                //    prints label + text
+pages/settings.tsx                              // "Ticket Reopen Reasons" card beside the cancel card; textarea and Save disabled without
+                                                //    MANAGE_SETTINGS
+pages/customer-detail.tsx                       // the Services tab's "Reopen Reason:" line is formatReopenReason(record)
+```
+
+Behavior worth knowing before the next pass touches it:
+- **The code is the entry as written.** Like the disposition's cancel reason, `reopenReasonCode`
+  stores the list entry's text ("Wrong price"), not a slug; `OTHER` is the one fixed code. Renaming
+  an entry in Settings does not rewrite old tickets - they keep the text they were reopened with.
+- **"Other" is offered, never stored.** `sanitizeTicketReopenReasons` drops it (any case) from every
+  save and every read, so the list holds only the office's reasons; the pop-up appends Other last
+  from the shared constant. A list of only "Other" is refused at save and reads as the defaults.
+- **Permission before text.** A support user sending OTHER is 403 whether or not they typed a
+  reason; the pop-up disables the option for them, so the order shows only at the API. A manager
+  sending OTHER with no text is 400.
+- **The text is optional beside a listed reason.** The route and storage accept `{ reasonCode:
+  "Wrong price", reason: "..." }` and store both; the pop-up asks for text only under Other (the
+  C3.2 spec), so the optional-detail path has no UI yet - a later pass can add a "Details" box
+  without touching the server.
+- **The finalize decision is taken at the click.** `closeWhenDone` is `!nextStep` when Finalize is
+  pressed - the run snapshot and the live record set at that moment - and rides the mutation's
+  variables; the D2 prompt's `onClose` (Generate, Generate & Send, Later, or a dismiss) then
+  closes the modal through `closeReviewAfterPromptRef`. D4's "apply the balance?" prompt is the
+  invoice prompt's own state and survives the modal closing. A deep-linked ticket (index -1)
+  closes on Finalize like a run of one; `closeReviewModal` clears its `?recordId=` as a manual
+  Close does.
+- **Legacy rows show their text alone.** `describeReopenReason` gives `label: null` for the 4 rows
+  reopened before this pass; the Reopen Audit block prints the text, the Services tab line prints
+  it, and the audit renderer diffs `reopenReasonCode` like any column (null -> "Wrong price").
+- **Verified 2026-09-25** (PORT=5001): `npm run check` clean; boot 1 printed the migration's one
+  line (4 reopened rows, text kept, code null) with all 44 tables' counts unchanged; 52 API / SQL
+  assertions on boot 1 as the four roles - the shared module and the matrix (eight defaults, no
+  Other; sanitize / normalize / describe / format; `REOPEN_TICKET_OTHER` manager and admin only),
+  the list (the defaults on an org with no row; technician, support and manager PATCH 403 with
+  nothing stored; admin PATCH trimming, de-duplicating and dropping Other; Other-only, empty and
+  blank 400; the cancel list untouched), a fixture ticket posted by the technician and finalized
+  by support through the real routes, then technician 403, the old `{ reason }` body 400, a code
+  not on the list 400, a default the saved list dropped 400, Other without text (manager) 400,
+  Other with text as support 403 naming "manager or admin", Other without text as support 403,
+  every refusal leaving the ticket finalized with no code, an unknown id 404; support with a
+  listed code -> REOPENED with the code and no text, the service back to SCHEDULED, one
+  `ticket_reopened` row with the code null -> "Finalized in error" and the actor; the technician's
+  re-post clearing the code; manager with "other" + padded text -> `OTHER` and the trimmed text;
+  admin with a listed code + detail storing both, three audit rows in all; the 4 pre-existing
+  reopened rows byte-for-byte as before; the row removed -> the defaults again; every fixture
+  deleted and 43 of 44 counts back at baseline (`session` up by the four logins); boot 2 printed
+  only the serving line with every count unchanged; a Vite 200 on the three touched pages and
+  (under `/@fs/`) the two shared modules. **Nothing was rendered in a browser** - the repo has no
+  browser automation and this session had no browser - so the pop-up, its disabled Other option,
+  the close-on-exhausted behaviour and the Settings card reach the owner first.
 
 ---
 

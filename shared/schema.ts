@@ -502,6 +502,12 @@ export const serviceRecords = pgTable("service_records", {
   reopenedByUserId: varchar("reopened_by_user_id"),
   reopenedByLabel: text("reopened_by_label"),
   reopenReason: text("reopen_reason"),
+  // Pass 17 (C3.2): the settings-list entry the reopen named, as written
+  // there, or OTHER with the typed reason in reopenReason
+  // (shared/ticket-reopen.ts). Null on rows reopened before the list existed
+  // (their free text stands alone), and cleared with the other reopen stamps
+  // when the technician re-posts.
+  reopenReasonCode: text("reopen_reason_code"),
   readyForBilling: boolean("ready_for_billing").notNull().default(false),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });

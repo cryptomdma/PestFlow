@@ -11,6 +11,12 @@ export const PERMISSIONS = {
   // refuses everyone until reopened. Every accepted edit is logged as
   // `ticket_edited`.
   EDIT_TICKET: "edit_ticket",
+  // PLAN_ROADMAP_V2.md C3.2 (Pass 17): reopen a ticket with "Other" - a typed
+  // reason instead of one from the settings list (shared/ticket-reopen.ts).
+  // Manager+, the ADJUST_PRICE_AGREEMENT pattern: the list is what the office
+  // maintains for its reviewers, and stepping outside it is a manager's
+  // call. REOPEN_TICKET (support+) still gates the reopen itself.
+  REOPEN_TICKET_OTHER: "reopen_ticket_other",
   ADJUST_PRICE_NON_AGREEMENT: "adjust_price_non_agreement",
   ADJUST_PRICE_AGREEMENT: "adjust_price_agreement",
   ADD_FIELD_SURCHARGE: "add_field_surcharge",
@@ -93,6 +99,7 @@ const ROLE_PERMISSIONS: Record<UserRole, ReadonlySet<Permission>> = {
     PERMISSIONS.POST_SERVICE_TICKET,
     PERMISSIONS.FINALIZE_TICKET,
     PERMISSIONS.REOPEN_TICKET,
+    PERMISSIONS.REOPEN_TICKET_OTHER,
     PERMISSIONS.EDIT_TICKET,
     PERMISSIONS.ADJUST_PRICE_NON_AGREEMENT,
     PERMISSIONS.ADJUST_PRICE_AGREEMENT,
@@ -120,4 +127,9 @@ const ROLE_PERMISSIONS: Record<UserRole, ReadonlySet<Permission>> = {
 
 export function can(role: string, permission: Permission): boolean {
   return ROLE_PERMISSIONS[role as UserRole]?.has(permission) ?? false;
+}
+
+/** The roles holding a permission, least to most privileged - for a refusal that says who may. */
+export function rolesWithPermission(permission: Permission): UserRole[] {
+  return (Object.keys(ROLE_PERMISSIONS) as UserRole[]).filter((role) => ROLE_PERMISSIONS[role].has(permission));
 }
