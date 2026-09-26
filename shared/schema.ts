@@ -972,6 +972,22 @@ export const documents = pgTable("documents", {
   orgId: varchar("org_id").notNull(),
   kind: text("kind").notNull(), // INVOICE | STATEMENT
   invoiceId: varchar("invoice_id").references(() => invoices.id),
+  // A STATEMENT document's identity (PLAN_ROADMAP_V2.md C2.5, Pass 15): who
+  // it is for, which variant (LOCATION | ACCOUNT | ZERO_BALANCE_LETTER -
+  // shared/statements.ts), the period it rolls up (period_from null for a
+  // letter, which speaks as of period_to) and who asked for it. Null on an
+  // INVOICE document, exactly as invoice_id is null on a statement. One row
+  // per generation, on request only, never re-rendered in place: a second
+  // request for the same period is a second row, byte-identical when the
+  // ledger has not moved (the renderer is deterministic), so the office can
+  // always reproduce what it sent. Added by server/document-bootstrap.ts.
+  statementVariant: text("statement_variant"),
+  customerId: varchar("customer_id").references(() => customers.id),
+  locationId: varchar("location_id").references(() => locations.id),
+  periodFrom: date("period_from"),
+  periodTo: date("period_to"),
+  generatedByUserId: varchar("generated_by_user_id"),
+  generatedByLabel: text("generated_by_label"),
   contentHash: text("content_hash").notNull(),
   contentBase64: text("content_base64").notNull(),
   mimeType: text("mime_type").notNull().default("application/pdf"),

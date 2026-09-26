@@ -22,7 +22,8 @@ import { OPPORTUNITY_ASSIGNEE_ME, OPPORTUNITY_ASSIGNEE_UNASSIGNED, OPPORTUNITY_W
 import { ZodError, z } from "zod";
 import type { Request } from "express";
 import { requirePermission } from "./auth";
-import { AppointmentDispositionError, DraftInvoiceDecisionRequiredError, PrefinalizationIssueError, TicketLockedError } from "./storage";
+import { AppointmentDispositionError, DraftInvoiceDecisionRequiredError, PrefinalizationIssueError, StatementRefusedError, TicketLockedError } from "./storage";
+import { isUtcDay, statementFileName } from "@shared/statements";
 import { APPOINTMENT_DISPOSITION_MODES, DISPOSITION_OPPORTUNITY_CHOICES } from "@shared/appointment-disposition";
 import { can, PERMISSIONS, type UserRole } from "@shared/permissions";
 import { INVOICE_ON_FINALIZE_MODES, normalizeInvoiceOnFinalizeMode } from "@shared/invoice-on-finalize";
@@ -2642,6 +2643,96 @@ export async function registerRoutes(
     if (!document) return res.status(404).json({ message: "Invoice not found" });
     const { contentBase64, ...info } = document;
     res.json(info);
+  });
+
+  // Statements (PLAN_ROADMAP_V2.md C2.5, Pass 15; B5). One generate route
+  // per variant - a location's period statement, the customer's account
+  // statement across every location, and a location's paid-in-full letter -
+  // each rendering and storing one STATEMENT document on request and
+  // answering its info plus the figures it printed. The gate is
+  // GENERATE_INVOICE (support+): a statement is a customer-facing billing
+  // document the office produces, the same act as "Add fee / adjustment",
+  // and no closer permission exists (SEND_INVOICE is the sent stamp, which a
+  // statement does not have until delivery arrives with C6.3). The reads -
+  // the lists, the info and the bytes - are open like every document and
+  // ledger read here. The period is two inclusive UTC calendar days, like
+  // every other date-only value in this repo.
+  const statementPeriodSchema = z
+    .object({
+      periodFrom: z.string().refine(isUtcDay, "periodFrom must be a YYYY-MM-DD day"),
+      periodTo: z.string().refine(isUtcDay, "periodTo must be a YYYY-MM-DD day"),
+    })
+    .refine((period) => period.periodFrom <= period.periodTo, { message: "periodFrom must not be after periodTo", path: ["periodFrom"] });
+  const respondStatementRefused = (res: any, err: StatementRefusedError) =>
+    res.status(409).json({ code: err.code, message: err.message, balanceDueCents: err.balanceDueCents });
+
+  app.post("/api/locations/:locationId/statements", requirePermission(PERMISSIONS.GENERATE_INVOICE), async (req, res) => {
+    try {
+      const period = statementPeriodSchema.parse(req.body ?? {});
+      const data = await req.storage.generateLocationStatement(req.params.locationId, { from: period.periodFrom, to: period.periodTo }, getAuditActor(req));
+      if (!data) return res.status(404).json({ message: "Location not found" });
+      res.status(201).json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/customers/:customerId/statements", requirePermission(PERMISSIONS.GENERATE_INVOICE), async (req, res) => {
+    try {
+      const period = statementPeriodSchema.parse(req.body ?? {});
+      const data = await req.storage.generateAccountStatement(req.params.customerId, { from: period.periodFrom, to: period.periodTo }, getAuditActor(req));
+      if (!data) return res.status(404).json({ message: "Customer not found" });
+      res.status(201).json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  // 409 LOCATION_HAS_BALANCE when the location still owes something: the
+  // letter is refused, never reworded as a balance-due statement.
+  app.post("/api/locations/:locationId/zero-balance-letter", requirePermission(PERMISSIONS.GENERATE_INVOICE), async (req, res) => {
+    try {
+      const data = await req.storage.generateZeroBalanceLetter(req.params.locationId, getAuditActor(req));
+      if (!data) return res.status(404).json({ message: "Location not found" });
+      res.status(201).json(data);
+    } catch (e: any) {
+      if (e instanceof StatementRefusedError) return respondStatementRefused(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.get("/api/locations/:locationId/statements", async (req, res) => {
+    const data = await req.storage.listStatementsByLocation(req.params.locationId);
+    res.json(data);
+  });
+
+  app.get("/api/customers/:customerId/statements", async (req, res) => {
+    const data = await req.storage.listStatementsByCustomer(req.params.customerId);
+    res.json(data);
+  });
+
+  app.get("/api/statements/:id", async (req, res) => {
+    const data = await req.storage.getStatement(req.params.id);
+    if (!data) return res.status(404).json({ message: "Statement not found" });
+    res.json(data);
+  });
+
+  // The stored bytes, exactly as generated - inline by default, an
+  // attachment with ?download=1, like the invoice's document read.
+  app.get("/api/statements/:id/document", async (req, res) => {
+    try {
+      const document = await req.storage.getStatementDocument(req.params.id);
+      if (!document) return res.status(404).json({ message: "Statement not found" });
+      const info = await req.storage.getStatement(req.params.id);
+      const disposition = req.query.download === "1" ? "attachment" : "inline";
+      res.setHeader("Content-Type", document.mimeType);
+      res.setHeader("Content-Disposition", `${disposition}; filename="${info ? statementFileName(info) : `statement-${document.id}.pdf`}"`);
+      res.send(Buffer.from(document.contentBase64, "base64"));
+    } catch (e: any) {
+      res.status(400).json({ message: e.message });
+    }
   });
 
   // Tax Rates

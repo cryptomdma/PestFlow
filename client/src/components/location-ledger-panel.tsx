@@ -30,7 +30,10 @@ import type { Agreement, CreditApplication, CreditMemo, Invoice, Payment, Paymen
 import { RecordPaymentDialog } from "@/components/record-payment-dialog";
 import { AddFeeAdjustmentDialog } from "@/components/add-fee-adjustment-dialog";
 import { InvoiceStatusBadge, InvoiceStatusIcon } from "@/components/invoice-status-badge";
-import { DollarSign, ReceiptText } from "lucide-react";
+import { StatementDialog } from "@/components/statement-dialog";
+import { StatementDocumentActions } from "@/components/statement-document-actions";
+import { describeStatementPeriod, STATEMENT_VARIANT_LABELS, type StatementInfo } from "@shared/statements";
+import { DollarSign, FileText, ReceiptText } from "lucide-react";
 
 // PLAN_BILLING_V1_1.md D5 / D4: the location's ledger, on its Invoices tab.
 // Balances at the top (open, on account, pending), then every payment and
@@ -40,7 +43,11 @@ import { DollarSign, ReceiptText } from "lucide-react";
 // every act (PLAN_ROADMAP_V2.md C2.1b). The header's third action since Pass
 // 13 is "Add fee / adjustment" - the manual invoice's only home (B6 / C2.3),
 // here because the location is already known, so a location-less invoice can
-// never recur; the Invoices screen's New Invoice is gone.
+// never recur; the Invoices screen's New Invoice is gone. The fourth, since
+// Pass 15 (C2.5), is "Statement": the location's period statement or its
+// paid-in-full letter, generated on request and stored; the stored
+// statements - the location's own and the customer's account-wide ones,
+// which cover it - are listed below the payments, each with Open / Download.
 
 /** Mirrors InvoiceLedger (server/storage.ts). */
 export interface InvoiceLedgerResponse {
@@ -453,6 +460,7 @@ export function InvoiceRowLedger({ invoice, onOpen }: { invoice: Invoice; onOpen
 export function LocationLedgerPanel({
   customerId,
   locationId,
+  locationLabel,
   invoices,
   agreements,
   onOpenInvoice,
@@ -460,6 +468,8 @@ export function LocationLedgerPanel({
   /** The location's customer - a fee is billed to the location, and the server checks the location is theirs. */
   customerId: string;
   locationId: string;
+  /** How the screen names the location - the Statement dialog's title. */
+  locationLabel?: string;
   invoices: Invoice[];
   agreements?: Agreement[];
   /** Opens a just-issued fee invoice in the invoice modal. */
@@ -475,8 +485,18 @@ export function LocationLedgerPanel({
   const canRefund = can(role, PERMISSIONS.REFUND_PAYMENT);
   const canCredit = can(role, PERMISSIONS.ISSUE_CREDIT_MEMO);
   const canAddFee = can(role, PERMISSIONS.GENERATE_INVOICE);
+  // Pass 15: a statement is a customer-facing billing document the office
+  // produces - the same gate as the fee, GENERATE_INVOICE (support+).
+  const canStatement = can(role, PERMISSIONS.GENERATE_INVOICE);
 
   const { data: summary } = useQuery<LocationLedgerSummary>({ queryKey: ["/api/locations", locationId, "ledger-summary"], enabled: !!locationId });
+  // Every statement stored for the customer; this location's own and the
+  // account-wide ones (locationId null) are the ones that cover it.
+  const { data: customerStatements } = useQuery<StatementInfo[]>({ queryKey: ["/api/customers", customerId, "statements"], enabled: !!customerId });
+  const locationStatements = useMemo(
+    () => (customerStatements ?? []).filter((statement) => statement.locationId === locationId || statement.locationId === null),
+    [customerStatements, locationId],
+  );
   const { data: locationPayments } = useQuery<Payment[]>({ queryKey: ["/api/payments/by-location", locationId], enabled: !!locationId });
   const { data: locationCredits } = useQuery<CreditMemo[]>({ queryKey: ["/api/credit-memos/by-location", locationId], enabled: !!locationId });
 
@@ -492,6 +512,7 @@ export function LocationLedgerPanel({
   const [recordOpen, setRecordOpen] = useState(false);
   const [creditOpen, setCreditOpen] = useState(false);
   const [feeOpen, setFeeOpen] = useState(false);
+  const [statementOpen, setStatementOpen] = useState(false);
   const [applySource, setApplySource] = useState<{ kind: "payment" | "credit_memo"; id: string; label: string; unappliedCents: number } | null>(null);
   const [reasonAct, setReasonAct] = useState<{ kind: "void_payment" | "refund_payment" | "void_credit"; id: string; label: string } | null>(null);
 
@@ -534,6 +555,11 @@ export function LocationLedgerPanel({
               ) : null}
               {canAddFee ? (
                 <Button size="sm" variant="outline" onClick={() => setFeeOpen(true)} data-testid="button-add-fee-adjustment">Add fee / adjustment</Button>
+              ) : null}
+              {canStatement ? (
+                <Button size="sm" variant="outline" onClick={() => setStatementOpen(true)} title="A period statement for this location, or a paid-in-full letter with agreement status" data-testid="button-location-statement">
+                  <FileText className="h-3 w-3 mr-1" /> Statement
+                </Button>
               ) : null}
             </div>
           </div>
@@ -639,8 +665,40 @@ export function LocationLedgerPanel({
         </Card>
       ) : null}
 
+      {locationStatements.length > 0 ? (
+        <Card data-testid="card-location-statements">
+          <CardHeader className="pb-2"><CardTitle className="text-sm font-semibold">Statements</CardTitle></CardHeader>
+          <CardContent className="space-y-2">
+            {locationStatements.map((statement) => (
+              <div key={statement.id} className="flex items-center justify-between gap-3 rounded-md bg-muted/40 px-3 py-2" data-testid={`row-statement-${statement.id}`}>
+                <div className="min-w-0 text-sm">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-medium">{STATEMENT_VARIANT_LABELS[statement.variant]}</span>
+                    <Badge variant="outline" className="text-xs">{describeStatementPeriod(statement)}</Badge>
+                    {statement.locationId === null ? <Badge variant="secondary" className="text-xs">All locations</Badge> : null}
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Generated {formatDate(statement.generatedAt)}{statement.generatedByLabel ? ` by ${statement.generatedByLabel}` : ""} - stored; there is no email delivery yet
+                  </p>
+                </div>
+                <div className="flex items-center gap-1 shrink-0">
+                  <StatementDocumentActions statement={statement} compact />
+                </div>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      ) : null}
+
       <RecordPaymentDialog open={recordOpen} onOpenChange={setRecordOpen} locationId={locationId} agreements={agreements} />
       <IssueCreditMemoDialog open={creditOpen} onOpenChange={setCreditOpen} locationId={locationId} invoices={invoices} />
+      <StatementDialog
+        open={statementOpen}
+        onOpenChange={setStatementOpen}
+        customerId={customerId}
+        customerLabel={locationLabel ?? "this customer"}
+        scope={{ kind: "location", locationId, locationLabel: locationLabel ?? "this location" }}
+      />
       <AddFeeAdjustmentDialog
         open={feeOpen}
         onOpenChange={setFeeOpen}

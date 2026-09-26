@@ -18,10 +18,11 @@ merged (PR #83); Pass 25 (Opportunity taxonomy, assignee and search, C4.1 - the 
 pass, pulled forward by the recommended order) is merged (PR #84); Pass 27 (Cancel and Reschedule,
 one path, C4.2 - the other pulled-forward Phase 4 pass) is merged (PR #85) with the owner's
 live-testing review of 2026-09-25 recorded on the same branch; Pass 27b (that review's two
-defects, C4.2b) is pushed, awaiting merge; **next pass: 15, Statements** (C2.5 - the recommended
-order is then exhausted, so the rest in phase order). The roadmap sequences every remaining item below; this
-file keeps the status pointer and, as its last section, the handoff prompt that starts the next
-session.
+defects, C4.2b) is merged (PR #86); Pass 15 (Statements, C2.5 - the last of the recommended
+immediate order) is pushed, awaiting merge; **next pass: 17, the reopen-reason pop-up** (C3.2 -
+the recommended order is exhausted, so the rest runs in phase order). The roadmap sequences every
+remaining item below; this file keeps the status pointer and, as its last section, the handoff
+prompt that starts the next session.
 
 ## Status
 Pass 1 (`feature/phase-1-appointment-status-enum`, D1a) merged as PR #56.
@@ -715,7 +716,7 @@ CONVERTED once the recycled service was placed again both pass as the agreement 
 (5) cancelling a `PENDING_SCHEDULING` service without placing it first is added to C4.3a
 (Pass 28), the queue's details link stays C5.4 (Pass 36).
 
-Pass 27b (`feature/phase-4-cancel-reschedule-review`, 2026-09-25, C4.2b) pushed, awaiting merge.
+Pass 27b (`feature/phase-4-cancel-reschedule-review`, 2026-09-25, C4.2b) merged as PR #86.
 **Cancel and Reschedule, owner review: the two defects.** (1) A CANCELED placement leaves the
 dispatch board, cancelled and rescheduled alike: one shared predicate, `isBoardPlacement()` in
 `shared/appointment-disposition.ts` (false for CANCELED whatever the flag), applied once in
@@ -746,17 +747,75 @@ the board without its red cards, the two dialogs closing on completion and the d
 not been rendered by anyone: the repo has no browser automation and the session had no browser.**
 Signatures and behavior are under "Shipped in Pass 27b" at the end of `PLAN_ROADMAP_V2.md` Part D.
 
-Next up: **Pass 15** — Statements (`PLAN_ROADMAP_V2.md` Phase 2 table, C2.5; B5): a location
-statement (period roll-up: opening balance, invoices, payments, credits, closing balance, aging
-strip), an account statement across every location (the property-manager case) and a paid-in-full
-/ zero-balance letter with agreement status for a home sale, through the existing document
-renderer pattern and stored like invoices (the `documents` table's STATEMENT kind has waited since
-Pass 10), Open / Download from the location Invoices tab and the customer header, on request
-only. The recommended immediate order is exhausted with it; after it the rest runs in phase order
-- Phase 3 from Pass 17 (C3.2, the reopen-reason pop-up), with Pass 26 (C4.1b) and Pass 28 (C4.3a)
-in Phase 4's turn. Branch from `origin/main` after confirming it contains Pass 27b's merge. The
-handoff prompt for Pass 15 is the last section of this file; the Pass 15 session writes Pass 17's
-(the C3.2 row carries the spec).
+Pass 15 (`feature/phase-2-statements`, 2026-09-25, C2.5) pushed, awaiting merge.
+**Statements.** Three customer-facing documents through the invoice document's pattern - storage
+assembles the context, the renderer is pure and byte-deterministic, the bytes are stored - all on
+request, none on a schedule. A **location statement** (`POST /api/locations/:id/statements
+{ periodFrom, periodTo }`, two inclusive UTC days like every other date-only value): the opening
+balance (invoices issued before the period less the confirmed applications and credits made
+before it), the period's lines in date order (invoices issued; payments and credit memos applied
+- a confirmed payment counts, a pending one shows and is marked; money received but not applied
+is an on-account line that moves nothing; refunds), the closing balance = opening + charges -
+credits, and the aging strip as of the period's end derived from the same rows cut off there - so
+for a period ending today the closing balance equals the ledger summary's open balance and the
+strip equals the customer aging read's entry, which the smoke test holds it to. An **account
+statement** (`POST /api/customers/:id/statements`): one section per location, primary first, a
+trailing section for issued invoices with no location when any exist, the figures summed and
+`rollupAging` for the strip - keyed on the **customer**, as the aging rollup is: the canonical
+Account has no screen and no read of its own and selects the same rows, and the customer header
+is the surface. A **paid-in-full letter** (`POST /api/locations/:id/zero-balance-letter`) as of
+today: the zero balance, any money on account or awaiting confirmation, the invoices to date, and
+the location's agreements with their status, active first (the home-sale case) - **refused with
+409 `LOCATION_HAS_BALANCE`** naming the balance while the location owes anything (a letter that
+says "you owe $X" is a balance-due statement, and the office generates a location statement for
+that); pending money applied to an open invoice does not clear it. The balance model is the
+ledger's (D4 / D5), not a customer-account one: the balance is what is owed on issued invoices, it
+moves when money is applied and confirmed, money on account is shown beside it and never netted,
+and a DRAFT, a VOID, a released application and a payment recorded in error do not appear;
+statuses are as of generation, dates place the rows. The arithmetic is one pure shared module,
+`shared/statements.ts` (`summarizeLocationStatement`, `summarizeAccountStatement`,
+`buildZeroBalanceLetter`, `zeroBalanceLetterRefusal`; 60 checks drive it directly); the
+document is `server/documents/statement-pdf.ts` (pdfkit, dates pinned to the statement date, a
+paginating table helper; no HTML twin - `renderInvoiceHtml` has no consumer). **Storage**: a
+statement's identity is a small nullable column set on `documents` (`statement_variant`,
+`customer_id`, `location_id`, `period_from`, `period_to`, `generated_by_user_id`,
+`generated_by_label`) rather than a second table - the same org / hash / bytes / created-at
+columns serve both kinds, the list reads are one query, and the columns are null on an INVOICE row
+exactly as `invoice_id` is null on a statement; one row per generation, never re-rendered in
+place (a second request over an unmoved ledger is a second, byte-identical row - the hash proves
+it); the migration (`document-bootstrap.ts`, guarded on the first column, `IF NOT EXISTS`
+throughout) printed its effect once on the dev DB (11 INVOICE rows untouched, nothing backfilled)
+and nothing on the second boot. **Routes**: the three generates under `GENERATE_INVOICE`
+(support+ - a statement is the office's customer-facing billing document, the same act as Add fee
+/ adjustment, and no closer permission exists; the technician is 403), list reads per location and
+per customer, an info read, and the bytes read (`GET /api/statements/:id/document`, inline,
+`?download=1` for an attachment named statement- / account-statement- / paid-in-full-letter-
+<day>.pdf), all open like every document read. **Client**: a **Statement** button on the location
+Invoices tab's Balance card (location statement or paid-in-full letter, in `StatementDialog`, the
+period month to date by default) and beside Add Location in the customer header (the account
+statement across every location), the generated figures shown with Open PDF / Download
+(`StatementDocumentActions`, the invoice pattern minus Mark Sent - a statement has no sent stamp
+until delivery arrives), and a **Statements** card on the Invoices tab listing the location's
+stored statements and the account-wide ones that cover it. Not built: delivery (C6.3), a scheduled
+monthly statement (a later Settings toggle), a preview that stores nothing, per-invoice line detail
+(the first line's description and "+N more"), due-date aging. **Restart `npm run dev:full` before
+manually testing - this pass adds routes and a migration (the migration already ran on the shared
+dev DB during this pass's verification boot; a server on the old code neither reads nor needs the
+new columns), and the two Statement buttons, the dialog, the Statements card and the three PDFs'
+layout have not been rendered by anyone: the repo has no browser automation and the session had
+no browser.** Signatures and behavior are under "Shipped in Pass 15" at the end of
+`PLAN_ROADMAP_V2.md` Part D.
+
+Next up: **Pass 17** — the reopen-reason pop-up (`PLAN_ROADMAP_V2.md` Phase 3 table, C3.2; D9's
+"pop-up with settings-configured dropdown; Other requires text, role-gated", unscheduled since Pass
+7.6): a settings list `ticket_reopen_reasons` in the `app_settings` shape of
+`appointment_cancel_reschedule_reasons`, `reopenReasonCode` + text on the ticket, "Other"
+requiring text and a new `REOPEN_TICKET_OTHER` (manager+), the inline textarea leaving the review
+modal for a pop-up, and the modal closing on Finalize when the queue is exhausted. The recommended
+immediate order is exhausted with Pass 15; the rest runs in phase order (Pass 17 → 18 → ..., with
+Pass 26 (C4.1b) and Pass 28 (C4.3a) in Phase 4's turn). Branch from `origin/main` after confirming
+it contains Pass 15's merge. The handoff prompt for Pass 17 is the last section of this file; the
+Pass 17 session writes Pass 18's (the C3.1b row carries the spec).
 
 Phase 1's ordered plan, impact analysis, conflict resolutions, and per-pass verification steps live in
 `PLAN_BILLING_V1_1_EXECUTION.md` — read it when a pass builds on a Phase 1 helper (its "Shipped in
@@ -989,127 +1048,98 @@ pointer and that prompt.
 
 Replaced at the end of every pass (`AGENT_WORKING_AGREEMENT.md`, the end-of-pass step). The owner
 pastes it verbatim to start the next session; it is also the last thing in the finishing session's
-final message. Written 2026-09-25, after Pass 27b was pushed as
-`feature/phase-4-cancel-reschedule-review`.
+final message. Written 2026-09-25, after Pass 15 was pushed as `feature/phase-2-statements`.
 
 ```text
-Start Pass 15 — Statements
-(PLAN_ROADMAP_V2.md Phase 2 table, row C2.5; B5 carries the owner's answer of 2026-09-19: no
-"monthly billing" term, but a statement is wanted - for commercial locations, for property
-managers with many locations and one payer, and for a home sale, as a paid-in-full / zero-balance
-letter with agreement status. The recommended immediate order ends with this pass; after it the
-rest runs in phase order, Phase 3 from Pass 17.) Read the CLAUDE.md docs in order first;
-CURRENT_FOCUS.md's last two entries (Pass 27b and "Next up") are the ones that matter.
+Start Pass 17 — Reopen-reason pop-up
+(PLAN_ROADMAP_V2.md Phase 3 table, row C3.2; PLAN_BILLING_V1_1.md D9's "reopen-reason UX per
+notes: pop-up with settings-configured dropdown; Other requires text, role-gated", unscheduled
+since Pass 7.6. The recommended immediate order is exhausted; the rest runs in phase order, and
+this is the first open Phase 3 row after Pass 16.) Read the CLAUDE.md docs in order first;
+CURRENT_FOCUS.md's last two entries (Pass 15 and "Next up") are the ones that matter.
 
-Branch feature/phase-2-statements from origin/main. Confirm main contains the Pass 27b merge
-(feature/phase-4-cancel-reschedule-review) before branching.
+Branch feature/phase-3-reopen-reason-popup from origin/main. Confirm main contains the Pass 15
+merge (feature/phase-2-statements) before branching.
 
-The decision is recorded (B5; the C2.5 row): a location statement - a period roll-up with opening
-balance, the period's invoices, payments and credits, closing balance and the aging strip; an
-account statement, the same across every location of the account (the property-manager case); a
-paid-in-full / zero-balance letter with agreement status (the home-sale case); all through the
-existing document renderer pattern, stored like invoices, opened and downloaded from the location
-Invoices tab and the customer header, on request only (a scheduled monthly statement is a later
-Settings toggle; delivery arrives with C6.3). Ground truth today (line numbers from origin/main at
-the Pass 27b merge; they drift, the names do not):
-- The document layer is invoice-only. server/documents/types.ts holds InvoiceDocumentContext and
-  InvoiceDocumentBranding (the org's logo, colour and Remit To: organizations.logoUrl /
-  primaryColorHex / remitToName / remitToAddress / remitToEmail / remitToPhone, shared/schema.ts
-  :1034-1039); invoice-pdf.ts renderInvoicePdf (:15, pdfkit, byte-deterministic) and
-  invoice-html.ts renderInvoiceHtml (:18) are pure; storage assembles the context in
-  getInvoiceDocumentContext (server/storage.ts:9047) and stores the PDF once in
-  getOrCreateInvoiceDocument (:9140 - a DRAFT previews and is never stored; getDocument :9203);
-  the routes are GET /api/invoices/:id/document (routes.ts:2626, inline, ?download=1 for an
-  attachment) and /document-info (:2640); the client's Open PDF / Download / Mark Sent is
-  InvoiceDocumentActions (client/src/components/invoice-document-actions.tsx; invoiceDocumentUrl
-  :23), used in the invoice modal at invoice-detail-dialog.tsx:609. The documents table
-  (shared/schema.ts:970: id, orgId, kind INVOICE | STATEMENT, invoiceId, contentHash,
-  contentBase64, mimeType, createdAt) has carried the STATEMENT kind since Pass 10 with no
-  writer; its only identity column is invoiceId, and the partial unique index
-  documents_invoice_id_uidx (server/document-bootstrap.ts:21) is scoped to kind = 'INVOICE', so
-  a statement needs an identity of its own (the location or customer, the variant, the period,
-  generated-at) - nothing exists for it yet, and a migration is expected.
-- The ledger a statement rolls up, all per location: getInvoicesByLocation (storage.ts:5160; GET
-  /api/invoices/by-location/:locationId, routes.ts:1170), getPaymentsByLocation (:7440;
-  /api/payments/by-location/:locationId, routes.ts:2376), getCreditMemosByLocation (:7617;
-  /api/credit-memos/by-location/:locationId, :2457), getInvoiceLedger (:8504, the payment and
-  credit applications behind one invoice, each with appliedAt and released),
-  getLocationLedgerSummary (:8524; LocationLedgerSummary in shared/payments.ts:390 - open
-  balance, unapplied confirmed and pending, the sources; /api/locations/:locationId/ledger-summary,
-  routes.ts:2462), and the unapplied pool (collectUnappliedSourcesTx :7753,
-  unappliedSourcesForLocationTx :7799). Invoices carry the D5 rollups (amountPaidCents,
-  balanceDueCents, pendingAppliedCents) as of now, never historically; an opening balance for a
-  period has to be derived from the rows' own dates (issuedAt on invoices, appliedAt / releasedAt
-  on applications, receivedAt and the confirm / void stamps on payments, issuedAt on credit
-  memos). "Pending shows, confirmed counts" (D5) holds on a statement too.
-- Aging is shared/aging.ts (summarizeAgingByLocation :296, rollupAging :256, ageInvoice :201,
-  agingAsOf :331; Current / 31-60 / 61-90 / Over 90 days since invoiced, B20), read by
-  getCustomerAging (storage.ts:5233) and getAgingReport (:5250) behind GET
-  /api/customers/:id/aging (routes.ts:633) and /api/reports/aging (:2452); the customer screen
-  renders it as CustomerAgingChips (client/src/components/aging-strip.tsx:49;
-  customer-detail.tsx:3724, the header's chip row) and LocationAgingStrip (aging-strip.tsx:85;
-  customer-detail.tsx:3888, the profile grid's right column). The strip is the statement's aging
-  strip.
-- Grouping: every rollup the screen shows is per customer - getLocationBalancesByCustomer
-  (storage.ts:5169; /api/location-balances/:customerId, routes.ts:1175) and getCustomerAging -
-  over the customer's locations (GET /api/locations/:customerId, routes.ts:854). The canonical
-  Account is the accounts table (shared/schema.ts:26: id, primaryLocationId, status,
-  legacyCustomerId; locations.accountId), one per customer today with no screen and no read of
-  its own. The account statement is therefore the customer-wide statement, keyed by the customer
-  as the aging rollup is, unless you find a reason to key it on accounts - say which you did.
-- Surfaces: the location Invoices tab (customer-detail.tsx:4011-4016 - LocationLedgerPanel, whose
-  Balance card carries Record Payment / Issue Credit Memo / Add fee / adjustment at
-  location-ledger-panel.tsx:529-536, then InvoiceRowLedger rows opening the invoice modal through
-  openInvoice :3617); the customer header (customer-detail.tsx:3724 for the chip row, :3786 for
-  the Add Location button beside the location selector). Agreement status for the letter:
-  agreements.status is ACTIVE | CANCELLED in the data (17 / 8 on the dev DB; canon §9 also names
-  paused and expired), read per location by getAgreementsByLocation (storage.ts:3731).
-- The Pass 14 fixtures are the smoke test's model (a two-location customer, manual invoices
-  back-dated by SQL, a pending check applied, a confirmed check and a credit memo on account);
-  the dev DB's own rows (66+ invoices, 18+ payments) are the owner's and are left alone.
+The decision is recorded (the C3.2 row; D9): a settings list ticket_reopen_reasons in the
+app_settings shape of appointment_cancel_reschedule_reasons; reopenReasonCode + text on the
+ticket; "Other" requires text and a new REOPEN_TICKET_OTHER (manager+); the inline textarea
+leaves the review modal for a pop-up; the modal closes on Finalize when the queue is exhausted.
+Ground truth today (line numbers from origin/main at the Pass 15 merge; they drift, the names do
+not):
+- The reopen path: POST /api/service-records/:id/reopen (routes.ts:1897, REOPEN_TICKET - support+
+  per shared/permissions.ts:81 / :95) parses reopenServiceRecordSchema (:318, { reason: string,
+  trimmed, min 1 }) and calls reopenServiceRecord (storage.ts:5020): one transaction that sets
+  confirmed false, ticketStatus REOPENED, reopenedAt / reopenedByUserId / reopenedByLabel,
+  reopenReason (the trimmed text) and readyForBilling false, then writes the audit row
+  ticket_reopened (service_record entity, before / after; :5047). The columns are
+  shared/schema.ts:501-504 (reopened_at, reopened_by_user_id, reopened_by_label, reopen_reason);
+  there is no reason-code column. Reopen clears the three "finalized" signals
+  shared/ticket-status.ts reads (isTicketFinalized :35), which is what re-admits the technician.
+- The settings-list shape to copy: appointment_cancel_reschedule_reasons is one app_settings row
+  (shared/schema.ts:509 - org_id + key primary key, value text) holding a JSON array of strings,
+  read by getAppointmentCancelReasons (storage.ts:5133, through normalizeAppointmentCancelReasons
+  :1084 with DEFAULT_APPOINTMENT_CANCEL_REASONS as the fallback when no row exists) and written by
+  setAppointmentCancelReasons (:5138 - trimmed, de-duplicated, at least one); the routes are GET /
+  PATCH /api/settings/appointment-cancel-reasons (routes.ts:1925 / :1930,
+  appointmentCancelReasonsSchema :296 - note that PATCH carries no permission gate, unlike
+  invoice-on-finalize at :1949 which is MANAGE_SETTINGS; decide which the new list gets and say
+  which); the Settings page edits it as one textarea, one reason per line ("Appointment Cancel /
+  Reschedule Reasons", settings.tsx:2021; state :1335, query :1352, mutation :1386). The
+  server-side "the reason must be on the list" check is dispositionAppointment's
+  (storage.ts:4240-4249: DISPOSITION_REASON_REQUIRED / DISPOSITION_REASON_NOT_ON_LIST from
+  shared/appointment-disposition.ts:79 / :81, answered as an AppointmentDispositionError 400 with
+  the code); the client dropdown fed by that list is the dispatch sheet's Cancel appointment
+  dialog (schedule.tsx:427; the list read at :637).
+- The review modal, client/src/pages/service-ticket-review.tsx: the inline "Reopen Reason"
+  Textarea (:683-684) sits above the footer, Reopen (:690, disabled until the text is non-empty)
+  beside Finalize (:693); reopenReason state (:286) is cleared by openRecordFromQueue (:349),
+  closeReviewModal (:354), goToRecord (:401) and the reopen mutation's success (:439);
+  reopenMutation (:432) posts { reason }. The finalize mutation (:415) invalidates, then either
+  opens the D2 invoice prompt or toasts, and leaves the modal open on the same ticket; Next / Back
+  walk a snapshot of the queue (navRecordIds; resolveReviewNav in
+  client/src/lib/review-queue-nav.ts:33, pure, the snapshot rule in the comment at :340-348), so
+  "the queue is exhausted" is resolveReviewNav answering no next step for the finalized ticket
+  (say whether a run of one - a deep-linked ticket - counts). The "Reopen Audit" block (:675-680)
+  shows the stamps and the free text. The audit renderer
+  (client/src/components/audit-log-entry-card.tsx) prints a service_record's before / after, so a
+  new column shows there like any other field.
+- Permissions: shared/permissions.ts - REOPEN_TICKET is support+; a new REOPEN_TICKET_OTHER goes
+  manager+ (the ADJUST_PRICE_AGREEMENT pattern); admin holds every permission.
 
-Build per C2.5 and B5: (1) one statement context builder in storage - storage assembles, the
-renderer is pure and byte-deterministic, the invoice pattern - for a location and a period (from
-/ to, inclusive UTC days like every other date-only value): opening balance (invoices issued
-before the period, less the confirmed applications and credits made before it), the period's
-lines in date order (invoices issued, payments received - confirmed counted, pending listed and
-marked, never counted - credit memos issued, applications), closing balance, and the aging strip
-as of the statement's end; for a period ending today the closing balance must equal the ledger
-summary's open balance and the aging strip's figures - the smoke test's cross-check. (2) The
-account statement: the same for every location of the customer, one section per location and a
-rollup, rollupAging for the strip. (3) The paid-in-full / zero-balance letter: a variant of the
-same document for a location with no open balance (refused, or worded as a balance-due statement,
-when one remains - say which), listing the location's agreements with their status. (4) Storage:
-documents rows with kind STATEMENT and their own identity (a small nullable column set on
-documents, or a statements table pointing at documents - say which), one row per generation, on
-request only, never re-rendered in place; a guarded migration in a bootstrap, its effect printed,
-idempotent on the second boot. (5) Routes: a generate route per variant (location, customer,
-letter) taking the period and returning the stored document's info, a document read serving the
-bytes inline or as an attachment like the invoice's, and a list read of a location's / customer's
-stored statements; reads open like the invoice reads, the generate gated by GENERATE_INVOICE
-unless you find a better fit - say which. (6) Client: a Statement action on the location Invoices
-tab's Balance card and on the customer header (period and variant in a small dialog, then Open /
-Download through the InvoiceDocumentActions pattern), and the stored statements listed on the
-Invoices tab. Not touched: invoice documents (stored bytes stay), the nightly run, delivery
-(C6.3), a scheduled statement (a later Settings toggle), the Payments screen, the Reports page.
+Build per C3.2: (1) the list - ticket_reopen_reasons in app_settings, a default list when no row
+exists (say which defaults), "Other" always offered last and never a stored entry (or stored - say
+which), GET / PATCH /api/settings/ticket-reopen-reasons in the cancel-reasons shape, a Settings
+card beside "Appointment Cancel / Reschedule Reasons" editing one reason per line; (2) the ticket
+- reopenReasonCode on service_records, a nullable text column added by a guarded migration in
+the bootstrap that owns service_records (its effect printed, idempotent on the second boot; the
+existing reopened rows keep their free text with a null code - never guessed), the reopen route
+taking { reasonCode, reason? }: a code on the list, or OTHER with required text, refused otherwise
+(400 with a code, the disposition's pattern), OTHER additionally gated by REOPEN_TICKET_OTHER (a
+support user reopening with Other is 403 with a message saying who may); the audit row and the
+Reopen Audit block carry both; (3) the pop-up - the inline textarea leaves the modal; Reopen opens
+a small dialog with a Select fed by the list, a text field that appears and is required for
+Other, Cancel / Reopen; the Other option is disabled, not hidden, with the reason, for anyone
+without REOPEN_TICKET_OTHER; (4) close on Finalize - when the finalize completes (after the D2
+prompt is answered, or at once when there is none) and resolveReviewNav has no next step for the
+run, the modal closes; otherwise it stays on the ticket exactly as today so Next still works. Not
+touched: the finalize path itself, the technician's view, the location Services tab's Review
+ticket link, the office edit button (C3.1b, Pass 18), the disposition's own reasons list.
 
 Environment: Node 24.21.0, npm run dev:full (restart it before manually testing - this pass adds
 routes and a migration), DEV_NOTES.md for the DB backup/restore and PowerShell traps, gh logged in
 so the session can open the PR. Verify on PORT=5001 as the previous passes did: npm run check;
 double boot (boot 1 prints the migration's effect, boot 2 only "serving on port 5001" with every
-table count unchanged); the pass's API smoke test as all four roles (a fixture customer with two
-locations, invoices back-dated by SQL across the period boundary, a confirmed payment applied, a
-pending payment shown and not counted, a credit memo; the location statement's opening, period
-and closing figures equal to the ledger summary and the aging strip; the account statement equal
-to the locations summed; the letter refused or worded for a location with a balance and clean for
-one without, its agreements listed; each generation stored once with reproducible bytes and served
-inline and as an attachment; the technician refused where the gate applies; every fixture and
-every stored statement deleted and counts back at baseline) and a Vite 200 on every touched
-client module; state plainly what was not rendered.
+table count unchanged); the pass's API smoke test as all four roles (a fixture ticket posted and
+finalized through the real routes; reopen with a listed code as support -> REOPENED with the code
+and the audit row; a code not on the list -> 400; Other without text -> 400; Other with text as
+support -> 403, as manager -> 200; the list read and PATCH, the defaults on an org with no row;
+the pre-existing reopened rows' null code untouched; every fixture deleted and counts back at
+baseline) and a Vite 200 on every touched client module; state plainly what was not rendered -
+the pop-up and the close-on-exhausted behavior cannot be exercised without a browser.
 
 Working agreement as always: one pass, one branch, update CURRENT_FOCUS and the roadmap's pass
 table at the end, replace the handoff prompt at the end of CURRENT_FOCUS.md with the one for the
-next pass (the recommended immediate order is exhausted after Pass 15, so the rest in phase
-order: Pass 17, the reopen-reason pop-up, C3.2, whose spec is its row, unless I say otherwise),
-push, open the PR and stop. I merge.
+next pass (phase order: Pass 18, the office Edit on the review modal, C3.1b, whose spec is its
+row, unless I say otherwise), push, open the PR and stop. I merge.
 ```

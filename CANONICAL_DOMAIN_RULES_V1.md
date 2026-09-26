@@ -1198,6 +1198,25 @@ Location (rule 1), and an Invoice with no Location is listed under its customer 
 The buckets, the day arithmetic and the rollup are one shared module, `shared/aging.ts`, read by
 the server's two reads and by the customer screen and the Reports page alike.
 
+### Canonical rule — a statement is the ledger rolled up for a period (PLAN_ROADMAP_V2.md C2.5, B5; Pass 15)
+
+A **statement** is a customer-facing document generated on request from the ledger as it stands
+and stored like an invoice's PDF (`documents`, kind STATEMENT, one row per generation, never
+re-rendered in place; a scheduled monthly statement is a later Settings toggle and delivery is
+C6.3). Three variants: a **location statement** rolls up one Location's ledger over two inclusive
+UTC days - the opening balance (invoices issued before the period less the confirmed applications
+and credits made before it), the period's invoices, applications and money received in date
+order, the closing balance, and the aging strip as of the period's end; an **account statement**
+is the same for every Location of the customer, one section each and a rollup - the property
+manager with many locations and one payer - keyed on the customer as the aging rollup is; a
+**paid-in-full / zero-balance letter** speaks for one Location as of a day, lists its agreements
+with their status (the home sale), and is **refused, never reworded**, while the Location owes
+anything. The balance on a statement is what is owed on issued Invoices (D5): it moves when money
+is applied to an Invoice and confirmed, never when money is merely received; money on account is
+shown beside it and never netted; pending shows, confirmed counts. A DRAFT, a VOID, a released
+application and a payment recorded in error do not appear. The arithmetic is one shared module,
+`shared/statements.ts`; the document is `server/documents/statement-pdf.ts`.
+
 ### Required fields
 
 * id
