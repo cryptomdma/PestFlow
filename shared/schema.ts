@@ -993,8 +993,16 @@ export const billingEvents = pgTable("billing_events", {
 export const documents = pgTable("documents", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   orgId: varchar("org_id").notNull(),
-  kind: text("kind").notNull(), // INVOICE | STATEMENT
+  kind: text("kind").notNull(), // INVOICE | STATEMENT | SERVICE_REPORT
   invoiceId: varchar("invoice_id").references(() => invoices.id),
+  // A SERVICE_REPORT document's identity (PLAN_ROADMAP_V2.md C3.5, Pass 22;
+  // canon §12): the ticket it reports. One per ticket by partial unique index
+  // (document-bootstrap.ts), rendered on the first request and kept until the
+  // ticket's content is written again - a re-post, an office edit that
+  // changed something, a material row added by the legacy route - which
+  // deletes the row so the next request renders the ticket as it now stands.
+  // Null on every other kind, as invoice_id is null on a statement.
+  serviceRecordId: varchar("service_record_id").references(() => serviceRecords.id),
   // A STATEMENT document's identity (PLAN_ROADMAP_V2.md C2.5, Pass 15): who
   // it is for, which variant (LOCATION | ACCOUNT | ZERO_BALANCE_LETTER -
   // shared/statements.ts), the period it rolls up (period_from null for a

@@ -33,6 +33,7 @@ import { describeUserRole, selectableUsers, userDisplayName } from "@shared/user
 import { INVOICE_ON_FINALIZE_MODES, describeInvoiceOnFinalizeMode, normalizeInvoiceOnFinalizeMode, type InvoiceOnFinalizeMode } from "@shared/invoice-on-finalize";
 import { isOnList, matchListEntry } from "@shared/material-lists";
 import { ListMultiSelect } from "@/components/list-multi-select";
+import { Switch } from "@/components/ui/switch";
 import { Plus, Settings as SettingsIcon, Wrench, FileText, Users, ShieldCheck, FlaskConical, Bug, CreditCard, CalendarClock, Percent, Scale, Building2, Receipt } from "lucide-react";
 import type { AgreementCancellationPolicy, AgreementTemplate, BillingPlan, BillingProfileTemplate, MaterialProduct, OpportunityCategory, OpportunityDisposition, Organization, ServiceType, TargetPest, TaxRate, TaxRule, Technician, UserSummary } from "@shared/schema";
 
@@ -1441,6 +1442,25 @@ export default function Settings() {
     },
     onError: (error: Error) => toast({ title: "Unable to update invoicing on finalization", description: error.message, variant: "destructive" }),
   });
+  // Pass 22 (C3.5; B11): "Attach service report to visit invoices". Read by
+  // anyone; the PATCH is MANAGE_SETTINGS, so the switch is disabled - not
+  // hidden - for everyone else (dev behavior rule 6).
+  const { data: attachServiceReport } = useQuery<{ enabled: boolean }>({ queryKey: ["/api/settings/attach-service-report"] });
+  const attachServiceReportEnabled = attachServiceReport?.enabled ?? false;
+  const updateAttachServiceReportMutation = useMutation({
+    mutationFn: async (enabled: boolean) => {
+      const response = await apiRequest("PATCH", "/api/settings/attach-service-report", { enabled });
+      return (await response.json()) as { enabled: boolean };
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/settings/attach-service-report"] });
+      toast({
+        title: data.enabled ? "Service reports will be attached to visit invoices" : "Service reports will no longer be attached to visit invoices",
+        description: "Applies to invoice PDFs rendered from now on. A PDF already rendered keeps what it rendered.",
+      });
+    },
+    onError: (error: Error) => toast({ title: "Unable to update the service report setting", description: error.message, variant: "destructive" }),
+  });
   const updateAppointmentCancelReasonsMutation = useMutation({
     mutationFn: async () => {
       const reasons = appointmentCancelReasonsText
@@ -1808,6 +1828,36 @@ export default function Settings() {
           <p className="text-xs text-muted-foreground">{describeInvoiceOnFinalizeMode(invoiceOnFinalizeMode).description}</p>
           <p className="text-xs text-muted-foreground">
             Visit invoices only. Agreements billed on a schedule are invoiced by the nightly billing run regardless, and their services appear on the visit invoice at $0. "Send" marks the invoice sent - there is no email delivery yet.
+          </p>
+          {!canManageSettings ? <p className="text-xs text-muted-foreground">Only an admin can change this setting.</p> : null}
+        </CardContent>
+      </Card>
+
+      {/* Pass 22 (C3.5; B11): the service report and its one setting. The
+          invoice and the report stay separate documents; this switch appends
+          the report(s) to a visit-anchored invoice's PDF. The PATCH is
+          MANAGE_SETTINGS, so the switch is disabled - not hidden - for
+          everyone else (dev behavior rule 6). */}
+      <Card data-testid="card-service-report">
+        <CardHeader>
+          <CardTitle className="text-base font-semibold flex items-center gap-2"><FileText className="h-4 w-4" /> Service Report</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="flex items-center gap-3">
+            <Switch
+              id="attach-service-report"
+              checked={attachServiceReportEnabled}
+              onCheckedChange={(enabled) => updateAttachServiceReportMutation.mutate(enabled)}
+              disabled={!canManageSettings || updateAttachServiceReportMutation.isPending}
+              data-testid="switch-attach-service-report"
+            />
+            <Label htmlFor="attach-service-report">Attach service report to visit invoices</Label>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            The service report is the customer-facing summary of a posted ticket - technician and license, service date, target pests, materials, notes, recommendations and a signature line - opened from Service Ticket Review and the location's Services tab. When this is on, a visit invoice's PDF ends with the report of each ticket on the visit. An invoice with no visit (an agreement billed on a schedule, a fee or adjustment) appends nothing. Both documents stay separately openable.
+          </p>
+          <p className="text-xs text-muted-foreground">
+            An invoice PDF is rendered once, on its first Open, Download or Mark Sent, and keeps what it rendered: changing this affects invoice PDFs rendered from now on, not those already produced.
           </p>
           {!canManageSettings ? <p className="text-xs text-muted-foreground">Only an admin can change this setting.</p> : null}
         </CardContent>

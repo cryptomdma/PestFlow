@@ -25,7 +25,8 @@ first Phase 3 row in phase order, the recommended order being exhausted) is merg
 18 (the office Edit on the review modal, C3.1b) is merged (PR #90); Pass 19 (the technician
 ticket modal's money and instructions, C3.3) is merged (PR #91); Pass 20 (material units and
 application areas, C3.4a) is merged (PR #92); Pass 21 (target pests at two levels, C3.4b) is
-pushed, awaiting merge; **next pass: 22, the service report document** (C3.5). The roadmap sequences every
+merged (PR #93); Pass 22 (the service report document, C3.5) is pushed, awaiting merge; **next
+pass: 23, the field surcharge line** (C3.6). The roadmap sequences every
 remaining item below; this file keeps the status pointer and, as its last section, the handoff
 prompt that starts the next session.
 
@@ -997,7 +998,7 @@ two Settings cards have not been rendered by anyone: the repo has no browser aut
 session had no browser.** Signatures and behavior are under "Shipped in Pass 20" at the end of
 `PLAN_ROADMAP_V2.md` Part D.
 
-Pass 21 (`feature/phase-3-target-pests-two-levels`, 2026-09-27, C3.4b) pushed, awaiting merge.
+Pass 21 (`feature/phase-3-target-pests-two-levels`, 2026-09-27, C3.4b) merged (PR #93, 2026-09-27).
 **Target pests at two levels.** Each material row carries its own target pests
 (`productApplications.targetPests text[]`, beside Pass 20's `applicationAreas`) - the compliance
 record of what a product was applied for - picked in the ticket dialog from the org's target-pest
@@ -1039,16 +1040,59 @@ material lines' pest captions have not been rendered by anyone: the repo has no 
 and the session had no browser.** Signatures and behavior are under "Shipped in Pass 21" at the
 end of `PLAN_ROADMAP_V2.md` Part D.
 
-Next up: **Pass 22** — the service report document (`PLAN_ROADMAP_V2.md` Phase 3 table, C3.5,
-B11): a customer-facing PDF of a posted / finalized ticket (technician + license, date, services,
-target pests, materials, notes, recommendations, a signature placeholder) through the document
-renderer, stored like invoices; Open / Download on the review modal and the Services tab, Preview
-in the collect step; the Settings toggle "Attach service report to visit invoices" appending the
-report(s) to a visit-anchored invoice's PDF. Phase order continues after it (Pass 23, C3.6 → ...,
-with Pass 26 (C4.1b) and Pass 28 (C4.3a) in Phase 4's turn). Branch from `origin/main` after
-confirming it contains Pass 21's merge. The handoff prompt for Pass 22 is the last section of
-this file; the Pass 22 session writes Pass 23's (the C3.6 row and this file's field-surcharge
-unit carry the spec).
+Pass 22 (`feature/phase-3-service-report-document`, 2026-09-27, C3.5) pushed, awaiting merge.
+**Service report document.** The customer-facing summary of a posted ticket, in the invoice
+document's shape: `documents.kind = 'SERVICE_REPORT'`, one row per ticket keyed by a new
+`service_record_id` column (partial unique index), rendered by a pure, paginating
+`renderServiceReportPdf()` (`server/documents/service-report-pdf.ts`, the statement renderer's
+template) on the first `GET /api/service-records/:id/report` and answered as the stored bytes
+after that - inline, `?download=1` for an attachment, named
+`service-report-<service day>-<location>.pdf`; `GET .../report-info` answers the row without its
+bytes plus the file name. It prints the org header and letterhead, the customer, the service
+location, the technician and license from the ticket's compliance snapshot (canon §12), the
+service date (the UTC day, as every document here prints dates), the service type, the stored
+target-pest union, the derived areas serviced, the follow-up, a materials table (product, EPA #,
+amount + unit, dilution, method, areas, pests), notes / conditions found / recommendations when
+written, and a signature line that says whether a signature was captured on the ticket.
+**Decided: a stored report is retired when the ticket's content is written again** - a re-post,
+an office edit that changed something and a material row added by the legacy route each delete
+the row in their own transaction, and the next request renders the ticket as it now stands;
+finalize and reopen change no content and keep it. **The collect step's "Preview report"** posts
+the unposted ticket's content (`POST /api/service-records/preview-report`, the post's body shape
+plus `serviceId`, any session role) and gets the PDF back marked "PREVIEW - not yet posted",
+stored nowhere; the tab is opened on the click and the PDF navigated into it. **Open / Download**
+(`ServiceReportActions`, the statement component's shape) sit beside Open Location on the review
+modal and before Reopen / Finalize in the Services tab's ticket dialog. **The Settings toggle
+"Attach service report to visit invoices"** (B11; `app_settings` key
+`attach_service_report_to_invoices`, boolean, default off; GET open, PATCH `MANAGE_SETTINGS`; a
+Switch card that says an invoice PDF already rendered keeps what it rendered): when on,
+`getInvoiceDocumentContext` of an invoice with an `appointmentId` appends the report of each
+distinct ticket among its lines, in line order, **drawn into the same pdfkit document**
+(`drawServiceReport()`; decided over a merge dependency - pdfkit cannot embed another PDF's pages
+and the repo carries no second PDF library); a DRAFT preview follows the same rule unstored; a
+schedule-driven, manual or standalone initial-charge invoice has no visit and appends nothing.
+Both documents stay separately openable. **Migration** (`bootstrapDocuments`, guarded, printed
+once): `service_record_id` and its partial unique index. **It ran against the shared dev DB
+during this pass's verification boot (an additive change, safe under the running server), so
+the owner's `npm run dev:full` restart prints nothing for Pass 22.** Not touched: the invoice
+document's own layout, email delivery (C6.3), the ticket dialog's fields, the legacy Service
+History form, the target-pests routes' gating. **Restart `npm run dev:full` before manually
+testing - this pass adds a column, an index, a settings key and five routes; the two Open /
+Download pairs, the Preview button, the Switch card and the PDF's look have not been rendered by
+anyone: the repo has no browser automation and the session had no browser.** Signatures and
+behavior are under "Shipped in Pass 22" at the end of `PLAN_ROADMAP_V2.md` Part D.
+
+Next up: **Pass 23** — the field surcharge line (`PLAN_ROADMAP_V2.md` Phase 3 table, C3.6; this
+file's "Field surcharge line" unit under the compensation notes): a SURCHARGE line the technician
+adds on the ticket, flowing onto the visit invoice as a SURCHARGE line item; the allow / reject
+toggle moving from the billing plan to the agreement template; `CLEANOUT_SURCHARGE` /
+`PREPAY_FULL` leaving the initial-charge vocabulary with the test-data defaults migrated;
+`ADD_FIELD_SURCHARGE` getting its UI; and the transitional credit rule (a recorded SURCHARGE line
+credits the posting technician until Phase 7's comp engine). Phase order continues after it
+(Pass 24, C3.7 → ..., with Pass 26 (C4.1b) and Pass 28 (C4.3a) in Phase 4's turn). Branch from
+`origin/main` after confirming it contains Pass 22's merge. The handoff prompt for Pass 23 is the
+last section of this file; the Pass 23 session writes Pass 24's (the C3.7 row and canon §10's
+"Service designation and warranty callbacks" carry the spec).
 
 Phase 1's ordered plan, impact analysis, conflict resolutions, and per-pass verification steps live in
 `PLAN_BILLING_V1_1_EXECUTION.md` — read it when a pass builds on a Phase 1 helper (its "Shipped in
@@ -1281,169 +1325,252 @@ pointer and that prompt.
 
 Replaced at the end of every pass (`AGENT_WORKING_AGREEMENT.md`, the end-of-pass step). The owner
 pastes it verbatim to start the next session; it is also the last thing in the finishing session's
-final message. Written 2026-09-27, after Pass 21 was pushed as
-`feature/phase-3-target-pests-two-levels`.
+final message. Written 2026-09-27, after Pass 22 was pushed as
+`feature/phase-3-service-report-document`.
 
 ```text
-Start Pass 22 — Service report document
-(PLAN_ROADMAP_V2.md Phase 3 table, row C3.5; B11 and the decision-log row for B11. Phase order:
-the next open Phase 3 row after Pass 21.) Read the CLAUDE.md docs in order first;
-CURRENT_FOCUS.md's last two entries (Pass 21 and "Next up") are the ones that matter.
+Start Pass 23 — Field surcharge line
+(PLAN_ROADMAP_V2.md Phase 3 table, row C3.6; CURRENT_FOCUS.md's "Field surcharge line" unit under
+the compensation notes and its "Surcharge production is a comp-plan setting" paragraph;
+PLAN_BILLING_V1_1.md D4, the owner review of Pass 5.5, items 2 and 3. Phase order: the next open
+Phase 3 row after Pass 22.) Read the CLAUDE.md docs in order first; CURRENT_FOCUS.md's last two
+entries (Pass 22 and "Next up") are the ones that matter.
 
-Branch feature/phase-3-service-report-document from origin/main. Confirm main contains the Pass 21
-merge (feature/phase-3-target-pests-two-levels) before branching.
+Branch feature/phase-3-field-surcharge-line from origin/main. Confirm main contains the Pass 22
+merge (feature/phase-3-service-report-document) before branching.
 
-The decision is recorded (the C3.5 row; B11, owner 2026-09-19: the invoice and the service report
-stay separate documents, and a Settings toggle "Attach service report to visit invoices" appends
-the report(s) to a visit-anchored invoice's PDF - a schedule-driven or manual invoice has no visit
-and appends nothing, "omit on null". The C3.5 row: a customer-facing summary of a posted /
-finalized ticket - technician + license, date, services, target pests, materials, notes,
-recommendations, a signature placeholder - through the document renderer, stored like invoices;
-Open / Download on the review modal and the Services tab, Preview in the collect step. Canon §12:
-the Service Record is the compliance snapshot (technician name / license copied at post) and its
-target pests are the ticket's picks ∪ every material's since Pass 21; Pass 10 / Pass 15: documents
-are rendered by pure functions, stored base64 in `documents` with a sha256 contentHash, opened by
-a session-gated GET. Dev rule 6: no dead control. B13: every field action is a route.) Ground
-truth today (line numbers from origin/main at the Pass 21 merge; they drift, the names do not):
-- The renderer: server/documents/ holds invoice-pdf.ts (renderInvoicePdf(context:
-  InvoiceDocumentContext): Promise<Buffer> - pdfkit LETTER / margin 50, CreationDate and ModDate
-  pinned to the issue date so the bytes are deterministic, no pagination, no footer),
-  statement-pdf.ts (renderStatementPdf - the better template: module constants LEFT / WIDTH /
-  TEXT / MUTED / RULE, a paginating drawTable(), paragraph / sectionHeading / rule / partyBlock /
-  footerNote closures, all local: no shared layout helpers exist), types.ts
-  (InvoiceDocumentBranding { orgName, logoUrl, primaryColorHex, remitTo* } - logoUrl is carried
-  and drawn by no renderer; InvoiceDocumentContext; StatementDocumentContext) and invoice-html.ts
-  (renderInvoiceHtml, no consumer - do not build an HTML twin). pdfkit is the only PDF dependency:
-  there is no pdf-lib, so "append the report to the invoice PDF" is either drawing the report's
-  pages inside the same pdfkit document or a new dependency - decide and state.
-- Document storage: `documents` (shared/schema.ts:985-1010) - kind "INVOICE | STATEMENT",
-  invoiceId (partial unique index documents_invoice_id_uidx where kind = 'INVOICE'),
-  statementVariant, customerId, locationId, periodFrom / periodTo, generatedByUserId / Label,
-  contentHash, contentBase64, mimeType; server/document-bootstrap.ts creates it and added the
-  statement columns with a guarded print (a report's identity column follows that pattern).
-  storage.ts: getInvoiceDocumentContext (:9458 - parties from billingProfileSnapshot, branding
-  built inline), getOrCreateInvoiceDocument (:9551 - the stored INVOICE row if any, else render /
-  hash / insert; a DRAFT answers a synthetic unstored `draft-preview-<id>` row :9574-9592, with a
-  23505 race recovery), getDocument (:9621), documentBrandingOf(org) (:9671 - the reusable
-  branding builder statements use), storeStatementDocument (:9787), the statement generators and
-  reads (:9818-9948); batchSendInvoices (:6370) pins the invoice document before stamping sentAt
-  (:6382). An INVOICE document is never re-rendered once stored (:9552-9558), so the attach
-  toggle's value at first render is frozen into that PDF - the Settings card must say so.
-- Document routes (routes.ts): GET /api/invoices/:id/document (:2779, session-gated, inline PDF,
-  `?download=1` for attachment, filename invoice-<number>.pdf), GET /api/invoices/:id/document-info
-  (:2793), POST /api/invoices/batch-send (:2381, SEND_INVOICE), the statement routes (:2821-2876:
-  GENERATE_INVOICE to create, a session to read, GET /api/statements/:id/document inline /
-  download). Nothing serves a document for a service record today.
-- Client document actions: client/src/components/invoice-document-actions.tsx
-  (invoiceDocumentUrl(); InvoiceDocumentActions { invoice, compact } - Open PDF is window.open of
-  the route, Download an <a download>, Mark Sent behind SEND_INVOICE; used by
-  invoice-detail-dialog.tsx:609) and statement-document-actions.tsx (StatementDocumentActions
-  { statement, compact } - Open and Download only: the closest template for a report-actions
-  component).
-- The review modal (client/src/pages/service-ticket-review.tsx) loads everything in bulk
-  (/api/service-records, /api/services, /api/appointments, /api/product-applications, ...
-  :379-386) and filters on the client; selectedRecord / selectedMaterials :404-409; the footer
-  :796-822 has "Open Location" on the left (:797) and Close / Edit (EDIT_TICKET, disabled when
-  finalized) / Reopen / Finalize on the right (:798-821) - the report's Open / Download sit beside
-  Open Location. It prints Notes and Target Pests (:750-759) and Materials (:766-783, each line
-  with areas and pests since Pass 21) but not areasServiced, conditionsFound or recommendations.
-- The Services tab (client/src/pages/customer-detail.tsx): ServiceDetailModal (:2769-2912)
-  prints the ticket (:2841-2873) and its materials (:2874-2888); its action row (:2865-2871) holds
-  Reopen Ticket / Finalize Ticket - the report's buttons go there; ServicesTab (:2914) reads
-  /api/services/by-location and /api/product-applications and maps serviceRecordByServiceId
-  (:2961).
-- The collect step (client/src/components/collect-payment-dialog.tsx, 277 lines): props open /
-  onOpenChange / appointmentId / locationId / designatedAgreementId / onPostTicket / postingTicket
-  / draftPrice (:42-60); it holds billing data only - no notes, pests, materials or technician -
-  and the ticket is NOT posted when it opens (no service_records row exists yet), so a Preview
-  needs the unposted ticket passed in from ServiceCompletionDialog's state (:206-226: notes,
-  targetPests string[], conditionsFound, recommendations, followUp*, materials: MaterialLine[]
-  with applicationAreas[] and targetPests[] per row, technicianId, serviceDate) and rendered
-  unstored - the invoice DRAFT preview (:9574-9592) is the precedent for a render-only answer;
-  its footer (:263-272) holds Back / Post Service Ticket.
-- The Settings toggle pattern: invoice_on_finalize - shared/invoice-on-finalize.ts (key, modes,
-  normalize), storage getInvoiceOnFinalizeMode / readInvoiceOnFinalizeModeTx /
-  setInvoiceOnFinalizeMode (:5464-5483, an upsert on (org_id, key)), routes GET / PATCH
-  /api/settings/invoice-on-finalize (:2096 open / :2101 MANAGE_SETTINGS), the Settings card
-  "Invoicing on Finalization" (settings.tsx:1788-1814 - a Select disabled for anyone but an admin,
-  "Only an admin can change this setting."); the Pass 20 lists are the second example
-  (material-lists.ts keys; storage :5418-5460; routes :2061-2082; settings.tsx cards :1823-1883).
-  A boolean toggle has client/src/components/ui/switch.tsx (used only by schedule.tsx today).
-- The invoice PDF path and visit anchoring: invoices.appointmentId is set for visit work and
-  serviceRecordId for an appointment-less one-off (schema.ts:737-748); manual
-  (createManualInvoice :6419), schedule-driven (:7615) and initial-charge invoices set neither.
-  invoice_line_items.serviceRecordId (schema.ts:934) is set by buildVisitInvoiceLinesTx (:6969) on
-  SERVICE and AGREEMENT_COVERED lines (:7008, :7029) and null on INITIAL_CHARGE (:7054);
-  getInvoiceDocumentContext reads the lines (:9466-9470) but drops serviceRecordId (:9520-9526).
-  The invoice PDF is rendered lazily on the first GET or on Mark Sent, never at issue.
-- Service record reads: GET /api/service-records (:1925), /:id (:1930),
-  /by-location/:locationId (:1206); GET /api/product-applications (:2173, every row for the
-  org); getProductApplicationsByServiceRecord exists (storage :5485) with no route. The
-  compliance snapshot: technicianName / technicianLicenseNumber (schema.ts:472-473), resolved at
-  post by resolveServiceRecordTechnicianSnapshot (:2004-2034); content: notes, targetPests (the
-  union), areasServiced (derived), conditionsFound, recommendations, followUpRequired / Notes,
-  customerSignature boolean (:474-481); a material row: productName, epaRegNumber, dilutionLabel /
-  Rate, amountApplied, unit, activeIngredientAmount, applicationMethod, device,
-  applicationAreas[], targetPests[], notes (applicationLocation is gone since Pass 21).
-- Branding: organizations.logoUrl / primaryColorHex / remitTo* (schema.ts:1065-1070), GET
-  /api/organization (:2199), PATCH /api/organization/branding (:2205, MANAGE_SETTINGS),
-  OrganizationBrandingCard (settings.tsx:74-145).
-- No code names a "service report" today; the docs do (roadmap Part A :100 and :133, B11, the
-  C3.5 row; C6.3 sends it by email later).
+The decision is recorded (owner, 2026-09-13, the Pass 5.5 review under D4: a cleanout surcharge
+is not a term of the sale - the technician charges it at the initial service for what could not
+be seen at scheduling (larger home, conducive conditions), it is in addition to the contract
+price unlike a down payment, and it becomes a line the technician adds on the ticket; the
+agreement template holds only an allow / reject toggle (today `fieldAddableSurcharge` sits on the
+billing plan with no reader); the SURCHARGE production credit keys off that recorded line -
+whether a surcharge earns production at all is a comp-plan selector in Phase 7, and until then
+the C3.6 row's transitional rule: a recorded SURCHARGE line always credits the posting technician,
+marked transitional (dev rule 4), replacing today's collector-permission inference;
+CLEANOUT_SURCHARGE and PREPAY_FULL leave INITIAL_CHARGE_TYPES, paid-in-full being a PREPAID_TERM
+plan; ADD_FIELD_SURCHARGE, held by every role today and read by nothing, gets its UI. B13: every
+field action is a route. D6: price is never mutated - the surcharge is its own line, never folded
+into the service price. D7: a surcharge is money and is audited.) Ground truth today (line
+numbers from origin/main at the Pass 22 merge; they drift, the names do not):
+- The vocabulary: shared/initial-charge.ts - INITIAL_CHARGE_TYPES ["DOWN_PAYMENT",
+  "CLEANOUT_SURCHARGE", "PREPAY_FULL"] (:16); initialChargeCountsTowardPrice (:122-130, CLEANOUT
+  always false); resolveInitialChargeCents (:202-216); isTechnicianSoleInitialChargeCollector
+  (:226) and isTechnicianCollectedCleanoutSurcharge (:242-244, the transitional credit predicate);
+  formatInitialChargeType (:273-284; "Cleanout surcharge" :277, "Prepay in full" :279);
+  describeRemainingContractPrice's cleanout wording (:347); the comment at :356-365 that the other
+  two types "are issued only from the card until the field-surcharge unit (C3.6) retires them";
+  initialChargeRidesFirstVisit (:367, DOWN_PAYMENT only); technicianMayCollectInitialCharge (:381)
+  exported and imported by nothing. Every literal CLEANOUT_SURCHARGE / PREPAY_FULL in the repo:
+  initial-charge.ts :16 :126 :243 :277 :279 :347; shared/schema.ts:352 (the agreements comment);
+  server/agreement-bootstrap.ts:257 and :274 (the Pass 5.5 one-shot migration, guarded at :246 on
+  a billing_plans column already dropped - dead on this DB); routes.ts:485
+  initialChargeTypeSchema = z.enum(INITIAL_CHARGE_TYPES); the client has no literal - the types
+  reach the Select through INITIAL_CHARGE_TYPES in
+  client/src/components/initial-charge-fields.tsx (:8, :101-103; cleanout helper text :106 and
+  :167; settings.tsx:608).
+- The plan flag with no reader: billingPlans.fieldAddableSurcharge (schema.ts:289, comment
+  :282-287; CREATE TABLE agreement-bootstrap.ts:43), copied into agreements.billing_plan_snapshot
+  by shared/billing-plan.ts buildBillingPlanSnapshot (:212, :229, :259; storage.ts:1816-1818,
+  used at :1899 / :2219 / :3947) and read into the snapshot by attachRequiredBillingPlans
+  (agreement-bootstrap.ts:666, :688); the plan form's checkbox "Tech may add surcharge in field"
+  (settings.tsx:611; state :492, payload :511; BillingPlanForm :477-618); the Billing Plans card
+  list (:1680-1723) does not show it; /api/billing-plans (routes :1583-1610, ungated). Nothing
+  gates anything on it. DB: true on Daily Recurring, Monthly Recurring and Pay In Full, false on
+  Annual Prepaid, COD (Per Service), Quarterly Recurring and Unit 15 Surcharge Test Plan; the
+  snapshots' key reads true 18 / false 6 / absent 1.
+- The template and agreement blocks: agreements.initialCharge* (schema.ts:358-366, comment
+  :348-357 - "credit inferred only when the tech is the sole collector"),
+  agreementTemplates.defaultInitialCharge* (:449-454); payments.collectedByUserId's comment
+  (:847-851) names this unit as the reader that replaces the inference. InitialChargeFormFields
+  (initial-charge-fields.tsx:69-177: the type Select :92-107, the DOWN_PAYMENT-only "in addition"
+  checkbox :110-123, mode :125-137, amount :138-150, collector :152-165) is used by
+  AgreementTemplateForm (settings.tsx:1100-1342, at :1319-1325 after Default Price) and
+  AgreementForm (customer-detail.tsx:1472-2091, at :2074-2078; buildAgreementFormState :331-375,
+  buildAgreementPayload :1614-1644); buildAgreementInsertFromTemplate propagates the block once at
+  creation (storage.ts:2163, :2191-2199) - nothing pushes template edits onto existing agreements.
+  The Agreement Templates card (settings.tsx:2147-2208; the initial-charge summary at :2180 and
+  :2195). Agreement routes: GET /api/agreements/:id/initial-charge-status (routes :1755), POST
+  /api/agreements/:id/issue-initial-charge (:1761, GENERATE_INVOICE) - issueInitialChargeInvoiceTx
+  (storage :9266-9352) is the only billing path a CLEANOUT_SURCHARGE or PREPAY_FULL has today.
+- The credit today: createSurchargeEntryIfConfigured (storage.ts:2607-2646, doc :2574-2606) -
+  its only caller is createProductionValueEntriesForFinalizedRecord (:2504-2572, at :2569-2571)
+  when the agreement's first scheduled slot finalizes (basis SCHEDULED_AGREEMENT_SERVICE,
+  scheduledCount 0), itself called only by finalizeServiceRecord (:5165-5241, at :5198-5201) and
+  only when the record was not already confirmed; it credits only
+  isTechnicianCollectedCleanoutSurcharge (CLEANOUT_SURCHARGE with the technician the sole
+  collector - null, "either may collect", is withheld), the amount from resolveInitialChargeCents
+  (:2616-2619), once per agreement (the idempotency check :2621-2631), one productionValueEntries
+  row (:2633-2645) with basis "SURCHARGE" - the column is `basis`, there is no `source`
+  (schema.ts:1028-1053; the vocabulary comment :1046: SCHEDULED_AGREEMENT_SERVICE |
+  ONE_TIME_SERVICE | CALLBACK | SURCHARGE), technicianId / technicianName from the finalized
+  ticket's snapshot, contractPriceCentsSnapshot = agreement.priceCents. The ledger's partial
+  unique index is on service_record_id WHERE basis != 'SURCHARGE'
+  (server/production-value-ledger-bootstrap.ts:29), so a SURCHARGE row sits beside a ticket's
+  main entry and nothing but the method stops a second one. Readers:
+  getProductionValueEntriesByAgreement / ByTechnician (:2648-2662; routes :2304 / :2309,
+  VIEW_PRODUCTION_VALUE); resolveServiceLineBillingTx's CALLBACK classification skips SURCHARGE
+  rows (:6893-6907); the main-entry guard at :2510-2520. shared/production-value.ts exports only
+  computeProductionValueCents (:5-14). DB: 4 SURCHARGE rows totalling $349.85 - Unit 15 Ledger
+  Test $50.00 (Austin Lowe, 2026-07-16; the only true cleanout) and three Daily Rodent Trapping
+  $99.95 rows that are DOWN PAYMENTS credited under unit 15 before Pass 5.5 limited the credit to
+  cleanouts; contract_price_cents_snapshot is null on all four. The other bases: ONE_TIME_SERVICE
+  30 rows, SCHEDULED_AGREEMENT_SERVICE 19, CALLBACK 3.
+- Invoice lines: invoiceLineItems.lineType (schema.ts:952, default ADJUSTMENT; the comment
+  :943-951 lists SERVICE | AGREEMENT_COVERED | INITIAL_CHARGE | ADDON | SURCHARGE | FEE | DISCOUNT
+  | ADJUSTMENT), taxable :957, taxCents :958; LINE_TYPE_LABELS (shared/invoice-detail.ts:57-68)
+  already labels SURCHARGE "Surcharge" (:64), describeInvoiceLineType :70-72, describeInvoiceOrigin
+  :96-116 (VISIT when appointmentId is set); isFullyAgreementCovered (shared/invoice-status.ts:
+  59-68) says "No Charge" only when every line is AGREEMENT_COVERED and the total is 0.
+  buildVisitInvoiceLinesTx (storage.ts:7115-7230): VisitInvoiceLine's lineType union is "SERVICE"
+  | "AGREEMENT_COVERED" | "INITIAL_CHARGE" (:743-752); descriptions `${serviceType} - ${date}`
+  (:7147-7153); AGREEMENT_COVERED $0 untaxed (:7155-7167); SERVICE taxed by resolveTaxDecision
+  (:7169-7186; :6648-6734); INITIAL_CHARGE from resolvePendingInitialChargesTx (:7189-7213;
+  :9403-9445 - DOWN_PAYMENT only, taxed with agreement.serviceTypeId :9431-9436, description
+  `${formatInitialChargeType(type)} - ${agreementName}` :9439); totals and the tax snapshot
+  :7215-7227. Callers: generateInvoiceFromServiceRecordTx (:7254, at :7318),
+  createDraftInvoiceForAppointmentTx (:7412, at :7434), issueInvoiceTx (:7496, at :7531; it
+  deletes and reinserts the draft's lines :7542-7545); insertInvoiceLineItemsTx :7232-7252. The
+  invoice modal lists lines at invoice-detail-dialog.tsx:414-469 (the type badge :458, the tax
+  cell :463). The batch preview's charges (shared/batch-invoice.ts:33, :47-55; storage
+  :6049-6144, charges :6117-6141) know only the down payment. DB: no SURCHARGE line exists yet
+  (ADJUSTMENT 2, AGREEMENT_COVERED 17, INITIAL_CHARGE 3, SERVICE 55).
+- The visit's money: shared/visit-billing.ts - VisitServiceBilling :25-61; VisitChargeBilling
+  (:73-91) has kind "INITIAL_CHARGE" as its one literal (:74), description :77-78, collectedBy
+  :85; VisitBillingDraft :113-118; VisitBillingSummary (:120-148, charges :134-135, totals
+  :136-147); technicianCollectibleCents (:165-170) subtracts charges collected by the office
+  only. getVisitBillingSummary (storage.ts:6173-6443: the draft :6190-6213; the invoiced branch
+  :6236-6315 pairing INITIAL_CHARGE lines with their events :6282-6315; the un-invoiced branch
+  :6316-6409 pricing pending charges :6372-6391 and the COA pool over lines plus charges
+  :6393-6408; totals :6411-6422); resolveServiceLineBillingTx :6863-6935; VisitBillingDraftInput
+  :396-401; GET /api/appointments/:id/billing-summary (routes :1806-1820, the query schema
+  :1791-1805 - Pass 19's ?serviceId=&priceCents= draft). Client: visit-billing-summary.tsx -
+  useVisitBillingSummary :37-46, describeChargeCollector (:101-103) and VisitInitialChargeCallout
+  (:111-137) hard-code "Down payment", ServiceBillingBlock :159-223 (down-payment wording
+  :185-196 and :213-219), VisitDueTodayTotal :226-240, VisitBillingTable charge rows :294-315,
+  VisitBillingRows charge rows :358-367; technician-work.tsx ServiceBillingBlock :443-445,
+  the due-today block :458-464, Collect Payment :465-469, CollectPaymentDialog :537;
+  collect-payment-dialog.tsx defaults the amount to technicianCollectibleCents (:114-128) and
+  shows VisitBillingRows plus the callout (:179-189); the review modal reads the same summary
+  (service-ticket-review.tsx:420, :726); schedule.tsx:234, :296.
+- The ticket dialog (client/src/components/service-completion-dialog.tsx): ticketPrice /
+  committedPrice (:226-230), isAgreementGeneratedService / allowServiceOverride / agreementLockNote
+  (:286-289), draftPrice (:295-308), the billing read (:309), the local draft (:393-410),
+  serviceOverridePayload (:441-448), commitPrice (:453-458); completeMutation's body :496-509,
+  officeEditMutation's :536-547, previewReportMutation (Pass 22) :565-587 - a new post field
+  flows into the report preview's body too; the header card :644-673 with the billing block
+  :663-672; the Service Type / Service Price grid :727-753 (the price Input :745 with onBlur
+  commitPrice, the locked display :747) - a Surcharge amount input belongs in that grid, before
+  Ticket Notes at :755; the buttons :993-1009; CollectPaymentDialog :1014-1028. Server:
+  completeServiceSchema (routes.ts:285-301, no surcharge field; previewServiceReportSchema extends
+  it :304-306), updateServiceRecordSchema is .strict() (:266-280) so the office PATCH refuses an
+  unknown field until it is added; POST /api/services/:id/complete (:1533-1550) has no permission
+  gate beyond the session; PATCH /api/service-records/:id (:1969-1985, EDIT_TICKET);
+  completeService (storage.ts:4949-5159: the state guards :4956-4968, the Service price stamped
+  :4981-4995 under allowFieldServiceOverride, price_overridden :4996-5011, the record payload
+  :5020-5051, ticket_edited on a re-post :5096-5104, productionValueCents :5144-5149);
+  updateServiceRecord (:4770-4947: the agreement-price gate :4785-4806, the Service write and
+  price_overridden :4875-4895, ticket_edited :4914-4922); CompleteServiceInput :542-562,
+  UpdateServiceRecordInput :425-444. The ticket_edited snapshot is the service_records row plus
+  the materials (PRODUCT_APPLICATION_SNAPSHOT_FIELDS storage.ts:506-520, snapshotTicketForAudit
+  :531-533) - nothing from the Service goes in.
+- Permissions (shared/permissions.ts): ADD_FIELD_SURCHARGE "add_field_surcharge" (:22, no
+  comment of its own) held by technician (:81), support (:90), manager (:106) and admin (:125,
+  everything), read by nothing anywhere; ADJUST_PRICE_AGREEMENT (:21, manager+; readers storage
+  :4796 :4800 :4983 :6197 :6210, the dialog :287 :289); TAKE_PAYMENT_FIELD (:53); can() :128,
+  rolesWithPermission() :133. Audit (shared/audit.ts): AuditEntityType :24-35 (customer,
+  location, invoice, invoice_line_item, service, service_record, payment, credit_memo, agreement,
+  opportunity, appointment), AuditAction :52-73 (price_overridden, ticket_edited, ticket_reopened,
+  invoice_line_edited with no writer, ...), the label maps :75-111; recordAuditLogTx storage
+  :1410.
+- Bootstraps and data: server/agreement-bootstrap.ts owns billing_plans / agreement_templates /
+  agreements (bootstrapAgreements :27-555, called from index.ts:98; helpers columnExists :7-12,
+  tableExists :14-17, columnIsNullable :19-25); the guarded one-shot pattern at :227-281
+  (columnExists at :246, UPDATE the rows, then DROP COLUMN :278-280) and Pass 11d's at :369-456
+  (a NOT EXISTS fence); seeds `WHERE NOT EXISTS` by name at :510-537. server/seed.ts:138-202
+  seeds three templates only on an empty DB. DB today: agreement_templates - Quarterly Control
+  DOWN_PAYMENT $99.95 FLAT TECH_AT_FIRST_SERVICE (it has NO cleanout default, whatever this file's
+  unit says; plan Monthly Recurring), Daily Rodent Trapping (plan Pay In Full) and Wildlife
+  Trapping Program (plan COD) with none; agreements with a type - 7 DOWN_PAYMENT (3 Daily Rodent
+  Trapping, 3 Quarterly Control, Wildlife Trapping Program 25% of $499), 1 CLEANOUT_SURCHARGE
+  (Unit 15 Ledger Test: $50.00 flat, TECH_AT_FIRST_SERVICE, plan Unit 15 Surcharge Test Plan,
+  template Quarterly Control, no billing event), 0 PREPAY_FULL anywhere (agreements, templates, or
+  the legacy snapshot key, which holds CLEANOUT_SURCHARGE 1 / DOWN_PAYMENT 3 / null 4). Unit 15
+  Surcharge Test Plan, Daily Recurring and the three templates are hand-made test data, in no
+  seed.
+- Docs to carry: the C3.6 row (PLAN_ROADMAP_V2.md:372); the stale citation at :109
+  (permissions.ts:9 -> :22); C2.1d's "CLEANOUT_SURCHARGE / PREPAY_FULL leave in C3.6" (:352); the
+  Phase 7 selector note (:417); the modal's SURCHARGE badge (:473); :822-823; this file's unit
+  (:1140-1153) and the compensation paragraphs (:1249-1262); D4 items 2 and 3
+  (PLAN_BILLING_V1_1.md:126-141) and the PREPAY_FULL fold (:143-145); PLAN_BILLING_V1.md §1.6.2
+  (:492, the basis vocabulary :511-512) and its historical plan block (:297-303); canon §13's
+  initial-charge rule (CANONICAL_DOMAIN_RULES_V1.md:1092-1130, fieldAddableSurcharge at :1117).
 
-Build per C3.5: (1) The document: a `documents.kind = 'SERVICE_REPORT'` row keyed by a new
-nullable serviceRecordId column with a partial unique index on (service_record_id) where kind =
-'SERVICE_REPORT' (document-bootstrap.ts, the effect printed once); a pure
-renderServiceReportPdf(context) in server/documents/service-report-pdf.ts modeled on
-statement-pdf.ts (paginating; the org header from documentBrandingOf; the customer and the
-service location; technician + license from the record's snapshot; the service date; the service
-type; the ticket's target pests (the stored union); the materials table - product, EPA #,
-amount + unit, dilution, method, areas, pests; notes, conditions found, recommendations,
-follow-up; a signature placeholder line that states whether a signature was captured), dates
-pinned as invoice-pdf.ts pins them; storage getServiceReportDocumentContext(recordId) and
-getOrCreateServiceReportDocument(recordId) in the invoice document's shape; decide and state how
-a ticket edited or re-posted after its report was stored gets a fresh report (re-render when a
-fresh render's contentHash differs, or invalidate the stored row from updateServiceRecord /
-completeService / reopen); a render-only preview of an unposted ticket (a POST in
-completeServiceSchema's content shape, answering the PDF, storing nothing). (2) Routes: GET
-/api/service-records/:id/report (session-gated like the invoice document, inline / ?download=1,
-filename service-report-<date>-<location>.pdf), GET /api/service-records/:id/report-info, POST
-/api/service-records/preview-report (any session role - the technician's preview). (3) Client: a
-ServiceReportActions component (Open / Download, the statement component's shape) on the review
-modal's footer and in ServiceDetailModal's action row; "Preview report" in the collect step's
-footer, fed the unposted state through new props from ServiceCompletionDialog. (4) The Settings
-toggle "Attach service report to visit invoices" (an app_settings key, boolean, default off; GET
-open / PATCH MANAGE_SETTINGS; a Switch card in Settings disabled for anyone but an admin, saying
-that an invoice PDF already rendered keeps what it rendered): when on, getOrCreateInvoiceDocument
-for an invoice with appointmentId set appends the report pages for the distinct non-null
-serviceRecordIds of its lines, in line order (inside the same pdfkit document or through a merge
-dependency - decide and state); a DRAFT preview follows the same rule unstored; an invoice
-without appointmentId appends nothing. Both documents stay separately openable. Not touched: the
-invoice document's own layout, email delivery (C6.3), the ticket dialog's fields, the legacy
-Service History form, the target-pests routes' gating.
+Build per C3.6: (1) The line on the ticket: a nullable surcharge amount (cents) with a short
+label defaulting to "Cleanout surcharge" - decide and state whether it lives on service_records
+(the ticket's content: edited by the office PATCH, snapshotted by ticket_edited, printed by the
+service report) or on services beside priceCents (the post's override rule; then the snapshot
+must carry it) - accepted by the post and the office PATCH (completeServiceSchema,
+updateServiceRecordSchema; the report preview's schema follows); a post or edit that records or
+changes a surcharge is a financial mutation and is audited (a new action, or price_overridden's
+shape on the ticket - decide and state). The gate: ADD_FIELD_SURCHARGE for whoever sends it, and
+the agreement template's toggle for an agreement service (a non-agreement service: decide and
+state - the owner's case is the initial service of an agreement); refused 403 with a code before
+anything is written. (2) The invoice line: buildVisitInvoiceLinesTx appends one SURCHARGE line per
+ticket carrying a surcharge ("<label> - <service type> - <date>"), taxed by resolveTaxDecision as
+the SERVICE line is, never counted toward the contract price, never "covered"; the visit billing
+read prices it as a BILLABLE charge before invoicing (VisitChargeBilling gains kind "SURCHARGE";
+technicianCollectibleCents includes it) and pairs it with its line once invoiced, so the ticket's
+block, the appointment details, the collect step's default and the review modal all show it;
+isFullyAgreementCovered keeps saying "No Charge" only when no surcharge is on the visit; the
+batch preview's charges list it. (3) The toggle moves: agreementTemplates.fieldSurchargeAllowed
+(boolean; a guarded migration printed once - decide and state the default per template: today's
+plan flag where the template's agreements share one plan, else off), billingPlans.
+fieldAddableSurcharge dropped with its checkbox and its snapshot key (the snapshots are jsonb and
+may keep the key as dead history - decide and state; a column DROP is verified against a copy of
+the DB); the template form and card show the new toggle; an agreement reads it through its
+template. (4) The vocabulary: CLEANOUT_SURCHARGE and PREPAY_FULL leave INITIAL_CHARGE_TYPES, the
+Select, the labels, the predicates and the comments; a guarded migration prints the rows it
+touches - Unit 15 Ledger Test's CLEANOUT_SURCHARGE $50.00 becomes no initial charge on the
+agreement (its $50.00 credit row stands as history; decide and state) and PREPAY_FULL prints 0;
+isTechnicianCollectedCleanoutSurcharge and createSurchargeEntryIfConfigured go. (5) The credit:
+the transitional rule - when a ticket carrying a surcharge is finalized,
+createProductionValueEntriesForFinalizedRecord writes one basis SURCHARGE row for the posting
+technician with the surcharge amount, marked TRANSITIONAL until Phase 7's comp-plan selector (dev
+rule 4), idempotent per ticket (the partial unique index excludes SURCHARGE, so the idempotency
+is the method's); the three Daily Rodent Trapping down-payment credits from unit 15 are wrong
+under Pass 5.5's rule - decide and state (leave as history, or a guarded correction printed
+once). (6) Client: the Surcharge input beside the price in the ticket dialog (post and
+office-edit modes; disabled with the reason, never hidden, when the template forbids it or the
+role lacks ADD_FIELD_SURCHARGE - dev rule 6), the figures following it through the billing read's
+draft (Pass 19's shape gains a surcharge parameter), the review modal and the Services tab
+showing the line, the invoice modal's SURCHARGE badge already there, the service report (Pass 22)
+printing the surcharge in its Service section. Not touched: the down payment's path (C2.1d), the
+comp engine (Phase 7), email delivery (C6.3), the manual invoice path, the Service History legacy
+form.
 
 Environment: Node 24.21.0, npm run dev:full (restart it before manually testing - this pass adds
-a column, an index, a settings key and routes), DEV_NOTES.md for the DB backup / restore, the
-PowerShell traps and the copy-database verification recipe, gh logged in so the session can open
-the PR. Verify on PORT=5001 as the previous passes did: npm run check; double boot (boot 1 prints
-the document-bootstrap effect once and boot 2 prints only "serving on port 5001" with every table
-count unchanged); the pass's API smoke test as all four roles (a ticket posted through the real
-routes with two material rows carrying areas and pests -> GET .../report 200 with a PDF whose text
-(the pdfkit extraction recipe) prints the technician, license, date, the ticket's pests, each
-material's product / EPA / areas / pests and the signature line; the same GET again answers the
-same contentHash and inserts no second row; the preview POST answers a PDF and stores nothing;
-the toggle's GET open, PATCH 403 for technician / support / manager and 200 for admin; a
-two-ticket visit invoiced through the real routes (the Pass 19 recipe) with the toggle on -> the
-invoice PDF's page count and text carry both reports, and with it off (a second invoice) the
-invoice alone; a manual invoice appends nothing either way; every fixture deleted, the settings
-row restored, counts back at baseline) and a Vite 200 on every touched client module; state
-plainly what was not rendered - the buttons, the Switch and the PDF's look cannot be judged
-without a browser.
+columns, drops one, changes three bodies and the billing read), DEV_NOTES.md for the DB backup /
+restore, the PowerShell traps and the copy-database verification recipe (a column DROP is
+verified against a copy, `pestflow_verify`, never against the shared DB under the running
+server), gh logged in so the session can open the PR. Verify on PORT=5001 as the previous passes
+did: npm run check; double boot (boot 1 prints the migration's effect once and boot 2 prints only
+"serving on port 5001" with every table count unchanged); the pass's API smoke test as all four
+roles (a template with the toggle on and an agreement on it; the technician's post with a
+surcharge -> the ticket carries it, the billing read shows a SURCHARGE charge and Due today
+includes it, the collect step's default follows; finalize -> exactly one SURCHARGE production row
+for the posting technician, a second finalize writing none; generate -> the invoice carries the
+SURCHARGE line taxed like the service line, the invoice detail read shows it, the service report
+prints it; a template with the toggle off -> the post refused with a code and the office PATCH
+too; a role without ADD_FIELD_SURCHARGE refused; a re-post that changes the surcharge writes its
+audit row; the migration's effect on Unit 15 Ledger Test and on the plan flag as decided; every
+fixture deleted, counts back at baseline) and a Vite 200 on every touched client module; state
+plainly what was not rendered - the input, the toggle and the figures cannot be judged without a
+browser.
 
 Working agreement as always: one pass, one branch, update CURRENT_FOCUS and the roadmap's pass
 table at the end, replace the handoff prompt at the end of CURRENT_FOCUS.md with the one for the
-next pass (phase order: Pass 23, the field surcharge line, C3.6, whose spec is its row and
-CURRENT_FOCUS.md's field-surcharge unit, unless I say otherwise), push, open the PR and stop.
-I merge.
+next pass (phase order: Pass 24, service designation and callback attribution, C3.7, whose spec
+is its row and canon §10's "Service designation and warranty callbacks", unless I say otherwise),
+push, open the PR and stop. I merge.
 ```
-

@@ -929,6 +929,25 @@ type follows the Service's as a post copies it.
 
 Agreement-generated Services advance agreement recurrence when the generated Service is office-finalized. Non-agreement finalized Services may generate future Opportunities according to Service Type follow-up rules.
 
+### Canonical rule — the service report (PLAN_ROADMAP_V2.md C3.5, B11; Pass 22)
+
+A Service Record has one customer-facing document, the **service report**: the technician of
+record and their license number as copied onto the ticket at post (never today's profile), the
+service date, the service type, the ticket's target pests (the stored union below), the areas
+serviced, every Product Application row (product, EPA registration number, amount and unit,
+dilution, method, areas, pests), the notes, conditions found and recommendations, the follow-up,
+and a signature line that states whether a signature was captured. It is rendered by a pure
+function (`server/documents/service-report-pdf.ts`) and stored like an invoice's PDF
+(`documents`, kind SERVICE_REPORT, one row per ticket) on the first request, served as the
+stored bytes after that, and **retired whenever the ticket's content is written again** - a
+re-post, an office edit that changed something, a material row added - so the next request
+renders the ticket as it now stands; finalize and reopen change no content and keep it. The
+audit log (§17) is the history; the report is always the present. A technician may preview the
+report of an unposted ticket from the collect step; the preview says so and is stored nowhere.
+The invoice and the service report are separate documents (owner, 2026-09-19): the Settings
+toggle "Attach service report to visit invoices" appends a visit's reports to its invoice PDF
+(§13), and neither replaces the other.
+
 ### Materials support
 
 Materials should be modeled as child records, not stuffed into one field.
@@ -1229,6 +1248,17 @@ is applied to an Invoice and confirmed, never when money is merely received; mon
 shown beside it and never netted; pending shows, confirmed counts. A DRAFT, a VOID, a released
 application and a payment recorded in error do not appear. The arithmetic is one shared module,
 `shared/statements.ts`; the document is `server/documents/statement-pdf.ts`.
+
+### Canonical rule — the invoice PDF may carry the visit's service reports (PLAN_ROADMAP_V2.md C3.5, B11; Pass 22)
+
+An invoice's PDF is rendered once, on its first open or when it is marked sent, and never
+re-rendered. When the office's "Attach service report to visit invoices" setting is on at that
+moment, a **visit-anchored** invoice (one with an `appointmentId`) ends with the service report
+(§12) of every ticket among its lines, in line order, drawn into the same document; an invoice
+with no visit - schedule-driven agreement billing, a manual fee or adjustment, a standalone
+initial charge - has nothing to attach and appends nothing ("omit on null"). A DRAFT's preview
+follows the same rule and is not stored. The setting's value at first render is what the stored
+PDF keeps; the ticket's own report stays separately openable and follows the ticket.
 
 ### Required fields
 
