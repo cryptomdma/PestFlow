@@ -366,7 +366,7 @@ so every field action is a route and every screen is data from a read — no pag
 | C3.2 (**Pass 17**) — **done** (`feature/phase-3-reopen-reason-popup`, 2026-09-25; see "Shipped in Pass 17" at the end of Part D) | **Reopen-reason pop-up** with a settings list (`ticket_reopen_reasons`, the `app_settings` shape of `appointment_cancel_reschedule_reasons`), `reopenReasonCode` + text; "Other" requires text and `REOPEN_TICKET_OTHER` (manager+); the inline textarea leaves the modal; the modal closes on Finalize when the queue is exhausted. | Remove reopen reason from modal; pop-up; dropdown config; Other role-gated; close on finalize | — (after C3.1 only to avoid a footer merge conflict) | — |
 | C3.1b (**Pass 18**) — **done** (`feature/phase-3-office-edit-ticket`, 2026-09-25; see "Shipped in Pass 18" at the end of Part D) | **Office Edit on the review modal** (D9): the role-gated Edit button opens `service-completion-dialog.tsx` in an `office-edit` mode (same fields, materials included) that submits through the gated PATCH instead of the post route; `ADJUST_PRICE_AGREEMENT` still guards an agreement price (support edits everything else); a FINALIZED ticket says "reopen first". Pass 16 built the PATCH content-only with materials as replace-all; the Service's price and type are not on it, so this unit adds the price edit (on the Service, logged `price_overridden` as a post's is). | Office edit button | C3.1, C3.2 | — |
 | C3.3 (**Pass 19**) — **done** (`feature/phase-3-tech-ticket-money-instructions`, 2026-09-25; see "Shipped in Pass 19" at the end of Part D) | **Technician ticket modal, money and instructions**: draft-price override on the billing-summary read (`?serviceId=&priceCents=`, priced server-side through `resolveServiceLineBillingTx` + tax), dollars.cents on blur, service instructions (agreement `serviceInstructions`, service notes, location notes) at the top, the **billing-plan pill** in the ticket header (the profile display waits for C5.2), **time-in prompt** on opening a ticket with no Time In (bypass allowed). Landing after Post unchanged (B1). | Tech modal items 1-4; time-in prompt; display billing plan | — | — |
-| C3.4a (**Pass 20**) | **Material units and application areas**: a settings-managed unit list (`material_units`) feeding a Unit dropdown, product `defaultUnit` migrated to pick from it; an org-level application-area list in Settings feeding products' allowed areas; application area multi-select per material line (`applicationAreas[]`, areas serviced still derived). | Unit dropdown; Application area multi-select | — | — |
+| C3.4a (**Pass 20**) — **done** (`feature/phase-3-material-units-areas`, 2026-09-26; see "Shipped in Pass 20" at the end of Part D) | **Material units and application areas**: a settings-managed unit list (`material_units`) feeding a Unit dropdown, product `defaultUnit` migrated to pick from it; an org-level application-area list in Settings feeding products' allowed areas; application area multi-select per material line (`applicationAreas[]`, areas serviced still derived). | Unit dropdown; Application area multi-select | — | — |
 | C3.4b (**Pass 21**) | **Target pests, two levels** (B12): `productApplications.targetPests[]` per material row from the target-pest list (compliance); the ticket-level target pests stay on the ticket, selectable from a searchable multi-select placed in the Materials section, and are **selected ∪ every material's pests**; the summary line at the top of the ticket shows that union. | Target pests; pest per application | C3.4a | — |
 | C3.5 (**Pass 22**) | **Service report document** — customer-facing summary of a posted/finalized ticket (technician + license, date, services, pests, materials, notes, recommendations, signature placeholder) through the document renderer, stored like invoices; Open / Download on the review modal and the Services tab, Preview in the collect step. **Settings toggle "Attach service report to visit invoices"** (B11): when on, a visit-anchored invoice's PDF appends the report(s) for its lines; schedule-driven and manual invoices have no visit and append nothing. Both documents stay separately openable. | "Preview/print/save/send service summary"; "sends invoice / service report" | — | — |
 | C3.6 (**Pass 23**) | **Field surcharge line** — as specified in `CURRENT_FOCUS.md`: SURCHARGE line on the ticket → invoice line; allow/reject toggle moves from plan to template; `CLEANOUT_SURCHARGE` / `PREPAY_FULL` leave the initial-charge vocabulary; test-data defaults migrated; `ADD_FIELD_SURCHARGE` gets its UI. **Transitional credit rule until Phase 7:** a recorded SURCHARGE line always credits the posting technician, marked transitional (dev rule 4), replacing today's permission inference in `createSurchargeEntryIfConfigured()`. | (owner-specified 2026-09-13) | — | — |
@@ -2106,6 +2106,124 @@ Behavior worth knowing before the next pass touches it:
   browser** - the repo has no browser automation and this session had no browser - so the
   re-pricing on blur, the dollars.cents formatting, the draft caption, the instructions block, the
   pill, the time-in prompt and the live sheet reach the owner first.
+
+**Shipped in Pass 20** (`feature/phase-3-material-units-areas`, 2026-09-26) — the C3.4a row as
+built, plus what it decided.
+
+```ts
+// shared/material-lists.ts (new)
+MATERIAL_UNITS_SETTING_KEY = "material_units"; APPLICATION_AREAS_SETTING_KEY = "application_areas"
+DEFAULT_MATERIAL_UNITS = ["oz", "fl oz", "gal", "lb", "g", "mL", "L", "each"]
+DEFAULT_APPLICATION_AREAS = ["Exterior", "Exterior Perimeter", "Interior", "Interior Baseboards", "Kitchen",
+                             "Bathrooms", "Garage", "Attic", "Crawl Space", "Yard"]
+sanitizeMaterialList(values)                  // trimmed, empties dropped, deduped case-insensitively (the first spelling wins)
+normalizeMaterialUnits(v) / normalizeApplicationAreas(v)   // the stored row as a list; no row or nothing usable -> the defaults
+matchListEntry(list, v) / isOnList(list, v)   // the list's spelling of a case-insensitive match, or null
+toListSpelling(list, v) / toListSpellings(list, vs)        // the list's spelling when matched, the value kept (trimmed) otherwise
+applicationAreasOf(row)                       // row.applicationAreas, else [row.applicationLocation], else []
+deriveAreasServiced(rows)                     // the union of every row's areas in row order joined ", ", or null
+formatApplicationAreas(row)                   // the row's areas joined ", ", or null
+
+// shared/schema.ts
+productApplications.applicationAreas: text[]  // beside applicationLocation (TRANSITIONAL, dev rule 4: written as the first area)
+
+// server/service-scheduling-bootstrap.ts
+bootstrapMaterialVocabulary()                 // guarded on the application_areas column: copies each application_location in as a
+                                              // one-element array; rewrites material_products.default_unit and product_applications.unit
+                                              // in the org's unit list's spelling where the match is case-insensitive, the per-row effect
+                                              // printed; a unit no list names is reported and left as written
+
+// server/storage.ts
+interface MaterialVocabulary { units: string[]; areas: string[] }
+readMaterialVocabularyTx(tx)                  // the two app_settings rows (the defaults when absent), read inside the post / edit tx
+getMaterialUnits() / setMaterialUnits(units) / getApplicationAreas() / setApplicationAreas(areas)   // one row each, upsert on (org_id, key)
+normalizeProductApplicationInputs(list, vocabulary)   // + unit -> the list's spelling; applicationAreas = applicationAreasOf(row) in the
+                                              // list's spelling, deduped, null when none; applicationLocation = areas[0] ?? null
+PRODUCT_APPLICATION_SNAPSHOT_FIELDS           // + "applicationAreas" (the ticket_edited diff's shape)
+completeService / updateServiceRecordContent  // areasServiced = deriveAreasServiced(rows) ?? the body's text when materials are sent;
+                                              // the content edit it always was when the body carries none
+normalizeMaterialProductInput(data)           // defaultUnit / allowedApplicationAreas / defaultApplicationArea -> the lists' spelling, off-list kept
+createProductApplication(data)                // the legacy route's row goes through the same normalizer
+
+// Routes
+GET   /api/settings/material-units            // open -> { units }
+PATCH /api/settings/material-units            // MANAGE_SETTINGS; { units: string[] } (min 1) -> { units } sanitized
+GET   /api/settings/application-areas         // open -> { areas }
+PATCH /api/settings/application-areas         // MANAGE_SETTINGS; { areas: string[] } (min 1) -> { areas } sanitized
+POST / PATCH /api/material-products           // shape and gating unchanged (none); values written in the lists' spelling
+
+// client/src/components/list-multi-select.tsx (new)
+<ListMultiSelect options value onChange placeholder searchPlaceholder offListCaption disabled testId />
+                                              // Popover + Command (search) + toggles, selected values as chips; a value off the list is a
+                                              // chip marked with offListCaption, removable, never dropped
+
+// client/src/components/service-completion-dialog.tsx
+MaterialLine.applicationAreas: string[]       // replaces applicationLocation on the line; materialFromDraft() migrates an older local draft
+Unit                                          // a Select over the org's units (select-material-unit-<i>); an off-list unit is an extra option
+Application Areas                             // a ListMultiSelect over the product's allowed areas, else the org's list (multiselect-material-areas-<i>)
+materialsPayload()                            // sends applicationAreas, never applicationLocation; neither body sends areasServiced any more
+
+// client/src/pages/settings.tsx
+Material Units / Application Areas cards      // a textarea one entry per line, disabled (not hidden) for anyone but an admin; above Material Products
+MaterialProductForm({ units, areas })         // Default Unit a Select over the units; Allowed Areas a ListMultiSelect over the areas;
+                                              // Default Area a Select over the product's allowed areas (the org's list when it has none)
+```
+
+Behavior worth knowing before the next pass touches it:
+- **Off the list: kept and marked, never refused.** A material row is the compliance record of
+  what the technician did; a refusal at post time would block a ticket from the field over
+  vocabulary the technician cannot edit, and 8 of the dev DB's 45 rows carry free-text areas no
+  list names ("Exterior perimeter, 3ft up/3ft out", "(1) Roof, (1) Attic", ...). The Selects
+  offer such a value as an extra option labelled "(not on the unit list)", the multi-selects show
+  it as an outlined chip with the caption; the read surfaces print what was recorded.
+- **Casing converges without a refusal.** A value matching a list entry apart from casing or
+  whitespace is written in the list's spelling (Each -> each, GARAGE -> Garage) by the migration
+  once and by every post, office edit and product save after it; a re-save that differs only in
+  casing changes nothing and writes no `ticket_edited` row. The lists themselves dedupe
+  case-insensitively (the first spelling wins), so the rule is never ambiguous.
+- **Areas serviced is the server's derivation.** Whenever a post or an office edit sends
+  materials, `areasServiced` is the union of every row's areas in row order; the body's own text
+  counts only when no row names an area, and a content edit without materials keeps the field as
+  sent. The dialog stopped computing it (B13: one rule in the route, so a native client gets the
+  same answer). The `areasServiced` field stays in both bodies for the no-materials case.
+- **The lists are not seeded.** No `app_settings` row exists until Settings saves one; the defaults
+  read until then (the Pass 17 shape). The smoke test's cleanup deleted the two rows it created,
+  so the dev org still reads the defaults.
+- **`applicationLocation` is transitional (dev rule 4).** Storage writes it as the first area, the
+  seed writes both, and only surfaces from before the list read it. C3.4b decides its fate.
+- **The migration ran against the shared dev DB during this pass's verification** (boot 1 on
+  PORT=5001 against the same Docker database), so the owner's `npm run dev:full` restart prints
+  nothing for Pass 20. What it did: 44 of 45 `product_applications` got their location copied in
+  (the one row with no location stays null); `Live Trap`'s `default_unit` and its 3 application
+  rows went `Each` -> `each`; every other unit (each x6, gal x27, 9 null) already matched.
+- **Verified 2026-09-26** (PORT=5001): `npm run check` clean; boot 1 printed the migration's
+  per-row effect (above) with all 44 table counts unchanged; 52 API / SQL assertions as the four
+  roles - both lists' GET open (401 without a session) and answering the defaults, PATCH 403 for
+  technician / support / manager and 400 on `[]` and `[""]`, the admin's save trimmed and deduped
+  case-insensitively with the GET reflecting it and two `app_settings` rows created; a fixture
+  product through `POST /api/material-products` (GAL -> gal; ["exterior perimeter", "Garage",
+  "Eaves", " garage "] -> ["Exterior Perimeter", "Garage", "Eaves"]; GARAGE -> Garage; a PATCH to
+  "quart" kept off-list, to "Bucket" respelled "bucket"); a ticket posted through
+  `POST /api/services/:id/complete` with four material rows - a list unit respelled, a body
+  naming only `applicationLocation` read as one area, an off-list unit kept, a nameless row
+  dropped - answering `areasServiced` "Exterior Perimeter, Garage, Attic, Kitchen window sill"
+  with the body's own text ignored and every `applicationLocation` the row's first area; the
+  technician's PATCH 403; support's replace-all -> `areasServiced` "Yard" and one `ticket_edited`
+  row whose before carries the three rows' `applicationAreas` and whose after carries ["Yard"];
+  the same rows re-sent in other casing writing nothing; a content edit without materials keeping
+  its text; rows without areas -> null, or the body's text; the legacy
+  `POST /api/product-applications` carrying `applicationAreas` and the respelled unit; every
+  fixture deleted and every count back at the post-boot baseline (`session` +4 per run); boot 2
+  printed only the serving line with every count unchanged; Vite 200 with the new symbols on the
+  six touched client modules and `shared/material-lists.ts`. **Nothing was rendered in a browser**
+  - the repo has no browser automation and this session had no browser - so the Unit Select, the
+  two multi-selects, the product form's three pickers and the two Settings cards reach the owner
+  first.
+- **Known follow-up.** The Service History page's pre-Phase-1 "New Service Record" form
+  (`services.tsx`, its own `POST /api/service-records`) still takes Areas Serviced and each
+  product's Application Location as free text; its product rows now go through the same
+  normalizer, but its `areasServiced` is typed, not derived. Untouched here (scope); it is the one
+  surface left with a freeform area field. The material-products routes stay ungated, as before.
 
 ---
 

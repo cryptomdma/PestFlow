@@ -252,6 +252,11 @@ export async function registerRoutes(
   // applied to the Service by storage under the post's rule (ADJUST_PRICE_AGREEMENT
   // on an agreement-generated service, 403 otherwise) and the price logged
   // `price_overridden` - never through the ungated PATCH /api/services/:id.
+  // Pass 20 (C3.4a): a material row carries applicationAreas[] (its
+  // applicationLocation is written as the first area, transitional); when
+  // materials are sent, areasServiced is derived from them by storage and
+  // the body's areasServiced counts only if no row names an area. Units and
+  // areas are put in the org's lists' spelling; an off-list value is kept.
   const updateServiceRecordSchema = z.object({
     serviceDate: z.coerce.date().optional(),
     technicianId: z.string().nullable().optional(),
@@ -267,6 +272,9 @@ export async function registerRoutes(
     serviceTypeId: z.string().nullable().optional(),
     priceCents: z.number().int().nullable().optional(),
   }).strict();
+  // The post. Pass 20: the same material rule as the PATCH above -
+  // areasServiced derives from the rows' applicationAreas, the body's text
+  // only when no row names an area.
   const completeServiceSchema = z.object({
     appointmentId: z.string().nullable().optional(),
     technicianId: z.string().nullable().optional(),
@@ -330,6 +338,15 @@ export async function registerRoutes(
   }).strict();
   const ticketReopenReasonsSchema = z.object({
     reasons: z.array(z.string().trim().min(1)).min(1),
+  });
+  // Pass 20 (C3.4a): the material unit list and the application-area list
+  // (shared/material-lists.ts) - sanitized by storage (trimmed, deduped
+  // case-insensitively), at least one entry.
+  const materialUnitsSchema = z.object({
+    units: z.array(z.string().trim().min(1)).min(1),
+  });
+  const applicationAreasSchema = z.object({
+    areas: z.array(z.string().trim().min(1)).min(1),
   });
   const opportunityStatusSchema = z.enum(["OPEN", "CONTACTED", "CONVERTED", "DISMISSED"]);
   // Pass 25 (C4.1), the Pass 16 pattern: the PATCH is content only and
@@ -2030,6 +2047,43 @@ export async function registerRoutes(
       const validated = ticketReopenReasonsSchema.parse(req.body);
       const data = await req.storage.setTicketReopenReasons(validated.reasons);
       res.json({ reasons: JSON.parse(data.value) });
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  // Pass 20 (C3.4a): the material unit list and the application-area list.
+  // Readable by anyone (the ticket dialog's Unit dropdown and Application
+  // Area multi-select and the product form fill from them); the PATCH is
+  // MANAGE_SETTINGS like the reopen list. A value outside either list is
+  // kept on the row that carries it, never refused (shared/material-lists.ts).
+  app.get("/api/settings/material-units", async (req, res) => {
+    const units = await req.storage.getMaterialUnits();
+    res.json({ units });
+  });
+
+  app.patch("/api/settings/material-units", requirePermission(PERMISSIONS.MANAGE_SETTINGS), async (req, res) => {
+    try {
+      const validated = materialUnitsSchema.parse(req.body);
+      const data = await req.storage.setMaterialUnits(validated.units);
+      res.json({ units: JSON.parse(data.value) });
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.get("/api/settings/application-areas", async (req, res) => {
+    const areas = await req.storage.getApplicationAreas();
+    res.json({ areas });
+  });
+
+  app.patch("/api/settings/application-areas", requirePermission(PERMISSIONS.MANAGE_SETTINGS), async (req, res) => {
+    try {
+      const validated = applicationAreasSchema.parse(req.body);
+      const data = await req.storage.setApplicationAreas(validated.areas);
+      res.json({ areas: JSON.parse(data.value) });
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
       res.status(400).json({ message: e.message });

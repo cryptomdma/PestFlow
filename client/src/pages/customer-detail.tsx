@@ -49,6 +49,7 @@ import {
 import { useAuth } from "@/hooks/use-auth";
 import { can, PERMISSIONS } from "@shared/permissions";
 import { formatReopenReason } from "@shared/ticket-reopen";
+import { formatApplicationAreas } from "@shared/material-lists";
 import { selectableUsers, userDisplayName } from "@shared/users";
 import type { UserSummary } from "@shared/schema";
 import { formatPhoneDisplay } from "@shared/phone";
@@ -2878,7 +2879,7 @@ function ServiceDetailModal({
               <div key={application.id} className="rounded-md border bg-muted/20 px-3 py-2">
                 <p className="font-medium">{application.productName}</p>
                 <p className="text-xs text-muted-foreground">
-                  {[application.amountApplied, application.applicationLocation, application.applicationMethod, application.epaRegNumber ? `EPA ${application.epaRegNumber}` : null].filter(Boolean).join(" - ")}
+                  {[application.amountApplied && `${application.amountApplied} ${application.unit || ""}`.trim(), formatApplicationAreas(application), application.applicationMethod, application.epaRegNumber ? `EPA ${application.epaRegNumber}` : null].filter(Boolean).join(" - ")}
                 </p>
               </div>
             ))}

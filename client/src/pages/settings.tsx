@@ -31,6 +31,8 @@ import { InitialChargeFormFields, initialChargeFieldsFrom, initialChargeFormStat
 import { can, PERMISSIONS } from "@shared/permissions";
 import { describeUserRole, selectableUsers, userDisplayName } from "@shared/users";
 import { INVOICE_ON_FINALIZE_MODES, describeInvoiceOnFinalizeMode, normalizeInvoiceOnFinalizeMode, type InvoiceOnFinalizeMode } from "@shared/invoice-on-finalize";
+import { isOnList, matchListEntry } from "@shared/material-lists";
+import { ListMultiSelect } from "@/components/list-multi-select";
 import { Plus, Settings as SettingsIcon, Wrench, FileText, Users, ShieldCheck, FlaskConical, Bug, CreditCard, CalendarClock, Percent, Scale, Building2, Receipt } from "lucide-react";
 import type { AgreementCancellationPolicy, AgreementTemplate, BillingPlan, BillingProfileTemplate, MaterialProduct, OpportunityCategory, OpportunityDisposition, Organization, ServiceType, TargetPest, TaxRate, TaxRule, Technician, UserSummary } from "@shared/schema";
 
@@ -219,7 +221,13 @@ function stringifyDilutions(value: unknown) {
     .join("\n");
 }
 
-function MaterialProductForm({ product, onClose }: { product?: MaterialProduct | null; onClose: () => void }) {
+// Pass 20 (C3.4a): Default Unit picks from the org's unit list and Allowed
+// Areas from the org's area list (the Settings cards above the product card);
+// Default Area picks from the product's allowed areas (the org's list when it
+// has none). A value already on the product that a list does not name is
+// kept and shown marked; the server writes list matches in the list's
+// spelling (shared/material-lists.ts).
+function MaterialProductForm({ product, onClose, units, areas }: { product?: MaterialProduct | null; onClose: () => void; units: string[]; areas: string[] }) {
   const { toast } = useToast();
   const isEditMode = !!product;
   const [form, setForm] = useState({
@@ -232,7 +240,7 @@ function MaterialProductForm({ product, onClose }: { product?: MaterialProduct |
     dilutionOptions: stringifyDilutions(product?.dilutionOptions),
     allowedApplicationMethods: (product?.allowedApplicationMethods ?? []).join(", "),
     allowedEquipment: (product?.allowedEquipment ?? []).join(", "),
-    allowedApplicationAreas: (product?.allowedApplicationAreas ?? []).join(", "),
+    allowedApplicationAreas: (product?.allowedApplicationAreas ?? []).filter((area) => area && area.trim()),
     defaultDilutionLabel: product?.defaultDilutionLabel ?? "",
     defaultApplicationMethod: product?.defaultApplicationMethod ?? "",
     defaultEquipment: product?.defaultEquipment ?? "",
@@ -254,7 +262,7 @@ function MaterialProductForm({ product, onClose }: { product?: MaterialProduct |
         dilutionOptions: parseDilutions(data.dilutionOptions),
         allowedApplicationMethods: splitList(data.allowedApplicationMethods),
         allowedEquipment: splitList(data.allowedEquipment),
-        allowedApplicationAreas: splitList(data.allowedApplicationAreas),
+        allowedApplicationAreas: data.allowedApplicationAreas,
         defaultDilutionLabel: data.defaultDilutionLabel || null,
         defaultApplicationMethod: data.defaultApplicationMethod || null,
         defaultEquipment: data.defaultEquipment || null,
@@ -276,6 +284,9 @@ function MaterialProductForm({ product, onClose }: { product?: MaterialProduct |
     onError: (err: Error) => toast({ title: "Error", description: err.message, variant: "destructive" }),
   });
 
+  // Default Area picks from what this product allows; the org's list when it allows none yet.
+  const defaultAreaOptions = form.allowedApplicationAreas.length ? form.allowedApplicationAreas : areas;
+
   return (
     <form onSubmit={(e) => { e.preventDefault(); mutation.mutate(form); }} className="space-y-4">
       <div className="grid gap-3 sm:grid-cols-2">
@@ -294,13 +305,36 @@ function MaterialProductForm({ product, onClose }: { product?: MaterialProduct |
       <div className="grid gap-3 sm:grid-cols-3">
         <div className="space-y-1.5"><Label>Allowed Methods</Label><Input value={form.allowedApplicationMethods} onChange={(e) => setForm((p) => ({ ...p, allowedApplicationMethods: e.target.value }))} placeholder="Crack & Crevice, Spot Treatment" /></div>
         <div className="space-y-1.5"><Label>Allowed Equipment</Label><Input value={form.allowedEquipment} onChange={(e) => setForm((p) => ({ ...p, allowedEquipment: e.target.value }))} placeholder="B&G, FlowZone" /></div>
-        <div className="space-y-1.5"><Label>Allowed Areas</Label><Input value={form.allowedApplicationAreas} onChange={(e) => setForm((p) => ({ ...p, allowedApplicationAreas: e.target.value }))} placeholder="Exterior Perimeter, Garage" /></div>
+        <div className="space-y-1.5">
+          <Label>Allowed Areas</Label>
+          <ListMultiSelect options={areas} value={form.allowedApplicationAreas} onChange={(next) => setForm((p) => ({ ...p, allowedApplicationAreas: next }))} placeholder="Select areas" searchPlaceholder="Search areas" offListCaption="not on the area list" testId="multiselect-product-allowed-areas" />
+        </div>
       </div>
       <div className="grid gap-3 sm:grid-cols-4">
         <div className="space-y-1.5"><Label>Default Dilution</Label><Input value={form.defaultDilutionLabel} onChange={(e) => setForm((p) => ({ ...p, defaultDilutionLabel: e.target.value }))} /></div>
         <div className="space-y-1.5"><Label>Default Method</Label><Input value={form.defaultApplicationMethod} onChange={(e) => setForm((p) => ({ ...p, defaultApplicationMethod: e.target.value }))} /></div>
-        <div className="space-y-1.5"><Label>Default Unit</Label><Input value={form.defaultUnit} onChange={(e) => setForm((p) => ({ ...p, defaultUnit: e.target.value }))} placeholder="oz" /></div>
-        <div className="space-y-1.5"><Label>Default Area</Label><Input value={form.defaultApplicationArea} onChange={(e) => setForm((p) => ({ ...p, defaultApplicationArea: e.target.value }))} /></div>
+        <div className="space-y-1.5">
+          <Label>Default Unit</Label>
+          <Select value={matchListEntry(units, form.defaultUnit) ?? (form.defaultUnit.trim() ? form.defaultUnit : "NONE")} onValueChange={(value) => setForm((p) => ({ ...p, defaultUnit: value === "NONE" ? "" : value }))}>
+            <SelectTrigger data-testid="select-product-default-unit"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="NONE">No default</SelectItem>
+              {units.map((unit) => <SelectItem key={unit} value={unit}>{unit}</SelectItem>)}
+              {form.defaultUnit.trim() && !isOnList(units, form.defaultUnit) ? <SelectItem value={form.defaultUnit}>{form.defaultUnit} (not on the unit list)</SelectItem> : null}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="space-y-1.5">
+          <Label>Default Area</Label>
+          <Select value={matchListEntry(defaultAreaOptions, form.defaultApplicationArea) ?? (form.defaultApplicationArea.trim() ? form.defaultApplicationArea : "NONE")} onValueChange={(value) => setForm((p) => ({ ...p, defaultApplicationArea: value === "NONE" ? "" : value }))}>
+            <SelectTrigger data-testid="select-product-default-area"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="NONE">No default</SelectItem>
+              {defaultAreaOptions.map((area) => <SelectItem key={area} value={area}>{area}</SelectItem>)}
+              {form.defaultApplicationArea.trim() && !isOnList(defaultAreaOptions, form.defaultApplicationArea) ? <SelectItem value={form.defaultApplicationArea}>{form.defaultApplicationArea} (not among the allowed areas)</SelectItem> : null}
+            </SelectContent>
+          </Select>
+        </div>
       </div>
       <div className="grid gap-3 sm:grid-cols-3">
         <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.restrictedUse} onChange={(e) => setForm((p) => ({ ...p, restrictedUse: e.target.checked }))} /> Restricted use</label>
@@ -1334,6 +1368,9 @@ export default function Settings() {
   const [editingTaxRule, setEditingTaxRule] = useState<TaxRule | null>(null);
   const [appointmentCancelReasonsText, setAppointmentCancelReasonsText] = useState("");
   const [ticketReopenReasonsText, setTicketReopenReasonsText] = useState("");
+  // Pass 20 (C3.4a): the material unit list and the application-area list.
+  const [materialUnitsText, setMaterialUnitsText] = useState("");
+  const [applicationAreasText, setApplicationAreasText] = useState("");
   const { data: serviceTypes, isLoading } = useQuery<ServiceType[]>({ queryKey: ["/api/service-types"] });
   const { data: technicians, isLoading: techniciansLoading } = useQuery<Technician[]>({ queryKey: ["/api/technicians?includeInactive=true"] });
   // Pass 12: the technician rows name their linked user.
@@ -1370,6 +1407,18 @@ export default function Settings() {
       setTicketReopenReasonsText(ticketReopenReasons.reasons.join("\n"));
     }
   }, [ticketReopenReasons]);
+  // Pass 20 (C3.4a): the unit list (the ticket's Unit dropdown, the product
+  // form's Default Unit) and the area list (products' Allowed Areas, and a
+  // material line's areas when its product names none). Read by anyone; the
+  // PATCH is MANAGE_SETTINGS.
+  const { data: materialUnits } = useQuery<{ units: string[] }>({ queryKey: ["/api/settings/material-units"] });
+  const { data: applicationAreas } = useQuery<{ areas: string[] }>({ queryKey: ["/api/settings/application-areas"] });
+  useEffect(() => {
+    if (materialUnits?.units) setMaterialUnitsText(materialUnits.units.join("\n"));
+  }, [materialUnits]);
+  useEffect(() => {
+    if (applicationAreas?.areas) setApplicationAreasText(applicationAreas.areas.join("\n"));
+  }, [applicationAreas]);
   const updateServiceTimeTrackingMutation = useMutation({
     mutationFn: async (mode: string) => {
       const response = await apiRequest("PATCH", "/api/settings/service-time-tracking", { mode });
@@ -1421,6 +1470,30 @@ export default function Settings() {
       toast({ title: "Ticket reopen reasons updated" });
     },
     onError: (error: Error) => toast({ title: "Unable to update ticket reopen reasons", description: error.message, variant: "destructive" }),
+  });
+  const updateMaterialUnitsMutation = useMutation({
+    mutationFn: async () => {
+      const units = materialUnitsText.split(/\r?\n/).map((unit) => unit.trim()).filter(Boolean);
+      const response = await apiRequest("PATCH", "/api/settings/material-units", { units });
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/settings/material-units"] });
+      toast({ title: "Material units updated" });
+    },
+    onError: (error: Error) => toast({ title: "Unable to update material units", description: error.message, variant: "destructive" }),
+  });
+  const updateApplicationAreasMutation = useMutation({
+    mutationFn: async () => {
+      const areas = applicationAreasText.split(/\r?\n/).map((area) => area.trim()).filter(Boolean);
+      const response = await apiRequest("PATCH", "/api/settings/application-areas", { areas });
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/settings/application-areas"] });
+      toast({ title: "Application areas updated" });
+    },
+    onError: (error: Error) => toast({ title: "Unable to update application areas", description: error.message, variant: "destructive" }),
   });
 
   const openCreateTemplate = () => {
@@ -1740,6 +1813,75 @@ export default function Settings() {
         </CardContent>
       </Card>
 
+      {/* Pass 20 (C3.4a): the two vocabularies behind a material row. The
+          unit list fills the ticket's Unit dropdown and the product form's
+          Default Unit; the area list fills products' Allowed Areas and a
+          material line's areas when its product names none. A value already
+          on a product or a ticket that a list does not name is kept and shown
+          marked, never dropped. The PATCH is MANAGE_SETTINGS, so the editors
+          are disabled - not hidden - for everyone else (dev behavior rule 6). */}
+      <Card data-testid="card-material-units">
+        <CardHeader>
+          <CardTitle className="text-base font-semibold flex items-center gap-2"><Scale className="h-4 w-4" /> Material Units</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="max-w-xl space-y-2">
+            <Label>Units</Label>
+            <Textarea
+              value={materialUnitsText}
+              onChange={(event) => setMaterialUnitsText(event.target.value)}
+              rows={6}
+              placeholder={"oz\nfl oz\ngal\nlb\neach"}
+              disabled={!canManageSettings}
+              data-testid="textarea-material-units"
+            />
+            <p className="text-xs text-muted-foreground">
+              One unit per line. Technicians pick a material's unit from this list on the ticket, and a product's default unit comes from it. A unit already recorded on a ticket or a product that is not on this list stays as written and is shown marked; a spelling that differs only in case is saved as it is written here.
+            </p>
+            {!canManageSettings ? <p className="text-xs text-muted-foreground">Only an admin can change this list.</p> : null}
+          </div>
+          <Button
+            type="button"
+            onClick={() => updateMaterialUnitsMutation.mutate()}
+            disabled={!canManageSettings || updateMaterialUnitsMutation.isPending || !materialUnitsText.trim()}
+            data-testid="button-save-material-units"
+          >
+            {updateMaterialUnitsMutation.isPending ? "Saving..." : "Save Units"}
+          </Button>
+        </CardContent>
+      </Card>
+
+      <Card data-testid="card-application-areas">
+        <CardHeader>
+          <CardTitle className="text-base font-semibold flex items-center gap-2"><SettingsIcon className="h-4 w-4" /> Application Areas</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="max-w-xl space-y-2">
+            <Label>Areas</Label>
+            <Textarea
+              value={applicationAreasText}
+              onChange={(event) => setApplicationAreasText(event.target.value)}
+              rows={8}
+              placeholder={"Exterior Perimeter\nInterior Baseboards\nGarage\nAttic"}
+              disabled={!canManageSettings}
+              data-testid="textarea-application-areas"
+            />
+            <p className="text-xs text-muted-foreground">
+              One area per line. A material product's allowed areas are picked from this list, and a technician picks a material's areas from the product's allowed areas (this whole list when the product has none). Areas serviced on a ticket are derived from what was picked. An area already recorded that is not on this list stays as written and is shown marked.
+            </p>
+            {!canManageSettings ? <p className="text-xs text-muted-foreground">Only an admin can change this list.</p> : null}
+          </div>
+          <Button
+            type="button"
+            onClick={() => updateApplicationAreasMutation.mutate()}
+            disabled={!canManageSettings || updateApplicationAreasMutation.isPending || !applicationAreasText.trim()}
+            data-testid="button-save-application-areas"
+          >
+            {updateApplicationAreasMutation.isPending ? "Saving..." : "Save Areas"}
+          </Button>
+        </CardContent>
+      </Card>
+
       <Card>
         <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
           <CardTitle className="text-base font-semibold flex items-center gap-2"><FlaskConical className="h-4 w-4" /> Material Products</CardTitle>
@@ -1747,7 +1889,7 @@ export default function Settings() {
             <DialogTrigger asChild><Button size="sm" onClick={() => setEditingMaterialProduct(null)}><Plus className="h-3 w-3 mr-1" /> Add Product</Button></DialogTrigger>
             <DialogContent className="max-w-3xl">
               <DialogHeader><DialogTitle>{editingMaterialProduct ? "Edit Material Product" : "New Material Product"}</DialogTitle></DialogHeader>
-              <MaterialProductForm product={editingMaterialProduct} onClose={() => { setMaterialDialogOpen(false); setEditingMaterialProduct(null); }} />
+              <MaterialProductForm product={editingMaterialProduct} onClose={() => { setMaterialDialogOpen(false); setEditingMaterialProduct(null); }} units={materialUnits?.units ?? []} areas={applicationAreas?.areas ?? []} />
             </DialogContent>
           </Dialog>
         </CardHeader>
@@ -1771,7 +1913,7 @@ export default function Settings() {
                       {product.epaRegNumber ? <Badge variant="outline">EPA {product.epaRegNumber}</Badge> : null}
                     </div>
                     <p className="mt-0.5 text-xs text-muted-foreground">
-                      {product.manufacturer || "No manufacturer"} | AI {product.activeIngredientPercent ?? "not set"}% | Default area: {product.defaultApplicationArea || "not set"}
+                      {product.manufacturer || "No manufacturer"} | AI {product.activeIngredientPercent ?? "not set"}% | Default unit: {product.defaultUnit || "not set"} | Default area: {product.defaultApplicationArea || "not set"}
                     </p>
                   </div>
                   <Button variant="outline" size="sm" onClick={() => { setEditingMaterialProduct(product); setMaterialDialogOpen(true); }}>Edit</Button>

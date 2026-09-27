@@ -1,6 +1,14 @@
 import { sql } from "drizzle-orm";
 import { db } from "./db";
 import { OPPORTUNITY_CATEGORY_SEED, taxonomyForSource } from "@shared/opportunities";
+import {
+  APPLICATION_AREAS_SETTING_KEY,
+  MATERIAL_UNITS_SETTING_KEY,
+  isOnList,
+  normalizeApplicationAreas,
+  normalizeMaterialUnits,
+  toListSpelling,
+} from "@shared/material-lists";
 
 async function columnExists(table: string, column: string): Promise<boolean> {
   const result = await db.execute(
@@ -198,6 +206,7 @@ export async function bootstrapServiceSchedulingFoundation(): Promise<void> {
   await db.execute(sql`ALTER TABLE product_applications ADD COLUMN IF NOT EXISTS unit text`);
   await db.execute(sql`ALTER TABLE product_applications ADD COLUMN IF NOT EXISTS active_ingredient_amount text`);
   await db.execute(sql`ALTER TABLE product_applications ADD COLUMN IF NOT EXISTS notes text`);
+  await bootstrapMaterialVocabulary();
 
   await db.execute(sql`
     CREATE TABLE IF NOT EXISTS target_pests (
@@ -469,6 +478,130 @@ interface RequeuedServiceRow {
   reschedule_requested: boolean;
   cancel_reason: string | null;
   scheduled_date: string;
+}
+
+// Pass 20 (PLAN_ROADMAP_V2.md C3.4a; CANONICAL_DOMAIN_RULES_V1.md §12
+// "Materials support"). One guarded migration, quiet once done:
+//   1. product_applications.application_areas (text[]) beside the single
+//      application_location. Guarded on the column: the boot that adds it
+//      copies every row's application_location in as a one-element array
+//      (trimmed; in the org's area list's spelling where it matches an entry
+//      apart from casing) and prints the count; a row with no location stays
+//      null. application_location stays as the transitional single value
+//      (dev rule 4) - storage writes it as the first area from here on -
+//      until C3.4b decides its fate.
+//   2. On the same boot, unit spellings: material_products.default_unit and
+//      product_applications.unit are rewritten in the org's unit list's
+//      spelling where they match an entry apart from casing / whitespace
+//      (Each -> each), the per-row effect printed before the row is written;
+//      a unit matching nothing is left as written and reported. The list is
+//      the org's material_units settings row when one exists (a restored
+//      dump may carry one) and shared/material-lists.ts's defaults otherwise.
+//   Nothing is refused and nothing is guessed: a free-text area or unit the
+//   lists do not name is carried as written (shared/material-lists.ts).
+async function bootstrapMaterialVocabulary(): Promise<void> {
+  const hadApplicationAreas = await columnExists("product_applications", "application_areas");
+  await db.execute(sql`ALTER TABLE product_applications ADD COLUMN IF NOT EXISTS application_areas text[]`);
+  if (hadApplicationAreas) return;
+
+  const orgScoped = (await columnExists("product_applications", "org_id"))
+    && (await columnExists("material_products", "org_id"))
+    && (await columnExists("app_settings", "org_id"));
+  if (!orgScoped) {
+    const counted = await db.execute(sql`SELECT count(*)::int AS total FROM product_applications`);
+    const total = (counted.rows[0] as { total: number } | undefined)?.total ?? 0;
+    console.log(
+      `[service-scheduling-bootstrap] Pass 20: product_applications gained application_areas (text[]). ${total} row(s) exist before the tables are org-scoped; nothing was backfilled or rewritten this boot.`,
+    );
+    return;
+  }
+
+  const located = await db.execute(sql`
+    SELECT count(*)::int AS total,
+           count(*) FILTER (WHERE application_location IS NOT NULL AND btrim(application_location) <> '')::int AS located
+    FROM product_applications
+  `);
+  const rowTotal = (located.rows[0] as { total: number; located: number } | undefined)?.total ?? 0;
+  const locatedTotal = (located.rows[0] as { total: number; located: number } | undefined)?.located ?? 0;
+  const unitTotals = await db.execute(sql`
+    SELECT (SELECT count(*)::int FROM material_products WHERE default_unit IS NOT NULL) AS products,
+           (SELECT count(*)::int FROM product_applications WHERE unit IS NOT NULL) AS applications
+  `);
+  const totals = (unitTotals.rows[0] as { products: number; applications: number } | undefined) ?? { products: 0, applications: 0 };
+  console.log(
+    `[service-scheduling-bootstrap] Pass 20 pre-migration report: product_applications gains application_areas (text[]). ${locatedTotal} row(s) carry a single application_location and get it copied in as a one-element array; ` +
+      `${totals.products} material_products default_unit(s) and ${totals.applications} product_applications unit(s) are checked against each org's unit list - the per-row effect below is printed before the row is written, and a unit the list does not name is left as written.`,
+  );
+
+  let copied = 0;
+  let respelled = 0;
+  let unitsRewritten = 0;
+  const unmatched: string[] = [];
+  const orgRows = await db.execute(sql`SELECT id, name FROM organizations ORDER BY created_at, id`);
+  for (const org of orgRows.rows as Array<{ id: string; name: string }>) {
+    const settings = await db.execute(sql`
+      SELECT key, value FROM app_settings
+      WHERE org_id = ${org.id} AND key IN (${MATERIAL_UNITS_SETTING_KEY}, ${APPLICATION_AREAS_SETTING_KEY})
+    `);
+    const settingRows = settings.rows as Array<{ key: string; value: string }>;
+    const units = normalizeMaterialUnits(settingRows.find((row) => row.key === MATERIAL_UNITS_SETTING_KEY)?.value);
+    const areas = normalizeApplicationAreas(settingRows.find((row) => row.key === APPLICATION_AREAS_SETTING_KEY)?.value);
+
+    const rows = await db.execute(sql`
+      SELECT id, application_location FROM product_applications
+      WHERE org_id = ${org.id} AND application_areas IS NULL AND application_location IS NOT NULL AND btrim(application_location) <> ''
+      ORDER BY id
+    `);
+    for (const row of rows.rows as Array<{ id: string; application_location: string }>) {
+      const area = toListSpelling(areas, row.application_location);
+      if (!area) continue;
+      if (area !== row.application_location) {
+        respelled++;
+        console.log(`[service-scheduling-bootstrap]   product_application ${row.id}  application_location "${row.application_location}" -> application_areas ["${area}"] (the area list's spelling)`);
+      }
+      await db.execute(sql`UPDATE product_applications SET application_areas = ARRAY[${area}]::text[] WHERE id = ${row.id} AND application_areas IS NULL`);
+      copied++;
+    }
+
+    const products = await db.execute(sql`
+      SELECT id, name, default_unit FROM material_products WHERE org_id = ${org.id} AND default_unit IS NOT NULL ORDER BY name, id
+    `);
+    for (const row of products.rows as Array<{ id: string; name: string; default_unit: string }>) {
+      if (!isOnList(units, row.default_unit)) {
+        unmatched.push(`material_product ${row.id} "${row.name}" default_unit "${row.default_unit}"`);
+        continue;
+      }
+      const spelled = toListSpelling(units, row.default_unit);
+      if (!spelled || spelled === row.default_unit) continue;
+      console.log(`[service-scheduling-bootstrap]   material_product ${row.id}  "${row.name}"  default_unit "${row.default_unit}" -> "${spelled}"`);
+      await db.execute(sql`UPDATE material_products SET default_unit = ${spelled} WHERE id = ${row.id}`);
+      unitsRewritten++;
+    }
+
+    const applications = await db.execute(sql`
+      SELECT id, product_name, unit FROM product_applications WHERE org_id = ${org.id} AND unit IS NOT NULL ORDER BY id
+    `);
+    for (const row of applications.rows as Array<{ id: string; product_name: string; unit: string }>) {
+      if (!isOnList(units, row.unit)) {
+        unmatched.push(`product_application ${row.id} "${row.product_name}" unit "${row.unit}"`);
+        continue;
+      }
+      const spelled = toListSpelling(units, row.unit);
+      if (!spelled || spelled === row.unit) continue;
+      console.log(`[service-scheduling-bootstrap]   product_application ${row.id}  "${row.product_name}"  unit "${row.unit}" -> "${spelled}"`);
+      await db.execute(sql`UPDATE product_applications SET unit = ${spelled} WHERE id = ${row.id}`);
+      unitsRewritten++;
+    }
+  }
+
+  console.log(
+    `[service-scheduling-bootstrap] Pass 20: ${copied} product_applications row(s) had their application_location copied into application_areas` +
+      ` (${respelled} in the area list's spelling rather than as written); ${rowTotal - copied} row(s) with no location stay null. application_location is transitional and is written as the first area from here on.`,
+  );
+  console.log(
+    `[service-scheduling-bootstrap] Pass 20: ${unitsRewritten} unit(s) rewritten in the unit list's spelling (the per-row effect above)` +
+      (unmatched.length ? `; ${unmatched.length} not on the list and left as written: ${unmatched.join("; ")}.` : "; every other unit already matched the list."),
+  );
 }
 
 // Pass 27 (PLAN_ROADMAP_V2.md C4.2): services.last_appointment_id - the

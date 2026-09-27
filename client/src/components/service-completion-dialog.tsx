@@ -17,8 +17,18 @@ import { BillingPlanPill, useBillingPlanById } from "@/components/billing-plan-p
 import { can, PERMISSIONS, rolesWithPermission } from "@shared/permissions";
 import { computeProductionValueCents } from "@shared/production-value";
 import { describeTicketLifecycle } from "@shared/ticket-status";
+import { applicationAreasOf, formatApplicationAreas, matchListEntry } from "@shared/material-lists";
+import { ListMultiSelect } from "@/components/list-multi-select";
 import type { Agreement, Appointment, CustomerNote, MaterialProduct, ProductApplication, Service, ServiceRecord, ServiceType, TargetPest, Technician } from "@shared/schema";
 
+// A material row as the dialog edits it. Pass 20 (C3.4a): `unit` picks from
+// the org's unit list and `applicationAreas` from the product's allowed areas
+// (the org's area list when the product names none); a value already on the
+// row that the list does not name is shown marked, never dropped. The server
+// writes the transitional single applicationLocation as the first area, so
+// the dialog never sends it, and derives areasServiced from every row's
+// areas, so neither body sends that either. C3.4b (Pass 21) adds the row's
+// targetPests[] beside applicationAreas.
 interface MaterialLine {
   key: string;
   collapsed: boolean;
@@ -30,7 +40,7 @@ interface MaterialLine {
   dilutionRate: string;
   applicationMethod: string;
   device: string;
-  applicationLocation: string;
+  applicationAreas: string[];
   epaRegNumber: string;
   activeIngredientAmount: string;
   notes: string;
@@ -80,10 +90,22 @@ function emptyMaterial(): MaterialLine {
     dilutionRate: "",
     applicationMethod: "",
     device: "",
-    applicationLocation: "",
+    applicationAreas: [],
     epaRegNumber: "",
     activeIngredientAmount: "",
     notes: "",
+  };
+}
+
+// A locally saved draft may predate Pass 20 (a single applicationLocation
+// string and no applicationAreas); it reads as one area, as the server reads
+// such a body.
+function materialFromDraft(draft: Partial<MaterialLine> & { applicationLocation?: string | null }): MaterialLine {
+  const { applicationLocation, applicationAreas, ...rest } = draft;
+  return {
+    ...emptyMaterial(),
+    ...rest,
+    applicationAreas: applicationAreasOf({ applicationAreas: Array.isArray(applicationAreas) ? applicationAreas : null, applicationLocation }),
   };
 }
 
@@ -99,7 +121,7 @@ function materialFromApplication(application: ProductApplication): MaterialLine 
     dilutionRate: application.dilutionRate || "",
     applicationMethod: application.applicationMethod || "",
     device: application.device || "",
-    applicationLocation: application.applicationLocation || "",
+    applicationAreas: applicationAreasOf(application),
     epaRegNumber: application.epaRegNumber || "",
     activeIngredientAmount: application.activeIngredientAmount || "",
     notes: application.notes || "",
@@ -205,6 +227,13 @@ export function ServiceCompletionDialog({
 
   const { data: materialProducts } = useQuery<MaterialProduct[]>({ queryKey: ["/api/material-products"] });
   const { data: productApplications } = useQuery<ProductApplication[]>({ queryKey: ["/api/product-applications"] });
+  // Pass 20 (C3.4a): the org's unit list and application-area list
+  // (shared/material-lists.ts) - the Unit dropdown's options, and the
+  // Application Areas multi-select's when the product names no allowed areas.
+  const { data: materialUnitsSetting } = useQuery<{ units: string[] }>({ queryKey: ["/api/settings/material-units"] });
+  const { data: applicationAreasSetting } = useQuery<{ areas: string[] }>({ queryKey: ["/api/settings/application-areas"] });
+  const unitOptions = materialUnitsSetting?.units ?? [];
+  const orgAreaOptions = applicationAreasSetting?.areas ?? [];
   const { data: configuredTargetPests } = useQuery<TargetPest[]>({ queryKey: ["/api/target-pests"] });
   const { data: timeTrackingSetting } = useQuery<{ mode: "AUTO_TIMEOUT_ON_TICKET_POST" | "PROMPT_FOR_TIMEOUT" | "MANUAL_TIMEOUT" }>({
     queryKey: ["/api/settings/service-time-tracking"],
@@ -302,7 +331,7 @@ export function ServiceCompletionDialog({
         const restoredPrice: string = parsed.ticketPrice ?? (service.priceCents != null ? centsToDollarString(service.priceCents) : "");
         setTicketPrice(restoredPrice);
         setCommittedPrice(restoredPrice);
-        setMaterials(Array.isArray(parsed.materials) && parsed.materials.length ? parsed.materials : [emptyMaterial()]);
+        setMaterials(Array.isArray(parsed.materials) && parsed.materials.length ? parsed.materials.map(materialFromDraft) : [emptyMaterial()]);
         return;
       } catch {
         if (draftKey) localStorage.removeItem(draftKey);
@@ -359,7 +388,8 @@ export function ServiceCompletionDialog({
   }, [conditionsFound, deviceNotes, draftKey, followUpNotes, followUpRequired, materials, notes, open, recommendations, service, serviceDate, targetPests, technicianId, ticketPrice, ticketServiceTypeId]);
 
   // The materials as the post and the office edit both send them (the
-  // PATCH's replace-all list is the post's shape).
+  // PATCH's replace-all list is the post's shape). Since Pass 20 the server
+  // derives areasServiced from these rows' areas, so neither body sends it.
   const materialsPayload = () => materials
     .filter((material) => material.productName.trim())
     .map((material) => ({
@@ -373,7 +403,8 @@ export function ServiceCompletionDialog({
       activeIngredientAmount: material.activeIngredientAmount || null,
       applicationMethod: material.applicationMethod || null,
       device: material.device || null,
-      applicationLocation: material.applicationLocation || null,
+      // The server writes applicationLocation as the first area (transitional).
+      applicationAreas: material.applicationAreas.filter((area) => area.trim()),
       notes: material.notes || null,
     }));
 
@@ -439,7 +470,6 @@ export function ServiceCompletionDialog({
   const completeMutation = useMutation({
     mutationFn: async () => {
       if (!service) throw new Error("Service is required");
-      const derivedAreas = uniqueValues(materials.map((material) => material.applicationLocation)).join(", ");
       const response = await apiRequest("POST", `/api/services/${service.id}/complete`, {
         appointmentId: appointment?.id ?? service.appointmentId ?? null,
         technicianId: technicianId || null,
@@ -447,7 +477,6 @@ export function ServiceCompletionDialog({
         ...serviceOverridePayload(),
         notes: [notes, deviceNotes ? `Device notes: ${deviceNotes}` : null].filter(Boolean).join("\n\n"),
         targetPests: targetPests.split(",").map((value) => value.trim()).filter(Boolean),
-        areasServiced: derivedAreas || null,
         conditionsFound,
         recommendations,
         followUpRequired,
@@ -481,14 +510,12 @@ export function ServiceCompletionDialog({
   const officeEditMutation = useMutation({
     mutationFn: async () => {
       if (!service || !existingServiceRecord) throw new Error("A posted ticket is required");
-      const derivedAreas = uniqueValues(materials.map((material) => material.applicationLocation)).join(", ");
       const response = await apiRequest("PATCH", `/api/service-records/${existingServiceRecord.id}`, {
         technicianId: technicianId || null,
         serviceDate,
         ...serviceOverridePayload(),
         notes: [notes, deviceNotes ? `Device notes: ${deviceNotes}` : null].filter(Boolean).join("\n\n"),
         targetPests: targetPests.split(",").map((value) => value.trim()).filter(Boolean),
-        areasServiced: derivedAreas || null,
         conditionsFound,
         recommendations,
         followUpRequired,
@@ -506,10 +533,10 @@ export function ServiceCompletionDialog({
     onError: (error: Error) => toast({ title: "Unable to save the ticket", description: getApiErrorMessage(error), variant: "destructive" }),
   });
 
-  const updateMaterial = (index: number, key: keyof MaterialLine, value: string) => {
+  const updateMaterial = <K extends keyof MaterialLine>(index: number, key: K, value: MaterialLine[K]) => {
     setMaterials((current) => current.map((material, currentIndex) => {
       if (currentIndex !== index) return material;
-      const next = { ...material, [key]: value };
+      const next = { ...material, [key]: value } as MaterialLine;
       const selectedProduct = materialProducts?.find((product) => product.id === next.materialProductId);
       const dilution = parseDilutionOptions(selectedProduct?.dilutionOptions).find((option) => option.label === next.dilutionLabel);
       return {
@@ -550,7 +577,7 @@ export function ServiceCompletionDialog({
         unit: product.defaultUnit || material.unit || "",
         applicationMethod: product.defaultApplicationMethod || "",
         device: product.defaultEquipment || "",
-        applicationLocation: product.defaultApplicationArea || "",
+        applicationAreas: product.defaultApplicationArea ? [product.defaultApplicationArea] : [],
       };
       return {
         ...next,
@@ -743,7 +770,7 @@ export function ServiceCompletionDialog({
               <div className="flex items-center justify-between">
                 <div>
                   <Label>Structured Materials / Chemicals</Label>
-                  <p className="text-xs text-muted-foreground">Areas serviced are derived from application areas.</p>
+                  <p className="text-xs text-muted-foreground">Areas serviced are derived from every row's application areas when the ticket is saved.</p>
                 </div>
                 <Button type="button" variant="outline" size="sm" onClick={() => setMaterials((current) => [emptyMaterial(), ...current])}>
                   Add Material
@@ -754,7 +781,13 @@ export function ServiceCompletionDialog({
                 const dilutionOptions = parseDilutionOptions(selectedProduct?.dilutionOptions);
                 const methodOptions = uniqueValues(selectedProduct?.allowedApplicationMethods ?? []);
                 const equipmentOptions = uniqueValues(selectedProduct?.allowedEquipment ?? []);
-                const areaOptions = uniqueValues(selectedProduct?.allowedApplicationAreas ?? []);
+                // Pass 20: the product's allowed areas, or the org's list when it names none.
+                const productAreaOptions = uniqueValues(selectedProduct?.allowedApplicationAreas ?? []);
+                const areaOptions = productAreaOptions.length ? productAreaOptions : orgAreaOptions;
+                // The Unit dropdown's value: the list's spelling of the row's unit, or the
+                // row's own off-list unit, offered as an extra option so it is never dropped.
+                const unitOnList = matchListEntry(unitOptions, material.unit);
+                const unitValue = unitOnList ?? (material.unit.trim() ? material.unit : "NONE");
 
                 return (
                   <div key={material.key || index} className="space-y-3 rounded-lg border p-3">
@@ -763,7 +796,7 @@ export function ServiceCompletionDialog({
                         <span>
                           <span className="block font-medium">{material.productName || "Material"}</span>
                           <span className="block text-xs text-muted-foreground">
-                            {[material.amountApplied && `${material.amountApplied} ${material.unit}`.trim(), material.dilutionLabel, material.applicationLocation, material.activeIngredientAmount && `AI ${material.activeIngredientAmount}`].filter(Boolean).join(" - ") || "Tap to edit"}
+                            {[material.amountApplied && `${material.amountApplied} ${material.unit}`.trim(), material.dilutionLabel, formatApplicationAreas(material), material.activeIngredientAmount && `AI ${material.activeIngredientAmount}`].filter(Boolean).join(" - ") || "Tap to edit"}
                           </span>
                         </span>
                         <span className="text-xs text-primary">Edit</span>
@@ -818,7 +851,14 @@ export function ServiceCompletionDialog({
                       </div>
                       <div className="space-y-1.5">
                         <Label>Unit</Label>
-                        <Input value={material.unit} onChange={(event) => updateMaterial(index, "unit", event.target.value)} placeholder="oz, gal, lb" />
+                        <Select value={unitValue} onValueChange={(value) => updateMaterial(index, "unit", value === "NONE" ? "" : value)}>
+                          <SelectTrigger data-testid={`select-material-unit-${index}`}><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="NONE">No unit</SelectItem>
+                            {unitOptions.map((value) => <SelectItem key={value} value={value}>{value}</SelectItem>)}
+                            {!unitOnList && material.unit.trim() ? <SelectItem value={material.unit}>{material.unit} (not on the unit list)</SelectItem> : null}
+                          </SelectContent>
+                        </Select>
                       </div>
                       <div className="space-y-1.5">
                         <Label>Application Method</Label>
@@ -845,16 +885,17 @@ export function ServiceCompletionDialog({
                         ) : <Input value={material.device} onChange={(event) => updateMaterial(index, "device", event.target.value)} />}
                       </div>
                       <div className="space-y-1.5">
-                        <Label>Application Area</Label>
-                        {areaOptions.length ? (
-                          <Select value={material.applicationLocation || "NONE"} onValueChange={(value) => updateMaterial(index, "applicationLocation", value === "NONE" ? "" : value)}>
-                            <SelectTrigger><SelectValue /></SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="NONE">Select area</SelectItem>
-                              {areaOptions.map((value) => <SelectItem key={value} value={value}>{value}</SelectItem>)}
-                            </SelectContent>
-                          </Select>
-                        ) : <Input value={material.applicationLocation} onChange={(event) => updateMaterial(index, "applicationLocation", event.target.value)} />}
+                        <Label>Application Areas</Label>
+                        <ListMultiSelect
+                          options={areaOptions}
+                          value={material.applicationAreas}
+                          onChange={(areas) => updateMaterial(index, "applicationAreas", areas)}
+                          placeholder="Select areas"
+                          searchPlaceholder="Search areas"
+                          offListCaption={productAreaOptions.length ? "not among this product's areas" : "not on the area list"}
+                          testId={`multiselect-material-areas-${index}`}
+                        />
+                        <p className="text-xs text-muted-foreground">{productAreaOptions.length ? "This product's allowed areas." : "The company's application areas (Settings)."}</p>
                       </div>
                       <div className="space-y-1.5">
                         <Label>Active Ingredient Applied</Label>

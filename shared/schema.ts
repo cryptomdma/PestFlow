@@ -626,6 +626,15 @@ export const productApplications = pgTable("product_applications", {
   activeIngredientAmount: text("active_ingredient_amount"),
   applicationMethod: text("application_method"),
   device: text("device"),
+  // Pass 20 (PLAN_ROADMAP_V2.md C3.4a): the areas a product went on, as a
+  // list - the product's allowed areas, or the org's application_areas
+  // settings list when the product names none (shared/material-lists.ts).
+  // A value off the list is kept, never refused. service_records.areasServiced
+  // derives from every row's list. Target pests per row are C3.4b's.
+  applicationAreas: text("application_areas").array(),
+  // TRANSITIONAL (dev rule 4): the single area rows carried before Pass 20.
+  // Written as the first entry of applicationAreas since; read only by
+  // surfaces that predate the list. C3.4b (Pass 21) decides its fate.
   applicationLocation: text("application_location"),
   notes: text("notes"),
 });
