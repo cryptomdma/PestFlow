@@ -48,7 +48,12 @@ export type AuditEntityType =
  *  `appointment_cancelled` / `appointment_rescheduled` (Pass 27, C4.2): the
  *  two modes of the one disposition path - the same CANCELED row shape, the
  *  flag telling them apart, the services requeued or cancelled and the
- *  opportunity choice in the after snapshot's `disposition`. */
+ *  opportunity choice in the after snapshot's `disposition`.
+ *  `surcharge_recorded` (Pass 23, C3.6): the field surcharge line on a ticket
+ *  was recorded, changed or removed by a post or an office edit - a money
+ *  mutation of its own beside the content's `ticket_edited`. The snapshots
+ *  are the two surcharge fields only ({ surchargeCents, surchargeLabel }),
+ *  both null before a first post, so the diff shows exactly what moved. */
 export type AuditAction =
   | "update"
   | "invoice_drafted"
@@ -70,7 +75,8 @@ export type AuditAction =
   | "ticket_edited"
   | "prefinalization_issue_override"
   | "appointment_cancelled"
-  | "appointment_rescheduled";
+  | "appointment_rescheduled"
+  | "surcharge_recorded";
 
 const ENTITY_TYPE_LABELS: Record<AuditEntityType, string> = {
   customer: "Customer",
@@ -108,6 +114,7 @@ const ACTION_LABELS: Record<AuditAction, string> = {
   prefinalization_issue_override: "Issued before finalization",
   appointment_cancelled: "Appointment cancelled",
   appointment_rescheduled: "Appointment rescheduled",
+  surcharge_recorded: "Surcharge recorded",
 };
 
 // Both take plain strings, not the unions: they render rows already in the

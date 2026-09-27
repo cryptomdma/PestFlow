@@ -283,10 +283,14 @@ export const billingPlans = pgTable("billing_plans", {
   // it is a term of one sale and lives on agreements / agreement_templates
   // (PLAN_BILLING_V1_1.md D4, owner correction; shared/initial-charge.ts).
   // What stays is how that charge interacts with this plan's cadence: does
-  // the up-front money buy period 1, and may the technician add a surcharge
-  // in the field. The moved columns were dropped by agreement-bootstrap.ts.
+  // the up-front money buy period 1. The moved columns were dropped by
+  // agreement-bootstrap.ts, as was `field_addable_surcharge` in Pass 23
+  // (C3.6): whether the technician may add a surcharge in the field is the
+  // agreement template's toggle (agreementTemplates.fieldSurchargeAllowed),
+  // never a plan's - a plan is shared by every agreement on it and had no
+  // reader for the flag. Snapshots written before Pass 23 keep the old key
+  // as frozen history; nothing reads it.
   initialChargeCoversFirstPeriod: boolean("initial_charge_covers_first_period").notNull().default(false),
-  fieldAddableSurcharge: boolean("field_addable_surcharge").notNull().default(false),
 
   sortOrder: integer("sort_order"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
@@ -349,12 +353,15 @@ export const agreements = pgTable("agreements", {
   // from THIS contract price, so it belongs here and not on the shared Billing
   // Plan (PLAN_BILLING_V1_1.md D4, owner correction). Vocabulary, invariants
   // and the amount resolver are in shared/initial-charge.ts:
-  //   type            null = no initial charge | DOWN_PAYMENT | CLEANOUT_SURCHARGE | PREPAY_FULL
+  //   type            null = no initial charge | DOWN_PAYMENT (CLEANOUT_SURCHARGE and
+  //                   PREPAY_FULL left in Pass 23, C3.6: a cleanout surcharge is a
+  //                   ticket line - serviceRecords.surchargeCents - and paid-in-full
+  //                   is a PREPAID_TERM billing plan)
   //   amountMode      FLAT (initialChargeCents) | PERCENT_OF_PRICE (initialChargePercentBasisPoints of priceCents)
   //   collectedBy     who MAY collect - null = either role | OFFICE_AT_SIGNING | TECH_AT_FIRST_SERVICE.
-  //                   A permission, not a record of who did: production-value
-  //                   credit for the charge is only inferred from it when the
-  //                   technician is the sole permitted collector.
+  //                   A permission, not a record of who did, and since Pass 23 it
+  //                   infers no credit: the SURCHARGE production credit keys off
+  //                   the recorded ticket line.
   initialChargeType: text("initial_charge_type"),
   initialChargeAmountMode: text("initial_charge_amount_mode"),
   initialChargeCents: integer("initial_charge_cents"),
@@ -452,6 +459,15 @@ export const agreementTemplates = pgTable("agreement_templates", {
   defaultInitialChargePercentBasisPoints: integer("default_initial_charge_percent_basis_points"),
   defaultInitialChargeCollectedBy: text("default_initial_charge_collected_by"),
   defaultInitialChargeInAdditionToPrice: boolean("default_initial_charge_in_addition_to_price").notNull().default(false),
+  // Pass 23 (PLAN_ROADMAP_V2.md C3.6; owner, 2026-09-13): may the technician
+  // add a surcharge on the ticket of a service under an agreement made from
+  // this template? The template holds only this allow / reject toggle - the
+  // surcharge itself is never a template default, it is charged at the visit
+  // for what scheduling could not see (shared/field-surcharge.ts). Moved
+  // here from billing_plans.field_addable_surcharge, which had no reader; an
+  // agreement reads it through its template (agreements.agreementTemplateId),
+  // so flipping it here applies to every agreement on the template at once.
+  fieldSurchargeAllowed: boolean("field_surcharge_allowed").notNull().default(false),
   defaultInstructions: text("default_instructions"),
   sortOrder: integer("sort_order"),
   internalCode: text("internal_code"),
@@ -483,6 +499,19 @@ export const serviceRecords = pgTable("service_records", {
   followUpRequired: boolean("follow_up_required").notNull().default(false),
   followUpNotes: text("follow_up_notes"),
   customerSignature: boolean("customer_signature").default(false),
+  // Pass 23 (PLAN_ROADMAP_V2.md C3.6): the field surcharge line - an amount
+  // the technician (or the office's edit) records on the ticket for what
+  // scheduling could not see, with a short label defaulting to "Cleanout
+  // surcharge" (shared/field-surcharge.ts normalizes both: no amount means
+  // no label). It is the ticket's CONTENT, not the Service's price (D6): the
+  // visit invoice carries it as its own SURCHARGE line beside the service
+  // line, taxed the same way, never counted toward the contract price and
+  // never "covered"; finalization credits it to the posting technician as a
+  // basis SURCHARGE production entry (transitional, SURCHARGE_CREDIT_RULE);
+  // every post or edit that records, changes or removes it writes
+  // `surcharge_recorded` (D7). Null on every ticket from before Pass 23.
+  surchargeCents: integer("surcharge_cents"),
+  surchargeLabel: text("surcharge_label"),
   confirmed: boolean("confirmed").default(false),
   // OFFICE_REVIEW_PENDING | FLAGGED_FOR_REVIEW | FINALIZED | REOPENED.
   // FLAGGED_FOR_REVIEW (PLAN_BILLING_V1_1.md D3) is "pending review, and the
@@ -845,8 +874,10 @@ export const payments = pgTable("payments", {
   // yesterday). createdAt is when it was recorded.
   receivedAt: timestamp("received_at").notNull(),
   // Who recorded the collection - the session actor, never client-supplied.
-  // This is the recorded collection event D4 says credit must key off once
-  // the field-surcharge unit replaces the collector-permission inference.
+  // The recorded collection event of D4. (The SURCHARGE production credit
+  // keys off the surcharge line recorded on the ticket since Pass 23, not
+  // off who collected: production is earned by doing the work, whoever
+  // banks the money - D4 item 3.)
   collectedByUserId: varchar("collected_by_user_id"),
   collectedByLabel: text("collected_by_label"),
   confirmedByUserId: varchar("confirmed_by_user_id"),
@@ -946,9 +977,14 @@ export const invoiceLineItems = pgTable("invoice_line_items", {
   // not-chargeable line for work the agreement's billing plan already bills
   // through the nightly run: always $0 and non-taxable, structurally distinct
   // from a chargeable line so it can never drift into one and double-bill.
-  // INITIAL_CHARGE (D4) is the agreement's down payment / cleanout surcharge /
-  // prepayment issued as a receivable at agreement start; its description is
-  // the initialChargeType's label.
+  // INITIAL_CHARGE (D4) is the agreement's down payment - on the first visit's
+  // invoice (Pass 11d) or issued up front from the agreement card; its
+  // description is the initialChargeType's label plus the agreement's name.
+  // SURCHARGE (Pass 23, C3.6) is the field surcharge the technician recorded
+  // on a ticket (serviceRecords.surchargeCents): one line per such ticket,
+  // "<label> - <service type> - <date>", carrying the ticket's serviceId and
+  // serviceRecordId beside its SERVICE / AGREEMENT_COVERED line, taxed as a
+  // SERVICE line is, chargeable even on a covered visit.
   lineType: text("line_type").notNull().default("ADJUSTMENT"),
   description: text("description").notNull(),
   quantity: integer("quantity").notNull().default(1),
@@ -1043,7 +1079,13 @@ export const productionValueEntries = pgTable("production_value_entries", {
   technicianName: text("technician_name"),
   agreementId: varchar("agreement_id").references(() => agreements.id),
   serviceTypeId: varchar("service_type_id").references(() => serviceTypes.id),
-  // SCHEDULED_AGREEMENT_SERVICE | ONE_TIME_SERVICE | CALLBACK | SURCHARGE
+  // SCHEDULED_AGREEMENT_SERVICE | ONE_TIME_SERVICE | CALLBACK | SURCHARGE.
+  // SURCHARGE (Pass 23, C3.6) is the separate, additive credit for the field
+  // surcharge line recorded on the ticket (serviceRecords.surchargeCents):
+  // one per ticket beside its main entry, the posting technician's, its
+  // amount the surcharge's - TRANSITIONAL until Phase 7's per-plan selector
+  // (shared/field-surcharge.ts SURCHARGE_CREDIT_RULE). The four rows from
+  // before Pass 23 (unit 15's collector inference) stand as history.
   basis: text("basis").notNull(),
   productionValueCents: integer("production_value_cents").notNull(),
   contractPriceCentsSnapshot: integer("contract_price_cents_snapshot"),

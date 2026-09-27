@@ -18,6 +18,7 @@ import {
   type BatchGenerateResult,
   type BatchInvoicePreview,
   type BatchInvoicePreviewTicket,
+  batchChargeKey,
 } from "@shared/batch-invoice";
 import type { Customer, Location, ServiceType, Technician } from "@shared/schema";
 import { FileStack, Send } from "lucide-react";
@@ -276,7 +277,7 @@ export function BatchInvoiceDialog({
                                   );
                                 })}
                                 {visit.charges.map((charge) => (
-                                  <div key={charge.agreementId} className="flex items-center justify-between gap-3 pl-3 text-xs" data-testid={`batch-charge-${charge.agreementId}`}>
+                                  <div key={batchChargeKey(charge)} className="flex items-center justify-between gap-3 pl-3 text-xs" data-testid={`batch-charge-${batchChargeKey(charge)}`}>
                                     <span className="min-w-0 truncate">
                                       {charge.description} <span className="text-muted-foreground">- billed on this visit's invoice</span>
                                     </span>

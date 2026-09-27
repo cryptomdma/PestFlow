@@ -148,5 +148,8 @@ export interface ServiceReportDocumentContext {
   followUpNotes: string | null;
   /** Whether the ticket records a customer signature; the report prints a signature line either way and says which. */
   customerSignature: boolean;
+  /** Pass 23 (C3.6): the field surcharge recorded on the ticket - amount and label - or null when none. Printed in the Service section. */
+  surchargeCents: number | null;
+  surchargeLabel: string | null;
   branding: InvoiceDocumentBranding;
 }

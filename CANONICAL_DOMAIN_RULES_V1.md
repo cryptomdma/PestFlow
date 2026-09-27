@@ -948,6 +948,30 @@ The invoice and the service report are separate documents (owner, 2026-09-19): t
 toggle "Attach service report to visit invoices" appends a visit's reports to its invoice PDF
 (§13), and neither replaces the other.
 
+### Canonical rule — the field surcharge line (PLAN_ROADMAP_V2.md C3.6; owner 2026-09-13; Pass 23)
+
+A **field surcharge** is a charge the technician records on the Service Ticket at the visit for
+what scheduling could not see (a larger home, conducive conditions). It is **not a term of the
+sale**: no Agreement or Agreement Template holds a surcharge default, only the template's toggle of
+whether the technician may add one (`fieldSurchargeAllowed`), read through the Agreement's template
+so a flip applies to every agreement on it. It is the **ticket's content** (`surchargeCents`,
+`surchargeLabel`, the label defaulting to "Cleanout surcharge"; no amount means no label): the post
+writes it whole, the office edit changes it, `ticket_edited` snapshots it, the service report prints
+it. It is **never the Service's price** (PLAN_BILLING_V1.1 D6): the visit Invoice carries it as its
+own `SURCHARGE` line beside the ticket's service line ("<label> - <service type> - <date>"), taxed as
+a `SERVICE` line is, never counted toward the contract price, chargeable even when the service
+itself is covered - a covered visit with a surcharge is never "No Charge". Recording, changing or
+removing one needs `ADD_FIELD_SURCHARGE` and, when adding to an agreement service, the template's
+toggle - refused with a code before anything is written, by one rule the server and the ticket
+dialog share; a non-agreement service needs the permission alone; an unchanged surcharge is never
+re-gated. Every change is a money mutation logged as `surcharge_recorded` (§17) beside the content's
+`ticket_edited`. The visit's figures (§13, D6) price it as a BILLABLE charge the technician collects
+with the service, and the unposted amount is priced by the read as the price is (Pass 19).
+**Production credit - transitional (development rule 4):** when a ticket carrying a surcharge is
+finalized, one basis `SURCHARGE` production entry credits the posting technician with the amount,
+once per ticket, standing in for a comp plan that answers "yes" until Phase 7's per-plan selector;
+it keys off the recorded line, never off who collected (D4 item 3).
+
 ### Materials support
 
 Materials should be modeled as child records, not stuffed into one field.
@@ -1110,8 +1134,10 @@ chosen over the silent one. An Agreement with no price refuses to invoice rather
 
 ### Canonical rule — the initial charge is a term of the Agreement, not of the Billing Plan (PLAN_BILLING_V1.1 D4)
 
-* A down payment, cleanout surcharge, or prepay-in-full owed at agreement start is a term of **one
-  sale**, derived from **that** Agreement's contract price. It lives on the Agreement
+* A down payment owed at agreement start - the one initial-charge type since Pass 23 (C3.6): a
+  cleanout surcharge is a ticket line (§12, the field surcharge line) and paid-in-full is a
+  `PREPAID_TERM` billing plan - is a term of **one sale**, derived from **that** Agreement's
+  contract price. It lives on the Agreement
   (`initialChargeType`, an amount mode of flat cents or percent of price, `initialChargeCollectedBy`),
   with the Agreement Template carrying the default — exactly the `defaultPriceCents` → `priceCents`
   relationship. The block moves as one: a sale's type with a template's amount describes nothing.
@@ -1124,16 +1150,17 @@ chosen over the silent one. An Agreement with no price refuses to invoice rather
   VOID; a voided invoice makes it non-live, so the deposit rides the corrected Invoice and the event
   is re-pointed, never duplicated. Nothing is issued at agreement creation. The explicit "issue up
   front" path on the agreement card is a standalone Invoice for a deposit the customer pays before
-  the visit, and the only path for the other charge types; it is refused once the charge is live
-  anywhere.
+  the visit; it is refused once the charge is live anywhere.
 * A down payment **counts toward the contract price** by default ($400 agreement, $100 down, $300
   remains); "in addition to" is an explicit exception (D4 owner review, built with the remaining-price
   arithmetic in Pass 6). Only a *surcharge* is inherently additional, and a surcharge is not a term of the sale at
   all: the technician charges it at the initial service for what scheduling could not see. The
-  template holds only whether the technician may (the field-surcharge unit).
+  template holds only whether the technician may (`fieldSurchargeAllowed`; the field surcharge
+  line, §12, Pass 23).
 * The Billing Plan says how and when a customer is charged and is shared by every agreement on it. It
   keeps only what concerns its cadence — `initialChargeCoversFirstPeriod` (does the up-front money buy
-  period 1) and, until it moves to the template, `fieldAddableSurcharge`. A plan never carries an
+  period 1); whether the technician may add a surcharge in the field is the Agreement Template's,
+  never a plan's (`fieldAddableSurcharge` was dropped in Pass 23). A plan never carries an
   amount. Paid-in-full is a plan arrangement: `PREPAID_TERM` bills the whole contract price once at
   start, for any term length, and every visit is a $0 covered line.
 * `initialChargeCollectedBy` is **who may collect**, never who did. Null means either role may. Its
@@ -1143,10 +1170,9 @@ chosen over the silent one. An Agreement with no price refuses to invoice rather
   Payment designated to the Agreement (§14), offered first when the first visit's Invoice is issued.
   It never affects per-service production value (contract price ÷ expected visits, no production on
   callbacks), which is independent of collection and of any balance due; comp plans decide payout.
-  The only thing inferred from it is the *separate* SURCHARGE credit for a technician-collected
-  cleanout surcharge, given only when the technician is the *sole* permitted collector, until the
-  surcharge is a recorded ticket line. A withheld credit is the visible failure; a wrong one is silent
-  and gets paid.
+  Nothing is inferred from it since Pass 23: the *separate* SURCHARGE credit keys off the surcharge
+  line recorded on the ticket (§12), never off who may collect. A withheld credit is the visible
+  failure; a wrong one is silent and gets paid.
 * The amount is resolved through one shared resolver (`resolveInitialChargeCents()` in
   `shared/initial-charge.ts`) wherever it is shown, credited, or invoiced. A percent of a price that is
   not set resolves to nothing — never to $0.

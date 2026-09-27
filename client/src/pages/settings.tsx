@@ -489,7 +489,6 @@ function BillingPlanForm({ plan, onClose }: { plan?: BillingPlan | null; onClose
     anchorDay: plan?.anchorDay != null ? String(plan.anchorDay) : "",
     prorationRule: plan?.prorationRule ?? "NONE",
     initialChargeCoversFirstPeriod: plan?.initialChargeCoversFirstPeriod ?? false,
-    fieldAddableSurcharge: plan?.fieldAddableSurcharge ?? false,
     isActive: plan?.isActive ?? true,
     sortOrder: plan?.sortOrder !== null && plan?.sortOrder !== undefined ? String(plan.sortOrder) : "0",
   });
@@ -508,7 +507,6 @@ function BillingPlanForm({ plan, onClose }: { plan?: BillingPlan | null; onClose
         anchorDay: data.anchorMode === "CALENDAR_DAY" ? (data.anchorDay.trim() ? parseInt(data.anchorDay, 10) : null) : null,
         prorationRule: data.prorationRule,
         initialChargeCoversFirstPeriod: data.initialChargeCoversFirstPeriod,
-        fieldAddableSurcharge: data.fieldAddableSurcharge,
         isActive: data.isActive,
         sortOrder: data.sortOrder.trim() ? parseInt(data.sortOrder, 10) : 0,
       };
@@ -605,12 +603,9 @@ function BillingPlanForm({ plan, onClose }: { plan?: BillingPlan | null; onClose
       </div>
       <div className="space-y-1.5">
         <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.initialChargeCoversFirstPeriod} onChange={(e) => setForm((p) => ({ ...p, initialChargeCoversFirstPeriod: e.target.checked }))} /> An agreement's initial charge covers its first period (no double-bill)</label>
-        <p className="text-xs text-muted-foreground">The initial charge itself (down payment, cleanout surcharge, amount, who may collect) is set per sale on the agreement and agreement template next to Price, not here. This only decides whether that money buys period 1 of this plan's schedule.</p>
+        <p className="text-xs text-muted-foreground">The initial charge itself (a down payment, its amount, who may collect) is set per sale on the agreement and agreement template next to Price, not here, and whether the technician may add a surcharge in the field is the agreement template's toggle. This only decides whether that money buys period 1 of this plan's schedule.</p>
       </div>
-      <div className="grid gap-3 sm:grid-cols-2">
-        <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.fieldAddableSurcharge} onChange={(e) => setForm((p) => ({ ...p, fieldAddableSurcharge: e.target.checked }))} /> Tech may add surcharge in field</label>
-        <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.isActive} onChange={(e) => setForm((p) => ({ ...p, isActive: e.target.checked }))} /> Active</label>
-      </div>
+      <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.isActive} onChange={(e) => setForm((p) => ({ ...p, isActive: e.target.checked }))} /> Active</label>
       <div className="space-y-1.5"><Label>Sort Order</Label><Input type="number" value={form.sortOrder} onChange={(e) => setForm((p) => ({ ...p, sortOrder: e.target.value }))} /></div>
       <div className="flex justify-end gap-2"><Button type="button" variant="outline" onClick={onClose}>Cancel</Button><Button type="submit" disabled={mutation.isPending || !form.name.trim()}>{mutation.isPending ? "Saving..." : isEditMode ? "Save Plan" : "Create Plan"}</Button></div>
     </form>
@@ -1131,6 +1126,7 @@ function AgreementTemplateForm({
     defaultDurationMinutes: template?.defaultDurationMinutes ? String(template.defaultDurationMinutes) : "",
     defaultPrice: template?.defaultPriceCents != null ? centsToDollarString(template.defaultPriceCents) : "",
     initialCharge: initialChargeFormStateFrom(initialChargeFromTemplate(template)),
+    fieldSurchargeAllowed: template?.fieldSurchargeAllowed ?? false,
     defaultInstructions: template?.defaultInstructions ?? "",
     sortOrder: template?.sortOrder ? String(template.sortOrder) : "",
     internalCode: template?.internalCode ?? "",
@@ -1168,6 +1164,7 @@ function AgreementTemplateForm({
         defaultDurationMinutes: data.defaultDurationMinutes.trim() ? parseInt(data.defaultDurationMinutes, 10) : null,
         defaultPriceCents: dollarsToCents(data.defaultPrice),
         ...initialChargeToTemplate(initialChargeFieldsFrom(data.initialCharge)),
+        fieldSurchargeAllowed: data.fieldSurchargeAllowed,
         defaultInstructions: data.defaultInstructions.trim() || null,
         sortOrder: data.sortOrder.trim() ? parseInt(data.sortOrder, 10) : null,
         internalCode: data.internalCode.trim() || null,
@@ -1323,6 +1320,16 @@ function AgreementTemplateForm({
         labelPrefix="Default "
         testIdPrefix="template"
       />
+      {/* Pass 23 (C3.6): the allow / reject toggle for the field surcharge line - the template holds only whether the technician may. */}
+      <div className="rounded-md border px-3 py-2" data-testid="block-template-field-surcharge">
+        <label className="flex items-start gap-2 text-sm">
+          <input type="checkbox" className="mt-1" checked={form.fieldSurchargeAllowed} onChange={(e) => setForm((prev) => ({ ...prev, fieldSurchargeAllowed: e.target.checked }))} data-testid="checkbox-template-field-surcharge" />
+          <span>
+            Technician may add a surcharge in the field
+            <span className="block text-xs font-normal text-muted-foreground">A cleanout surcharge is not a term of the sale: the technician records it on the ticket at the visit for what scheduling could not see, and it bills as its own line on the visit invoice in addition to the contract price. This only says whether the technician may; it applies to every agreement made from this template, existing ones included.</span>
+          </span>
+        </label>
+      </div>
       <div className="space-y-1.5"><Label>Default Instructions</Label><Textarea value={form.defaultInstructions} onChange={(e) => setForm((prev) => ({ ...prev, defaultInstructions: e.target.value }))} className="resize-none" /></div>
       <div className="space-y-1">
         <h3 className="text-sm font-semibold">Template Metadata</h3>
@@ -2193,6 +2200,9 @@ export default function Settings() {
                           Cancellation: {cancellationPolicy ? `${cancellationPolicy.name} (${formatCancellationFee(cancellationPolicy)})` : "No policy assigned"}
                         </p>
                         {initialChargeSummary && <p className="text-xs text-muted-foreground mt-0.5">Initial charge default - {initialChargeSummary}</p>}
+                        <p className="text-xs text-muted-foreground mt-0.5" data-testid={`text-template-field-surcharge-${template.id}`}>
+                          Field surcharge: {template.fieldSurchargeAllowed ? "the technician may add one on the ticket" : "not allowed"}
+                        </p>
                         {template.description && <p className="text-xs text-muted-foreground mt-1">{template.description}</p>}
                       </div>
                       <div className="flex items-center gap-3 shrink-0">

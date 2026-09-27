@@ -20,7 +20,8 @@ import { computeProductionValueCents } from "@shared/production-value";
 import { describeTicketLifecycle } from "@shared/ticket-status";
 import { applicationAreasOf, deriveTicketTargetPests, formatApplicationAreas, formatTargetPests, matchListEntry, targetPestsOf } from "@shared/material-lists";
 import { ListMultiSelect } from "@/components/list-multi-select";
-import type { Agreement, Appointment, CustomerNote, MaterialProduct, ProductApplication, Service, ServiceRecord, ServiceType, TargetPest, Technician } from "@shared/schema";
+import { DEFAULT_SURCHARGE_LABEL, MAX_SURCHARGE_LABEL_LENGTH, resolveFieldSurchargeGate, surchargeOf } from "@shared/field-surcharge";
+import type { Agreement, AgreementTemplate, Appointment, CustomerNote, MaterialProduct, ProductApplication, Service, ServiceRecord, ServiceType, TargetPest, Technician } from "@shared/schema";
 
 // A material row as the dialog edits it. Pass 20 (C3.4a): `unit` picks from
 // the org's unit list and `applicationAreas` from the product's allowed areas
@@ -228,6 +229,12 @@ export function ServiceCompletionDialog({
   // set when the technician leaves the box - so the billing block and the
   // collect step re-read at the draft price on blur, never on every keystroke.
   const [committedPrice, setCommittedPrice] = useState("");
+  // Pass 23 (C3.6): the field surcharge line - the amount as typed, the
+  // amount as last committed (the billing read prices it on blur, as the
+  // price), and its label (empty = "Cleanout surcharge").
+  const [surchargeAmount, setSurchargeAmount] = useState("");
+  const [committedSurcharge, setCommittedSurcharge] = useState("");
+  const [surchargeLabel, setSurchargeLabel] = useState("");
   // D8: finish -> collect -> post. "Finish & Collect" opens the collection
   // step; "Post Service Ticket" lives there. Office finalization owns
   // "complete", so neither button says it.
@@ -250,6 +257,16 @@ export function ServiceCompletionDialog({
     queryKey: [`/api/agreements/${service?.agreementId}`],
     enabled: !!service?.agreementId,
   });
+  // Pass 23 (C3.6): the agreement's template, whose toggle says whether a
+  // surcharge may be added on this ticket - the same rows the server gates on.
+  const { data: agreementTemplates } = useQuery<AgreementTemplate[]>({
+    queryKey: ["/api/agreement-templates"],
+    enabled: open && !!service?.agreementId,
+  });
+  const agreementTemplate = useMemo(
+    () => (agreementTemplates ?? []).find((template) => template.id === agreement?.agreementTemplateId) ?? null,
+    [agreement?.agreementTemplateId, agreementTemplates],
+  );
   // Pass 19 (C3.3): D6's billing-plan pill on the ticket header for an
   // agreement service (the billing-profile display waits for C5.2).
   const { planById: billingPlanById, isLoading: billingPlansLoading } = useBillingPlanById(open && !!service?.agreementId);
@@ -287,6 +304,21 @@ export function ServiceCompletionDialog({
   const allowServiceOverride = !!service && (!isAgreementGeneratedService || can(user?.role ?? "", PERMISSIONS.ADJUST_PRICE_AGREEMENT));
   // The locked price / type caption: the office is told who may (dev rule 6).
   const agreementLockNote = isOfficeEdit ? `(agreement - ${rolesWithPermission(PERMISSIONS.ADJUST_PRICE_AGREEMENT).join(" or ")} only)` : "(agreement locked)";
+  // Pass 23 (C3.6): whether this user may add or change a surcharge here -
+  // the server's own gate (shared/field-surcharge.ts), so the input is
+  // disabled with the very reason the post would refuse (development rule
+  // 6). While an agreement service's agreement and template are loading the
+  // input waits rather than guess.
+  const storedSurchargeCents = surchargeOf(existingServiceRecord).surchargeCents;
+  const surchargeGate = useMemo(() => {
+    if (!service) return null;
+    const waitingOnAgreement = isAgreementGeneratedService && !!service.agreementId && (!agreement || !agreementTemplates);
+    if (waitingOnAgreement) {
+      return { code: "LOADING" as const, message: "Checking whether the agreement's template allows a field surcharge..." };
+    }
+    return resolveFieldSurchargeGate({ actorRole: user?.role ?? "", isAgreementService: isAgreementGeneratedService, template: agreementTemplate, adding: true });
+  }, [agreement, agreementTemplate, agreementTemplates, isAgreementGeneratedService, service, user?.role]);
+  const surchargeLocked = !!surchargeGate;
   const computedProductionValueCents = useMemo(
     () => computeProductionValueCents(agreement?.priceCents, agreement?.expectedServiceCount),
     [agreement?.priceCents, agreement?.expectedServiceCount],
@@ -298,14 +330,26 @@ export function ServiceCompletionDialog({
   // the committed value differs from what is stored, and for an agreement
   // service never the computed default (which the post leaves unstamped).
   // Null means "the stored figures", the read as it was before this pass.
+  // Pass 23 (C3.6): the committed surcharge rides the same draft when it
+  // differs from the stored one (an emptied box previews as 0, the removal)
+  // and the gate allows - a disabled input never moves the figures.
   const draftPrice = useMemo<VisitBillingDraftPrice | null>(() => {
-    if (!service || !allowServiceOverride) return null;
-    const cents = dollarsToCents(committedPrice);
-    if (cents == null || cents < 0) return null;
-    if (cents === service.priceCents) return null;
-    if (isAgreementGeneratedService && cents === computedProductionValueCents) return null;
-    return { serviceId: service.id, priceCents: cents };
-  }, [allowServiceOverride, committedPrice, computedProductionValueCents, isAgreementGeneratedService, service]);
+    if (!service) return null;
+    const draft: VisitBillingDraftPrice = { serviceId: service.id };
+    if (allowServiceOverride) {
+      const cents = dollarsToCents(committedPrice);
+      if (cents != null && cents >= 0 && cents !== service.priceCents && !(isAgreementGeneratedService && cents === computedProductionValueCents)) {
+        draft.priceCents = cents;
+      }
+    }
+    if (!surchargeLocked) {
+      const surchargeCents = dollarsToCents(committedSurcharge) ?? 0;
+      if (surchargeCents >= 0 && surchargeCents !== (storedSurchargeCents ?? 0)) {
+        draft.surchargeCents = surchargeCents;
+      }
+    }
+    return draft.priceCents === undefined && draft.surchargeCents === undefined ? null : draft;
+  }, [allowServiceOverride, committedPrice, committedSurcharge, computedProductionValueCents, isAgreementGeneratedService, service, storedSurchargeCents, surchargeLocked]);
   const { data: visitBilling, isLoading: visitBillingLoading, isError: visitBillingError } = useVisitBillingSummary(open ? visitAppointmentId : null, draftPrice);
   const serviceBilling = visitBilling?.services.find((line) => line.serviceId === service?.id) ?? null;
   const targetPestOptions = useMemo(() => {
@@ -328,6 +372,9 @@ export function ServiceCompletionDialog({
     // with nothing touched sends what the ticket already holds.
     const nextTechnicianId = existingServiceRecord?.technicianId || (isOfficeEdit ? "" : defaultTechnicianId || service.assignedTechnicianId || appointment?.assignedTechnicianId || "");
     const nextServiceDate = formatDateTimeLocalValue(existingServiceRecord?.serviceDate ?? appointment?.scheduledDate ?? new Date());
+    // Pass 23: the ticket's surcharge as stored (an office edit, a re-post) seeds the boxes; a locked box keeps it, so a re-post never drops it silently.
+    const seededSurcharge = existingServiceRecord?.surchargeCents != null && existingServiceRecord.surchargeCents > 0 ? centsToDollarString(existingServiceRecord.surchargeCents) : "";
+    const seededSurchargeLabel = existingServiceRecord?.surchargeLabel ?? "";
     const cachedDraft = draftKey ? localStorage.getItem(draftKey) : null;
 
     if (cachedDraft) {
@@ -351,6 +398,11 @@ export function ServiceCompletionDialog({
         const restoredPrice: string = parsed.ticketPrice ?? (service.priceCents != null ? centsToDollarString(service.priceCents) : "");
         setTicketPrice(restoredPrice);
         setCommittedPrice(restoredPrice);
+        // A draft from before Pass 23 saved no surcharge; the stored one stands then.
+        const restoredSurcharge: string = typeof parsed.surchargeAmount === "string" ? parsed.surchargeAmount : seededSurcharge;
+        setSurchargeAmount(restoredSurcharge);
+        setCommittedSurcharge(restoredSurcharge);
+        setSurchargeLabel(typeof parsed.surchargeLabel === "string" ? parsed.surchargeLabel : seededSurchargeLabel);
         setMaterials(Array.isArray(parsed.materials) && parsed.materials.length ? parsed.materials.map(materialFromDraft) : [emptyMaterial()]);
         return;
       } catch {
@@ -373,6 +425,9 @@ export function ServiceCompletionDialog({
     const seededPrice = service.priceCents != null ? centsToDollarString(service.priceCents) : "";
     setTicketPrice(seededPrice);
     setCommittedPrice(seededPrice);
+    setSurchargeAmount(seededSurcharge);
+    setCommittedSurcharge(seededSurcharge);
+    setSurchargeLabel(seededSurchargeLabel);
     setMaterials(existingApplications.length ? existingApplications.map(materialFromApplication) : []);
   }, [appointment?.assignedTechnicianId, appointment?.scheduledDate, defaultTechnicianId, draftKey, existingApplications, existingServiceRecord, isOfficeEdit, open, service]);
 
@@ -404,10 +459,12 @@ export function ServiceCompletionDialog({
       deviceNotes,
       ticketServiceTypeId,
       ticketPrice,
+      surchargeAmount,
+      surchargeLabel,
       materials,
       savedAt: new Date().toISOString(),
     }));
-  }, [conditionsFound, deviceNotes, draftKey, followUpNotes, followUpRequired, materials, notes, open, recommendations, service, serviceDate, targetPests, technicianId, ticketPrice, ticketServiceTypeId]);
+  }, [conditionsFound, deviceNotes, draftKey, followUpNotes, followUpRequired, materials, notes, open, recommendations, service, serviceDate, surchargeAmount, surchargeLabel, targetPests, technicianId, ticketPrice, ticketServiceTypeId]);
 
   // The materials as the post and the office edit both send them (the
   // PATCH's replace-all list is the post's shape). Since Pass 20 the server
@@ -457,6 +514,25 @@ export function ServiceCompletionDialog({
     setCommittedPrice(formatted);
   };
 
+  // Pass 23 (C3.6): the same on leaving the surcharge box - dollars.cents,
+  // and the committed value the billing read prices from; an empty, zero or
+  // unparsable box commits as none.
+  const commitSurcharge = () => {
+    const cents = dollarsToCents(surchargeAmount);
+    const formatted = cents == null || cents <= 0 ? "" : centsToDollarString(cents);
+    if (formatted !== surchargeAmount) setSurchargeAmount(formatted);
+    setCommittedSurcharge(formatted);
+  };
+
+  // The surcharge as the post, the office edit and the report preview all
+  // send it: the boxes' values, which a locked box holds at what the ticket
+  // already carries - unchanged values pass the server's gate untouched, so a
+  // template toggled off later never drops a recorded surcharge silently.
+  const surchargePayload = () => ({
+    surchargeCents: dollarsToCents(surchargeAmount) ?? null,
+    surchargeLabel: surchargeLabel.trim() || null,
+  });
+
   // Pass 19 (C3.3): what the technician is told before the work - the
   // agreement's service instructions (defaulted from its template), the
   // service's own notes and the location's notes (pinned first, then newest,
@@ -498,6 +574,7 @@ export function ServiceCompletionDialog({
         technicianId: technicianId || null,
         serviceDate,
         ...serviceOverridePayload(),
+        ...surchargePayload(),
         notes: [notes, deviceNotes ? `Device notes: ${deviceNotes}` : null].filter(Boolean).join("\n\n"),
         targetPests,
         conditionsFound,
@@ -537,6 +614,7 @@ export function ServiceCompletionDialog({
         technicianId: technicianId || null,
         serviceDate,
         ...serviceOverridePayload(),
+        ...surchargePayload(),
         notes: [notes, deviceNotes ? `Device notes: ${deviceNotes}` : null].filter(Boolean).join("\n\n"),
         targetPests,
         conditionsFound,
@@ -572,6 +650,7 @@ export function ServiceCompletionDialog({
           technicianId: technicianId || null,
           serviceDate,
           serviceTypeId: allowServiceOverride ? ticketServiceTypeId || null : undefined,
+          ...surchargePayload(),
           notes: [notes, deviceNotes ? `Device notes: ${deviceNotes}` : null].filter(Boolean).join("\n\n"),
           targetPests,
           conditionsFound,
@@ -750,6 +829,25 @@ export function ServiceCompletionDialog({
                   <p className="text-xs text-muted-foreground">Agreement-covered: not billed on this visit. The default shown is the visit's production value.</p>
                 )}
               </div>
+            </div>
+
+            {/* Pass 23 (C3.6): the field surcharge line - its own BILLABLE line on the visit invoice, never folded
+                into the price (D6). Disabled with the reason, never hidden, when the template or the role forbids
+                it (development rule 6); a locked box still shows what the ticket carries. */}
+            <div className="grid gap-4 sm:grid-cols-2" data-testid="block-ticket-surcharge">
+              <div className="space-y-2">
+                <Label>Surcharge ($)</Label>
+                <Input type="number" inputMode="decimal" min="0" step="0.01" value={surchargeAmount} onChange={(event) => setSurchargeAmount(event.target.value)} onBlur={commitSurcharge} disabled={surchargeLocked} placeholder="0.00" data-testid="input-ticket-surcharge" />
+              </div>
+              <div className="space-y-2">
+                <Label>Surcharge Label</Label>
+                <Input value={surchargeLabel} onChange={(event) => setSurchargeLabel(event.target.value.slice(0, MAX_SURCHARGE_LABEL_LENGTH))} disabled={surchargeLocked} placeholder={DEFAULT_SURCHARGE_LABEL} data-testid="input-ticket-surcharge-label" />
+              </div>
+              <p className={`text-xs sm:col-span-2 ${surchargeGate ? "text-destructive" : "text-muted-foreground"}`} data-testid="text-ticket-surcharge-note">
+                {surchargeGate
+                  ? surchargeGate.message
+                  : "For what scheduling could not see (a larger home, conducive conditions). Charged in addition to the service as its own line on the visit invoice, taxed like the service; leave empty for none."}
+              </p>
             </div>
 
             <div className="space-y-2">

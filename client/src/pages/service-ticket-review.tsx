@@ -28,6 +28,7 @@ import { ServiceCompletionDialog } from "@/components/service-completion-dialog"
 import { ServiceReportActions } from "@/components/service-report-actions";
 import { resolveReviewNav, type ReviewNavStep } from "@/lib/review-queue-nav";
 import { formatCents } from "@shared/money";
+import { describeSurcharge } from "@shared/field-surcharge";
 import { can, PERMISSIONS, rolesWithPermission } from "@shared/permissions";
 import { REOPEN_REASON_OTHER, REOPEN_REASON_OTHER_LABEL, describeReopenReason, isOtherReopenReason, type ReopenTicketRequest } from "@shared/ticket-reopen";
 import { isTicketFinalized } from "@shared/ticket-status";
@@ -746,6 +747,10 @@ export default function ServiceTicketReview() {
                   <p className="text-xs uppercase tracking-wide text-muted-foreground">Billing Readiness</p>
                   <p className="mt-1 font-medium">{selectedRecord.readyForBilling ? "Ready for billing" : "Not billing-ready"}</p>
                   <p className="text-xs text-muted-foreground">Only finalized services are billing eligible.</p>
+                  {/* Pass 23 (C3.6): the field surcharge the ticket carries - its own line on the visit invoice. */}
+                  {describeSurcharge(selectedRecord) && (
+                    <p className="mt-1 text-sm" data-testid="text-review-surcharge">Surcharge: {describeSurcharge(selectedRecord)} - billed as its own line in addition to the service.</p>
+                  )}
                 </div>
               </div>
               <div className="grid gap-3 md:grid-cols-2">

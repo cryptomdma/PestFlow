@@ -19,6 +19,11 @@ export const PERMISSIONS = {
   REOPEN_TICKET_OTHER: "reopen_ticket_other",
   ADJUST_PRICE_NON_AGREEMENT: "adjust_price_non_agreement",
   ADJUST_PRICE_AGREEMENT: "adjust_price_agreement",
+  // PLAN_ROADMAP_V2.md C3.6 (Pass 23): record, change or remove the field
+  // surcharge line on a ticket (serviceRecords.surchargeCents) - the post and
+  // the office edit alike. Every role holds it today; for an agreement
+  // service the agreement template's toggle must allow it too
+  // (shared/field-surcharge.ts resolveFieldSurchargeGate).
   ADD_FIELD_SURCHARGE: "add_field_surcharge",
   GENERATE_INVOICE: "generate_invoice",
   // PLAN_BILLING_V1_1.md D3: issuing a DRAFT invoice while any ticket on its

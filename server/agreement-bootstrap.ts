@@ -40,7 +40,6 @@ export async function bootstrapAgreements(): Promise<void> {
       anchor_day integer,
       proration_rule text NOT NULL DEFAULT 'NONE',
       initial_charge_covers_first_period boolean NOT NULL DEFAULT false,
-      field_addable_surcharge boolean NOT NULL DEFAULT false,
       sort_order integer,
       created_at timestamp NOT NULL DEFAULT now(),
       updated_at timestamp NOT NULL DEFAULT now()
@@ -241,6 +240,10 @@ export async function bootstrapAgreements(): Promise<void> {
   //   createSurchargeEntryIfConfigured() no longer reads it.
   // - Only charges with a positive flat amount are carried; a type with no
   //   amount never fired anything and would fail validateInitialCharge().
+  // - Only a DOWN_PAYMENT is carried (narrowed in Pass 23, C3.6, when
+  //   CLEANOUT_SURCHARGE and PREPAY_FULL left the vocabulary): carrying
+  //   either forward only for the Pass 23 one-shot below to clear it again
+  //   would be a round trip to nowhere.
   // - The legacy plan columns are then dropped, exactly as money-bootstrap.ts
   //   drops its decimal columns once every read/write path has cut over.
   if (await columnExists("billing_plans", "initial_charge_type")) {
@@ -254,7 +257,7 @@ export async function bootstrapAgreements(): Promise<void> {
       FROM billing_plans p
       WHERE t.billing_plan_id = p.id
         AND t.default_initial_charge_type IS NULL
-        AND p.initial_charge_type IN ('DOWN_PAYMENT', 'CLEANOUT_SURCHARGE', 'PREPAY_FULL')
+        AND p.initial_charge_type = 'DOWN_PAYMENT'
         AND p.initial_charge_cents IS NOT NULL
         AND p.initial_charge_cents > 0
     `);
@@ -271,7 +274,7 @@ export async function bootstrapAgreements(): Promise<void> {
           END
       WHERE initial_charge_type IS NULL
         AND jsonb_typeof(billing_plan_snapshot) = 'object'
-        AND billing_plan_snapshot->>'initialChargeType' IN ('DOWN_PAYMENT', 'CLEANOUT_SURCHARGE', 'PREPAY_FULL')
+        AND billing_plan_snapshot->>'initialChargeType' = 'DOWN_PAYMENT'
         AND jsonb_typeof(billing_plan_snapshot->'initialChargeCents') = 'number'
         AND (billing_plan_snapshot->>'initialChargeCents')::integer > 0
     `);
@@ -453,6 +456,149 @@ export async function bootstrapAgreements(): Promise<void> {
         VALUES (${row.org_id}, ${row.id}, 'INITIAL_CHARGE', 'INITIAL_CHARGE', ${amountCents}, NULL)
       `);
     }
+  }
+
+  // Pass 23 (PLAN_ROADMAP_V2.md C3.6; owner, 2026-09-13): whether the
+  // technician may add a surcharge in the field is the AGREEMENT TEMPLATE's
+  // toggle, not the billing plan's - a plan is shared by every agreement on
+  // it, and billing_plans.field_addable_surcharge had no reader anywhere.
+  // The template column is added silently (idempotent); the one-shot below
+  // is keyed on the plan column still existing, so it runs once per database
+  // and can never match again after the drop. Each template's default is
+  // printed before it is written:
+  //   - its agreements' plans all agree on the flag -> that value (the flag
+  //     carried where it is unambiguous);
+  //   - it has no agreements -> its own default plan's flag (what its next
+  //     agreement would have been sold under, the Pass 5.5 template rule);
+  //   - its agreements' plans disagree -> off, the safe direction: a refused
+  //     surcharge is the visible failure, an unauthorized charge the silent
+  //     one. The office flips it under Settings, Agreement Templates.
+  // The agreements' billing_plan_snapshot JSON keeps its fieldAddableSurcharge
+  // key as frozen history, exactly as the Pass 5.5 keys were left; nothing
+  // reads it.
+  await db.execute(sql`ALTER TABLE agreement_templates ADD COLUMN IF NOT EXISTS field_surcharge_allowed boolean NOT NULL DEFAULT false`);
+  if (await columnExists("billing_plans", "field_addable_surcharge")) {
+    const templates = await db.execute(sql`
+      SELECT t.id, t.name,
+             (SELECT p.field_addable_surcharge FROM billing_plans p WHERE p.id = t.billing_plan_id) AS template_plan_flag,
+             (SELECT count(*)::int FROM agreements a WHERE a.agreement_template_id = t.id) AS agreement_count,
+             (SELECT count(DISTINCT p.field_addable_surcharge)::int FROM agreements a JOIN billing_plans p ON p.id = a.billing_plan_id WHERE a.agreement_template_id = t.id) AS distinct_flags,
+             (SELECT bool_or(p.field_addable_surcharge) FROM agreements a JOIN billing_plans p ON p.id = a.billing_plan_id WHERE a.agreement_template_id = t.id) AS any_flag,
+             (SELECT string_agg(DISTINCT p.name || ' (' || CASE WHEN p.field_addable_surcharge THEN 'on' ELSE 'off' END || ')', ', ')
+                FROM agreements a JOIN billing_plans p ON p.id = a.billing_plan_id WHERE a.agreement_template_id = t.id) AS plans
+      FROM agreement_templates t
+      ORDER BY t.name, t.id
+    `);
+    const rows = templates.rows as Array<{
+      id: string;
+      name: string;
+      template_plan_flag: boolean | null;
+      agreement_count: number;
+      distinct_flags: number;
+      any_flag: boolean | null;
+      plans: string | null;
+    }>;
+    console.log(
+      `[agreement-bootstrap] Pass 23 pre-migration report: billing_plans.field_addable_surcharge moves to ` +
+        `agreement_templates.field_surcharge_allowed (${rows.length} template(s)). Each template's default is printed before it ` +
+        `is written; the plan column is then dropped (the agreements' plan snapshots keep the old key as history).`,
+    );
+    for (const row of rows) {
+      let allowed: boolean;
+      let reason: string;
+      if (row.agreement_count === 0) {
+        allowed = row.template_plan_flag === true;
+        reason = `no agreements - its default plan's flag (${row.template_plan_flag == null ? "no default plan" : row.template_plan_flag ? "on" : "off"})`;
+      } else if (row.distinct_flags === 1) {
+        allowed = row.any_flag === true;
+        reason = `${row.agreement_count} agreement(s) on ${row.plans ?? "?"} - the plans agree`;
+      } else {
+        allowed = false;
+        reason = `${row.agreement_count} agreement(s) on ${row.plans ?? "?"} - the plans disagree, so off`;
+      }
+      console.log(`[agreement-bootstrap]   ${row.id}  "${row.name}"  field surcharge ${allowed ? "ALLOWED" : "not allowed"}  (${reason})`);
+      await db.execute(sql`UPDATE agreement_templates SET field_surcharge_allowed = ${allowed} WHERE id = ${row.id}`);
+    }
+    await db.execute(sql`ALTER TABLE billing_plans DROP COLUMN IF EXISTS field_addable_surcharge`);
+  }
+
+  // Pass 23 (C3.6): CLEANOUT_SURCHARGE and PREPAY_FULL left the initial-charge
+  // vocabulary (shared/initial-charge.ts) - a cleanout surcharge is a line
+  // the technician adds on the ticket, and paid-in-full is a PREPAID_TERM
+  // billing plan. A row still carrying either type becomes "no initial
+  // charge": the whole block is cleared, as normalizeInitialCharge() does for
+  // a type it does not know, so a stale amount cannot survive. Self-guarding:
+  // once cleared no row matches and nothing prints. A SURCHARGE production
+  // entry credited under the old inference (Unit 15 Ledger Test's $50.00)
+  // stands as history - the ledger is append-only and carries no adjustment
+  // vocabulary until Phase 7. The per-row effect is printed before the write.
+  const retiredAgreements = await db.execute(sql`
+    SELECT a.id, a.agreement_name, a.status, a.initial_charge_type, a.initial_charge_amount_mode,
+           a.initial_charge_cents, a.initial_charge_percent_basis_points,
+           l.name AS location_name, c.first_name, c.last_name, c.company_name
+    FROM agreements a
+    LEFT JOIN locations l ON l.id = a.location_id
+    LEFT JOIN customers c ON c.id = a.customer_id
+    WHERE a.initial_charge_type IN ('CLEANOUT_SURCHARGE', 'PREPAY_FULL')
+    ORDER BY a.initial_charge_type, a.agreement_name, a.id
+  `);
+  const retiredTemplates = await db.execute(sql`
+    SELECT id, name, default_initial_charge_type AS initial_charge_type, default_initial_charge_amount_mode AS initial_charge_amount_mode,
+           default_initial_charge_cents AS initial_charge_cents, default_initial_charge_percent_basis_points AS initial_charge_percent_basis_points
+    FROM agreement_templates
+    WHERE default_initial_charge_type IN ('CLEANOUT_SURCHARGE', 'PREPAY_FULL')
+    ORDER BY default_initial_charge_type, name, id
+  `);
+  type RetiredChargeRow = {
+    id: string;
+    initial_charge_type: string;
+    initial_charge_amount_mode: string | null;
+    initial_charge_cents: number | null;
+    initial_charge_percent_basis_points: number | null;
+  };
+  const retiredAgreementRows = retiredAgreements.rows as Array<RetiredChargeRow & {
+    agreement_name: string;
+    status: string;
+    location_name: string | null;
+    first_name: string | null;
+    last_name: string | null;
+    company_name: string | null;
+  }>;
+  const retiredTemplateRows = retiredTemplates.rows as Array<RetiredChargeRow & { name: string }>;
+  if (retiredAgreementRows.length || retiredTemplateRows.length) {
+    const describeAmount = (row: RetiredChargeRow) =>
+      row.initial_charge_amount_mode === "PERCENT_OF_PRICE"
+        ? `${(row.initial_charge_percent_basis_points ?? 0) / 100}% of price`
+        : `$${((row.initial_charge_cents ?? 0) / 100).toFixed(2)}`;
+    const countOf = (rows: RetiredChargeRow[], type: string) => rows.filter((row) => row.initial_charge_type === type).length;
+    console.log(
+      `[agreement-bootstrap] Pass 23 pre-migration report: the initial-charge types CLEANOUT_SURCHARGE and PREPAY_FULL left the vocabulary. ` +
+        `Agreements carrying one: CLEANOUT_SURCHARGE ${countOf(retiredAgreementRows, "CLEANOUT_SURCHARGE")}, PREPAY_FULL ${countOf(retiredAgreementRows, "PREPAY_FULL")}; ` +
+        `templates: CLEANOUT_SURCHARGE ${countOf(retiredTemplateRows, "CLEANOUT_SURCHARGE")}, PREPAY_FULL ${countOf(retiredTemplateRows, "PREPAY_FULL")}. ` +
+        `Each becomes "no initial charge" (the block cleared); a SURCHARGE production entry already credited stands as history.`,
+    );
+    for (const row of retiredAgreementRows) {
+      const customer = row.company_name?.trim() || `${row.first_name ?? ""} ${row.last_name ?? ""}`.trim() || "unknown customer";
+      console.log(
+        `[agreement-bootstrap]   agreement ${row.id}  "${row.agreement_name}"  ${row.status}  ${customer} @ ${row.location_name ?? "unknown location"}  ` +
+          `${row.initial_charge_type} ${describeAmount(row)} -> no initial charge`,
+      );
+    }
+    for (const row of retiredTemplateRows) {
+      console.log(`[agreement-bootstrap]   template ${row.id}  "${row.name}"  default ${row.initial_charge_type} ${describeAmount(row)} -> no initial charge default`);
+    }
+    await db.execute(sql`
+      UPDATE agreements
+      SET initial_charge_type = NULL, initial_charge_amount_mode = NULL, initial_charge_cents = NULL,
+          initial_charge_percent_basis_points = NULL, initial_charge_collected_by = NULL, initial_charge_in_addition_to_price = false
+      WHERE initial_charge_type IN ('CLEANOUT_SURCHARGE', 'PREPAY_FULL')
+    `);
+    await db.execute(sql`
+      UPDATE agreement_templates
+      SET default_initial_charge_type = NULL, default_initial_charge_amount_mode = NULL, default_initial_charge_cents = NULL,
+          default_initial_charge_percent_basis_points = NULL, default_initial_charge_collected_by = NULL, default_initial_charge_in_addition_to_price = false
+      WHERE default_initial_charge_type IN ('CLEANOUT_SURCHARGE', 'PREPAY_FULL')
+    `);
   }
 
   await db.execute(sql`
@@ -663,7 +809,7 @@ function stripLegacyFrequencyNote(notes: string | null): { value: string | null;
 async function attachRequiredBillingPlans(): Promise<void> {
   const planRows = await db.execute(sql`
     SELECT id, org_id, name, charge_trigger, billing_mode, interval_unit, interval_count, installment_count,
-           anchor_mode, anchor_day, proration_rule, initial_charge_covers_first_period, field_addable_surcharge
+           anchor_mode, anchor_day, proration_rule, initial_charge_covers_first_period
     FROM billing_plans
     WHERE name = ${REQUIRED_BILLING_PLAN_NAME}
     ORDER BY org_id, created_at, id
@@ -685,7 +831,6 @@ async function attachRequiredBillingPlans(): Promise<void> {
       anchorDay: raw.anchor_day == null ? null : Number(raw.anchor_day),
       prorationRule: String(raw.proration_rule),
       initialChargeCoversFirstPeriod: raw.initial_charge_covers_first_period === true,
-      fieldAddableSurcharge: raw.field_addable_surcharge === true,
     });
   }
 

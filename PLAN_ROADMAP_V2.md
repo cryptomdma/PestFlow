@@ -106,7 +106,7 @@ are calibrated to Phase 1's: Pass 6 (four tables, routes, three dialogs) is the 
 | Review modal: reopen reason as a pop-up with a settings list, "Other" requires text | DONE — Pass 17 (2026-09-25) | was: inline free-text `Textarea` (`:643-646`), `reopenReason` text only, no code column, no settings key. Now `ReopenTicketDialog` over `ticket_reopen_reasons`, `reopenReasonCode` + text, Other gated by `REOPEN_TICKET_OTHER` (see "Shipped in Pass 17" at the end of Part D) |
 | Reopen must be role-authorized | DONE | `REOPEN_TICKET` support+ (`routes.ts:1669`), reason required, audit-logged (Pass 8) |
 | Fields immutable once posted / finalized (price, service date, collection data) | DONE — Pass 16 (2026-09-23) | was **NOT ENFORCED**: `PATCH /api/service-records/:id` had no permission gate and no status guard, `updateServiceRecord` blind-wrote (and completed the Service on `confirmed`), and `completeService` re-posted over a FINALIZED record and reset its stamps. Now the PATCH is `EDIT_TICKET` (support+), content-only and strict, 409 on FINALIZED; a re-post is refused on FINALIZED (anyone) and on a ticket in review without `EDIT_TICKET`; every accepted edit or re-post writes `ticket_edited`; the rules are `shared/ticket-status.ts`, read by the technician view too. See "Shipped in Pass 16" at the end of Part D. Payment records were already immutable (Pass 6). |
-| Technician ticket: add a second service / surcharge line / Generate Proposal | ABSENT | none in `service-completion-dialog.tsx`; `ADD_FIELD_SURCHARGE` permission exists (`permissions.ts:9`) with no UI; `lineType: "SURCHARGE"` exists in schema |
+| Technician ticket: add a second service / surcharge line / Generate Proposal | PARTIAL — the surcharge line DONE, Pass 23 (2026-09-27) | was: none in `service-completion-dialog.tsx`, `ADD_FIELD_SURCHARGE` (`permissions.ts:22`) read by nothing. Now the Surcharge ($) / Surcharge Label inputs on the ticket (post and office edit), gated by `ADD_FIELD_SURCHARGE` and the agreement template's toggle, a `SURCHARGE` invoice line per ticket and a transitional SURCHARGE production credit (C3.6). A second service from the field is C4.3b (Pass 29); Generate Proposal is Phase 9 |
 | Invoice document: Bill To from the primary location / billing profile; a Service Location block (owner, 2026-09-21) | DONE — Pass 11c (2026-09-21) | was a defect: `getInvoiceDocumentContext` fell back to the **service** location's live address when no profile address was snapshotted, which was every invoice on the dev DB. Now the parties are frozen at issue in `billingProfileSnapshot.billTo` / `.serviceLocation` by `resolveInvoicePartiesTx` on every issuing path, the renderer prints Remit To / Bill To / Service Location, and the 64 pre-11c rows (45 with no snapshot, 19 profile-only) resolve at render by the same rule, marked transitional. Documents already stored keep their bytes (§1.7). See "Shipped in Pass 11c" at the end of Part D. C2.1c |
 | Down payment collected in the field rides the first visit's invoice; the technician sees it as due today (owner, 2026-09-21) | DONE — Pass 11d (2026-09-22) | now: `createAgreement` issues nothing; the down payment rides the first visit's invoice as an `INITIAL_CHARGE` line (`buildVisitInvoiceLinesTx`), `getVisitBillingSummary` prices it into the visit's figures as `charges`, the collector field has its readers (the office prompt at signing and scheduling, the technician's callout), the explicit up-front button stays, and the three unissued `Daily Rodent Trapping` deposits are settled outside the ledger. See "Shipped in Pass 11d" at the end of Part D. Was: `createAgreement` issues a standalone `INITIAL_CHARGE` invoice (`storage.ts:3252`, `7625-7714`); `getVisitBillingSummary` (`:4724`) never finds it, so the ticket says $0 due; `initialChargeCollectedBy` has no reader in the field. Owner correction recorded under D4 in `PLAN_BILLING_V1_1.md`. C2.1d |
 
@@ -349,7 +349,7 @@ by name; `CURRENT_FOCUS.md`'s unscheduled list points at them.
 | C2.1a (**Pass 11a**) — **done** (`feature/phase-2-invoice-modal-core`, 2026-09-19; see "Shipped in Pass 11a" at the end of Part D) | **Invoice modal, core** — new `GET /api/invoices/:id`; `InvoiceDetailDialog` with every section and every action; the Invoices screen rows slimmed to data + open, **no quick action** (owner), customer and location on the row become links; `/invoices?invoiceId=`. Spec in Part D. | Invoices: modal, Void in modal, cash/check collection, mark sent / print; hyperlinks on invoice rows | — | — |
 | C2.1b (**Pass 11b**) — **done** (`feature/phase-2-invoice-modal-reach`, 2026-09-20; see "Shipped in Pass 11b" at the end of Part D) | **Invoice modal, reach** — `InvoiceRowLedger` rows open the same modal; `/customers/:id?locationId=&tab=invoices&invoiceId=`; Ticket Review reads `?recordId=` (entry point `openRecordFromQueue`, `service-ticket-review.tsx:280`) so the modal's per-line "Open ticket" lands; new `GET /api/invoices/by-appointment/:id` feeding an **invoice badge** on the review modal, or **Generate** when the visit is finalized and un-invoiced (the "Later" case); the Services tab Invoice column and `ServiceDetailModal` open the modal; `POST /api/invoices/:id/assign-location` (manager+, audit `update`) for the two location-less rows. | Links to the ticket system-wide; Generate Invoice on the review modal | C2.1a | — |
 | C2.1c (**Pass 11c**) — **done** (`feature/phase-2-invoice-document-parties`, 2026-09-21; see "Shipped in Pass 11c" at the end of Part D) | **Invoice document parties** (owner review 2026-09-21, item 1). The Bill To is decided at **issue** and frozen: `resolveInvoiceTermsForLocationTx` (`storage.ts:5463`) always writes a snapshot, growing the existing `billingProfileSnapshot` jsonb with `billTo: { name, address, source: PROFILE \| LOCATION_OVERRIDE \| PRIMARY_LOCATION }` and `serviceLocation: { name, address }`, `profileId` null when no profile resolved. Address rule: the profile's `billingAddress`, else (a location-override profile) that location's own address, else the customer's **primary location's** address; name: the profile's `billingName`, else today's customer-name order. `createManualInvoice` (`storage.ts:5045`, snapshot hardcoded null) and the schedule-driven path's inline duplicate of the snapshot (`~storage.ts:6141`) both call the resolver. `getInvoiceDocumentContext` reads the keys; the 45 legacy null-snapshot rows fall back at render (primary location for Bill To, the invoice's location for Service Location), marked transitional. `InvoiceDocumentContext` gains `serviceLocation`; the PDF and HTML print a third block. Client: `readBillingProfileSnapshot` (`shared/invoice-detail.ts`) reads the keys; the modal's Terms shows "Bill to … (primary location)" and the service location; "No billing profile was snapshotted" only for legacy rows. No migration. **Verify** (5001): a manual invoice at a non-primary location → `billTo.source = PRIMARY_LOCATION` with the primary's address and `serviceLocation` = that location; a `POST /api/billing-profiles` override row with an address → `PROFILE`; an override row without one → `LOCATION_OVERRIDE` with that location's own address; a legacy row's document still renders; the `/document` PDF is stored once; fixture profiles deleted in cleanup. | Bill To from the primary location; service location on the invoice (owner, 2026-09-21) | C2.1a | — |
-| C2.1d (**Pass 11d**) — **done** (`feature/phase-2-down-payment-first-visit`, 2026-09-22; see "Shipped in Pass 11d" at the end of Part D; the open flag in Part E answered the same day) | **Down payment on the first visit's invoice** (owner correction 2026-09-21 under D4, `PLAN_BILLING_V1_1.md`). `createAgreement` stops calling `issueInitialChargeInvoiceTx` (`storage.ts:3252`); `POST /api/agreements/:id/issue-initial-charge` and its event stay as the explicit up-front path. A **live** event is an `INITIAL_CHARGE` billing event whose invoice is not VOID (or that has no invoice: settled outside the ledger). `buildVisitInvoiceLinesTx` (`storage.ts:5496`) appends, for each agreement behind the visit's services with `initialChargeType = DOWN_PAYMENT`, a resolvable amount (`resolveInitialChargeCents`) and no live event, an `INITIAL_CHARGE` line "Down payment - <agreement>" taxed as the standalone path taxes it; generation and `issueInvoiceTx` (never the draft) insert the event with `invoiceId` = the visit invoice, so a void of that invoice makes the event non-live and the corrected invoice carries the line again. `DOWN_PAYMENT` only (`CLEANOUT_SURCHARGE` / `PREPAY_FULL` leave in C3.6). `isFullyAgreementCovered` must not read a covered visit with a down-payment line as "No charge". `getVisitBillingSummary`'s un-invoiced branch prices the pending line as `BILLABLE` (Price / COA in D4's order / Due today) so the ticket, appointment details, collect step and review modal show it. `initialChargeCollectedBy` gets its reader: the office prompt at scheduling fires unless `TECH_AT_FIRST_SERVICE`; the technician's collect step shows a "Down payment $X" callout unless `OFFICE_AT_SIGNING`; both when null. **Office prompt**: appointment creation (`POST /api/appointments` and the schedule screen's placement) for a service on an agreement with a live-less down payment and no designated payment covering it returns `initialChargeDue: { agreementId, amountCents }`; the client asks "Collect the $X down payment now?" → `RecordPaymentDialog` with `designatedAgreementId` + `appointmentId` (split into 11e if the pass runs long — the routing and the technician's figures are the must-haves). Copy: `initial-charge-fields.tsx:106`; the agreement card's `AgreementInitialChargeStatus` → "Billed on the first visit's invoice" + "Issue up front instead", "Invoiced as INV-x (first visit)" once fired. **Migration** (`agreement-bootstrap.ts`, guarded, per-row effect printed before commit): the three `Daily Rodent Trapping` rows per the open flag in Part E. Canon §13 and the initial-charge canon corrected in the same PR. **Verify** (5001): `DOWN_PAYMENT` $100 on a plan-less agreement → no invoice at creation; the first visit's summary shows the `INITIAL_CHARGE` line `BILLABLE` $100 beside the service line at remaining ÷ expected; generate → both lines and the event on the visit invoice; the second visit's summary has no down-payment line; void the first invoice → the summary shows it again; the explicit button on a fresh agreement → standalone + event, second press refused; a schedule-billed agreement → $100 down + $0 covered, no "No charge" banner; appointment creation returns `initialChargeDue`, and not after a covering designated payment. | Down payment shares the visit's invoice; office prompt at scheduling; tech collects against it (owner, 2026-09-21) | C2.1c (the line's Bill To), Pass 6 | Open flag in Part E (the three unissued rows) |
+| C2.1d (**Pass 11d**) — **done** (`feature/phase-2-down-payment-first-visit`, 2026-09-22; see "Shipped in Pass 11d" at the end of Part D; the open flag in Part E answered the same day) | **Down payment on the first visit's invoice** (owner correction 2026-09-21 under D4, `PLAN_BILLING_V1_1.md`). `createAgreement` stops calling `issueInitialChargeInvoiceTx` (`storage.ts:3252`); `POST /api/agreements/:id/issue-initial-charge` and its event stay as the explicit up-front path. A **live** event is an `INITIAL_CHARGE` billing event whose invoice is not VOID (or that has no invoice: settled outside the ledger). `buildVisitInvoiceLinesTx` (`storage.ts:5496`) appends, for each agreement behind the visit's services with `initialChargeType = DOWN_PAYMENT`, a resolvable amount (`resolveInitialChargeCents`) and no live event, an `INITIAL_CHARGE` line "Down payment - <agreement>" taxed as the standalone path taxes it; generation and `issueInvoiceTx` (never the draft) insert the event with `invoiceId` = the visit invoice, so a void of that invoice makes the event non-live and the corrected invoice carries the line again. `DOWN_PAYMENT` only (`CLEANOUT_SURCHARGE` / `PREPAY_FULL` left in C3.6, Pass 23). `isFullyAgreementCovered` must not read a covered visit with a down-payment line as "No charge". `getVisitBillingSummary`'s un-invoiced branch prices the pending line as `BILLABLE` (Price / COA in D4's order / Due today) so the ticket, appointment details, collect step and review modal show it. `initialChargeCollectedBy` gets its reader: the office prompt at scheduling fires unless `TECH_AT_FIRST_SERVICE`; the technician's collect step shows a "Down payment $X" callout unless `OFFICE_AT_SIGNING`; both when null. **Office prompt**: appointment creation (`POST /api/appointments` and the schedule screen's placement) for a service on an agreement with a live-less down payment and no designated payment covering it returns `initialChargeDue: { agreementId, amountCents }`; the client asks "Collect the $X down payment now?" → `RecordPaymentDialog` with `designatedAgreementId` + `appointmentId` (split into 11e if the pass runs long — the routing and the technician's figures are the must-haves). Copy: `initial-charge-fields.tsx:106`; the agreement card's `AgreementInitialChargeStatus` → "Billed on the first visit's invoice" + "Issue up front instead", "Invoiced as INV-x (first visit)" once fired. **Migration** (`agreement-bootstrap.ts`, guarded, per-row effect printed before commit): the three `Daily Rodent Trapping` rows per the open flag in Part E. Canon §13 and the initial-charge canon corrected in the same PR. **Verify** (5001): `DOWN_PAYMENT` $100 on a plan-less agreement → no invoice at creation; the first visit's summary shows the `INITIAL_CHARGE` line `BILLABLE` $100 beside the service line at remaining ÷ expected; generate → both lines and the event on the visit invoice; the second visit's summary has no down-payment line; void the first invoice → the summary shows it again; the explicit button on a fresh agreement → standalone + event, second press refused; a schedule-billed agreement → $100 down + $0 covered, no "No charge" banner; appointment creation returns `initialChargeDue`, and not after a covering designated payment. | Down payment shares the visit's invoice; office prompt at scheduling; tech collects against it (owner, 2026-09-21) | C2.1c (the line's Bill To), Pass 6 | Open flag in Part E (the three unissued rows) |
 | C2.2 (**Pass 12**) — **done** (`feature/phase-2-billing-plan-required-sold-by`, 2026-09-23; see "Shipped in Pass 12" at the end of Part D) | **Billing Plan required on every Agreement + sale attribution.** Backfill the 11, `billingPlanId NOT NULL` + zod; `agreements.soldByUserId` — a `users` FK (owner: one identity table for techs and office), defaulting to the session user at creation, changed only under a new `ASSIGN_SALE_CREDIT` (manager+), audit `update`; template propagation untouched. `technicians` has no link to `users` today (`schema.ts:160-172`), so the same pass adds a nullable `technicians.userId` bridge; the full merge is C5.7. | Compensation basis (CURRENT_FOCUS) | — | Answered 2026-09-19: attach the billing plan named **Monthly Recurring** to all 11 — the 9 `Quarterly Control` rows (monthly billing for a quarterly program, the industry norm; the marked "Monthly" line in `notes` is deleted once attached) and the 2 Wildlife rows, whose term is already past its end, so Pass 3.5's attach rule starts no schedule and bills nothing. The 4 CANCELLED rows attach for the constraint only. The pass prints the per-row effect (`nextBillingDate` or the refusal) before committing. **Built as decided** (the DB had 5 CANCELLED rows, not 4; the 4 ACTIVE rows anchored on 2026-09-24, the Wildlife rows refused at their term end, nothing else asked). |
 | C2.3 (**Pass 13**) — **done** (`feature/phase-2-batch-invoice-and-draft`, 2026-09-24; see "Shipped in Pass 13" at the end of Part D) | **Batch Invoice moves to the Invoices screen**; range labelled "posted between"; group by technician then service date (a "route" is technician × day — `appointments` carry no route columns); technician filter passed to preview **and generate**; the preview shows the down payment generate will bill (the Pass 11d gap); Send All stays; Ticket Review loses the button. **New Invoice is removed** (owner); the screen gains **"Draft invoice for a visit"** (customer → location → un-invoiced appointment → `createDraftInvoiceForAppointment`); the manual path survives only as **"Add fee / adjustment"** on the location ledger panel (owner, B6); `createManualInvoice` keeps requiring a location and defaults a blank due date from the location's billing terms. | Move Batch Invoice (×2), batch by route/tech, sort by date, New Invoice → Draft | C2.1a (result rows open the modal) | — |
 | C2.4 (**Pass 14**) — **done** (`feature/phase-2-aging-and-balances`, 2026-09-24; see "Shipped in Pass 14" at the end of Part D) | **Aging and balances on the customer screen.** Derived reads: `GET /api/customers/:id/aging` (per location + rollup) and `GET /api/reports/aging` (org-wide); buckets **Current (0-30) / 31-60 / 61-90 / Over 90 days since invoiced** (`issuedAt`, B20) over issued open balances, pending-applied and on-account shown beside, never netted. Header card: the customer-wide open balance, on-account figure and oldest bucket sit beside the primary-location chip; location profile card: the location's strip below `LocationNotesPanel`, its invoices opening the modal; Reports: an Aging **section** (the page has no tabs - owner's handoff of 2026-09-24), every row linking to the customer screen. Both reads open to any authenticated role, like every invoice read (the reasoning is in the shipped record). Nothing stored; UTC days like every other date-only value. | Aging report, customer balance at top with primary location info, location balance below notes | C2.1a (bucket rows open the modal) | — |
@@ -369,7 +369,7 @@ so every field action is a route and every screen is data from a read — no pag
 | C3.4a (**Pass 20**) — **done** (`feature/phase-3-material-units-areas`, 2026-09-26; see "Shipped in Pass 20" at the end of Part D) | **Material units and application areas**: a settings-managed unit list (`material_units`) feeding a Unit dropdown, product `defaultUnit` migrated to pick from it; an org-level application-area list in Settings feeding products' allowed areas; application area multi-select per material line (`applicationAreas[]`, areas serviced still derived). | Unit dropdown; Application area multi-select | — | — |
 | C3.4b (**Pass 21**) — **done** (`feature/phase-3-target-pests-two-levels`, 2026-09-27; see "Shipped in Pass 21" at the end of Part D) | **Target pests, two levels** (B12): `productApplications.targetPests[]` per material row from the target-pest list (compliance); the ticket-level target pests stay on the ticket, selectable from a searchable multi-select placed in the Materials section, and are **selected ∪ every material's pests**; the summary line at the top of the ticket shows that union. Decided there: `applicationLocation` dropped. | Target pests; pest per application | C3.4a | — |
 | C3.5 (**Pass 22**) — **done** (`feature/phase-3-service-report-document`, 2026-09-27; see "Shipped in Pass 22" at the end of Part D) | **Service report document** — customer-facing summary of a posted/finalized ticket (technician + license, date, services, pests, materials, notes, recommendations, signature placeholder) through the document renderer, stored like invoices; Open / Download on the review modal and the Services tab, Preview in the collect step. **Settings toggle "Attach service report to visit invoices"** (B11): when on, a visit-anchored invoice's PDF appends the report(s) for its lines; schedule-driven and manual invoices have no visit and append nothing. Both documents stay separately openable. | "Preview/print/save/send service summary"; "sends invoice / service report" | — | — |
-| C3.6 (**Pass 23**) | **Field surcharge line** — as specified in `CURRENT_FOCUS.md`: SURCHARGE line on the ticket → invoice line; allow/reject toggle moves from plan to template; `CLEANOUT_SURCHARGE` / `PREPAY_FULL` leave the initial-charge vocabulary; test-data defaults migrated; `ADD_FIELD_SURCHARGE` gets its UI. **Transitional credit rule until Phase 7:** a recorded SURCHARGE line always credits the posting technician, marked transitional (dev rule 4), replacing today's permission inference in `createSurchargeEntryIfConfigured()`. | (owner-specified 2026-09-13) | — | — |
+| C3.6 (**Pass 23**) — **done** (`feature/phase-3-field-surcharge-line`, 2026-09-27; see "Shipped in Pass 23" at the end of Part D) | **Field surcharge line** — as specified in `CURRENT_FOCUS.md`: SURCHARGE line on the ticket → invoice line; allow/reject toggle moves from plan to template; `CLEANOUT_SURCHARGE` / `PREPAY_FULL` leave the initial-charge vocabulary; test-data defaults migrated; `ADD_FIELD_SURCHARGE` gets its UI. **Transitional credit rule until Phase 7:** a recorded SURCHARGE line always credits the posting technician, marked transitional (dev rule 4), replacing today's permission inference in `createSurchargeEntryIfConfigured()`. As built: the surcharge lives on the ticket (`service_records.surchargeCents` / `surchargeLabel`), audited as `surcharge_recorded`; the gate is `ADD_FIELD_SURCHARGE` plus the template's toggle for an agreement service (a non-agreement service: the permission alone); the migration decided each template's default from its agreements' plans (agree → that flag; none → its default plan's; disagree → off); the four unit-15 credit rows stand as history. | (owner-specified 2026-09-13) | — | — |
 | C3.7 (**Pass 24**) | **Service designation + callback attribution** — `ServiceType.category` (CALLBACK / PRODUCTION / SERVICE) in Settings, instance designation on Service defaulted from the type, a required "answers Service …" link on a CALLBACK chosen at scheduling; production basis and invoice $0 read the designation instead of the slot counter. Canon §10. Its urgency in `CURRENT_FOCUS.md` came from plan-less agreements billing per visit; that drops once Pass 12 lands, so it sequences after it (COD-plan callbacks remain the case it fixes). | (roadmap note in canon) | C2.2 | — |
 
 ### Phase 4 — Scheduling and dispatch (D8's deferred scheduling pass, split)
@@ -414,7 +414,9 @@ zones from C4.1b, and only the last exists by then.
 Per V1 §1.6.2 and the `CURRENT_FOCUS.md` compensation entry: `comp_plans` / `comp_components` /
 `comp_earnings` with plan and rate snapshotted per earning; split allocation rows beneath production
 entries (needs C4.4's crews); components that pay a non-technician (needs C2.2's sold-by); the
-per-plan surcharge selector (C3.6 already keys the credit off the line); per-period statements
+per-plan surcharge selector (C3.6 / Pass 23 keys the credit off the recorded line under the
+transitional always-credit rule, `SURCHARGE_CREDIT_RULE`; the selector replaces that rule, and an
+adjustment entry for a surcharge changed after its credit belongs here too); per-period statements
 exported to QuickBooks Payroll. Graduates to its own plan doc when scheduled.
 
 ### Phase 8 — Communications and automation (V1's "Phase 3")
@@ -820,7 +822,7 @@ Behavior worth knowing before the next pass touches it:
   collect step's default amount leaves it out.
 - **Not built:** the batch-invoice preview's per-ticket amounts do not show a pending deposit that
   generate will bill (C2.3 moves the batch anyway); `CLEANOUT_SURCHARGE` / `PREPAY_FULL` never ride a
-  visit and are issued only from the card until C3.6 retires them; a visit carrying two agreements'
+  visit and are issued only from the card until C3.6 retires them (retired in Pass 23); a visit carrying two agreements'
   deposits prompts the office for the first by name only. The 11e split was not needed.
 - **Verified 2026-09-22** (PORT=5001; boot 1 printed the migration's three rows, boot 2 printed only
   "serving on port 5001" with all 42 tables unchanged; 54 API assertions on boot 2 with every count
@@ -2511,6 +2513,178 @@ Behavior worth knowing before the next pass touches it:
   REOPENED ticket is still served (its content stands until the technician re-posts, which
   retires it); a `text[]` row order in the materials table is the table's heap order, as every
   other reader of `product_applications` shows it.
+
+---
+
+**Shipped in Pass 23** (`feature/phase-3-field-surcharge-line`, 2026-09-27) — the C3.6 row as
+built, plus what it decided.
+
+```ts
+// shared/field-surcharge.ts (new) - the line's vocabulary, invariants, gate and copy, read by the server and the client
+DEFAULT_SURCHARGE_LABEL = "Cleanout surcharge"; MAX_SURCHARGE_LABEL_LENGTH = 60
+SURCHARGE_CREDIT_RULE = "TRANSITIONAL_ALWAYS_CREDITS_POSTING_TECHNICIAN"   // development rule 4: the ledger write cites it until Phase 7's per-plan selector
+interface SurchargeFields { surchargeCents: number | null; surchargeLabel: string | null }; NO_SURCHARGE
+normalizeSurcharge({ surchargeCents?, surchargeLabel? })    // no / zero amount -> both null; a positive amount -> rounded, the label trimmed, capped and defaulted
+surchargeChanged(before, after); surchargeOf(record)         // the gated-and-audited test; a row from before Pass 23 reads as none
+resolveFieldSurchargeGate({ actorRole, isAgreementService, template, adding })   // null, or { code: "SURCHARGE_FORBIDDEN" | "SURCHARGE_NOT_ALLOWED", message }
+describeSurcharge(record)                                    // "Cleanout surcharge $50.00" | null - the review modal, the Services tab
+surchargeLineDescription(label, serviceTypeName, dateText)   // "<label> - <service type> - <date>" - the invoice line, the visit's charge, the batch preview
+
+// shared/schema.ts
+serviceRecords.surchargeCents / surchargeLabel               // nullable; the ticket's content
+agreementTemplates.fieldSurchargeAllowed                     // boolean NOT NULL DEFAULT false - the allow / reject toggle
+billingPlans.fieldAddableSurcharge                           // DROPPED; BillingPlanSnapshotFields / BillingPlanSnapshot / buildBillingPlanSnapshot lose the key (old snapshots keep it as history)
+
+// shared/initial-charge.ts
+INITIAL_CHARGE_TYPES = ["DOWN_PAYMENT"]                       // CLEANOUT_SURCHARGE / PREPAY_FULL gone: formatInitialChargeType's cases, initialChargeCountsTowardPrice's branch,
+                                                             //   isTechnicianSoleInitialChargeCollector and isTechnicianCollectedCleanoutSurcharge deleted
+
+// shared/audit.ts
+AuditAction + "surcharge_recorded"                           // "Surcharge recorded": entity service_record, before / after { surchargeCents, surchargeLabel }
+
+// shared/visit-billing.ts
+type VisitChargeBilling = VisitInitialChargeBilling | VisitSurchargeBilling
+                                                             // kind INITIAL_CHARGE (agreementId, agreementName) | SURCHARGE (serviceId, serviceRecordId, serviceTypeName, label); collectedBy null on a surcharge
+visitChargeKey(charge); describeVisitChargeKind(charge)      // the agreement id | "surcharge-<serviceId>"; "down payment" | "surcharge"
+interface VisitBillingDraft { serviceId; priceCents: number | null; applied; note; surchargeCents: number | null; surchargeApplied; surchargeNote }
+
+// shared/batch-invoice.ts
+interface BatchInvoicePreviewCharge { kind: "INITIAL_CHARGE" | "SURCHARGE"; agreementId | null; agreementName | null; ticketServiceRecordId | null; ... }; batchChargeKey(charge)
+
+// server/storage.ts
+CompleteServiceInput / UpdateServiceRecordInput / ServiceReportPreviewInput   // + surchargeCents?: number | null; surchargeLabel?: string | null
+interface VisitBillingDraftInput { serviceId; priceCents?; surchargeCents?; actorRole }
+resolveFieldSurchargeGateTx(tx, { actorRole, service, adding })   // loads the agreement's template; the post, the PATCH and the billing read all call it
+completeService / updateServiceRecord                        // normalize -> gate (403 with the code, before any write) -> write the columns -> `surcharge_recorded` when it moved
+createProductionValueEntriesForFinalizedRecord               // the main entry and the SURCHARGE entry checked independently; SURCHARGE = record.surchargeCents for the ticket's technician
+buildVisitInvoiceLinesTx                                     // + one SURCHARGE line per ticket right after its service line; a tax snapshot entry { serviceRecordId, lineType: "SURCHARGE", ... }
+getVisitBillingSummary                                       // un-invoiced: the draft's (gated) or the record's surcharge as a SURCHARGE charge, taxed like the service line;
+                                                             //   invoiced: SURCHARGE lines paired by serviceRecordId / serviceId; the service's own line lookup skips SURCHARGE lines
+getBatchInvoicePreviewForDateRange                           // + a SURCHARGE charge per finalized ticket of each visit, listed before the visit's down payment
+serviceReportContextForRecordTx / renderServiceReportPreview  // + surchargeCents / surchargeLabel on the context
+
+// server/routes.ts
+completeServiceSchema / updateServiceRecordSchema (previewServiceReportSchema extends the former)   // surchargeCents: int >= 0 | null | absent; surchargeLabel: <= 60 chars | null | absent
+GET  /api/appointments/:id/billing-summary?serviceId=&priceCents=&surchargeCents=   // serviceId with either or both; a fractional or orphaned param is a 400
+POST /api/services/:id/complete                              // + 403 { code: "SURCHARGE_FORBIDDEN" | "SURCHARGE_NOT_ALLOWED", message }
+PATCH /api/service-records/:id                               // the same two codes
+
+// server/agreement-bootstrap.ts
+bootstrapAgreements()                                        // + ADD COLUMN agreement_templates.field_surcharge_allowed (silent); one-shot keyed on billing_plans.field_addable_surcharge existing
+                                                             //   (each template's default printed, then DROP COLUMN); one-shot clearing every CLEANOUT_SURCHARGE / PREPAY_FULL block
+                                                             //   (printed per row, self-guarding); the Pass 5.5 one-shot's IN lists narrowed to DOWN_PAYMENT
+// server/service-scheduling-bootstrap.ts
+bootstrapServiceSchedulingFoundation()                       // + service_records.surcharge_cents / surcharge_label (guarded on the column, printed once, no backfill)
+
+// server/documents/types.ts, service-report-pdf.ts
+ServiceReportDocumentContext.surchargeCents / surchargeLabel  // the Service section prints a "Surcharge" row: "<label> - $X (in addition to the service, billed as its own line on the visit invoice)"
+
+// client
+service-completion-dialog.tsx        // Surcharge ($) + Surcharge Label (input-ticket-surcharge, input-ticket-surcharge-label, text-ticket-surcharge-note) under the price grid;
+                                     //   surchargeGate = resolveFieldSurchargeGate over /api/agreement-templates (disabled with the reason; "Checking..." while loading);
+                                     //   draft { serviceId, priceCents?, surchargeCents? }; surchargePayload() on the post, the PATCH and the report preview; the local draft saves both boxes
+visit-billing-summary.tsx            // VisitBillingDraftPrice { serviceId; priceCents?; surchargeCents? }; charge rows keyed by visitChargeKey (row-visit-charge-<key>);
+                                     //   ServiceBillingBlock shows the service's own surcharge (text-service-surcharge-<id>) and the draft echo (text-service-draft-surcharge-<id>);
+                                     //   the reconciling line sums charges by kind; VisitInitialChargeCallout lists INITIAL_CHARGE charges only
+settings.tsx                         // template form: checkbox-template-field-surcharge; template card: text-template-field-surcharge-<id>; the plan form's checkbox and caption gone
+service-ticket-review.tsx            // "Surcharge: <label> $X - billed as its own line in addition to the service." (text-review-surcharge) under Billing Readiness
+customer-detail.tsx                  // ServiceDetailModal: "Surcharge: <label> $X (in addition to the service)" (text-service-surcharge-<record id>)
+batch-invoice-dialog.tsx             // charge rows keyed by batchChargeKey
+initial-charge-fields.tsx            // the two captions no longer name a cleanout surcharge or a prepayment as initial charges
+```
+
+Behavior worth knowing before the next pass touches it:
+- **The gate fires only on a change.** `surchargeChanged(stored, sent)` decides: a new or changed
+  positive amount needs `ADD_FIELD_SURCHARGE` and, on an agreement service, the template's
+  toggle; a removal needs the permission alone (the template says whether the technician may ADD
+  one); an unchanged value is never gated, so the dialog re-sends what the ticket carries even
+  when its box is locked, and a template toggled off after a surcharge was recorded never strands
+  it. An agreement service with no template is refused (the safe direction). A non-agreement
+  service is gated by the permission alone - decided, not owner-specified: it has no template to
+  ask, the technician may already set its price, and a labelled line beats a folded-in extra
+  (D6). Every role holds the permission today, so the role refusal is exercised only by the pure
+  function; it is there for the day a role loses it.
+- **The post writes the ticket whole.** A re-post that omits `surchargeCents` clears a recorded
+  surcharge (as it clears notes), through the gate and with a `surcharge_recorded` row; the PATCH
+  keeps an omitted one. The dialog sends the boxes on both paths, so neither drops one by
+  accident; a native client re-posting must send it.
+- **Two audit rows for one edit.** An office edit that changes the surcharge writes
+  `surcharge_recorded` (the two fields) and `ticket_edited` (the whole ticket, in which the two
+  fields also appear) - the same pairing as `price_overridden` beside `ticket_edited`. A first post
+  writes `surcharge_recorded` alone (there is no ticket to have edited).
+- **The credit is per ticket and once.** The SURCHARGE entry's idempotency is the method's own
+  select (the ledger's partial unique index excludes SURCHARGE, as before); the main entry and the
+  surcharge entry are checked independently, so a ticket reopened, given a surcharge and
+  re-finalized earns the credit then. A surcharge CHANGED after its credit keeps the first
+  amount - the ledger is append-only and has no adjustment entry; Phase 7 owns that. The
+  technician is the ticket's snapshot, as the main entry's is; `contractPriceCentsSnapshot` is the
+  agreement's price when there is one.
+- **The unit-15 rows stand.** The three Daily Rodent Trapping $99.95 SURCHARGE credits (down
+  payments, wrong under Pass 5.5's rule) and Unit 15 Ledger Test's $50.00 (a real cleanout, its
+  initial charge now cleared) are left as history: deleting them would break the append-only
+  rule, a negative adjustment row has no vocabulary yet, and no engine pays them. When Phase 7
+  builds adjustment entries, they are its first four cases.
+- **The draft prices the surcharge exactly as Post will accept it.** `&surchargeCents=` goes
+  through the same gate; a refused draft prices the stored surcharge and says why
+  (`surchargeNote`, the dialog's caption); 0 previews the removal; the label of a draft is the
+  stored one, else the default (the read carries no label). An invoiced visit's figures are the
+  invoice's and no draft applies, as before.
+- **The invoice line pairs with its service by ids.** A SURCHARGE line carries the same
+  `serviceId` / `serviceRecordId` as the ticket's service line, so the invoice modal's "Open
+  ticket", the detail read's type / date / status enrichment and the visit read's pairing all
+  work unchanged; readers that look a service line up by `serviceId` must skip `SURCHARGE` lines
+  (the billing read does). The tax snapshot is PER_LINE with a `lineType: "SURCHARGE"` entry.
+- **Migration decisions.** The template default was derived from its agreements' plans (agree →
+  that flag; none → the template's default plan's flag; disagree → off) and printed per template;
+  the office flips it in Settings. The plan snapshots keep `fieldAddableSurcharge` as dead
+  history (the Pass 5.5 precedent). The Pass 5.5 one-shot (dead on this DB) now carries only
+  DOWN_PAYMENT forward, since the Pass 23 one-shot would clear anything else at once. The
+  handoff's claim that the Quarterly Control template carried a cleanout default was wrong - it
+  carries a DOWN_PAYMENT, which stands; run the SQL, never trust a doc's data claim.
+- **Verified 2026-09-27** (PORT=5001 against a copy of the dev DB, `pestflow_verify`, dropped
+  afterwards - a column drop is never verified under the owner's running server): `npm run
+  check` clean; boot 1 printed the seven migration lines once (3 templates, the summary; Unit 15
+  Ledger Test, the summary; the two ticket columns) with all 44 table counts unchanged; boot 2
+  printed only the serving line with every count unchanged; 95 API / SQL assertions as the four
+  roles - the pure gate (a role without the permission, no template, a forbidding template, an
+  allowing one, a removal); two templates through the API (toggle on / off), `GET
+  /api/billing-plans` without the old key; the billing read's draft on the allowed agreement
+  (SURCHARGE $50.00 + $4.13 tax BILLABLE, Due today 16238 beside the $100.00 + $8.25 service
+  line, the description "Cleanout surcharge - General Pest Control - <date>"), refused with the
+  reason on the forbidding template, price and surcharge together on the manual service, 0 as a
+  removal, 400 for an orphaned or fractional param; the technician's post with $50.00 → the
+  ticket carries it with the default label, one `surcharge_recorded` (null → 5000) by the
+  technician, the read pairs it and Due today follows; the forbidding template's post and office
+  PATCH refused 403 `SURCHARGE_NOT_ALLOWED` naming the template with nothing written; the manual
+  service's labelled surcharge trimmed and kept, its DRAFT carrying SERVICE 15000 then SURCHARGE
+  2500 with the ticket's ids; the office edit to $75.00 "Heavy cleanout" (a second audit row plus
+  `ticket_edited`), a no-op edit writing nothing, an omitted field keeping it, -1 and a 61-char
+  label 400, a fractional post 400; reopen → re-post at $60.00 (a third row, the label back to
+  the default) → finalize → exactly the main entry plus one SURCHARGE 6000 for John Doe on the
+  agreement with the price snapshot, a second finalize and a reopen + re-finalize writing none,
+  the technician's production read listing it; the batch preview listing it on its visit with
+  tax; generate → SERVICE 10000/825 then SURCHARGE 6000/495, taxable, the ids, total 17320 OPEN, a
+  PER_LINE tax snapshot with the SURCHARGE entry, the detail read enriching the line, the
+  invoiced read pairing it (Due today 17320), the service report printing "Cleanout surcharge -
+  $60.00", the invoice PDF printing the line; the covered agreement's visit - PRODUCTION $0 plus a
+  BILLABLE $30.00 surcharge (Due today 3248), the credit written, the invoice AGREEMENT_COVERED 0
+  + SURCHARGE 3000/248 total 3248 OPEN and its PDF never "No Charge"; a PATCH to 0 removing the
+  surcharge (label too, the audit row's after both null), the credit then ONE_TIME_SERVICE alone,
+  and the DRAFT issued without the removed line; the report preview printing a typed $42.00
+  label and storing nothing; the template toggle flipped on making the office PATCH pass, flipped
+  off leaving an unchanged surcharge alone, a removal allowed and an add refused; CLEANOUT_SURCHARGE
+  and PREPAY_FULL refused by the template schema (400) while DOWN_PAYMENT stands; every fixture
+  deleted (the two templates included), every count back at the run's start (`session` +4); a
+  Vite 200 with the new symbols on the seven touched client modules, the three consuming pages and
+  the four shared modules. **Nothing was rendered in a browser** - the repo has no browser
+  automation and the session had no browser - so the two inputs, the template checkbox, the card
+  line, the figures and the report row reach the owner first.
+- **Known follow-up.** A surcharge changed after its credit (Phase 7's adjustment entry); the
+  comp-plan selector itself; `technicianMayCollectInitialCharge` is still exported and read by
+  nothing; the draft read carries no label (the stored one or the default is shown until Post);
+  the Service History legacy form (`POST /api/service-records`) writes no surcharge; a surcharge
+  on a ticket with no service is refused rather than modelled; the invoice document prints the
+  SURCHARGE line as any line, with no badge of its own.
 
 ---
 

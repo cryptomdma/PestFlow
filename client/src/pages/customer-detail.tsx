@@ -56,6 +56,7 @@ import type { UserSummary } from "@shared/schema";
 import { formatPhoneDisplay } from "@shared/phone";
 import { AuditLogEntryCard } from "@/components/audit-log-entry-card";
 import { dollarsToCents, centsToDollars, centsToDollarString, formatCents } from "@shared/money";
+import { describeSurcharge } from "@shared/field-surcharge";
 import { describeBillingPlanBehavior } from "@shared/billing-plan";
 import { describeInitialCharge, formatInitialChargeType, initialChargeFromTemplate, type AgreementInitialChargeStatus, type InitialChargeDue } from "@shared/initial-charge";
 import { InitialChargeFormFields, initialChargeFieldsFrom, initialChargeFormStateFrom, validateInitialChargeFormState } from "@/components/initial-charge-fields";
@@ -2859,6 +2860,8 @@ function ServiceDetailModal({
           {serviceRecord.notes && <p><span className="font-medium">Notes:</span> {serviceRecord.notes}</p>}
           {serviceRecord.areasServiced && <p><span className="font-medium">Derived Areas:</span> {serviceRecord.areasServiced}</p>}
           {serviceRecord.targetPests && serviceRecord.targetPests.length > 0 && <p><span className="font-medium">Target Pests:</span> {serviceRecord.targetPests.join(", ")}</p>}
+          {/* Pass 23 (C3.6): the field surcharge the ticket carries - its own line on the visit invoice. */}
+          {describeSurcharge(serviceRecord) && <p data-testid={`text-service-surcharge-${serviceRecord.id}`}><span className="font-medium">Surcharge:</span> {describeSurcharge(serviceRecord)} (in addition to the service)</p>}
           {serviceRecord.conditionsFound && <p><span className="font-medium">Conditions:</span> {serviceRecord.conditionsFound}</p>}
           {serviceRecord.recommendations && <p><span className="font-medium">Recommendations:</span> {serviceRecord.recommendations}</p>}
           {serviceRecord.followUpRequired && (
