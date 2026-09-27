@@ -367,7 +367,7 @@ so every field action is a route and every screen is data from a read — no pag
 | C3.1b (**Pass 18**) — **done** (`feature/phase-3-office-edit-ticket`, 2026-09-25; see "Shipped in Pass 18" at the end of Part D) | **Office Edit on the review modal** (D9): the role-gated Edit button opens `service-completion-dialog.tsx` in an `office-edit` mode (same fields, materials included) that submits through the gated PATCH instead of the post route; `ADJUST_PRICE_AGREEMENT` still guards an agreement price (support edits everything else); a FINALIZED ticket says "reopen first". Pass 16 built the PATCH content-only with materials as replace-all; the Service's price and type are not on it, so this unit adds the price edit (on the Service, logged `price_overridden` as a post's is). | Office edit button | C3.1, C3.2 | — |
 | C3.3 (**Pass 19**) — **done** (`feature/phase-3-tech-ticket-money-instructions`, 2026-09-25; see "Shipped in Pass 19" at the end of Part D) | **Technician ticket modal, money and instructions**: draft-price override on the billing-summary read (`?serviceId=&priceCents=`, priced server-side through `resolveServiceLineBillingTx` + tax), dollars.cents on blur, service instructions (agreement `serviceInstructions`, service notes, location notes) at the top, the **billing-plan pill** in the ticket header (the profile display waits for C5.2), **time-in prompt** on opening a ticket with no Time In (bypass allowed). Landing after Post unchanged (B1). | Tech modal items 1-4; time-in prompt; display billing plan | — | — |
 | C3.4a (**Pass 20**) — **done** (`feature/phase-3-material-units-areas`, 2026-09-26; see "Shipped in Pass 20" at the end of Part D) | **Material units and application areas**: a settings-managed unit list (`material_units`) feeding a Unit dropdown, product `defaultUnit` migrated to pick from it; an org-level application-area list in Settings feeding products' allowed areas; application area multi-select per material line (`applicationAreas[]`, areas serviced still derived). | Unit dropdown; Application area multi-select | — | — |
-| C3.4b (**Pass 21**) | **Target pests, two levels** (B12): `productApplications.targetPests[]` per material row from the target-pest list (compliance); the ticket-level target pests stay on the ticket, selectable from a searchable multi-select placed in the Materials section, and are **selected ∪ every material's pests**; the summary line at the top of the ticket shows that union. | Target pests; pest per application | C3.4a | — |
+| C3.4b (**Pass 21**) — **done** (`feature/phase-3-target-pests-two-levels`, 2026-09-27; see "Shipped in Pass 21" at the end of Part D) | **Target pests, two levels** (B12): `productApplications.targetPests[]` per material row from the target-pest list (compliance); the ticket-level target pests stay on the ticket, selectable from a searchable multi-select placed in the Materials section, and are **selected ∪ every material's pests**; the summary line at the top of the ticket shows that union. Decided there: `applicationLocation` dropped. | Target pests; pest per application | C3.4a | — |
 | C3.5 (**Pass 22**) | **Service report document** — customer-facing summary of a posted/finalized ticket (technician + license, date, services, pests, materials, notes, recommendations, signature placeholder) through the document renderer, stored like invoices; Open / Download on the review modal and the Services tab, Preview in the collect step. **Settings toggle "Attach service report to visit invoices"** (B11): when on, a visit-anchored invoice's PDF appends the report(s) for its lines; schedule-driven and manual invoices have no visit and append nothing. Both documents stay separately openable. | "Preview/print/save/send service summary"; "sends invoice / service report" | — | — |
 | C3.6 (**Pass 23**) | **Field surcharge line** — as specified in `CURRENT_FOCUS.md`: SURCHARGE line on the ticket → invoice line; allow/reject toggle moves from plan to template; `CLEANOUT_SURCHARGE` / `PREPAY_FULL` leave the initial-charge vocabulary; test-data defaults migrated; `ADD_FIELD_SURCHARGE` gets its UI. **Transitional credit rule until Phase 7:** a recorded SURCHARGE line always credits the posting technician, marked transitional (dev rule 4), replacing today's permission inference in `createSurchargeEntryIfConfigured()`. | (owner-specified 2026-09-13) | — | — |
 | C3.7 (**Pass 24**) | **Service designation + callback attribution** — `ServiceType.category` (CALLBACK / PRODUCTION / SERVICE) in Settings, instance designation on Service defaulted from the type, a required "answers Service …" link on a CALLBACK chosen at scheduling; production basis and invoice $0 read the designation instead of the slot counter. Canon §10. Its urgency in `CURRENT_FOCUS.md` came from plan-less agreements billing per visit; that drops once Pass 12 lands, so it sequences after it (COD-plan callbacks remain the case it fixes). | (roadmap note in canon) | C2.2 | — |
@@ -2224,6 +2224,134 @@ Behavior worth knowing before the next pass touches it:
   product's Application Location as free text; its product rows now go through the same
   normalizer, but its `areasServiced` is typed, not derived. Untouched here (scope); it is the one
   surface left with a freeform area field. The material-products routes stay ungated, as before.
+
+**Shipped in Pass 21** (`feature/phase-3-target-pests-two-levels`, 2026-09-27) — the C3.4b row as
+built, plus what it decided.
+
+```ts
+// shared/material-lists.ts
+interface MaterialRowPests { targetPests?: readonly string[] | null }
+targetPestsOf(row)                            // the row's pests trimmed, empties dropped, order kept
+deriveTicketTargetPests(list, selected, rows) // the ticket's set: the picks first in the order picked, then every row's pests in row order,
+                                              // each in the list's spelling (toListSpellings), deduped case-insensitively - storage stores it,
+                                              // the dialog shows it
+formatTargetPests(row)                        // the row's pests joined ", ", or null
+MaterialRowAreas.applicationLocation          // kept as an optional INPUT field for the dialog's pre-Pass-20 local drafts only; the column is gone
+
+// shared/schema.ts
+productApplications.targetPests: text[]       // beside applicationAreas; applicationLocation REMOVED (the column dropped)
+serviceRecords.targetPests                    // documented as the derived union
+
+// server/service-scheduling-bootstrap.ts
+bootstrapMaterialTargetPests()                // after the target_pests seed: ADD COLUMN target_pests text[] (guarded, printed once, no backfill -
+                                              // no row carried a pest); then, guarded on the column's presence, copies any row's
+                                              // application_location into an empty application_areas (0 on the dev DB) and DROPs
+                                              // application_location, printed once
+
+// server/storage.ts
+interface MaterialVocabulary { units; areas; pests }   // + pests: the org's active target_pests labels in sort order
+readMaterialVocabularyTx(tx)                  // + a select on target_pests (active) in the same transaction as the settings rows
+normalizeProductApplicationInputs(list, vocabulary)   // + targetPests in the list's spelling, deduped, null when none; applicationLocation gone
+deriveStoredTargetPests(list, selected, rows) // deriveTicketTargetPests; an empty union keeps the picks' own shape (null -> null, [] -> [])
+PRODUCT_APPLICATION_SNAPSHOT_FIELDS           // "applicationLocation" -> "targetPests" (the ticket_edited diff's shape)
+completeService                               // targetPests = deriveStoredTargetPests(pests, body.targetPests, the normalized rows)
+updateServiceRecord                           // targetPests = deriveStoredTargetPests(pests, body.targetPests ?? the stored set,
+                                              //   the rows sent ?? the existing rows); the vocabulary read once at the top of the edit
+createProductApplication(data)                // the legacy route, now in a transaction: the row's pests spelled and folded into its ticket's set
+
+// Routes (bodies; no new route)
+POST /api/services/:id/complete               // each productApplications[] row accepts targetPests: string[] - drizzle-zod picked the column
+PATCH /api/service-records/:id                //   up with no schema edit (confirmed); applicationLocation is stripped from a body (not a column)
+POST /api/product-applications                // same
+
+// server/seed.ts                             // the four seed rows carry targetPests instead of applicationLocation
+
+// client/src/components/service-completion-dialog.tsx
+MaterialLine.targetPests: string[]            // materialFromDraft() reads an older draft as []; materialFromApplication() reads the row
+targetPests (state): string[]                 // the picks (was a comma-joined string; an older local draft's string is split on restore);
+                                              //   an office edit seeds it from the stored set whole
+ticketTargetPests                             // deriveTicketTargetPests(targetPestOptions, targetPests, materials) - the header's summary line
+                                              //   (text-ticket-target-pests, under the service type, both modes, absent when empty) and the
+                                              //   caption under the ticket-level control naming the pests that come from materials alone
+Target Pests (ticket level)                   // a ListMultiSelect at the top of the Materials section (multiselect-ticket-target-pests); the
+                                              //   pill toggles, their search box and toggleTargetPest are gone; both bodies send the array
+Target Pests (per row)                        // a ListMultiSelect per material row (multiselect-material-pests-<i>, offListCaption "not on the
+                                              //   pest list"); the collapsed summary prints "for <pests>"
+materialsPayload()                            // sends targetPests per row
+
+// client/src/pages/service-ticket-review.tsx / customer-detail.tsx / services.tsx
+                                              // each material line prints the row's pests (formatTargetPests); the review modal's Target Pests
+                                              //   line (the stored union) gains the caption "The ticket's picks plus every material's pests.";
+                                              //   the customer screen's ticket card prints Target Pests; the Service History legacy form's
+                                              //   product row sends applicationAreas: [applicationArea] (label "Application Area")
+```
+
+Behavior worth knowing before the next pass touches it:
+- **The set is derived on the server, and only the union is stored.** Whenever a ticket is posted
+  or edited, `service_records.targetPests` = the picks ∪ every row's pests, in that order, deduped
+  case-insensitively, each in the pest list's spelling. The picks are the body's `targetPests`, or
+  the stored set when the body omits them; the rows are the body's when materials are sent, the
+  existing rows otherwise - so a content edit without materials still names every row's pest. The
+  dialog computes the same union with the same shared function for its summary line (B13: one
+  rule, so a native client gets the same answer from the read).
+- **A pick is never silently dropped.** There is no second column for "selected": on an office
+  edit the stored set seeds the ticket-level control whole, so a pest that came in through a
+  material stays a pick until someone removes it from the control. Removing a material's pest
+  therefore never removes it from the ticket by itself; sending explicit picks replaces the picks
+  and keeps the rows' pests (`{Fleas}` + a Termites row -> `{Fleas,Termites}`).
+- **Off the list: kept and marked, never refused** (Pass 20's rule). "Crickets" on a ticket from
+  before the list and "Squirrels" or "raccoons" on a row stay as written (trimmed) and show as
+  outlined chips; a value matching an active pest apart from casing or whitespace is written in
+  the list's spelling ("roaches" -> "Roaches"), and a re-save that differs only in casing writes
+  no `ticket_edited` row. The list is the table's **active** rows, in sort order - the same list
+  `GET /api/target-pests` offers the dialog; a deactivated pest already on a ticket is therefore
+  kept and marked, not respelled.
+- **An empty union keeps the picks' shape.** Picks `[]` with no row pests store `{}`; picks `null`
+  store `NULL` - what the two bodies stored before this pass, so nothing rewrites a ticket that
+  did not change.
+- **`applicationLocation` is gone.** Decided here (the C3.4b row): every reader already went
+  through `applicationAreasOf()` / `formatApplicationAreas()`, every writer wrote
+  `applicationAreas`, no dev-DB row had a location without areas, and the client has no service
+  worker, so no cached client can still send the field. The bootstrap drops the column after a
+  safety copy; the field left the row's API shape with it (drizzle-zod strips it from a body, so
+  the Service History legacy form now sends `applicationAreas`); the snapshot shape carries
+  `targetPests` in its place; the one reader left of the name is the dialog's restore of a local
+  draft saved before Pass 20.
+- **The migration did NOT run against the shared dev DB.** A column drop breaks any server still
+  running the previous code against the same database (drizzle selects columns by name), so this
+  pass's verification ran against a copy (`pestflow_verify`, restored from a fresh dump, dropped
+  afterwards - the recipe is in `DEV_NOTES.md`). The owner's `npm run dev:full` restart runs both
+  steps on the shared DB and prints them: 45 rows gain `target_pests` with nothing backfilled;
+  `application_location` is dropped with 0 rows copied first.
+- **Verified 2026-09-27** (PORT=5001, against the copy): `npm run check` clean; boot 1 printed the
+  two Pass 21 lines with all 44 table counts unchanged; 36 API / SQL assertions as the four roles -
+  `GET /api/target-pests` 401 without a session, 200 and the same list for technician and admin;
+  a ticket posted through `POST /api/services/:id/complete` as the technician with picks
+  `["roaches", " Ants ", "Crickets"]` and rows Demand CS `["ants", " Spiders "]`, Advion Ant Gel
+  `["Rodents", "Squirrels", "ANTS"]` and a nameless row -> the stored set
+  `{Roaches,Ants,Crickets,Spiders,Rodents,Squirrels}`, the rows `{Ants,Spiders}` and
+  `{Rodents,Squirrels,Ants}`, `areasServiced` "Garage, Kitchen", no `applicationLocation` in the
+  response and no such column; `GET /api/service-records/:id` as manager and
+  `GET /api/product-applications` as admin reading them back; the technician's PATCH 403;
+  support's replace-all with one Termites row and no picks -> the set kept every pick and gained
+  Termites, one `ticket_edited` row whose before carries the two rows' `targetPests` and the old
+  set and whose after carries `["Termites"]` and the new set, neither snapshot naming
+  `applicationLocation`; explicit picks `["fleas"]` with the same row -> `{Fleas,Termites}`; a
+  content edit `["ticks"]` without materials -> `{Ticks,Termites}`; `["TICKS"]` again -> unchanged
+  and no audit row; picks `[]` with a row naming Squirrels and raccoons -> both kept as written; an
+  empty union storing `{}` for `[]` and `NULL` for `null`; the legacy `POST /api/product-applications`
+  with `["bed bugs", "Moths"]` -> `{Bed Bugs,Moths}` on the row and on the ticket; a legacy body
+  naming only `applicationLocation` -> 201 with `applicationAreas` null; every fixture deleted and
+  every count back at the post-boot baseline (`session` +4); boot 2 printed only the serving line
+  with every count unchanged; Vite 200 with the new symbols on the four touched client modules,
+  `shared/material-lists.ts` and the untouched `list-multi-select.tsx`. **Nothing was rendered in
+  a browser** - the repo has no browser automation and this session had no browser - so the two
+  multi-selects, the summary line and the material lines' pest captions reach the owner first.
+- **Known follow-up.** The Service History page's legacy "New Service Record" form still types the
+  ticket's target pests comma-separated into its own `POST /api/service-records`, which stores
+  them as typed (not respelled; its product rows do go through the normalizer and fold their
+  pests into the set). The dialog's `FALLBACK_TARGET_PEST_OPTIONS` still stands in for an org with
+  no configured pests. The target-pests routes stay ungated, as before.
 
 ---
 

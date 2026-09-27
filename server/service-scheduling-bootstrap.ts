@@ -239,6 +239,7 @@ export async function bootstrapServiceSchedulingFoundation(): Promise<void> {
       ('Occasional Invaders', true, false, 120)
     ON CONFLICT DO NOTHING
   `);
+  await bootstrapMaterialTargetPests();
 
   await db.execute(sql`
     CREATE TABLE IF NOT EXISTS opportunities (
@@ -487,9 +488,9 @@ interface RequeuedServiceRow {
 //      copies every row's application_location in as a one-element array
 //      (trimmed; in the org's area list's spelling where it matches an entry
 //      apart from casing) and prints the count; a row with no location stays
-//      null. application_location stays as the transitional single value
-//      (dev rule 4) - storage writes it as the first area from here on -
-//      until C3.4b decides its fate.
+//      null. application_location stayed as the transitional single value
+//      (dev rule 4) until Pass 21 (C3.4b) dropped it - see
+//      bootstrapMaterialTargetPests below, which runs after this.
 //   2. On the same boot, unit spellings: material_products.default_unit and
 //      product_applications.unit are rewritten in the org's unit list's
 //      spelling where they match an entry apart from casing / whitespace
@@ -601,6 +602,54 @@ async function bootstrapMaterialVocabulary(): Promise<void> {
   console.log(
     `[service-scheduling-bootstrap] Pass 20: ${unitsRewritten} unit(s) rewritten in the unit list's spelling (the per-row effect above)` +
       (unmatched.length ? `; ${unmatched.length} not on the list and left as written: ${unmatched.join("; ")}.` : "; every other unit already matched the list."),
+  );
+}
+
+// Pass 21 (PLAN_ROADMAP_V2.md C3.4b; CANONICAL_DOMAIN_RULES_V1.md §12).
+// Two guarded steps, each printed once and quiet after:
+//   1. product_applications.target_pests (text[]) beside application_areas -
+//      the pests a product was applied for, the compliance record per row.
+//      No backfill: no row carried a pest before the column existed, so the
+//      boot that adds it only reports the row count. The post and the office
+//      edit write it from here on (storage normalizeProductApplicationInputs,
+//      in the org's target_pests list's spelling), and
+//      service_records.target_pests becomes the ticket's picks plus every
+//      row's pests.
+//   2. product_applications.application_location is DROPPED - the fate the
+//      C3.4b row decided for Pass 20's transitional single area. Every
+//      reader goes through applicationAreasOf() / formatApplicationAreas()
+//      and every writer (storage, the seed, the Service History page's legacy
+//      form) writes application_areas, so the column had no reader left. As
+//      a safety net, a row that still had a location and no areas (none on
+//      the dev database; a dump from before Pass 20 gets Pass 20's copy
+//      first, above) has it copied in as a one-element array, kept as
+//      written, before the drop. A server still running the previous code
+//      against this database selects the column by name and must be
+//      restarted - which is why this pass's verification ran against a copy
+//      of the dev database (DEV_NOTES.md).
+async function bootstrapMaterialTargetPests(): Promise<void> {
+  const hadTargetPests = await columnExists("product_applications", "target_pests");
+  await db.execute(sql`ALTER TABLE product_applications ADD COLUMN IF NOT EXISTS target_pests text[]`);
+  if (!hadTargetPests) {
+    const counted = await db.execute(sql`SELECT count(*)::int AS total FROM product_applications`);
+    const total = (counted.rows[0] as { total: number } | undefined)?.total ?? 0;
+    console.log(
+      `[service-scheduling-bootstrap] Pass 21: product_applications gained target_pests (text[]). ${total} existing row(s) carried no pest before this column existed, so nothing was backfilled; the post and the office edit write a row's pests from here on, and service_records.target_pests is the ticket's own picks plus every row's pests.`,
+    );
+  }
+
+  const hadLocation = await columnExists("product_applications", "application_location");
+  if (!hadLocation) return;
+  const copied = await db.execute(sql`
+    UPDATE product_applications
+    SET application_areas = ARRAY[btrim(application_location)]::text[]
+    WHERE (application_areas IS NULL OR cardinality(application_areas) = 0)
+      AND application_location IS NOT NULL AND btrim(application_location) <> ''
+  `);
+  await db.execute(sql`ALTER TABLE product_applications DROP COLUMN IF EXISTS application_location`);
+  console.log(
+    `[service-scheduling-bootstrap] Pass 21: product_applications.application_location dropped (C3.4b decided the fate of Pass 20's transitional single area: every reader and writer uses application_areas). ` +
+      `${copied.rowCount ?? 0} row(s) still had a location and no areas and had it copied in as a one-element array first; every other row's location was already its first area.`,
   );
 }
 

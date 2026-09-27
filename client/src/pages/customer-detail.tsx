@@ -49,7 +49,7 @@ import {
 import { useAuth } from "@/hooks/use-auth";
 import { can, PERMISSIONS } from "@shared/permissions";
 import { formatReopenReason } from "@shared/ticket-reopen";
-import { formatApplicationAreas } from "@shared/material-lists";
+import { formatApplicationAreas, formatTargetPests } from "@shared/material-lists";
 import { selectableUsers, userDisplayName } from "@shared/users";
 import type { UserSummary } from "@shared/schema";
 import { formatPhoneDisplay } from "@shared/phone";
@@ -2854,6 +2854,7 @@ function ServiceDetailModal({
           <p><span className="font-medium">Billing Readiness:</span> {serviceRecord.readyForBilling ? "Ready for billing" : "Not billing-ready"}</p>
           {serviceRecord.notes && <p><span className="font-medium">Notes:</span> {serviceRecord.notes}</p>}
           {serviceRecord.areasServiced && <p><span className="font-medium">Derived Areas:</span> {serviceRecord.areasServiced}</p>}
+          {serviceRecord.targetPests && serviceRecord.targetPests.length > 0 && <p><span className="font-medium">Target Pests:</span> {serviceRecord.targetPests.join(", ")}</p>}
           {serviceRecord.conditionsFound && <p><span className="font-medium">Conditions:</span> {serviceRecord.conditionsFound}</p>}
           {serviceRecord.recommendations && <p><span className="font-medium">Recommendations:</span> {serviceRecord.recommendations}</p>}
           {serviceRecord.followUpRequired && (
@@ -2879,7 +2880,7 @@ function ServiceDetailModal({
               <div key={application.id} className="rounded-md border bg-muted/20 px-3 py-2">
                 <p className="font-medium">{application.productName}</p>
                 <p className="text-xs text-muted-foreground">
-                  {[application.amountApplied && `${application.amountApplied} ${application.unit || ""}`.trim(), formatApplicationAreas(application), application.applicationMethod, application.epaRegNumber ? `EPA ${application.epaRegNumber}` : null].filter(Boolean).join(" - ")}
+                  {[application.amountApplied && `${application.amountApplied} ${application.unit || ""}`.trim(), formatApplicationAreas(application), formatTargetPests(application) && `for ${formatTargetPests(application)}`, application.applicationMethod, application.epaRegNumber ? `EPA ${application.epaRegNumber}` : null].filter(Boolean).join(" - ")}
                 </p>
               </div>
             ))}

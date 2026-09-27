@@ -8,8 +8,10 @@
 // and the product form's Default Unit; the area list feeds the product
 // form's Allowed Areas and, for a product that lists none, the material
 // line's Application Area multi-select (a product with allowed areas offers
-// those). Target pests per material row are C3.4b's (Pass 21); the row's
-// shape leaves room beside applicationAreas.
+// those). Pass 21 (C3.4b) added the third vocabulary: the org's target-pest
+// list (the target_pests table, its active rows) behind each material row's
+// targetPests[] and the ticket's own picks; the ticket-level set is their
+// union, deriveTicketTargetPests() below.
 //
 // What a value outside a list does: it is KEPT, never refused, and the
 // editors show it marked "not on the list". A material row is the
@@ -136,17 +138,22 @@ export function toListSpellings(list: readonly string[], values: readonly (strin
   return out;
 }
 
-/** The fields of a material row this module reads. */
+/** The fields of a material row this module reads for its areas. */
 export interface MaterialRowAreas {
   applicationAreas?: readonly string[] | null;
-  /** Transitional (dev rule 4): the single area rows carried before Pass 20; written as the first area since. */
+  /**
+   * The single area a ticket draft saved locally before Pass 20 may still
+   * name. The column of that name was dropped in Pass 21 (C3.4b) and the
+   * server accepts no such field: this is read only when the ticket dialog
+   * restores such a draft.
+   */
   applicationLocation?: string | null;
 }
 
 /**
  * A row's areas as a list: applicationAreas when it names any, else the
- * transitional single applicationLocation as one entry (a body or a row
- * from before the list existed), else nothing.
+ * pre-Pass-20 single applicationLocation as one entry (a local draft from
+ * before the list existed), else nothing.
  */
 export function applicationAreasOf(row: MaterialRowAreas): string[] {
   const areas = (row.applicationAreas ?? []).map((area) => (area ?? "").trim()).filter((area) => area.length > 0);
@@ -177,4 +184,42 @@ export function deriveAreasServiced(rows: readonly MaterialRowAreas[]): string |
 export function formatApplicationAreas(row: MaterialRowAreas): string | null {
   const areas = applicationAreasOf(row);
   return areas.length ? areas.join(", ") : null;
+}
+
+/** The fields of a material row this module reads for its target pests (Pass 21, C3.4b). */
+export interface MaterialRowPests {
+  targetPests?: readonly string[] | null;
+}
+
+/** A row's target pests as a list: trimmed, empties dropped, order kept. */
+export function targetPestsOf(row: MaterialRowPests): string[] {
+  return (row.targetPests ?? []).map((pest) => (pest ?? "").trim()).filter((pest) => pest.length > 0);
+}
+
+/**
+ * service_records.targetPests, derived (canon §12, C3.4b): the ticket's own
+ * picks first, in the order picked, then every row's pests in row order -
+ * each in the pest list's spelling where it matches an entry apart from
+ * casing or whitespace and kept as written otherwise, duplicates dropped
+ * case-insensitively. Storage stores this on every post and office edit; the
+ * ticket dialog shows the same union as its summary line. A pick is never
+ * dropped because a material stopped naming it: the picks are the "selected"
+ * part, and only removing the pick removes it.
+ */
+export function deriveTicketTargetPests(
+  list: readonly string[],
+  selected: readonly (string | null | undefined)[] | null | undefined,
+  rows: readonly MaterialRowPests[],
+): string[] {
+  const fromRows: string[] = [];
+  for (const row of rows) {
+    for (const pest of targetPestsOf(row)) fromRows.push(pest);
+  }
+  return toListSpellings(list, [...(selected ?? []), ...fromRows]);
+}
+
+/** One line for a summary or a card: the row's target pests joined ", ", or null. */
+export function formatTargetPests(row: MaterialRowPests): string | null {
+  const pests = targetPestsOf(row);
+  return pests.length ? pests.join(", ") : null;
 }
