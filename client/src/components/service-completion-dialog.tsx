@@ -17,7 +17,7 @@ import { BillingPlanPill, useBillingPlanById } from "@/components/billing-plan-p
 import { can, PERMISSIONS, rolesWithPermission } from "@shared/permissions";
 import { computeProductionValueCents } from "@shared/production-value";
 import { describeTicketLifecycle } from "@shared/ticket-status";
-import type { Agreement, Appointment, Location, MaterialProduct, ProductApplication, Service, ServiceRecord, ServiceType, TargetPest, Technician } from "@shared/schema";
+import type { Agreement, Appointment, CustomerNote, MaterialProduct, ProductApplication, Service, ServiceRecord, ServiceType, TargetPest, Technician } from "@shared/schema";
 
 interface MaterialLine {
   key: string;
@@ -56,11 +56,6 @@ interface ServiceCompletionDialogProps {
   // local draft, and the technician and service date editable (the PATCH's
   // content, which a post fixes at start). Defaults to "post".
   mode?: "post" | "office-edit";
-  // Pass 19 (PLAN_ROADMAP_V2.md C3.3): the visit's location, for its notes in
-  // the instructions block. The technician view passes it from its work
-  // read; a caller without one (the review modal, the Services tab) leaves
-  // it out and the dialog reads the customer's locations instead.
-  location?: Location | null;
 }
 
 type DilutionOption = {
@@ -182,7 +177,6 @@ export function ServiceCompletionDialog({
   existingServiceRecord,
   onCompleted,
   mode = "post",
-  location = null,
 }: ServiceCompletionDialogProps) {
   const { toast } = useToast();
   const { user } = useAuth();
@@ -222,13 +216,15 @@ export function ServiceCompletionDialog({
   // Pass 19 (C3.3): D6's billing-plan pill on the ticket header for an
   // agreement service (the billing-profile display waits for C5.2).
   const { planById: billingPlanById, isLoading: billingPlansLoading } = useBillingPlanById(open && !!service?.agreementId);
-  // The location's notes for the instructions block when no location was
-  // passed in: the customer's locations read, the row this service sits at.
-  const { data: customerLocations } = useQuery<Location[]>({
-    queryKey: [`/api/locations/${service?.customerId}`],
-    enabled: open && !location && !!service?.customerId,
+  // The location's notes for the instructions block (Pass 19): the canonical
+  // LOCATION-scope rows in customer_notes, through the read the customer
+  // screen's notes panel uses (same query key, so its cache and invalidations
+  // are shared). locations.notes is the transitional legacy column - empty
+  // everywhere - and is not read here.
+  const { data: locationNotes } = useQuery<CustomerNote[]>({
+    queryKey: ["/api/notes/location", service?.locationId],
+    enabled: open && !!service?.locationId,
   });
-  const resolvedLocation = location ?? customerLocations?.find((row) => row.id === service?.locationId) ?? null;
   // D6: what this service bills and what is due today, resolved by the
   // server through the same code that prices the visit invoice - not from
   // the agreement row above, which cannot say whether its plan covers the visit.
@@ -409,14 +405,22 @@ export function ServiceCompletionDialog({
 
   // Pass 19 (C3.3): what the technician is told before the work - the
   // agreement's service instructions (defaulted from its template), the
-  // service's own notes and the location's notes - each labelled, absent
-  // when empty. Read from rows the dialog already has or reads; never typed
-  // here (instructions are edited where they live).
+  // service's own notes and the location's notes (pinned first, then newest,
+  // one paragraph each) - each labelled, absent when empty. Read from rows
+  // the dialog already has or reads; never typed here (instructions are
+  // edited where they live).
   const instructions = [
-    { label: "Agreement instructions", text: agreement?.serviceInstructions ?? "" },
-    { label: "Service notes", text: service?.notes ?? "" },
-    { label: "Location notes", text: resolvedLocation?.notes ?? "" },
-  ].filter((entry) => entry.text.trim().length > 0);
+    { label: "Agreement instructions", paragraphs: [agreement?.serviceInstructions ?? ""] },
+    { label: "Service notes", paragraphs: [service?.notes ?? ""] },
+    {
+      label: "Location notes",
+      paragraphs: [...(locationNotes ?? [])]
+        .sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned) || new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+        .map((note) => note.body),
+    },
+  ]
+    .map((entry) => ({ ...entry, paragraphs: entry.paragraphs.map((text) => text.trim()).filter((text) => text.length > 0) }))
+    .filter((entry) => entry.paragraphs.length > 0);
 
   const invalidateTicketViews = () => {
     queryClient.invalidateQueries({ queryKey: ["/api/services"] });
@@ -597,7 +601,9 @@ export function ServiceCompletionDialog({
                 {instructions.map((entry) => (
                   <div key={entry.label}>
                     <p className="text-xs font-medium text-muted-foreground">{entry.label}</p>
-                    <p className="mt-0.5 whitespace-pre-wrap text-sm">{entry.text}</p>
+                    {entry.paragraphs.map((text, index) => (
+                      <p key={index} className="mt-0.5 whitespace-pre-wrap text-sm">{text}</p>
+                    ))}
                   </div>
                 ))}
               </div>

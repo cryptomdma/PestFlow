@@ -2029,21 +2029,24 @@ draftPrice?: VisitBillingDraftPrice | null           // read with the summary, s
 useBillingPlanById(enabled = true)                   // the dialog reads the plans only for an open agreement ticket
 
 // client/src/components/service-completion-dialog.tsx
-location?: Location | null                           // the visit's location for the instructions block; absent -> the row at
-                                                     // service.locationId from GET /api/locations/:customerId
+locationNotes                                        // GET /api/notes/location/:locationId under the customer screen's query key -
+                                                     // the canonical LOCATION-scope customer_notes rows; locations.notes is the
+                                                     // legacy column and is not read
 committedPrice / commitPrice()                       // onBlur of the price box (input-ticket-price): dollars.cents, and the
                                                      // value the draft derives from
 draftPrice                                           // serviceOverridePayload's rule: allowServiceOverride, != service.priceCents,
                                                      // and for an agreement service != computedProductionValueCents; else null
 instructions                                         // [Agreement instructions, Service notes, Location notes] minus the empty
                                                      // ones (block-ticket-instructions), between the header card and the
-                                                     // technician / date grid
+                                                     // technician / date grid; location notes pinned first, newest first, one
+                                                     // paragraph each
 <BillingPlanPill>                                    // under the mode badge once `agreement` and the plans have loaded
 
 // client/src/pages/technician-work.tsx
 selectedVisit / detailVisit                          // the clicked snapshot, and the live row from `visits` by appointment id
-completionContext.location                           // passed to the dialog as `location`
-openTicket(service, appointment, location)           // no timeInAt -> the prompt; otherwise opens the ticket
+detailLocationNotes                                  // the sheet's Location Notes block, from the same notes read (it read
+                                                     // locations.notes before - blank everywhere)
+openTicket(service, appointment)                     // no timeInAt -> the prompt; otherwise opens the ticket
 openTicketWithoutTimeIn() / timeInAndOpenTicket()    // the prompt's two buttons (button-time-in-prompt-skip / -yes); Yes posts
                                                      // POST /api/appointments/:id/time-in through timeInMutation.mutateAsync
                                                      // (refreshWork runs on success) and opens on the returned appointment
@@ -2070,8 +2073,15 @@ Behavior worth knowing before the next pass touches it:
 - **The prompt is the technician view's.** It sits in front of the ticket's open, where Time In
   means something, and never in the dialog: the office-edit mode and the Services tab's office
   post never ask. The rule is the sheet's own (`!appointment.timeInAt`, whatever the status).
-- **Verified 2026-09-25** (PORT=5001): `npm run check` clean; boot 1 printed only the serving line
-  with all 44 table counts unchanged (no migration); 50 API / SQL assertions on boot 1 as the four
+- **Location notes are `customer_notes`, not `locations.notes`.** The owner's live test of
+  2026-09-26 found no location notes anywhere on the tech view: the sheet (since before this pass)
+  and the first cut of the instructions block read the transitional legacy column, empty on all 14
+  dev locations, while the notes written on the customer screen are LOCATION-scope
+  `customer_notes` rows. Both surfaces now read `GET /api/notes/location/:locationId` under the
+  customer screen's query key; the `location` prop and the customer-locations fallback are gone.
+- **Verified 2026-09-25, re-run 2026-09-26 with the location-notes fix** (PORT=5001): `npm run
+  check` clean; boot 1 printed only the serving line with all 44 table counts unchanged (no
+  migration); 52 API / SQL assertions on boot 1 as the four
   roles - a fixture customer and location, a manual service at $150.00 and an agreement-generated
   service on the COD (Per Service) plan ($400 over 4 visits) placed on one appointment through
   `POST /api/appointments` and `PATCH /api/services/:id`; the plain read (both lines, tax = the
@@ -2080,7 +2090,10 @@ Behavior worth knowing before the next pass touches it:
   the stored price still 15000, no audit row, `applied: true`), a $0 draft, support's draft
   applying too; the technician's and support's draft on the agreement service ignored with the
   "manager or admin" note, the manager's and admin's applied ($999.00 + tax), stored prices
-  unchanged (null, 15000) and no audit row after every read; a serviceId not on the visit 400
+  unchanged (null, 15000) and no audit row after every read; a pinned LOCATION-scope note on the
+  fixture location returned by `GET /api/notes/location/:id` to the technician while
+  `locations.notes` is empty; a serviceId not on the visit 400
+
   `DRAFT_SERVICE_NOT_ON_VISIT`, one param without the other 400, priceCents abc / 1.5 / -1 / ""
   400, an unknown appointment 404, no session 401; the time-in route stamping once (a second
   call keeps the first `timeInAt`, status IN_PROGRESS); then both tickets posted by the technician

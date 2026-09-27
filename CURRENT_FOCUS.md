@@ -931,10 +931,12 @@ is in flight); `CollectPaymentDialog` takes the same `draftPrice`, so **Finish &
 defaults to the new amount**; the billing block says what its figures are priced at ("Priced at
 the ticket's $X - not posted yet", or why the draft is not applied). **Instructions** near the top
 of the open ticket: the agreement's `serviceInstructions`, the service's `notes` and the location's
-`notes`, each labelled, absent when empty; the location comes in as a new `location` prop from the
-technician view (its work read already carries it), and a caller without one (the review modal's
-office edit, the Services tab's post) falls back to the customer's locations read
-(`GET /api/locations/:customerId`, the row this service sits at). **The billing-plan pill** (D6's
+notes, each labelled, absent when empty; the location's notes are the canonical LOCATION-scope
+`customer_notes` rows through `GET /api/notes/location/:locationId` (the customer screen's notes
+read and query key; pinned first, then newest, one paragraph each) - `locations.notes` is the
+transitional legacy column and is empty everywhere, which is why the sheet's Location Notes block
+had been silently blank since before this pass; the sheet reads the same route now (the owner's
+live test of 2026-09-26, fixed on the branch before merge). **The billing-plan pill** (D6's
 `BillingPlanPill`; `useBillingPlanById` now takes `enabled`) sits under the mode badge in the header
 for an agreement service; the billing-profile display waits for C5.2. **Time in now?** lives in
 the technician view (`technician-work.tsx`), in front of the ticket's open: an `AlertDialog` when
