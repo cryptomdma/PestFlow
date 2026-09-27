@@ -30,6 +30,7 @@ import { formatCents } from "@shared/money";
 import { can, PERMISSIONS, rolesWithPermission } from "@shared/permissions";
 import { REOPEN_REASON_OTHER, REOPEN_REASON_OTHER_LABEL, describeReopenReason, isOtherReopenReason, type ReopenTicketRequest } from "@shared/ticket-reopen";
 import { isTicketFinalized } from "@shared/ticket-status";
+import { formatApplicationAreas } from "@shared/material-lists";
 import { CASH_CONFIRM_NOTE, formatPaymentMethod, formatPaymentStatus, mayConfirmPayment, needsCashAuthority, paymentHoldsValue, type LocationLedgerSummary } from "@shared/payments";
 import type { AppointmentInvoiceStatus } from "@shared/invoice-detail";
 import { CheckCircle2, ChevronLeft, ChevronRight, ClipboardCheck, FileText, MapPin, Pencil, RotateCcw } from "lucide-react";
@@ -772,7 +773,7 @@ export default function ServiceTicketReview() {
                       <div key={material.id} className="rounded-md bg-muted/20 p-2 text-sm">
                         <p className="font-medium">{material.productName}</p>
                         <p className="text-xs text-muted-foreground">
-                          {[material.epaRegNumber && `EPA ${material.epaRegNumber}`, material.dilutionLabel, material.amountApplied && `${material.amountApplied} ${material.unit || ""}`.trim(), material.applicationLocation, material.activeIngredientAmount && `AI ${material.activeIngredientAmount}`].filter(Boolean).join(" | ")}
+                          {[material.epaRegNumber && `EPA ${material.epaRegNumber}`, material.dilutionLabel, material.amountApplied && `${material.amountApplied} ${material.unit || ""}`.trim(), formatApplicationAreas(material), material.activeIngredientAmount && `AI ${material.activeIngredientAmount}`].filter(Boolean).join(" | ")}
                         </p>
                         {material.applicationMethod ? <p className="text-xs text-muted-foreground">Method: {material.applicationMethod}</p> : null}
                       </div>

@@ -97,6 +97,17 @@ import {
   normalizeTicketReopenReasons,
   sanitizeTicketReopenReasons,
 } from "@shared/ticket-reopen";
+import {
+  APPLICATION_AREAS_SETTING_KEY,
+  MATERIAL_UNITS_SETTING_KEY,
+  applicationAreasOf,
+  deriveAreasServiced,
+  normalizeApplicationAreas,
+  normalizeMaterialUnits,
+  sanitizeMaterialList,
+  toListSpelling,
+  toListSpellings,
+} from "@shared/material-lists";
 import { computeProductionValueCents } from "@shared/production-value";
 import { formatCents } from "@shared/money";
 import { buildBillingPlanSnapshot as buildSharedBillingPlanSnapshot, isScheduleBilledPlan } from "@shared/billing-plan";
@@ -421,17 +432,39 @@ export interface UpdateServiceRecordInput {
   actor?: AuditActor | null;
 }
 
+// The org's material vocabularies (Pass 20, C3.4a; shared/material-lists.ts):
+// the two app_settings lists, the defaults when the org has not saved one.
+export interface MaterialVocabulary {
+  units: string[];
+  areas: string[];
+}
+
 // What a post and an edit both do to the materials they were sent: trim the
-// name, drop nameless rows, trim the notes to null.
+// name, drop nameless rows, trim the notes to null, and (Pass 20) put the
+// row's vocabulary in the org's spelling - the unit and each application
+// area rewritten to the list's entry where they match one apart from casing
+// or whitespace, kept as written otherwise (never refused; see
+// shared/material-lists.ts for why). applicationAreas is the row's areas - a
+// body naming only applicationLocation (a client from before the list) reads
+// as one area - deduped, order kept, null when there are none;
+// applicationLocation is written as the first area: the transitional single
+// value (dev rule 4) until C3.4b decides its fate.
 function normalizeProductApplicationInputs(
   list: Array<Omit<InsertProductApplication, "serviceRecordId">> | null | undefined,
+  vocabulary: MaterialVocabulary,
 ): Array<Omit<InsertProductApplication, "serviceRecordId">> {
   return (list ?? [])
-    .map((application) => ({
-      ...application,
-      productName: application.productName?.trim() ?? "",
-      notes: application.notes?.trim() || null,
-    }))
+    .map((application) => {
+      const areas = toListSpellings(vocabulary.areas, applicationAreasOf(application));
+      return {
+        ...application,
+        productName: application.productName?.trim() ?? "",
+        unit: toListSpelling(vocabulary.units, application.unit),
+        applicationAreas: areas.length ? areas : null,
+        applicationLocation: areas[0] ?? null,
+        notes: application.notes?.trim() || null,
+      };
+    })
     .filter((application) => application.productName);
 }
 
@@ -450,10 +483,11 @@ const PRODUCT_APPLICATION_SNAPSHOT_FIELDS = [
   "activeIngredientAmount",
   "applicationMethod",
   "device",
+  "applicationAreas",
   "applicationLocation",
   "notes",
 ] as const;
-type ProductApplicationSnapshot = Record<(typeof PRODUCT_APPLICATION_SNAPSHOT_FIELDS)[number], string | null>;
+type ProductApplicationSnapshot = Record<(typeof PRODUCT_APPLICATION_SNAPSHOT_FIELDS)[number], string | string[] | null>;
 
 function snapshotProductApplication(row: Partial<Omit<InsertProductApplication, "serviceRecordId">>): ProductApplicationSnapshot {
   const snapshot = {} as ProductApplicationSnapshot;
@@ -986,6 +1020,10 @@ export interface IStorage {
   setAppointmentCancelReasons(reasons: string[]): Promise<AppSetting>;
   getTicketReopenReasons(): Promise<string[]>;
   setTicketReopenReasons(reasons: string[]): Promise<AppSetting>;
+  getMaterialUnits(): Promise<string[]>;
+  setMaterialUnits(units: string[]): Promise<AppSetting>;
+  getApplicationAreas(): Promise<string[]>;
+  setApplicationAreas(areas: string[]): Promise<AppSetting>;
   getInvoiceOnFinalizeMode(): Promise<InvoiceOnFinalizeMode>;
   setInvoiceOnFinalizeMode(mode: InvoiceOnFinalizeMode): Promise<AppSetting>;
 
@@ -4710,6 +4748,17 @@ export class DatabaseStorage implements IStorage {
       }
 
       const followUpRequired = input.followUpRequired ?? existingRecord.followUpRequired;
+      // Pass 20 (C3.4a): the materials in the org's vocabulary, and areas
+      // serviced derived from them (canon §12) whenever they are sent - the
+      // union of every row's areas in row order, else the body's own text,
+      // else nothing. Without materials in the body the field is the content
+      // edit it always was.
+      const nextApplications = input.productApplications === undefined
+        ? null
+        : normalizeProductApplicationInputs(input.productApplications, await this.readMaterialVocabularyTx(tx));
+      const nextAreasServiced = nextApplications !== null
+        ? deriveAreasServiced(nextApplications) ?? (input.areasServiced?.trim() || null)
+        : input.areasServiced === undefined ? existingRecord.areasServiced : input.areasServiced?.trim() || null;
       const nextFields = {
         serviceDate: input.serviceDate ?? existingRecord.serviceDate,
         technicianId,
@@ -4717,7 +4766,7 @@ export class DatabaseStorage implements IStorage {
         technicianLicenseNumber,
         notes: input.notes === undefined ? existingRecord.notes : input.notes?.trim() || null,
         targetPests: input.targetPests === undefined ? existingRecord.targetPests : input.targetPests?.filter((value) => value.trim()) ?? null,
-        areasServiced: input.areasServiced === undefined ? existingRecord.areasServiced : input.areasServiced?.trim() || null,
+        areasServiced: nextAreasServiced,
         conditionsFound: input.conditionsFound === undefined ? existingRecord.conditionsFound : input.conditionsFound?.trim() || null,
         recommendations: input.recommendations === undefined ? existingRecord.recommendations : input.recommendations?.trim() || null,
         followUpRequired,
@@ -4727,7 +4776,6 @@ export class DatabaseStorage implements IStorage {
         // on the Service follows onto the ticket the same way.
         serviceTypeId: nextServiceTypeId,
       };
-      const nextApplications = input.productApplications === undefined ? null : normalizeProductApplicationInputs(input.productApplications);
 
       const recordChanged = (Object.keys(nextFields) as Array<keyof typeof nextFields>).some((key) => !ticketFieldsEqual(nextFields[key], existingRecord[key]));
       const applicationsChanged = nextApplications !== null
@@ -4871,6 +4919,11 @@ export class DatabaseStorage implements IStorage {
         }
       }
 
+      // Pass 20 (C3.4a): the materials in the org's vocabulary, and areas
+      // serviced derived from them (canon §12) - the union of every row's
+      // areas in row order; the body's own text only when no row names an
+      // area (a post with no materials).
+      const normalizedApplications = normalizeProductApplicationInputs(input.productApplications, await this.readMaterialVocabularyTx(tx));
       const recordPayload: Omit<InsertServiceRecord, "orgId"> = {
         serviceId: effectiveService.id,
         appointmentId: appointment?.id ?? effectiveService.appointmentId ?? null,
@@ -4883,7 +4936,7 @@ export class DatabaseStorage implements IStorage {
         technicianLicenseNumber: null,
         notes: input.notes?.trim() || null,
         targetPests: input.targetPests?.filter((value) => value.trim()) ?? null,
-        areasServiced: input.areasServiced?.trim() || null,
+        areasServiced: deriveAreasServiced(normalizedApplications) ?? (input.areasServiced?.trim() || null),
         conditionsFound: input.conditionsFound?.trim() || null,
         recommendations: input.recommendations?.trim() || null,
         followUpRequired: input.followUpRequired ?? false,
@@ -4935,7 +4988,7 @@ export class DatabaseStorage implements IStorage {
       const serviceRecord = await this.flagTicketIfVisitAlreadyInvoicedTx(tx, postedRecord);
 
       await tx.delete(productApplications).where(and(eq(productApplications.orgId, this.orgId), eq(productApplications.serviceRecordId, serviceRecord.id)));
-      const validApplications = normalizeProductApplicationInputs(input.productApplications)
+      const validApplications = normalizedApplications
         .map((application) => ({ ...application, orgId: this.orgId, serviceRecordId: serviceRecord.id }));
       const savedApplications = validApplications.length
         ? await tx.insert(productApplications).values(validApplications).returning()
@@ -5242,15 +5295,32 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(materialProducts).where(and(eq(materialProducts.orgId, this.orgId), eq(materialProducts.isActive, true))).orderBy(asc(materialProducts.name));
   }
 
+  // Pass 20 (C3.4a): a product's default unit, allowed areas and default
+  // area are written in the org's lists' spelling where they match an entry
+  // (casing and whitespace aside) and kept as typed otherwise - never
+  // refused; the form shows an off-list value marked (shared/material-lists.ts).
+  private async normalizeMaterialProductInput<T extends Partial<InsertMaterialProduct>>(data: T): Promise<T> {
+    const vocabulary = await this.readMaterialVocabularyTx(db as any);
+    const next: Partial<InsertMaterialProduct> = { ...data };
+    if (data.defaultUnit !== undefined) next.defaultUnit = toListSpelling(vocabulary.units, data.defaultUnit);
+    if (data.allowedApplicationAreas !== undefined) {
+      next.allowedApplicationAreas = data.allowedApplicationAreas === null ? null : toListSpellings(vocabulary.areas, data.allowedApplicationAreas);
+    }
+    if (data.defaultApplicationArea !== undefined) next.defaultApplicationArea = toListSpelling(vocabulary.areas, data.defaultApplicationArea);
+    return next as T;
+  }
+
   async createMaterialProduct(data: InsertMaterialProduct): Promise<MaterialProduct> {
-    const [product] = await db.insert(materialProducts).values({ ...data, orgId: this.orgId }).returning();
+    const normalized = await this.normalizeMaterialProductInput(data);
+    const [product] = await db.insert(materialProducts).values({ ...normalized, orgId: this.orgId }).returning();
     return product;
   }
 
   async updateMaterialProduct(id: string, data: Partial<InsertMaterialProduct>): Promise<MaterialProduct | undefined> {
+    const normalized = await this.normalizeMaterialProductInput(data);
     const [product] = await db
       .update(materialProducts)
-      .set({ ...data, updatedAt: new Date() })
+      .set({ ...normalized, updatedAt: new Date() })
       .where(and(eq(materialProducts.orgId, this.orgId), eq(materialProducts.id, id)))
       .returning();
     return product;
@@ -5341,6 +5411,54 @@ export class DatabaseStorage implements IStorage {
     return setting;
   }
 
+  // Pass 20 (C3.4a): the material unit list and the application-area list -
+  // one app_settings row each, the reopen list's shape; no row reads as the
+  // defaults (shared/material-lists.ts). Read inside a transaction by the
+  // post and the office edit to put a row's vocabulary in the org's spelling.
+  private async readMaterialVocabularyTx(tx: DbTransaction): Promise<MaterialVocabulary> {
+    const rows = await tx
+      .select()
+      .from(appSettings)
+      .where(and(eq(appSettings.orgId, this.orgId), inArray(appSettings.key, [MATERIAL_UNITS_SETTING_KEY, APPLICATION_AREAS_SETTING_KEY])));
+    return {
+      units: normalizeMaterialUnits(rows.find((row) => row.key === MATERIAL_UNITS_SETTING_KEY)?.value),
+      areas: normalizeApplicationAreas(rows.find((row) => row.key === APPLICATION_AREAS_SETTING_KEY)?.value),
+    };
+  }
+
+  async getMaterialUnits(): Promise<string[]> {
+    return (await this.readMaterialVocabularyTx(db as any)).units;
+  }
+
+  async setMaterialUnits(units: string[]): Promise<AppSetting> {
+    return this.writeMaterialList(MATERIAL_UNITS_SETTING_KEY, units, "At least one material unit is required");
+  }
+
+  async getApplicationAreas(): Promise<string[]> {
+    return (await this.readMaterialVocabularyTx(db as any)).areas;
+  }
+
+  async setApplicationAreas(areas: string[]): Promise<AppSetting> {
+    return this.writeMaterialList(APPLICATION_AREAS_SETTING_KEY, areas, "At least one application area is required");
+  }
+
+  private async writeMaterialList(key: string, values: string[], emptyMessage: string): Promise<AppSetting> {
+    const normalized = sanitizeMaterialList(values);
+    if (!normalized.length) {
+      throw new Error(emptyMessage);
+    }
+    const value = JSON.stringify(normalized);
+    const [setting] = await db
+      .insert(appSettings)
+      .values({ orgId: this.orgId, key, value })
+      .onConflictDoUpdate({
+        target: [appSettings.orgId, appSettings.key],
+        set: { value, updatedAt: new Date() },
+      })
+      .returning();
+    return setting;
+  }
+
   // D2: PROMPT | AUTO_DRAFT | OFF, default PROMPT. A missing or unrecognised
   // row reads as the default rather than failing finalization.
   async getInvoiceOnFinalizeMode(): Promise<InvoiceOnFinalizeMode> {
@@ -5369,7 +5487,13 @@ export class DatabaseStorage implements IStorage {
   }
 
   async createProductApplication(data: InsertProductApplication): Promise<ProductApplication> {
-    const [pa] = await db.insert(productApplications).values({ ...data, orgId: this.orgId }).returning();
+    // The same vocabulary rule as a post's materials (Pass 20), so a row
+    // written by this legacy route carries applicationAreas too.
+    const [normalized] = normalizeProductApplicationInputs([data], await this.readMaterialVocabularyTx(db as any));
+    if (!normalized) {
+      throw new Error("Product name is required");
+    }
+    const [pa] = await db.insert(productApplications).values({ ...normalized, serviceRecordId: data.serviceRecordId, orgId: this.orgId }).returning();
     return pa;
   }
 

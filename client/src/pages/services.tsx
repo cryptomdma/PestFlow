@@ -34,6 +34,7 @@ import {
 } from "lucide-react";
 import { Link } from "wouter";
 import { describeTicketLifecycle, isTicketFinalized } from "@shared/ticket-status";
+import { formatApplicationAreas } from "@shared/material-lists";
 import type { Appointment, Customer, Service, ServiceRecord, ProductApplication, ServiceType, Location, Technician } from "@shared/schema";
 
 function toDateTimeLocalValue(value?: string | Date | null) {
@@ -418,7 +419,7 @@ export default function Services() {
                                 {app.dilutionRate && <span> | Rate: {app.dilutionRate}</span>}
                                 {app.amountApplied && <span> | Amt: {app.amountApplied}</span>}
                                 {app.device && <span> | Device: {app.device}</span>}
-                                {app.applicationLocation && <span> | Location: {app.applicationLocation}</span>}
+                                {formatApplicationAreas(app) && <span> | Areas: {formatApplicationAreas(app)}</span>}
                               </div>
                             ))}
                           </div>

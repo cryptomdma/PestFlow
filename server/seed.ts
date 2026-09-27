@@ -232,10 +232,10 @@ export async function seedDatabase() {
   ].map(withOrg)).returning();
 
   await db.insert(productApplications).values([
-    { serviceRecordId: sr1.id, productName: "Demand CS", epaRegNumber: "100-1066", dilutionRate: "0.4 oz/gal", amountApplied: "2 gallons", applicationMethod: "Spray", device: "B&G Sprayer", applicationLocation: "Exterior perimeter, 3ft up/3ft out" },
-    { serviceRecordId: sr1.id, productName: "Advion Ant Gel", epaRegNumber: "352-746", dilutionRate: "Ready to use", amountApplied: "15 grams", applicationMethod: "Bait placement", device: "Gel gun", applicationLocation: "Kitchen window sill, behind appliances" },
-    { serviceRecordId: sr2.id, productName: "Vendetta Plus", epaRegNumber: "1021-2593", dilutionRate: "Ready to use", amountApplied: "30 grams", applicationMethod: "Crack & crevice bait", device: "Bait gun", applicationLocation: "Kitchen equipment bases, wall voids behind prep areas" },
-    { serviceRecordId: sr2.id, productName: "Gentrol Point Source", epaRegNumber: "2724-469", dilutionRate: "Ready to use", amountApplied: "6 units", applicationMethod: "IGR placement", device: "Point source device", applicationLocation: "Under sinks, behind equipment" },
+    { serviceRecordId: sr1.id, productName: "Demand CS", epaRegNumber: "100-1066", dilutionRate: "0.4 oz/gal", amountApplied: "2 gallons", applicationMethod: "Spray", device: "B&G Sprayer", applicationAreas: ["Exterior perimeter, 3ft up/3ft out"], applicationLocation: "Exterior perimeter, 3ft up/3ft out" },
+    { serviceRecordId: sr1.id, productName: "Advion Ant Gel", epaRegNumber: "352-746", dilutionRate: "Ready to use", amountApplied: "15 grams", applicationMethod: "Bait placement", device: "Gel gun", applicationAreas: ["Kitchen window sill, behind appliances"], applicationLocation: "Kitchen window sill, behind appliances" },
+    { serviceRecordId: sr2.id, productName: "Vendetta Plus", epaRegNumber: "1021-2593", dilutionRate: "Ready to use", amountApplied: "30 grams", applicationMethod: "Crack & crevice bait", device: "Bait gun", applicationAreas: ["Kitchen equipment bases, wall voids behind prep areas"], applicationLocation: "Kitchen equipment bases, wall voids behind prep areas" },
+    { serviceRecordId: sr2.id, productName: "Gentrol Point Source", epaRegNumber: "2724-469", dilutionRate: "Ready to use", amountApplied: "6 units", applicationMethod: "IGR placement", device: "Point source device", applicationAreas: ["Under sinks, behind equipment"], applicationLocation: "Under sinks, behind equipment" },
   ].map(withOrg));
 
   const lastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 15);

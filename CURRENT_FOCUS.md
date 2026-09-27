@@ -23,8 +23,9 @@ immediate order) is merged (PR #87); Pass 15b (the location balance row inside t
 the owner's note of 2026-09-25) is merged (PR #88); Pass 17 (the reopen-reason pop-up, C3.2 - the
 first Phase 3 row in phase order, the recommended order being exhausted) is merged (PR #89); Pass
 18 (the office Edit on the review modal, C3.1b) is merged (PR #90); Pass 19 (the technician
-ticket modal's money and instructions, C3.3) is pushed, awaiting merge; **next pass: 20, material
-units and application areas** (C3.4a). The roadmap sequences every
+ticket modal's money and instructions, C3.3) is merged (PR #91); Pass 20 (material units and
+application areas, C3.4a) is pushed, awaiting merge; **next pass: 21, target pests at two
+levels** (C3.4b). The roadmap sequences every
 remaining item below; this file keeps the status pointer and, as its last section, the handoff
 prompt that starts the next session.
 
@@ -903,7 +904,7 @@ office-edit mode and its editable technician / date cards have not been rendered
 repo has no browser automation and the session had no browser.** Signatures and behavior are
 under "Shipped in Pass 18" at the end of `PLAN_ROADMAP_V2.md` Part D.
 
-Pass 19 (`feature/phase-3-tech-ticket-money-instructions`, 2026-09-25, C3.3) pushed, awaiting merge.
+Pass 19 (`feature/phase-3-tech-ticket-money-instructions`, 2026-09-25, C3.3) merged (PR #91).
 **The price typed on the ticket drives the figures, priced by the server.** `GET
 /api/appointments/:id/billing-summary?serviceId=&priceCents=` (together or not at all) prices THAT
 service at the draft price through the same `resolveServiceLineBillingTx` and `resolveTaxDecision`
@@ -955,14 +956,57 @@ the re-pricing on blur, the instructions block, the pill and the time-in prompt 
 rendered by anyone: the repo has no browser automation and the session had no browser.**
 Signatures and behavior are under "Shipped in Pass 19" at the end of `PLAN_ROADMAP_V2.md` Part D.
 
-Next up: **Pass 20** — material units and application areas (`PLAN_ROADMAP_V2.md` Phase 3 table,
-C3.4a): a settings-managed unit list (`material_units`) feeding a Unit dropdown on the material
-line, product `defaultUnit` migrated to pick from it; an org-level application-area list in
-Settings feeding products' allowed areas; an application-area multi-select per material line
-(`applicationAreas[]`, areas serviced still derived). Phase order continues after it (Pass 21,
-C3.4b → ..., with Pass 26 (C4.1b) and Pass 28 (C4.3a) in Phase 4's turn). Branch from
-`origin/main` after confirming it contains Pass 19's merge. The handoff prompt for Pass 20 is the
-last section of this file; the Pass 20 session writes Pass 21's (the C3.4b row carries the spec).
+Pass 20 (`feature/phase-3-material-units-areas`, 2026-09-26, C3.4a) pushed, awaiting merge.
+**Material units and application areas.** Two Settings-managed lists in the reopen list's shape
+(`shared/material-lists.ts`; one `app_settings` row each, `material_units` and
+`application_areas`, the defaults until Settings saves one - oz / fl oz / gal / lb / g / mL / L /
+each, and ten areas from Exterior to Yard): `GET` open, `PATCH` MANAGE_SETTINGS, a Settings card
+each (a textarea one entry per line, disabled - not hidden - for anyone but an admin), placed above
+Material Products. **The product form** picks Default Unit from the unit list (a Select), Allowed
+Areas from the org's area list (a multi-select) and Default Area from the product's allowed areas.
+**The material line** picks Unit from the unit list (a Select) and its **Application Areas** - a
+list per row, `productApplications.applicationAreas text[]` - from the product's allowed areas or,
+when the product names none, the org's list (a Popover + Command multi-select,
+`client/src/components/list-multi-select.tsx`, shared with the product form); the collapsed
+summary, the review modal, the customer screen's service history and the Service History page
+print the list. **Areas serviced is derived by the server** now (canon §12): whenever a post or an
+office edit sends materials, `areasServiced` is the union of every row's areas in row order, the
+body's own text counting only when no row names an area; the dialog stopped computing it.
+**Decided: a unit or area outside the lists is kept, never refused**, and the editors show it
+marked "not on the list" (an extra Select option, an outlined chip) - a material row is the
+compliance record of what the technician did, a post from the field must not fail over vocabulary
+the technician cannot edit, and 8 of the 45 existing rows carry free text no list names; a value
+matching a list entry apart from casing or whitespace is written in the list's spelling (Each ->
+each, GARAGE -> Garage) on every post, office edit and product save, so the vocabulary converges
+without a refusal, and a re-save that differs only in casing writes nothing.
+`applicationLocation` stays as the **transitional single value** (dev rule 4): written as the first
+area by storage, read only by surfaces that predate the list, its fate C3.4b's. **Migration**
+(`bootstrapMaterialVocabulary`, guarded on the new column, the per-row effect printed once): 44 of
+45 `product_applications` got their `application_location` copied in as a one-element array (the
+row with none stays null); `Live Trap`'s `default_unit` and its 3 application rows went `Each` ->
+`each`; every other unit already matched. **It ran against the shared dev DB during this pass's
+verification boot, so the owner's `npm run dev:full` restart prints nothing for Pass 20.** The
+legacy `POST /api/product-applications` row goes through the same normalizer; the Service History
+page's pre-Phase-1 "New Service Record" form (freeform Areas Serviced and Application Location,
+its own `POST /api/service-records`) is untouched and remains the one surface with a freeform area
+field. Not touched: target pests (C3.4b), the post's price / type path (Passes 8, 18, 19), the tax
+engine, the service report (C3.5), the material-products routes' gating (none, as before).
+**Restart `npm run dev:full` before manually testing - this pass adds a column, four routes and a
+column on two bodies; the Unit Select, the two multi-selects, the product form's pickers and the
+two Settings cards have not been rendered by anyone: the repo has no browser automation and the
+session had no browser.** Signatures and behavior are under "Shipped in Pass 20" at the end of
+`PLAN_ROADMAP_V2.md` Part D.
+
+Next up: **Pass 21** — target pests at two levels (`PLAN_ROADMAP_V2.md` Phase 3 table, C3.4b,
+B12): `productApplications.targetPests[]` per material row from the target-pest list
+(compliance), beside Pass 20's `applicationAreas`; the ticket-level target pests stay on the
+ticket, selectable from a searchable multi-select placed in the Materials section, and are
+**selected ∪ every material's pests**; the summary line at the top of the ticket shows that
+union; the fate of the transitional `applicationLocation` is decided there. Phase order continues
+after it (Pass 22, C3.5 → ..., with Pass 26 (C4.1b) and Pass 28 (C4.3a) in Phase 4's turn).
+Branch from `origin/main` after confirming it contains Pass 20's merge. The handoff prompt for
+Pass 21 is the last section of this file; the Pass 21 session writes Pass 22's (the C3.5 row
+carries the spec).
 
 Phase 1's ordered plan, impact analysis, conflict resolutions, and per-pass verification steps live in
 `PLAN_BILLING_V1_1_EXECUTION.md` — read it when a pass builds on a Phase 1 helper (its "Shipped in
@@ -1195,105 +1239,106 @@ pointer and that prompt.
 
 Replaced at the end of every pass (`AGENT_WORKING_AGREEMENT.md`, the end-of-pass step). The owner
 pastes it verbatim to start the next session; it is also the last thing in the finishing session's
-final message. Written 2026-09-25, after Pass 19 was pushed as
-`feature/phase-3-tech-ticket-money-instructions`.
+final message. Written 2026-09-26, after Pass 20 was pushed as
+`feature/phase-3-material-units-areas`.
 
 ```text
-Start Pass 20 — Material units and application areas
-(PLAN_ROADMAP_V2.md Phase 3 table, row C3.4a. Phase order: the next open Phase 3 row after Pass
-19.) Read the CLAUDE.md docs in order first; CURRENT_FOCUS.md's last two entries (Pass 19 and
-"Next up") are the ones that matter.
+Start Pass 21 — Target pests at two levels
+(PLAN_ROADMAP_V2.md Phase 3 table, row C3.4b; B12 and decision-log row 5. Phase order: the next
+open Phase 3 row after Pass 20.) Read the CLAUDE.md docs in order first; CURRENT_FOCUS.md's last
+two entries (Pass 20 and "Next up") are the ones that matter.
 
-Branch feature/phase-3-material-units-areas from origin/main. Confirm main contains the Pass 19
-merge (feature/phase-3-tech-ticket-money-instructions) before branching.
+Branch feature/phase-3-target-pests-two-levels from origin/main. Confirm main contains the Pass 20
+merge (feature/phase-3-material-units-areas) before branching.
 
-The decision is recorded (the C3.4a row: a settings-managed unit list (material_units) feeding a
-Unit dropdown, product defaultUnit migrated to pick from it; an org-level application-area list in
-Settings feeding products' allowed areas; application area multi-select per material line
-(applicationAreas[], areas serviced still derived); canon §12 "Materials support" - Product
-Application rows are product-driven, areas serviced derive from structured application areas, no
-duplicate freeform area field; B13's rule - every field action is a route and every screen is
-data from a read; B12 / C3.4b (Pass 21) puts target pests per material row NEXT, so leave the
-material line's shape room for it). Ground truth today (line numbers from origin/main at the Pass
-19 merge; they drift, the names do not):
-- Data: material_products (shared/schema.ts:633) carries allowedApplicationAreas text[] (:645),
-  defaultUnit text (:649), defaultApplicationArea text (:650), allowedApplicationMethods /
-  allowedEquipment text[] (:643-644) and allowTechnicianOverride (:651); product_applications
-  (:615) carries unit text (:625) and ONE applicationLocation text (:629) per row;
-  service_records.areasServiced text (:476) is derived by the dialog from the rows'
-  applicationLocation (uniqueValues(...).join(", ")) on the post and on the office edit. The
-  tables are created in server/service-scheduling-bootstrap.ts (:171-196 - CREATE TABLE IF NOT
-  EXISTS material_products with allowed_application_areas :182 and default_unit :186; the
-  product_applications.material_product_id column :196); the migration convention is a guarded
-  ALTER in a *-bootstrap.ts with the per-row effect printed once (PROJECT_MAP.md). The dev DB
-  today: 4 products (default units each / gal / each / Each - note the casing drift - and allowed
-  areas such as Exterior / Interior / Garage / Attic / Crawl Space / Interior Baseboards /
-  Exterior Perimeter / Yard); 45 product_applications whose unit is null, each, Each or gal and
-  whose application_location is free text (Attic, Exterior, Exterior Perimeter, "Exterior
-  perimeter, 3ft up/3ft out", "(1) Roof, (1) Attic", "Kitchen equipment bases, wall voids behind
-  prep areas", ...).
-- The settings-list pattern to copy is Pass 17's: shared/ticket-reopen.ts (the key constant, the
-  defaults, the sanitize / normalize helpers), storage.ts getTicketReopenReasons /
-  setTicketReopenReasons (:5322-5340 - one app_settings row, a JSON array of strings, upsert on
-  (org_id, key)), routes.ts GET / PATCH /api/settings/ticket-reopen-reasons (:2023-2036, the GET
-  open and the PATCH MANAGE_SETTINGS), the Settings card (settings.tsx:2070-2105, a textarea one
-  entry per line, disabled - not hidden - for anyone but an admin). Material products: GET / POST
-  / PATCH /api/material-products (routes.ts:2059-2076, ungated), storage.ts:5238-5250; the product
-  form is MaterialProductForm (settings.tsx:222) with Allowed Areas a comma-separated Input (:297)
-  and Default Unit a free Input (:302); the Material Products card is at :1745.
-- The material line: client/src/components/service-completion-dialog.tsx - MaterialLine (:22, unit
-  and applicationLocation strings), the Unit free Input (:814-815, placeholder "oz, gal, lb"), the
-  Application Area Select over the product's allowedApplicationAreas or a free Input when the
-  product has none (:842-851; areaOptions :751), selectProduct seeding unit from
-  product.defaultUnit and applicationLocation from product.defaultApplicationArea (:546-549),
-  materialsPayload (:370-384) sending unit and applicationLocation, derivedAreas (:438 the post,
-  :480 the office edit), the collapsed summary line (:760). The post body:
-  completeServiceSchema.productApplications = insertProductApplicationSchema minus serviceRecordId
-  (routes.ts:266; the PATCH's :285); storage normalizeProductApplicationInputs (:426) and
-  snapshotProductApplication (:458 - the ticket_edited diff's shape). The review modal prints each
-  material's unit and applicationLocation (service-ticket-review.tsx:775).
+The decision is recorded (the C3.4b row and B12, owner 2026-09-19: target pests stay at the
+service-ticket level, selectable from the modal, AND each material application carries its own
+target pests for compliance; the ticket-level set is selected ∪ every material's pests and is what
+the summary shows; the ticket-level control becomes a searchable multi-select placed in the
+Materials section. Canon §12: target pests are Settings-managed reference data for internal
+treatment context, not warranted pests. B13's rule: every field action is a route and every screen
+is data from a read. Pass 20's rule for a value outside a list - kept, never refused, shown marked,
+a case-insensitive match written in the list's spelling - and its shared/material-lists.ts helpers
+(matchListEntry / toListSpellings / isOnList) are the pattern to reuse. Dev rule 4:
+applicationLocation is the transitional single area and this row decides its fate.) Ground truth
+today (line numbers from origin/main at the Pass 20 merge; they drift, the names do not):
+- Data: service_records.targetPests text[] (shared/schema.ts:475) is the ticket-level set;
+  product_applications (:615) carries applicationAreas text[] (:634) and the transitional
+  applicationLocation (:638) and NO pest column; target_pests (:667 - label, isActive, isFavorite,
+  sortOrder, notes; org-scoped; created and seeded with 12 pests in
+  server/service-scheduling-bootstrap.ts:212, unique on lower(label)). Routes: GET / POST / PATCH
+  /api/target-pests (routes.ts:2143-2170, ungated; the Settings card at settings.tsx:1583 with
+  TargetPestForm :350); the post and the PATCH accept targetPests: z.array(z.string()) on the
+  ticket (routes.ts:264, :285) and storage trims / filters them (storage.ts:4768 the edit, :4938
+  the post). The material row's write path is storage normalizeProductApplicationInputs (:452 -
+  the place to add the row's pests in the pest list's spelling) and
+  PRODUCT_APPLICATION_SNAPSHOT_FIELDS (:475 - the ticket_edited diff's shape; add the field);
+  readMaterialVocabularyTx (:5418) reads the two Pass 20 lists inside the post / edit transaction -
+  the pest list is a table, not an app_settings row, so it is a select on target_pests (active
+  rows) in the same transaction. The dev DB: 71 service_records, 45 product_applications, 12
+  target_pests (Ants ... Occasional Invaders); the tickets' targetPests are free strings that match
+  the labels.
+- The dialog (client/src/components/service-completion-dialog.tsx): the ticket-level control is a
+  search Input plus pill toggles (:712-730; state targetPests as a comma-joined string :209,
+  targetPestSearch :216, configuredTargetPests from GET /api/target-pests :237 with
+  FALLBACK_TARGET_PEST_OPTIONS :131 when the org has none, selectedTargetPests / targetPestOptions
+  / filteredTargetPests :303-308, toggleTargetPest :549); both bodies send targetPests.split(",")
+  (:479 the post, :518 the office edit). The material line is MaterialLine (:32; applicationAreas:
+  string[] :43 - the comment there reserves room for targetPests[]), materialFromDraft (:103,
+  migrates an older local draft), materialFromApplication (:112), materialsPayload (:393),
+  selectProduct (:564), the row UI with Unit (:853) and Application Areas (:888, a
+  <ListMultiSelect> from client/src/components/list-multi-select.tsx - options, value, onChange,
+  placeholder, searchPlaceholder, offListCaption, testId; off-list values shown as marked chips)
+  and the collapsed summary line (:799). The Materials section header is :772 ("Structured
+  Materials / Chemicals"). There is NO summary line at the top of the ticket today: the header
+  card (:~600) shows the service type, the schedule, the mode badge, the billing-plan pill and
+  the billing block.
+- Readers of the ticket's pests: the review modal prints them joined (service-ticket-review.tsx:757)
+  and each material's line (:776, formatApplicationAreas from shared/material-lists.ts); the
+  Service History page prints pills (services.tsx:403-406) and its legacy "New Service Record"
+  form takes them comma-separated (:288); the customer screen's service history prints the
+  record's derived areas and its materials (customer-detail.tsx ~2856, ~2882) but not its pests.
 
-Build per C3.4a: (1) material_units - a settings-managed list in the reopen-reasons shape (one
-app_settings row, a shared module with the defaults - propose them, e.g. oz, fl oz, gal, lb, g,
-mL, L, each - GET open, PATCH MANAGE_SETTINGS, a Settings card), the product form's Default Unit
-becoming a Select over it and the material line's Unit a Select over it (a unit already on a row
-that is not on the list is still shown, never dropped); the migration normalizes
-material_products.default_unit and product_applications.unit to the list's spelling where the
-match is case-insensitive (Each -> each) and prints the per-row effect once, leaving anything it
-cannot match untouched and reported; (2) an org-level application-area list in Settings
-(application_areas, the same shape) feeding the product form's Allowed Areas (a multi-select over
-the org list instead of comma-separated free text; values already on a product and not on the list
-are kept and shown); (3) applicationAreas[] on product_applications - a text[] column beside the
-existing applicationLocation, the material line's Application Area becoming a multi-select over
-the product's allowed areas (the org list when the product has none), areasServiced still derived
-(the union of every row's areas, in order), the review modal and the collapsed summary printing
-the list; the migration copies each existing applicationLocation into applicationAreas as a
-one-element array and prints the count; applicationLocation stays as the transitional single
-value, written as the first area and marked so (dev rule 4), until C3.4b decides its fate; (4)
-B13: every list is a read and every save a route - nothing page-only. Say plainly what a unit or
-area typed outside the lists does (refused, or kept and flagged) and why. Not touched: target
-pests (C3.4b), the post's price / type path (Passes 8, 18, 19), the tax engine, the service report
-(C3.5).
+Build per C3.4b: (1) productApplications.targetPests text[] beside applicationAreas - a guarded
+ALTER in service-scheduling-bootstrap.ts with the effect printed once (no backfill: no row carried
+a pest; say so in the print); the post / PATCH bodies accepting it on each row (the row schema is
+insertProductApplicationSchema minus serviceRecordId, so drizzle-zod picks the column up -
+confirm); storage writing each row's pests in the target-pest list's spelling where the match is
+case-insensitive and keeping anything else (Pass 20's rule, stated); the snapshot field added so
+ticket_edited carries before / after. (2) The ticket-level set = selected ∪ every material's
+pests: decide and state where the union is computed - the server, on the post and the PATCH
+whenever materials are sent (B13: one rule in the route, as Pass 20 did for areasServiced), with
+the technician's own picks preserved as the "selected" part so removing a material's pest never
+silently drops a ticket-level pick; the client shows the same union. (3) The ticket-level control
+moves into the Materials section as a searchable multi-select over the target-pest list (the
+<ListMultiSelect>, searchable already; the pill toggles and the separate search box go), and each
+material row gains a Target Pests multi-select over the same list; a pest already on a row or a
+ticket that the list does not name is kept and marked. (4) The summary line at the top of the
+ticket - the union, in the header card under the service type - on both modes (post and office
+edit), absent when empty (dev rule 6); the review modal's Target Pests line reads the stored
+union. (5) The fate of applicationLocation: this row decides it - either drop the column (a
+guarded ALTER after the readers are gone: service-ticket-review / customer-detail / services.tsx
+all read formatApplicationAreas already, the seed and storage write both) or keep it another pass
+with the reason stated; say which and why. Not touched: the unit and area lists (Pass 20), the
+post's price / type path, the service report (C3.5), the target-pests routes' gating (none, as
+before).
 
-Environment: Node 24.21.0, npm run dev:full (restart it before manually testing - this pass adds
-a migration and routes), DEV_NOTES.md for the DB backup/restore and PowerShell traps, gh logged in
-so the session can open the PR. Verify on PORT=5001 as the previous passes did: npm run check;
-double boot (boot 1 prints the migration's per-row effect - the unit normalizations and the
-applicationAreas backfill count - and boot 2 prints only "serving on port 5001" with every table
-count unchanged); the pass's API smoke test as all four roles (the two lists' GET / PATCH and
-their gating; a fixture product created through POST /api/material-products with a unit from the
-list and allowed areas from the org list; a ticket posted through the real routes with two
-material rows carrying applicationAreas[] -> areasServiced derived as their union and the rows'
-unit on the list; an office edit replacing the rows (Pass 16's replace-all) -> ticket_edited's
-before / after carrying applicationAreas; a unit or area outside the lists handled as decided;
-every fixture deleted and counts back at baseline; snapshot the two app_settings rows before the
-run and restore or delete them in the cleanup) and a Vite 200 on every touched client module;
-state plainly what was not rendered - the Selects, the multi-selects and the Settings cards cannot
-be exercised without a browser.
+Environment: Node 24.21.0, npm run dev:full (restart it before manually testing - this pass adds a
+column and changes two bodies), DEV_NOTES.md for the DB backup/restore and PowerShell traps, gh
+logged in so the session can open the PR. Verify on PORT=5001 as the previous passes did: npm run
+check; double boot (boot 1 prints the migration's effect once and boot 2 prints only "serving on
+port 5001" with every table count unchanged); the pass's API smoke test as all four roles (a
+ticket posted through the real routes with two material rows carrying targetPests[] and a
+ticket-level pick -> the stored ticket set is the union in the stated order and the rows' pests
+are in the list's spelling; an office edit replacing the rows -> ticket_edited's before / after
+carry the rows' targetPests and the ticket set follows; a pest outside the list handled as
+decided; the technician's PATCH 403; every fixture deleted and counts back at baseline) and a
+Vite 200 on every touched client module; state plainly what was not rendered - the multi-selects
+and the summary line cannot be exercised without a browser.
 
 Working agreement as always: one pass, one branch, update CURRENT_FOCUS and the roadmap's pass
 table at the end, replace the handoff prompt at the end of CURRENT_FOCUS.md with the one for the
-next pass (phase order: Pass 21, target pests at two levels, C3.4b, whose spec is its row, unless
+next pass (phase order: Pass 22, the service report document, C3.5, whose spec is its row, unless
 I say otherwise), push, open the PR and stop. I merge.
 ```
 
