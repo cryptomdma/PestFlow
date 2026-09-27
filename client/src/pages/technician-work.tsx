@@ -3,6 +3,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -19,7 +20,7 @@ import { apiRequest, getApiErrorMessage, queryClient } from "@/lib/queryClient";
 import { can, PERMISSIONS } from "@shared/permissions";
 import { isTicketFinalized, isTicketReopened, technicianMayPostTicket } from "@shared/ticket-status";
 import { AlertTriangle, Banknote, CalendarDays, CheckCircle2, ClipboardList, Clock3, MapPin, Navigation } from "lucide-react";
-import type { Appointment, Customer, Location, Service, ServiceRecord, ServiceType, Technician } from "@shared/schema";
+import type { Appointment, Customer, CustomerNote, Location, Service, ServiceRecord, ServiceType, Technician } from "@shared/schema";
 
 interface TechnicianWorkService {
   service: Service;
@@ -95,7 +96,10 @@ export default function TechnicianWork() {
   const [selectedDate, setSelectedDate] = useState(formatDateInputValue(new Date()));
   const [selectedTechnicianId, setSelectedTechnicianId] = useState("");
   const [completionContext, setCompletionContext] = useState<{ service: Service; appointment: Appointment } | null>(null);
-  const [detailVisit, setDetailVisit] = useState<TechnicianWorkVisit | null>(null);
+  const [selectedVisit, setSelectedVisit] = useState<TechnicianWorkVisit | null>(null);
+  // Pass 19 (C3.3): "Time in now?" - the ticket the technician asked to open
+  // on a visit with no Time In, held while the prompt is up.
+  const [timeInPrompt, setTimeInPrompt] = useState<{ service: Service; appointment: Appointment } | null>(null);
   const [cancelAction, setCancelAction] = useState<"cancel" | "reschedule" | null>(null);
   const [cancelReason, setCancelReason] = useState("");
   const [cancelNotes, setCancelNotes] = useState("");
@@ -114,10 +118,29 @@ export default function TechnicianWork() {
     queryKey: [`/api/technicians/${selectedTechnicianId}/work?date=${selectedDate}`],
     enabled: !!selectedTechnicianId && !!selectedDate,
   });
+  // The open sheet follows the day's read (Pass 19): a Time In / Time Out
+  // recorded from it, or from the ticket's prompt, shows without closing and
+  // reopening the sheet. The snapshot stands until the refetch lands.
+  const detailVisit = useMemo(
+    () => (selectedVisit ? visits?.find((visit) => visit.appointment.id === selectedVisit.appointment.id) ?? selectedVisit : null),
+    [selectedVisit, visits],
+  );
 
   // D6: Price / COA / Due today per service and the visit's due-today sum,
   // server-resolved. Refetched by refreshWork's ["/api/appointments"] prefix.
   const { data: detailBilling, isLoading: detailBillingLoading, isError: detailBillingError } = useVisitBillingSummary(detailVisit?.appointment.id);
+  // The location's notes (Pass 19): the canonical LOCATION-scope customer_notes
+  // rows through the customer screen's own read and query key. This block read
+  // locations.notes before - the transitional legacy column, empty everywhere -
+  // so it had been silently blank. Pinned first, then newest.
+  const detailLocationId = detailVisit?.appointment.locationId ?? detailVisit?.location?.id ?? null;
+  const { data: detailLocationNoteRows } = useQuery<CustomerNote[]>({ queryKey: ["/api/notes/location", detailLocationId], enabled: !!detailLocationId });
+  const detailLocationNotes = useMemo(
+    () => [...(detailLocationNoteRows ?? [])]
+      .filter((note) => note.body.trim().length > 0)
+      .sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned) || new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()),
+    [detailLocationNoteRows],
+  );
   const collectLocationId = detailVisit?.appointment.locationId ?? detailVisit?.location?.id ?? detailVisit?.services[0]?.service.locationId ?? null;
   // D9 (Pass 16): the ticket dialog is handed a record only to edit and
   // re-post a REOPENED ticket. A posted or finalized record is never passed -
@@ -129,7 +152,7 @@ export default function TechnicianWork() {
   const collectDesignation = resolveVisitDesignation((detailVisit?.services ?? []).map(({ service }) => service.agreementId));
   const closeDetail = () => {
     setCollectOpen(false);
-    setDetailVisit(null);
+    setSelectedVisit(null);
   };
 
   const activeTechnicians = useMemo(() => (technicians ?? []).filter((technician) => technician.status === "ACTIVE"), [technicians]);
@@ -172,7 +195,7 @@ export default function TechnicianWork() {
       setCancelAction(null);
       setCancelReason("");
       setCancelNotes("");
-      setDetailVisit(null);
+      setSelectedVisit(null);
     },
     onError: (error: Error) => {
       const drafts = getDraftInvoiceDecisionRequired(error);
@@ -200,6 +223,37 @@ export default function TechnicianWork() {
     },
     onSuccess: refreshWork,
   });
+
+  // Pass 19 (C3.3): opening a ticket on a visit with no Time In asks first.
+  // Yes posts the existing time-in route (the day's read refreshes, and the
+  // ticket opens on the stamped appointment); No opens the ticket anyway -
+  // bypass allowed. The technician view is the one surface that opens the
+  // post mode from a visit, so the office-edit mode never comes through here.
+  const openTicket = (service: Service, appointment: Appointment) => {
+    if (!appointment.timeInAt) {
+      setTimeInPrompt({ service, appointment });
+      return;
+    }
+    setCompletionContext({ service, appointment });
+  };
+  const openTicketWithoutTimeIn = () => {
+    if (!timeInPrompt) return;
+    setCompletionContext(timeInPrompt);
+    setTimeInPrompt(null);
+  };
+  const timeInAndOpenTicket = async () => {
+    if (!timeInPrompt) return;
+    const context = timeInPrompt;
+    setTimeInPrompt(null);
+    try {
+      const updated = (await timeInMutation.mutateAsync(context.appointment.id)) as Appointment | undefined;
+      setCompletionContext({ ...context, appointment: updated?.id ? updated : context.appointment });
+    } catch (error) {
+      // The ticket is never blocked by a failed time-in: say so and open it.
+      toast({ title: "Unable to time in", description: getApiErrorMessage(error), variant: "destructive" });
+      setCompletionContext(context);
+    }
+  };
 
   return (
     <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 p-4 sm:p-6">
@@ -265,7 +319,7 @@ export default function TechnicianWork() {
             const completedCount = visit.services.filter(({ service, serviceRecord }) => service.status === "COMPLETED" || !!serviceRecord).length;
             const serviceLabels = visit.services.map(({ service }) => serviceTypeNameById.get(service.serviceTypeId || "") || "Service");
             return (
-            <Card key={visit.appointment.id} className="overflow-hidden transition-colors hover:bg-muted/10" onClick={() => setDetailVisit(visit)}>
+            <Card key={visit.appointment.id} className="overflow-hidden transition-colors hover:bg-muted/10" onClick={() => setSelectedVisit(visit)}>
               <CardHeader className="p-4">
                 <div className="flex items-start justify-between gap-3">
                   <div>
@@ -358,10 +412,12 @@ export default function TechnicianWork() {
                   <p className="mt-1 whitespace-pre-wrap text-sm">{detailVisit.appointment.notes}</p>
                 </div>
               )}
-              {detailVisit.location?.notes && (
-                <div className="rounded-lg border p-3">
+              {detailLocationNotes.length > 0 && (
+                <div className="rounded-lg border p-3" data-testid="block-detail-location-notes">
                   <p className="text-xs uppercase tracking-wide text-muted-foreground">Location Notes</p>
-                  <p className="mt-1 whitespace-pre-wrap text-sm">{detailVisit.location.notes}</p>
+                  {detailLocationNotes.map((note) => (
+                    <p key={note.id} className="mt-1 whitespace-pre-wrap text-sm">{note.body}</p>
+                  ))}
                 </div>
               )}
               <div className="space-y-3">
@@ -391,7 +447,7 @@ export default function TechnicianWork() {
                         type="button"
                         className="mt-3 h-11 w-full"
                         variant={posted ? "outline" : "default"}
-                        onClick={() => canOpenTicketEditor(serviceRecord) && setCompletionContext({ service, appointment: detailVisit.appointment })}
+                        onClick={() => canOpenTicketEditor(serviceRecord) && openTicket(service, detailVisit.appointment)}
                         disabled={!canOpenTicketEditor(serviceRecord)}
                       >
                         {getTicketActionLabel(service, serviceRecord)}
@@ -487,11 +543,27 @@ export default function TechnicianWork() {
         />
       )}
 
+      <AlertDialog open={!!timeInPrompt} onOpenChange={(open) => !open && setTimeInPrompt(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Time in now?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This visit has no Time In yet. Time in now and open the ticket, or open it without timing in.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={openTicketWithoutTimeIn} data-testid="button-time-in-prompt-skip">Open without timing in</AlertDialogCancel>
+            <AlertDialogAction onClick={timeInAndOpenTicket} disabled={timeInMutation.isPending} data-testid="button-time-in-prompt-yes">Time in and open</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       <ServiceCompletionDialog
         open={!!completionContext}
         onOpenChange={(open) => !open && setCompletionContext(null)}
         service={completionContext?.service ?? null}
         appointment={completionContext?.appointment ?? null}
+
         technicians={technicians}
         serviceTypes={serviceTypes}
         defaultTechnicianId={selectedTechnicianId}
@@ -499,7 +571,7 @@ export default function TechnicianWork() {
         onCompleted={() => {
           refreshWork();
           setCompletionContext(null);
-          setDetailVisit(null);
+          setSelectedVisit(null);
         }}
       />
     </div>

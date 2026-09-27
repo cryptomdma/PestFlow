@@ -20,14 +20,28 @@ import {
 // coverage or an amount from agreementId or a plan - that is the drift the
 // server-side resolver exists to prevent.
 
-export function visitBillingSummaryQueryKey(appointmentId: string) {
-  return ["/api/appointments", appointmentId, "billing-summary"] as const;
+/** Pass 19 (C3.3): the ticket's unposted price, priced by the read (VisitBillingDraft in shared/visit-billing.ts says what came of it). */
+export interface VisitBillingDraftPrice {
+  serviceId: string;
+  priceCents: number;
 }
 
-export function useVisitBillingSummary(appointmentId: string | null | undefined) {
+// The draft rides the key's last segment as the query string, so a changed
+// draft is a new read and every ["/api/appointments"] prefix invalidation
+// still reaches it.
+export function visitBillingSummaryQueryKey(appointmentId: string, draft?: VisitBillingDraftPrice | null) {
+  const search = draft ? `?serviceId=${encodeURIComponent(draft.serviceId)}&priceCents=${draft.priceCents}` : "";
+  return ["/api/appointments", appointmentId, `billing-summary${search}`] as const;
+}
+
+export function useVisitBillingSummary(appointmentId: string | null | undefined, draft?: VisitBillingDraftPrice | null) {
   return useQuery<VisitBillingSummary>({
-    queryKey: visitBillingSummaryQueryKey(appointmentId ?? ""),
+    queryKey: visitBillingSummaryQueryKey(appointmentId ?? "", draft),
     enabled: !!appointmentId,
+    // A changed draft re-reads under a new key; keep the same visit's last
+    // figures on screen while it is in flight rather than flashing "Loading
+    // billing...". Another visit's figures are never shown as a placeholder.
+    placeholderData: (previousData, previousQuery) => (previousQuery?.queryKey[1] === appointmentId ? previousData : undefined),
   });
 }
 
@@ -188,6 +202,14 @@ export function ServiceBillingBlock({
       </div>
       <ServiceBillingFigures line={line} invoiced={summary.invoiced} testId={line.serviceId} />
       {line.priceCents == null && line.note && <p className="text-xs text-destructive">{line.note}</p>}
+      {/* Pass 19: what the figures are priced at when the ticket carries an unposted price - applied, or why not. */}
+      {summary.draft && summary.draft.serviceId === serviceId && (
+        <p className="text-xs text-muted-foreground" data-testid={`text-service-draft-price-${serviceId}`}>
+          {summary.draft.applied
+            ? `Priced at the ticket's ${formatCents(summary.draft.priceCents)} - not posted yet; the stored price changes when the ticket is posted.${summary.draft.note ? ` ${summary.draft.note}` : ""}`
+            : `The ticket's ${formatCents(summary.draft.priceCents)} is not priced here. ${summary.draft.note ?? ""}`}
+        </p>
+      )}
       {hasCharges && (
         <p className="text-xs text-muted-foreground" data-testid={`text-service-visit-due-${serviceId}`}>
           {line.dueTodayCents == null

@@ -12,8 +12,8 @@ import type { Agreement, BillingPlan } from "@shared/schema";
 // resolveBillingPlanCharge's, the same arithmetic the nightly run bills by.
 
 /** The org's billing plans by id, inactive included, so an agreement on a retired plan still names it. */
-export function useBillingPlanById() {
-  const { data: plans, isLoading } = useQuery<BillingPlan[]>({ queryKey: ["/api/billing-plans?includeInactive=true"] });
+export function useBillingPlanById(enabled = true) {
+  const { data: plans, isLoading } = useQuery<BillingPlan[]>({ queryKey: ["/api/billing-plans?includeInactive=true"], enabled });
   const planById = useMemo(() => new Map((plans ?? []).map((plan) => [plan.id, plan])), [plans]);
   return { planById, isLoading };
 }

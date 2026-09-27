@@ -262,6 +262,8 @@ Stripe remains Phase 2. Phase 1 builds the ledger with manual instruments:
 - Billing-plan pill on agreements (owner clarification): agreements with a recurring plan display a
   pill — plan name + periodic amount (e.g. `Monthly · $50`) — on the agreement card and location
   screen. Customers/locations are never "COD" or "monthly" as a whole; **plans attach to agreements.**
+  Since Pass 19 (`PLAN_ROADMAP_V2.md` C3.3, 2026-09-25) the same pill sits in the technician's
+  ticket header for an agreement service; the billing-profile display waits for C5.2.
 
 ## D7. Audit: promote `audit_logs` to the system-wide immutable history
 
@@ -312,6 +314,14 @@ Decided now, built later, so they stop resurfacing as ambiguity:
   and creating an agreement from the field (which wants sale attribution first). Recorded in
   full, with what exists today and the proposed design, in `CURRENT_FOCUS.md`; one
   technician-view pass after Pass 9.
+  **Items 1-4 built as Pass 19** (`feature/phase-3-tech-ticket-money-instructions`, 2026-09-25,
+  C3.3): the draft price is priced by the billing-summary read's `?serviceId=&priceCents=`
+  override through the invoice's resolver and tax engine, nothing written, and the stored price
+  still changes only at Post; an agreement price without `ADJUST_PRICE_AGREEMENT` is ignored and
+  echoed, never refused (the read previews what Post does); dollars.cents on blur; the
+  instructions block (agreement, service, location); the billing-plan pill on the ticket header
+  and the time-in prompt rode along from the C3.3 row. Adding a service from the field is C4.3b
+  (Pass 29); creating an agreement from the field stays Phase 9.
 - **Proposal generator** from the field: future/external, API-linked. Framework note only.
 
 ## D9. Schema cleanups riding along in Phase 1
