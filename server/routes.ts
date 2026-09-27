@@ -27,6 +27,7 @@ import { isUtcDay, statementFileName } from "@shared/statements";
 import { APPOINTMENT_DISPOSITION_MODES, DISPOSITION_OPPORTUNITY_CHOICES } from "@shared/appointment-disposition";
 import { can, PERMISSIONS, type UserRole } from "@shared/permissions";
 import { INVOICE_ON_FINALIZE_MODES, normalizeInvoiceOnFinalizeMode } from "@shared/invoice-on-finalize";
+import { normalizeAttachServiceReport } from "@shared/service-report";
 import {
   INITIAL_CHARGE_AMOUNT_MODES,
   INITIAL_CHARGE_COLLECTORS,
@@ -297,6 +298,14 @@ export async function registerRoutes(
     customerSignature: z.boolean().nullable().optional(),
     confirmed: z.boolean().nullable().optional(),
     productApplications: z.array(insertProductApplicationSchema.omit({ serviceRecordId: true })).optional(),
+  });
+  // Pass 22 (C3.5): the service report preview of an unposted ticket - the
+  // post's content shape plus the service it belongs to; rendered, never stored.
+  const previewServiceReportSchema = completeServiceSchema.extend({
+    serviceId: z.string().min(1),
+  });
+  const attachServiceReportSchema = z.object({
+    enabled: z.boolean(),
   });
   const materialProductSchema = insertMaterialProductSchema.extend({
     activeIngredientPercent: z.union([z.string(), z.number()]).nullable().optional()
@@ -2006,6 +2015,54 @@ export async function registerRoutes(
     }
   });
 
+  // Service report (PLAN_ROADMAP_V2.md C3.5, Pass 22; B11) - the customer-
+  // facing document of a posted ticket, the invoice document's routes:
+  // rendered and stored on the first request, the stored bytes after that
+  // until a write to the ticket retires them; inline by default, an
+  // attachment with ?download=1, named service-report-<date>-<location>.pdf.
+  // A read, so no gate beyond the session, like every document read here.
+  app.get("/api/service-records/:id/report", async (req, res) => {
+    try {
+      const result = await req.storage.getOrCreateServiceReportDocument(req.params.id);
+      if (!result) return res.status(404).json({ message: "Service record not found" });
+      const disposition = req.query.download === "1" ? "attachment" : "inline";
+      res.setHeader("Content-Type", result.document.mimeType);
+      res.setHeader("Content-Disposition", `${disposition}; filename="${result.fileName}"`);
+      res.send(Buffer.from(result.document.contentBase64, "base64"));
+    } catch (e: any) {
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.get("/api/service-records/:id/report-info", async (req, res) => {
+    try {
+      const result = await req.storage.getOrCreateServiceReportDocument(req.params.id);
+      if (!result) return res.status(404).json({ message: "Service record not found" });
+      const { contentBase64, ...info } = result.document;
+      res.json({ ...info, fileName: result.fileName });
+    } catch (e: any) {
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  // The collect step's "Preview report": the report of an UNPOSTED ticket,
+  // from the post's content shape plus the service, answered as the PDF and
+  // stored nowhere. Any session role - it is the technician's preview (B13:
+  // a route, so a native client gets the same document).
+  app.post("/api/service-records/preview-report", async (req, res) => {
+    try {
+      const validated = previewServiceReportSchema.parse(req.body);
+      const result = await req.storage.renderServiceReportPreview(validated);
+      if (!result) return res.status(404).json({ message: "Service not found" });
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader("Content-Disposition", `inline; filename="${result.fileName}"`);
+      res.send(result.pdf);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
   app.get("/api/settings/service-time-tracking", async (req, res) => {
     const mode = await req.storage.getServiceTimeTrackingMode();
     res.json({ mode });
@@ -2109,6 +2166,27 @@ export async function registerRoutes(
       const validated = invoiceOnFinalizeModeSchema.parse(req.body);
       const data = await req.storage.setInvoiceOnFinalizeMode(validated.mode);
       res.json({ mode: normalizeInvoiceOnFinalizeMode(data.value) });
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  // Pass 22 (C3.5; B11): "Attach service report to visit invoices". Readable
+  // by anyone (the Settings page shows it); changing it decides what every
+  // visit invoice's PDF carries from then on, so the PATCH is MANAGE_SETTINGS
+  // like invoice-on-finalize. An invoice PDF already rendered keeps what it
+  // rendered (getOrCreateInvoiceDocument never re-renders).
+  app.get("/api/settings/attach-service-report", async (req, res) => {
+    const enabled = await req.storage.getAttachServiceReportToInvoices();
+    res.json({ enabled });
+  });
+
+  app.patch("/api/settings/attach-service-report", requirePermission(PERMISSIONS.MANAGE_SETTINGS), async (req, res) => {
+    try {
+      const validated = attachServiceReportSchema.parse(req.body);
+      const data = await req.storage.setAttachServiceReportToInvoices(validated.enabled);
+      res.json({ enabled: normalizeAttachServiceReport(data.value) });
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
       res.status(400).json({ message: e.message });

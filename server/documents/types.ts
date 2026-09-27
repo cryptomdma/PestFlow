@@ -57,6 +57,14 @@ export interface InvoiceDocumentContext {
   noChargeCoveredByAgreement: boolean;
   notes: string | null;
   branding: InvoiceDocumentBranding;
+  /**
+   * Pass 22 (C3.5; B11): the service reports appended after the invoice's own
+   * pages when the office has "Attach service report to visit invoices" on -
+   * one per distinct ticket among the invoice's lines, in line order, each
+   * drawn by drawServiceReport() into the same document. Undefined (nothing
+   * appended) for an invoice with no visit, and when the setting is off.
+   */
+  attachedServiceReports?: ServiceReportDocumentContext[];
 }
 
 // ---------------------------------------------------------------------------
@@ -89,3 +97,56 @@ export type StatementDocumentContext =
   | (StatementDocumentBase & { variant: "LOCATION"; location: StatementDocumentParty; statement: LocationStatement })
   | (StatementDocumentBase & { variant: "ACCOUNT"; statement: AccountStatement })
   | (StatementDocumentBase & { variant: "ZERO_BALANCE_LETTER"; location: StatementDocumentParty; letter: ZeroBalanceLetter });
+
+// ---------------------------------------------------------------------------
+// Service report (PLAN_ROADMAP_V2.md C3.5, Pass 22; B11; canon §12). The same
+// pattern once more: storage assembles the context from the ticket as it
+// stands (getServiceReportDocumentContext / renderServiceReportPreview in
+// storage.ts) and renderServiceReportPdf turns it into bytes. The technician
+// name and license are the compliance snapshot copied onto the ticket at
+// post, the target pests the stored union of the ticket's picks and every
+// material's, the materials the product application rows in the org's
+// vocabulary - nothing here is a live join to today's profiles or lists.
+// ---------------------------------------------------------------------------
+
+/** One product application row as the report prints it. */
+export interface ServiceReportMaterialLine {
+  productName: string;
+  epaRegNumber: string | null;
+  amountApplied: string | null;
+  unit: string | null;
+  dilutionLabel: string | null;
+  dilutionRate: string | null;
+  applicationMethod: string | null;
+  device: string | null;
+  applicationAreas: string[];
+  targetPests: string[];
+}
+
+export interface ServiceReportDocumentContext {
+  /** The UTC day of the service (YYYY-MM-DD) - printed, and what the PDF's dates are pinned to. */
+  serviceDate: string;
+  /** True for the render-only preview of an unposted ticket: the header says so and nothing is stored. */
+  preview: boolean;
+  /** The customer's display name (company first). */
+  customerName: string;
+  /** Where the work was done, as every document prints a location. Null only for a ticket with no location. */
+  serviceLocation: { name: string; address: string | null } | null;
+  serviceTypeName: string | null;
+  /** The compliance snapshot (canon §12): copied onto the ticket at post, never today's profile. */
+  technicianName: string | null;
+  technicianLicenseNumber: string | null;
+  /** The ticket's stored set: its picks plus every material's pests (Pass 21). */
+  targetPests: string[];
+  /** Derived from the materials' areas (Pass 20), else the ticket's own text. */
+  areasServiced: string | null;
+  materials: ServiceReportMaterialLine[];
+  notes: string | null;
+  conditionsFound: string | null;
+  recommendations: string | null;
+  followUpRequired: boolean;
+  followUpNotes: string | null;
+  /** Whether the ticket records a customer signature; the report prints a signature line either way and says which. */
+  customerSignature: boolean;
+  branding: InvoiceDocumentBranding;
+}

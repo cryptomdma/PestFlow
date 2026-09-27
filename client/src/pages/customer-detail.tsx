@@ -35,6 +35,7 @@ import { OpportunityHistoryDialog } from "@/components/opportunity-history-dialo
 import { OpportunityConvertDialog } from "@/components/opportunity-convert-dialog";
 import { OpportunityTaxonomyChips } from "@/components/opportunity-taxonomy-chips";
 import { ServiceCompletionDialog } from "@/components/service-completion-dialog";
+import { ServiceReportActions } from "@/components/service-report-actions";
 import { DraftInvoiceVoidPrompt, getDraftInvoiceDecisionRequired, type DraftInvoiceRef } from "@/components/draft-invoice-void-prompt";
 import { resolveServiceScheduleState, SERVICE_SCHEDULE_STATE_LABELS, type ServiceScheduleState } from "@shared/appointment-disposition";
 import { BillingPlanPill, useBillingPlanById } from "@/components/billing-plan-pill";
@@ -2781,6 +2782,7 @@ function ServiceDetailModal({
   onFinalizeTicket,
   onReopenTicket,
   onOpenInvoice,
+  locationName = null,
 }: {
   service: Service;
   serviceTypeName: string;
@@ -2798,6 +2800,8 @@ function ServiceDetailModal({
   onReopenTicket?: (serviceRecord: ServiceRecord) => void;
   /** Pass 11b: the invoice number opens the invoice modal. */
   onOpenInvoice?: (invoiceId: string) => void;
+  /** Pass 22 (C3.5): names the service report's download file. */
+  locationName?: string | null;
 }) {
   const displayDate = getServiceDisplayDate(service, appointment, serviceRecord);
   const siblingCount = Math.max((siblingServices?.length ?? 1) - 1, 0);
@@ -2863,7 +2867,9 @@ function ServiceDetailModal({
               <p className="mt-1 whitespace-pre-wrap font-semibold">{serviceRecord.followUpNotes || "No follow-up notes provided."}</p>
             </div>
           )}
-          <div className="flex justify-end gap-2">
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            {/* Pass 22 (C3.5): the customer-facing report of this ticket - Open / Download. */}
+            <ServiceReportActions record={serviceRecord} locationName={locationName} />
             {serviceRecord.confirmed ? (
               <Button type="button" variant="outline" size="sm" onClick={() => onReopenTicket?.(serviceRecord)}>Reopen Ticket</Button>
             ) : (
@@ -2919,6 +2925,7 @@ function ServicesTab({
   serviceRecords,
   invoices,
   onOpenInvoice,
+  locationName = null,
 }: {
   customerId: string;
   locationId: string;
@@ -2927,6 +2934,8 @@ function ServicesTab({
   invoices?: Invoice[];
   /** Pass 11b: the Invoice column and the Service Details dialog open the invoice modal, not the Invoices tab. */
   onOpenInvoice: (invoiceId: string) => void;
+  /** Pass 22 (C3.5): the location's name, for the service report's file name. */
+  locationName?: string | null;
 }) {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingService, setEditingService] = useState<Service | null>(null);
@@ -3282,6 +3291,7 @@ function ServicesTab({
               onFinalizeTicket={(serviceRecord) => finalizeTicketMutation.mutate(serviceRecord)}
               onReopenTicket={(serviceRecord) => reopenTicketMutation.mutate(serviceRecord)}
               onOpenInvoice={onOpenInvoice}
+              locationName={locationName}
             />
           )}
         </DialogContent>
@@ -4030,6 +4040,7 @@ export default function CustomerDetail() {
             <ServicesTab
               customerId={customerId}
               locationId={activeLocationId}
+              locationName={activeLocation?.name ?? null}
               appointments={locationAppts}
               serviceRecords={locationServices}
               invoices={locationInvoices}

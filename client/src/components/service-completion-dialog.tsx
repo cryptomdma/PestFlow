@@ -13,6 +13,7 @@ import { apiRequest, getApiErrorMessage, queryClient } from "@/lib/queryClient";
 import { dollarsToCents, centsToDollarString, formatCents } from "@shared/money";
 import { ServiceBillingBlock, VisitInitialChargeCallout, useVisitBillingSummary, type VisitBillingDraftPrice } from "@/components/visit-billing-summary";
 import { CollectPaymentDialog } from "@/components/collect-payment-dialog";
+import { openServiceReportPreviewWindow, showServiceReportPreview } from "@/components/service-report-actions";
 import { BillingPlanPill, useBillingPlanById } from "@/components/billing-plan-pill";
 import { can, PERMISSIONS, rolesWithPermission } from "@shared/permissions";
 import { computeProductionValueCents } from "@shared/production-value";
@@ -555,6 +556,36 @@ export function ServiceCompletionDialog({
     onError: (error: Error) => toast({ title: "Unable to save the ticket", description: getApiErrorMessage(error), variant: "destructive" }),
   });
 
+  // Pass 22 (C3.5): the collect step's "Preview report" - the service report
+  // of this ticket as the post would store it, rendered by the server from
+  // the same content the post sends (POST /api/service-records/preview-report)
+  // and never stored. The tab is opened on the click, before the fetch, so a
+  // browser's popup rule sees the gesture; the PDF lands in it when the
+  // render answers (a blocked tab falls back to a download).
+  const previewReportMutation = useMutation({
+    mutationFn: async (target: Window | null) => {
+      if (!service) throw new Error("Service is required");
+      await showServiceReportPreview(
+        {
+          serviceId: service.id,
+          appointmentId: appointment?.id ?? service.appointmentId ?? null,
+          technicianId: technicianId || null,
+          serviceDate,
+          serviceTypeId: allowServiceOverride ? ticketServiceTypeId || null : undefined,
+          notes: [notes, deviceNotes ? `Device notes: ${deviceNotes}` : null].filter(Boolean).join("\n\n"),
+          targetPests,
+          conditionsFound,
+          recommendations,
+          followUpRequired,
+          followUpNotes: followUpRequired ? followUpNotes : null,
+          productApplications: materialsPayload(),
+        },
+        target,
+      );
+    },
+    onError: (error: Error) => toast({ title: "Unable to preview the service report", description: getApiErrorMessage(error), variant: "destructive" }),
+  });
+
   const updateMaterial = <K extends keyof MaterialLine>(index: number, key: K, value: MaterialLine[K]) => {
     setMaterials((current) => current.map((material, currentIndex) => {
       if (currentIndex !== index) return material;
@@ -991,6 +1022,8 @@ export function ServiceCompletionDialog({
         onPostTicket={() => completeMutation.mutate()}
         postingTicket={completeMutation.isPending}
         draftPrice={draftPrice}
+        onPreviewReport={() => previewReportMutation.mutate(openServiceReportPreviewWindow())}
+        previewingReport={previewReportMutation.isPending}
       />
     )}
     </>

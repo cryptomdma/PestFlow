@@ -97,7 +97,7 @@ are calibrated to Phase 1's: Pass 6 (four tables, routes, three dialogs) is the 
 | Batch date range labelled as posting date | DONE — Pass 13 (2026-09-24) | the dialog's inputs are "Posted from" / "Posted to" and its copy says "posted between"; the server still filters `postedAt ?? serviceDate` (`getServiceRecordsReadyForBillingInRange`). Was: a bare "from through to" subtitle (`:672`) |
 | Appointment-based invoicing (one visit, one invoice) | DONE | D1 / Pass 3 |
 | Generate Invoice from the Ticket Review modal, generate-and-send | PARTIAL | the on-finalize prompt (Pass 5: Generate / Generate & Send / Later) is the only Generate on that page (`service-ticket-review.tsx:216`); a ticket finalized with "Later" or under `OFF` has no Generate on the modal afterwards — only Batch or the Invoices screen |
-| … "sends invoice / service report to customer" | PARTIAL | invoice = `sentAt` stamp + pinned PDF (Pass 10); no service report document exists |
+| … "sends invoice / service report to customer" | PARTIAL — the documents exist, delivery does not | invoice = `sentAt` stamp + pinned PDF (Pass 10); the service report document since Pass 22 (C3.5, 2026-09-27): Open / Download per ticket, a Settings toggle attaching it to visit invoices; email delivery of either is C6.3 |
 | Paid status derived; check deferred until cleared; cash paid only by a manager | DONE, by a different mechanism | status derives from confirmed applications; `payments.status = PENDING` and `pendingAppliedCents` carry "pending" — there is **no invoice-level PENDING status** and none is needed (see B4) |
 | "Invoices are not being created upon finalization" | DONE | Pass 5; under `PROMPT`, "Later" creates nothing by design |
 | "New Invoice" links to an existing service, pre-finalization, and becomes the visit's invoice | DONE — Pass 13 (2026-09-24) | New Invoice is gone from the Invoices screen; **"Draft invoice for a visit"** (`draft-invoice-for-visit-dialog.tsx`: customer → location → draftable visit → Pass 4's `draft-for-appointment` route, the DRAFT opening in the modal) takes its place, and the manual invoice survives only as **"Add fee / adjustment"** on the location ledger panel (`add-fee-adjustment-dialog.tsx`, the location fixed, B6). Was: the capability existed only on the Services tab as Draft invoice, and "New Invoice" was the *manual* invoice (one `ADJUSTMENT` line, no service reference; `routes.ts:1853-1861`, `storage.ts:4895-4952`). |
@@ -130,7 +130,7 @@ are calibrated to Phase 1's: Pass 6 (four tables, routes, three dialogs) is the 
 | Generate Proposal | ABSENT | no `proposal` anywhere |
 | Ticket / appointment details: due vs prepaid, Price / COA / Due today, designation | DONE | Pass 7 (`ServiceBillingBlock` at `:446`; `technician-work.tsx:376, 392`) |
 | … billing plan/profile display, card-on-file icon | PARTIAL / ABSENT | plan pill on agreement card + location profile (Pass 7); nothing on the ticket; no card icon (no `payment_methods`) |
-| Post-ticket sequence: finish → collect → post | DONE, with D8's labels not the notes' | Pass 7.5 (see B1); the collect step's "preview / print / send service summary" is the service report document, C3.5 |
+| Post-ticket sequence: finish → collect → post | DONE, with D8's labels not the notes' | Pass 7.5 (see B1); the collect step's "preview / print / send service summary" is the service report document — built as Pass 22 (C3.5): Preview in the collect step, Open / Download on the review modal and the Services tab; "send" waits for C6.3 |
 | Appointment status "Scheduled → Pending" | **REJECTED (Q4 / D1a)** | no fifth status; the feature is the reschedule-to-queue action (see B2) |
 | Appointment Details (tech): service price = sum of due services | DONE | `VisitDueTodayTotal` (`technician-work.tsx:392`) |
 | Appointment Details (tech): auto refresh after Time In / Out | DONE | `refreshWork()` invalidates on both mutations (`technician-work.tsx:128-190`). The note predates this or reflects a stale dev server (Pass 7.6's finding); re-verify after `npm run dev:full` restart. |
@@ -368,7 +368,7 @@ so every field action is a route and every screen is data from a read — no pag
 | C3.3 (**Pass 19**) — **done** (`feature/phase-3-tech-ticket-money-instructions`, 2026-09-25; see "Shipped in Pass 19" at the end of Part D) | **Technician ticket modal, money and instructions**: draft-price override on the billing-summary read (`?serviceId=&priceCents=`, priced server-side through `resolveServiceLineBillingTx` + tax), dollars.cents on blur, service instructions (agreement `serviceInstructions`, service notes, location notes) at the top, the **billing-plan pill** in the ticket header (the profile display waits for C5.2), **time-in prompt** on opening a ticket with no Time In (bypass allowed). Landing after Post unchanged (B1). | Tech modal items 1-4; time-in prompt; display billing plan | — | — |
 | C3.4a (**Pass 20**) — **done** (`feature/phase-3-material-units-areas`, 2026-09-26; see "Shipped in Pass 20" at the end of Part D) | **Material units and application areas**: a settings-managed unit list (`material_units`) feeding a Unit dropdown, product `defaultUnit` migrated to pick from it; an org-level application-area list in Settings feeding products' allowed areas; application area multi-select per material line (`applicationAreas[]`, areas serviced still derived). | Unit dropdown; Application area multi-select | — | — |
 | C3.4b (**Pass 21**) — **done** (`feature/phase-3-target-pests-two-levels`, 2026-09-27; see "Shipped in Pass 21" at the end of Part D) | **Target pests, two levels** (B12): `productApplications.targetPests[]` per material row from the target-pest list (compliance); the ticket-level target pests stay on the ticket, selectable from a searchable multi-select placed in the Materials section, and are **selected ∪ every material's pests**; the summary line at the top of the ticket shows that union. Decided there: `applicationLocation` dropped. | Target pests; pest per application | C3.4a | — |
-| C3.5 (**Pass 22**) | **Service report document** — customer-facing summary of a posted/finalized ticket (technician + license, date, services, pests, materials, notes, recommendations, signature placeholder) through the document renderer, stored like invoices; Open / Download on the review modal and the Services tab, Preview in the collect step. **Settings toggle "Attach service report to visit invoices"** (B11): when on, a visit-anchored invoice's PDF appends the report(s) for its lines; schedule-driven and manual invoices have no visit and append nothing. Both documents stay separately openable. | "Preview/print/save/send service summary"; "sends invoice / service report" | — | — |
+| C3.5 (**Pass 22**) — **done** (`feature/phase-3-service-report-document`, 2026-09-27; see "Shipped in Pass 22" at the end of Part D) | **Service report document** — customer-facing summary of a posted/finalized ticket (technician + license, date, services, pests, materials, notes, recommendations, signature placeholder) through the document renderer, stored like invoices; Open / Download on the review modal and the Services tab, Preview in the collect step. **Settings toggle "Attach service report to visit invoices"** (B11): when on, a visit-anchored invoice's PDF appends the report(s) for its lines; schedule-driven and manual invoices have no visit and append nothing. Both documents stay separately openable. | "Preview/print/save/send service summary"; "sends invoice / service report" | — | — |
 | C3.6 (**Pass 23**) | **Field surcharge line** — as specified in `CURRENT_FOCUS.md`: SURCHARGE line on the ticket → invoice line; allow/reject toggle moves from plan to template; `CLEANOUT_SURCHARGE` / `PREPAY_FULL` leave the initial-charge vocabulary; test-data defaults migrated; `ADD_FIELD_SURCHARGE` gets its UI. **Transitional credit rule until Phase 7:** a recorded SURCHARGE line always credits the posting technician, marked transitional (dev rule 4), replacing today's permission inference in `createSurchargeEntryIfConfigured()`. | (owner-specified 2026-09-13) | — | — |
 | C3.7 (**Pass 24**) | **Service designation + callback attribution** — `ServiceType.category` (CALLBACK / PRODUCTION / SERVICE) in Settings, instance designation on Service defaulted from the type, a required "answers Service …" link on a CALLBACK chosen at scheduling; production basis and invoice $0 read the designation instead of the slot counter. Canon §10. Its urgency in `CURRENT_FOCUS.md` came from plan-less agreements billing per visit; that drops once Pass 12 lands, so it sequences after it (COD-plan callbacks remain the case it fixes). | (roadmap note in canon) | C2.2 | — |
 
@@ -2352,6 +2352,165 @@ Behavior worth knowing before the next pass touches it:
   them as typed (not respelled; its product rows do go through the normalizer and fold their
   pests into the set). The dialog's `FALLBACK_TARGET_PEST_OPTIONS` still stands in for an org with
   no configured pests. The target-pests routes stay ungated, as before.
+
+---
+
+**Shipped in Pass 22** (`feature/phase-3-service-report-document`, 2026-09-27) — the C3.5 row as
+built, plus what it decided.
+
+```ts
+// shared/service-report.ts
+ATTACH_SERVICE_REPORT_SETTING_KEY = "attach_service_report_to_invoices"   // one app_settings row, "true" / "false"; DEFAULT_ATTACH_SERVICE_REPORT = false
+normalizeAttachServiceReport(value) / serializeAttachServiceReport(enabled)
+interface ServiceReportInfo { id; serviceRecordId; contentHash; mimeType; createdAt; fileName }   // what GET .../report-info answers
+serviceReportDay(serviceDate)                    // the UTC day, YYYY-MM-DD - what the report prints and pins its dates to
+fileNameSlug(text, fallback)                     // lower-case letters and digits, hyphens between words, at most 40 characters
+serviceReportFileName({ serviceDate, locationName })   // service-report-<day>-<location>.pdf: the route's name and the Download button's
+
+// shared/schema.ts
+documents.kind                                   // INVOICE | STATEMENT | SERVICE_REPORT
+documents.serviceRecordId                        // a SERVICE_REPORT row's identity (FK service_records); null on every other kind
+
+// server/document-bootstrap.ts
+bootstrapDocuments()                             // + ADD COLUMN service_record_id (guarded on the column, printed once) and the partial unique index
+                                                 //   documents_service_record_id_uidx (service_record_id) WHERE kind = 'SERVICE_REPORT'
+
+// server/documents/types.ts
+interface ServiceReportMaterialLine { productName; epaRegNumber; amountApplied; unit; dilutionLabel; dilutionRate; applicationMethod; device;
+                                      applicationAreas: string[]; targetPests: string[] }
+interface ServiceReportDocumentContext { serviceDate; preview; customerName; serviceLocation; serviceTypeName; technicianName; technicianLicenseNumber;
+                                         targetPests; areasServiced; materials; notes; conditionsFound; recommendations; followUpRequired;
+                                         followUpNotes; customerSignature; branding }
+InvoiceDocumentContext.attachedServiceReports?   // the reports appended after the invoice's own pages; undefined = nothing appended
+
+// server/documents/service-report-pdf.ts
+drawServiceReport(doc, context)                  // draws the report into a pdfkit document the caller owns, from the top of its current page,
+                                                 //   paginating (the statement renderer's local helpers: drawTable / paragraph / sectionHeading / partyBlock)
+renderServiceReportPdf(context): Promise<Buffer> // a document of its own; CreationDate / ModDate pinned to the service date, byte-deterministic
+
+// server/documents/invoice-pdf.ts
+renderInvoicePdf(context)                        // unchanged layout; after its pages, for each attachedServiceReports[] entry: addPage() + drawServiceReport()
+
+// server/storage.ts
+getAttachServiceReportToInvoices() / setAttachServiceReportToInvoices(enabled)   // the toggle: upsert on (org_id, key); readAttachServiceReportTx(reader)
+interface ServiceReportDocumentResult { document: Document; fileName }
+interface ServiceReportPreviewInput { serviceId; appointmentId?; technicianId?; serviceDate: Date; serviceTypeId?; notes?; targetPests?; areasServiced?;
+                                      conditionsFound?; recommendations?; followUpRequired?; followUpNotes?; customerSignature?; productApplications? }
+interface ServiceReportPreviewResult { pdf: Buffer; fileName }
+getServiceReportDocumentContext(recordId)        // the ticket as it stands: the snapshot technician (the live profile only for a pre-snapshot row), the
+                                                 //   stored pest union, the rows, customer / service location / service type, documentBrandingOf(org)
+getOrCreateServiceReportDocument(recordId)       // the stored SERVICE_REPORT row if any, else render / sha256 / insert (customer_id and location_id set),
+                                                 //   23505 race recovery; answers the row and its file name
+renderServiceReportPreview(input)                // render-only: normalizeProductApplicationInputs + deriveStoredTargetPests + deriveAreasServiced +
+                                                 //   resolveServiceRecordTechnicianSnapshot exactly as a post; preview: true; nothing written
+invalidateServiceReportTx(tx, recordId)          // deletes the stored row; called by updateServiceRecord (when the ticket or its materials changed),
+                                                 //   completeService (a re-post over an existing record) and createProductApplication (the legacy route)
+getInvoiceDocumentContext(invoiceId)             // + attachedServiceReports: with the toggle on and invoice.appointmentId set, the context of each distinct
+                                                 //   non-null line serviceRecordId in line order; undefined otherwise. A DRAFT preview follows the same rule.
+
+// Routes
+GET   /api/service-records/:id/report            // session; inline PDF, ?download=1 for an attachment, filename service-report-<day>-<location>.pdf; 404 unknown
+GET   /api/service-records/:id/report-info       // session; the row without contentBase64, plus fileName
+POST  /api/service-records/preview-report        // session, any role; completeServiceSchema + serviceId -> the PDF, stored nowhere; 400 no serviceId, 404 unknown
+GET   /api/settings/attach-service-report        // open; { enabled }
+PATCH /api/settings/attach-service-report        // MANAGE_SETTINGS; { enabled: boolean } -> { enabled }; 400 on a non-boolean
+
+// client/src/components/service-report-actions.tsx
+serviceReportUrl(record, download?)              // /api/service-records/:id/report[?download=1]
+ServiceReportActions({ record, locationName?, compact? })   // "Service Report" (window.open, inline) + Download (<a download> named by serviceReportFileName);
+                                                 //   testids button-open-service-report-<id> / button-download-service-report-<id>
+openServiceReportPreviewWindow()                 // window.open("", "_blank") in the click handler, a "Rendering..." placeholder written into it
+showServiceReportPreview(body, target)           // POST the preview, blob -> target.location.href (an <a download> when the tab was blocked); revoked after 60 s
+
+// client/src/pages/service-ticket-review.tsx    // ServiceReportActions beside Open Location on the modal footer's left
+// client/src/pages/customer-detail.tsx          // ServiceDetailModal's action row: ServiceReportActions before Reopen / Finalize; locationName threaded
+                                                 //   from the page (activeLocation) through ServicesTab
+// client/src/components/collect-payment-dialog.tsx   // props onPreviewReport / previewingReport; "Preview report" (button-preview-service-report) on the
+                                                      //   footer's left, Back / Post Service Ticket on the right
+// client/src/components/service-completion-dialog.tsx // previewReportMutation(target): the post's content -> showServiceReportPreview; the tab is opened
+                                                       //   in the click handler (openServiceReportPreviewWindow()) and handed to the mutation
+// client/src/pages/settings.tsx                 // the "Service Report" card (card-service-report): a Switch (switch-attach-service-report) disabled for
+                                                 //   anyone but an admin, the "already rendered keeps what it rendered" caption
+```
+
+Behavior worth knowing before the next pass touches it:
+- **Stored on first request, retired on a content write.** The report is the ticket as it
+  stands, never a history: a re-post, an office edit that changed the ticket or its materials,
+  and a material row added by the legacy `POST /api/product-applications` each delete the
+  stored row in the same transaction as their write, so the next Open renders afresh (a new
+  `contentHash`, still one row). A no-op edit, finalize and reopen write no content and keep the
+  row. The audit log (`ticket_edited`) is the history of what changed.
+- **The attach rule is read at the invoice's first render and frozen with it.** An INVOICE
+  document is never re-rendered (Pass 10), so a visit invoice PDF rendered while the toggle was
+  on keeps its reports even after those tickets are edited or the toggle is turned off, and one
+  rendered while it was off never gains them - the Settings card says so. A DRAFT preview is
+  re-rendered on every open and follows the toggle as it stands. An invoice with no
+  `appointmentId` (schedule-driven, manual, the standalone initial charge) appends nothing
+  whatever the toggle says.
+- **Inside one pdfkit document, not a merge.** The report's renderer exposes
+  `drawServiceReport(doc, context)`; the invoice renderer calls it after `addPage()` per
+  attached report. pdfkit cannot embed another PDF's pages, so the alternative was a new
+  dependency (pdf-lib) to merge stored bytes; drawing from the context keeps the repo on one
+  PDF library and keeps the invoice's own layout untouched. The layout helpers are local to the
+  file, as they are in `statement-pdf.ts` - three renderers now carry a copy each.
+- **Dates are UTC days**, as every document here prints them (`serviceReportDay`); a late-evening
+  service in a US timezone prints the next day, exactly as the invoice's issue date does. An
+  org-level timezone would fix every document at once; it is a known follow-up, not this pass's.
+- **The technician is the snapshot.** The name and license come from the ticket's
+  `technicianName` / `technicianLicenseNumber` (copied at post, canon §12); only a row from
+  before the snapshot existed (neither set, a `technicianId`) reads the live profile, as the
+  review queue does. The preview resolves them exactly as a post will
+  (`resolveServiceRecordTechnicianSnapshot`: the body's technician, else the service's, else the
+  appointment's).
+- **The preview is render-only and any role's.** It prints "PREVIEW - not yet posted" in the
+  header and "as drafted by the technician; the posted ticket is the record" in the footer; the
+  body's service type is printed as sent (the post applies it only under its override rule, but
+  nothing is written here). The tab is opened synchronously in the click handler so a browser's
+  popup rule sees the gesture; a blocked tab falls back to a download of the same bytes.
+- **Determinism holds.** Same context, same bytes: the standalone render of one context twice
+  gave one hash; the stored row answers the same `contentHash` on every later GET; the invoice
+  document with reports is stored once and re-served.
+- **Verified 2026-09-27** (PORT=5001, the shared dev DB - an additive migration, safe under the
+  owner's server on 5000): `npm run check` clean; a standalone render (deterministic, one page;
+  40 material rows and a long note paginate to four; an invoice with two reports is three pages,
+  alone one); boot 1 printed the Pass 22 line once with all 44 table counts unchanged; 133 API /
+  SQL assertions as the four roles - a ticket posted through `POST /api/services/:id/complete`
+  with picks `["roaches"]` and two rows (Demand CS: Exterior Perimeter + Garage, ants + Spiders;
+  Contrac Blox: Attic, Rodents) -> `GET .../report` 401 without a session, 200 as the technician
+  with `inline; filename="service-report-2026-09-27-pass22-smoke-house.pdf"`, one page whose text
+  prints the org and letterhead, the customer, the location and address, "John Doe", "License #
+  0123456", "Service date: 2026-09-27", "Service: General Pest Control", the union "Roaches, Ants,
+  Spiders, Rodents", "Exterior Perimeter, Garage, Attic", "Required - 2 weeks", each row's
+  product / EPA / amount + unit / dilution / method / device / areas / pests, the notes,
+  conditions and recommendations, the signature line and "A customer signature was captured";
+  one SERVICE_REPORT row with customer_id and location_id whose `content_hash` is the sha256 of
+  the bytes served; `report-info` as manager answering it without bytes plus the file name; the
+  same GET as support answering the same bytes with `?download=1` an attachment and no second
+  row; 404 for an unknown ticket; the preview as the technician answering a PDF marked PREVIEW
+  with its own date, notes, "Fleas, Ticks" and "No customer signature was captured", storing
+  nothing, 401 / 400 / 404 for no session / no serviceId / an unknown service; a no-op office edit
+  keeping the row, a real one retiring it and the next GET rendering the new notes under a new
+  hash with one row; finalize keeping it; the toggle GET 200 `{ enabled: false }` as all four
+  roles, PATCH 403 as technician / support / manager, 400 on a non-boolean, 200 as admin and a
+  row written; a two-ticket visit (the Pass 19 recipe) invoiced through
+  `generate-from-service-record` with the toggle on -> a 3-page invoice PDF carrying both
+  reports after the invoice in line order, stored once and re-served, each ticket's own report
+  still one page; a second visit's DRAFT preview 3 pages with the toggle on and 1 page with it
+  off, unstored, then issued with it off -> the invoice alone, stored; a manual invoice 1 page
+  with the toggle on and off; a reopen keeping the report and the re-post retiring it while the
+  visit invoice's stored PDF kept its hash; the legacy material-row route retiring it; every
+  fixture deleted, the settings row deleted (none existed), every count back at the run's start
+  (`session` +4); boot 2 printed only the serving line with every count unchanged; Vite 200 with
+  the new symbols on the six touched client modules and `shared/service-report.ts`. **Nothing was
+  rendered in a browser** - the repo has no browser automation and this session had no browser -
+  so the Open / Download pairs, the Preview button, the Switch card and the PDF's look reach the
+  owner first.
+- **Known follow-up.** An org-level timezone for the dates on every document; a shared layout
+  module for the three renderers' local helpers when a fourth document arrives; `logoUrl` is
+  still carried and drawn by no renderer; email delivery of the report is C6.3; the report of a
+  REOPENED ticket is still served (its content stands until the technician re-posts, which
+  retires it); a `text[]` row order in the materials table is the table's heap order, as every
+  other reader of `product_applications` shows it.
 
 ---
 

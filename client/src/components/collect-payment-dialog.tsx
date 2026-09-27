@@ -17,6 +17,7 @@ import { centsToDollarString, dollarsToCents, formatCents } from "@shared/money"
 import { MANUAL_PAYMENT_METHODS, formatPaymentMethod } from "@shared/payments";
 import { technicianCollectibleCents } from "@shared/visit-billing";
 import type { Agreement, Payment } from "@shared/schema";
+import { FileText } from "lucide-react";
 
 // PLAN_BILLING_V1_1.md D8 - the post-ticket sequence is finish -> collect ->
 // post. This is the field's collection step, and it is not the office's
@@ -57,6 +58,14 @@ interface CollectPaymentDialogProps {
    * defaults to what Post will stamp rather than the stored amount.
    */
   draftPrice?: VisitBillingDraftPrice | null;
+  /**
+   * Pass 22 (C3.5): "Preview report" - the service report of this unposted
+   * ticket, rendered by the server from the ticket dialog's state and never
+   * stored. Given in the ticket flow only; the ticket dialog opens the tab on
+   * the click and hands the render to the report component.
+   */
+  onPreviewReport?: () => void;
+  previewingReport?: boolean;
 }
 
 export function CollectPaymentDialog({
@@ -68,6 +77,8 @@ export function CollectPaymentDialog({
   onPostTicket,
   postingTicket = false,
   draftPrice = null,
+  onPreviewReport,
+  previewingReport = false,
 }: CollectPaymentDialogProps) {
   const { toast } = useToast();
   const { user } = useAuth();
@@ -260,15 +271,35 @@ export function CollectPaymentDialog({
             <p className="text-xs text-muted-foreground">Nothing collected - posting sends the ticket to office review and the office bills the balance.</p>
           )}
 
-          <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-            <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>
-              {onPostTicket ? "Back" : "Close"}
-            </Button>
-            {onPostTicket && (
-              <Button type="button" variant={hasAmount ? "outline" : "default"} onClick={onPostTicket} disabled={busy} data-testid="button-post-service-ticket">
-                {postingTicket ? "Posting..." : "Post Service Ticket"}
+          <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-between">
+            {/* Pass 22 (C3.5): the customer-facing summary of this ticket, as
+                it will read once posted. Render-only - nothing is stored until
+                the ticket is posted and its report is first opened. */}
+            {onPreviewReport ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={onPreviewReport}
+                disabled={busy || previewingReport}
+                title="Open a PDF preview of this ticket's service report in a new tab. Nothing is stored."
+                data-testid="button-preview-service-report"
+              >
+                <FileText className="mr-1 h-4 w-4" /> {previewingReport ? "Rendering..." : "Preview report"}
               </Button>
+            ) : (
+              <span />
             )}
+            <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+              <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>
+                {onPostTicket ? "Back" : "Close"}
+              </Button>
+              {onPostTicket && (
+                <Button type="button" variant={hasAmount ? "outline" : "default"} onClick={onPostTicket} disabled={busy} data-testid="button-post-service-ticket">
+                  {postingTicket ? "Posting..." : "Post Service Ticket"}
+                </Button>
+              )}
+            </div>
           </div>
         </div>
       </DialogContent>

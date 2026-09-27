@@ -25,6 +25,7 @@ import { InvoiceDetailDialog } from "@/components/invoice-detail-dialog";
 import { InvoiceStatusBadge } from "@/components/invoice-status-badge";
 import { ApplyLocationBalancePrompt } from "@/components/apply-location-balance-prompt";
 import { ServiceCompletionDialog } from "@/components/service-completion-dialog";
+import { ServiceReportActions } from "@/components/service-report-actions";
 import { resolveReviewNav, type ReviewNavStep } from "@/lib/review-queue-nav";
 import { formatCents } from "@shared/money";
 import { can, PERMISSIONS, rolesWithPermission } from "@shared/permissions";
@@ -796,7 +797,15 @@ export default function ServiceTicketReview() {
                 </div>
               ) : null}
               <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-between">
-                <Button type="button" variant="outline" onClick={() => selectedLocation && setLocation(`/customers/${selectedRecord.customerId}?locationId=${selectedLocation.id}`)}>Open Location</Button>
+                <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center">
+                  <Button type="button" variant="outline" onClick={() => selectedLocation && setLocation(`/customers/${selectedRecord.customerId}?locationId=${selectedLocation.id}`)}>Open Location</Button>
+                  {/* Pass 22 (C3.5): the customer-facing report of this ticket -
+                      Open / Download, rendered on the first request and stored
+                      until the ticket's content is written again. */}
+                  <div className="flex items-center gap-1">
+                    <ServiceReportActions record={selectedRecord} locationName={selectedLocation?.name ?? null} />
+                  </div>
+                </div>
                 <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
                   <Button type="button" variant="outline" onClick={closeReviewModal}>Close</Button>
                   {/* Pass 18 (C3.1b): the office edit - EDIT_TICKET holders only;

@@ -1,6 +1,7 @@
 import PDFDocument from "pdfkit";
 import { formatCents } from "@shared/money";
 import { NO_CHARGE_LABEL } from "@shared/invoice-status";
+import { drawServiceReport } from "./service-report-pdf";
 import type { InvoiceDocumentContext } from "./types";
 
 // Deterministic PDF generation: the same context must always produce the
@@ -125,6 +126,17 @@ export function renderInvoicePdf(context: InvoiceDocumentContext): Promise<Buffe
     if (context.notes) {
       doc.moveDown(2);
       doc.fontSize(9).fillColor("#4b5563").text(context.notes, 50, totalsY + 20, { width: 495 });
+    }
+
+    // Pass 22 (C3.5; B11): the visit's service reports, one per ticket, each
+    // starting on a page of its own after the invoice - drawn into this same
+    // document rather than merged from another PDF (pdfkit cannot embed
+    // pages, and a merge library is a dependency this repo does not carry).
+    // The invoice's own pages above are untouched; an invoice with nothing to
+    // attach ends exactly as it did before this pass.
+    for (const report of context.attachedServiceReports ?? []) {
+      doc.addPage();
+      drawServiceReport(doc, report);
     }
 
     doc.end();

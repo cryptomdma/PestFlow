@@ -55,4 +55,23 @@ export async function bootstrapDocuments(): Promise<void> {
       `[document-bootstrap] Pass 15: documents gained the statement identity columns (statement_variant, customer_id, location_id, period_from, period_to, generated_by_user_id, generated_by_label) and partial indexes on customer_id and location_id. Existing rows: ${existing} document(s), all untouched - an INVOICE document keeps invoice_id as its identity and no STATEMENT row existed before this pass, so nothing was backfilled.`,
     );
   }
+
+  // Pass 22 (PLAN_ROADMAP_V2.md C3.5): a SERVICE_REPORT document's identity -
+  // the ticket it reports, in a nullable column beside invoice_id, with the
+  // INVOICE kind's rule: one stored report per ticket, enforced by a partial
+  // unique index so getOrCreateServiceReportDocument stays idempotent (and a
+  // concurrent first request loses the race cleanly instead of storing a
+  // twin). The row is deleted when the ticket's content is written again, so
+  // the index is what lets the next request re-render without a second row.
+  // Guarded on the column so the effect prints once; a second boot is a no-op.
+  const hadServiceRecordColumn = await columnExists("documents", "service_record_id");
+  await db.execute(sql`ALTER TABLE documents ADD COLUMN IF NOT EXISTS service_record_id varchar REFERENCES service_records(id)`);
+  await db.execute(sql`CREATE UNIQUE INDEX IF NOT EXISTS documents_service_record_id_uidx ON documents (service_record_id) WHERE service_record_id IS NOT NULL AND kind = 'SERVICE_REPORT'`);
+  if (!hadServiceRecordColumn) {
+    const counts = await db.execute(sql`SELECT kind, count(*)::int AS count FROM documents GROUP BY kind ORDER BY kind`);
+    const existing = (counts.rows as Array<{ kind: string; count: number }>).map((row) => `${row.count} ${row.kind}`).join(", ") || "0";
+    console.log(
+      `[document-bootstrap] Pass 22: documents gained service_record_id (a SERVICE_REPORT document's identity) and the partial unique index documents_service_record_id_uidx (one stored report per ticket). Existing rows: ${existing} document(s), all untouched - no SERVICE_REPORT row existed before this pass and every report is rendered on its first request, so nothing was backfilled.`,
+    );
+  }
 }

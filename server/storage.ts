@@ -66,9 +66,10 @@ import { eq, and, or, inArray, notInArray, sql, gt, gte, lte, lt, asc, desc, ne,
 import type { AuditAction, AuditEntityType } from "@shared/audit";
 import { PLACEHOLDER_LOCATION_NAME, PLACEHOLDER_LOCATION_NOTE } from "./account-bootstrap";
 import { createHash } from "crypto";
-import type { InvoiceDocumentBranding, InvoiceDocumentContext, StatementDocumentContext, StatementDocumentParty } from "./documents/types";
+import type { InvoiceDocumentBranding, InvoiceDocumentContext, ServiceReportDocumentContext, ServiceReportMaterialLine, StatementDocumentContext, StatementDocumentParty } from "./documents/types";
 import { renderInvoicePdf } from "./documents/invoice-pdf";
 import { renderStatementPdf } from "./documents/statement-pdf";
+import { renderServiceReportPdf } from "./documents/service-report-pdf";
 import {
   buildZeroBalanceLetter,
   LOCATION_HAS_BALANCE,
@@ -182,6 +183,13 @@ import {
   type FinalizationInvoicingOutcome,
   type InvoiceOnFinalizeMode,
 } from "@shared/invoice-on-finalize";
+import {
+  ATTACH_SERVICE_REPORT_SETTING_KEY,
+  normalizeAttachServiceReport,
+  serializeAttachServiceReport,
+  serviceReportDay,
+  serviceReportFileName,
+} from "@shared/service-report";
 import {
   agingAsOf,
   agingFiguresOf,
@@ -563,6 +571,41 @@ export interface CompleteServiceResult {
   // live-computed value from the related agreement. See
   // shared/production-value.ts.
   productionValueCents: number | null;
+}
+
+// The service report (PLAN_ROADMAP_V2.md C3.5, Pass 22): a stored report is
+// its `documents` row plus the file name the document route sends
+// (service-report-<service day>-<location>.pdf, shared/service-report.ts).
+export interface ServiceReportDocumentResult {
+  document: Document;
+  fileName: string;
+}
+
+// The collect step's preview of an UNPOSTED ticket: the post's content shape
+// (completeServiceSchema in routes.ts) plus the service it belongs to. The
+// report is rendered from this exactly as a post would store it - the same
+// vocabulary rule for the materials, the same target-pest union, the same
+// technician snapshot resolution - and nothing is written.
+export interface ServiceReportPreviewInput {
+  serviceId: string;
+  appointmentId?: string | null;
+  technicianId?: string | null;
+  serviceDate: Date;
+  serviceTypeId?: string | null;
+  notes?: string | null;
+  targetPests?: string[] | null;
+  areasServiced?: string | null;
+  conditionsFound?: string | null;
+  recommendations?: string | null;
+  followUpRequired?: boolean | null;
+  followUpNotes?: string | null;
+  customerSignature?: boolean | null;
+  productApplications?: Array<Omit<InsertProductApplication, "serviceRecordId">>;
+}
+
+export interface ServiceReportPreviewResult {
+  pdf: Buffer;
+  fileName: string;
 }
 
 export type ServiceTimeTrackingMode = "AUTO_TIMEOUT_ON_TICKET_POST" | "PROMPT_FOR_TIMEOUT" | "MANUAL_TIMEOUT";
@@ -1049,6 +1092,11 @@ export interface IStorage {
   setApplicationAreas(areas: string[]): Promise<AppSetting>;
   getInvoiceOnFinalizeMode(): Promise<InvoiceOnFinalizeMode>;
   setInvoiceOnFinalizeMode(mode: InvoiceOnFinalizeMode): Promise<AppSetting>;
+  // Pass 22 (C3.5; B11): "Attach service report to visit invoices" - one
+  // boolean app_settings row (shared/service-report.ts), default off, read
+  // by getInvoiceDocumentContext when an invoice PDF is first rendered.
+  getAttachServiceReportToInvoices(): Promise<boolean>;
+  setAttachServiceReportToInvoices(enabled: boolean): Promise<AppSetting>;
 
   getMaterialProducts(includeInactive?: boolean): Promise<MaterialProduct[]>;
   createMaterialProduct(data: InsertMaterialProduct): Promise<MaterialProduct>;
@@ -1137,6 +1185,15 @@ export interface IStorage {
   getInvoiceDocumentContext(invoiceId: string): Promise<InvoiceDocumentContext | undefined>;
   getOrCreateInvoiceDocument(invoiceId: string): Promise<Document | undefined>;
   getDocument(id: string): Promise<Document | undefined>;
+
+  // Service report (PLAN_ROADMAP_V2.md C3.5, Pass 22; canon §12). The invoice
+  // document's shape: the context from the ticket as it stands, one stored
+  // `documents` row of kind SERVICE_REPORT per ticket rendered on the first
+  // request and retired when the ticket's content is written again, and a
+  // render-only preview of an unposted ticket. Undefined outside the org.
+  getServiceReportDocumentContext(serviceRecordId: string): Promise<ServiceReportDocumentContext | undefined>;
+  getOrCreateServiceReportDocument(serviceRecordId: string): Promise<ServiceReportDocumentResult | undefined>;
+  renderServiceReportPreview(input: ServiceReportPreviewInput): Promise<ServiceReportPreviewResult | undefined>;
 
   // Statements (PLAN_ROADMAP_V2.md C2.5, Pass 15). Each generate renders the
   // document and stores one `documents` row of kind STATEMENT - on request
@@ -4863,6 +4920,10 @@ export class DatabaseStorage implements IStorage {
           before: snapshotTicketForAudit(existingRecord, previousApplications),
           after: snapshotTicketForAudit(record, applications),
         });
+        // Pass 22 (C3.5): the stored service report is the ticket as it
+        // stood; an edit that changed it retires the report, and the next
+        // request renders the ticket as it now stands.
+        await this.invalidateServiceReportTx(tx, record.id);
       }
 
       if (record.serviceId && record.technicianId !== existingRecord.technicianId) {
@@ -5041,6 +5102,9 @@ export class DatabaseStorage implements IStorage {
           before: snapshotTicketForAudit(existingRecord, previousApplications),
           after: snapshotTicketForAudit(postedRecord, savedApplications),
         });
+        // Pass 22 (C3.5): a re-post rewrites the ticket, so its stored
+        // service report is retired with it.
+        await this.invalidateServiceReportTx(tx, serviceRecord.id);
       }
 
       const [postedService] = await tx
@@ -5524,6 +5588,31 @@ export class DatabaseStorage implements IStorage {
     return setting;
   }
 
+  // Pass 22 (C3.5; B11): "Attach service report to visit invoices", the
+  // invoice-on-finalize shape - one app_settings row, default off, a missing
+  // or unrecognised value reading as off rather than failing a render.
+  async getAttachServiceReportToInvoices(): Promise<boolean> {
+    return this.readAttachServiceReportTx(db);
+  }
+
+  private async readAttachServiceReportTx(reader: DbReader): Promise<boolean> {
+    const [setting] = await reader.select().from(appSettings).where(and(eq(appSettings.orgId, this.orgId), eq(appSettings.key, ATTACH_SERVICE_REPORT_SETTING_KEY)));
+    return normalizeAttachServiceReport(setting?.value);
+  }
+
+  async setAttachServiceReportToInvoices(enabled: boolean): Promise<AppSetting> {
+    const value = serializeAttachServiceReport(enabled);
+    const [setting] = await db
+      .insert(appSettings)
+      .values({ orgId: this.orgId, key: ATTACH_SERVICE_REPORT_SETTING_KEY, value })
+      .onConflictDoUpdate({
+        target: [appSettings.orgId, appSettings.key],
+        set: { value, updatedAt: new Date() },
+      })
+      .returning();
+    return setting;
+  }
+
   async getProductApplicationsByServiceRecord(serviceRecordId: string): Promise<ProductApplication[]> {
     return db.select().from(productApplications).where(and(eq(productApplications.orgId, this.orgId), eq(productApplications.serviceRecordId, serviceRecordId)));
   }
@@ -5539,6 +5628,9 @@ export class DatabaseStorage implements IStorage {
         throw new Error("Product name is required");
       }
       const [pa] = await tx.insert(productApplications).values({ ...normalized, serviceRecordId: data.serviceRecordId, orgId: this.orgId }).returning();
+      // Pass 22 (C3.5): a material row added is ticket content written -
+      // the stored service report, if any, is retired.
+      await this.invalidateServiceReportTx(tx, pa.serviceRecordId);
       // Pass 21 (C3.4b): the ticket's set names every row's pests, this
       // route's row included - the ticket keeps its own picks and gains the
       // row's. Not audited: this pre-Phase-1 route never was.
@@ -9564,6 +9656,27 @@ export class DatabaseStorage implements IStorage {
       }
     }
 
+    // Pass 22 (C3.5; B11): with "Attach service report to visit invoices"
+    // on, a visit-anchored invoice's PDF ends with the report of every ticket
+    // on it - the distinct service records of its lines, in line order,
+    // rendered from the tickets as they stand now. An invoice with no visit
+    // (schedule-driven, manual, the standalone initial charge) has nothing to
+    // attach and appends nothing ("omit on null"). Read here, at render, and
+    // frozen into the stored document with everything else: the toggle's
+    // value at first render is what that PDF keeps, and a DRAFT preview
+    // follows the same rule unstored.
+    let attachedServiceReports: ServiceReportDocumentContext[] | undefined;
+    if (invoice.appointmentId && (await this.readAttachServiceReportTx(db))) {
+      attachedServiceReports = [];
+      const seen = new Set<string>();
+      for (const item of lineItems) {
+        if (!item.serviceRecordId || seen.has(item.serviceRecordId)) continue;
+        seen.add(item.serviceRecordId);
+        const report = await this.getServiceReportDocumentContext(item.serviceRecordId);
+        if (report) attachedServiceReports.push(report);
+      }
+    }
+
     return {
       invoiceNumber: invoice.invoiceNumber,
       publicId: invoice.publicId,
@@ -9589,6 +9702,7 @@ export class DatabaseStorage implements IStorage {
       balanceDueCents: invoice.balanceDueCents,
       noChargeCoveredByAgreement: isFullyAgreementCovered({ totalAmountCents: invoice.totalAmountCents, lines: lineItems }),
       notes: invoice.notes,
+      attachedServiceReports,
       branding: {
         orgName: org?.name ?? "PestFlow",
         logoUrl: org?.logoUrl ?? null,
@@ -9635,6 +9749,7 @@ export class DatabaseStorage implements IStorage {
         orgId: this.orgId,
         kind: "INVOICE",
         invoiceId,
+        serviceRecordId: null,
         statementVariant: null,
         customerId: null,
         locationId: null,
@@ -9682,6 +9797,221 @@ export class DatabaseStorage implements IStorage {
   }
 
   // ---------------------------------------------------------------------------
+  // Service report (PLAN_ROADMAP_V2.md C3.5, Pass 22; B11; canon §12). The
+  // invoice document's pattern: storage assembles the context once from the
+  // ticket as it stands - the compliance snapshot (technician name and
+  // license copied at post), the stored target-pest union, the material rows
+  // in the org's vocabulary, the customer and the service location, the
+  // org's branding - and renderServiceReportPdf turns it into bytes stored
+  // as one `documents` row of kind SERVICE_REPORT keyed by the ticket.
+  // Rendered on the first request; every later request answers the stored
+  // row. The one way a stored report goes stale is the ticket's content being
+  // written again, so every such write (a re-post, an office edit that
+  // changed something, a material row added by the legacy route) deletes the
+  // row in its own transaction, and the next request renders the ticket as
+  // it now stands. Finalize and reopen change no content and keep the report.
+  // An invoice PDF that embedded a report keeps what it rendered: the invoice
+  // document is never re-rendered (getOrCreateInvoiceDocument).
+  // ---------------------------------------------------------------------------
+
+  private async invalidateServiceReportTx(tx: DbTransaction, serviceRecordId: string): Promise<void> {
+    await tx.delete(documents).where(and(eq(documents.orgId, this.orgId), eq(documents.kind, "SERVICE_REPORT"), eq(documents.serviceRecordId, serviceRecordId)));
+  }
+
+  private serviceReportMaterialLine(row: Omit<InsertProductApplication, "serviceRecordId">): ServiceReportMaterialLine {
+    return {
+      productName: row.productName,
+      epaRegNumber: row.epaRegNumber ?? null,
+      amountApplied: row.amountApplied ?? null,
+      unit: row.unit ?? null,
+      dilutionLabel: row.dilutionLabel ?? null,
+      dilutionRate: row.dilutionRate ?? null,
+      applicationMethod: row.applicationMethod ?? null,
+      device: row.device ?? null,
+      applicationAreas: applicationAreasOf(row),
+      targetPests: targetPestsOf(row),
+    };
+  }
+
+  // The parts of the context every report shares, resolved once: the org's
+  // branding, the customer's display name, the service location as documents
+  // print it (and its name for the file name), the service type's name.
+  private async serviceReportPartiesTx(reader: DbReader, input: { customerId: string; locationId: string | null; serviceTypeId: string | null }) {
+    const [org] = await reader.select().from(organizations).where(eq(organizations.id, this.orgId));
+    const [customer] = await reader.select().from(customers).where(and(eq(customers.orgId, this.orgId), eq(customers.id, input.customerId)));
+    const [location] = input.locationId
+      ? await reader.select().from(locations).where(and(eq(locations.orgId, this.orgId), eq(locations.id, input.locationId)))
+      : [undefined];
+    const [serviceType] = input.serviceTypeId
+      ? await reader.select().from(serviceTypes).where(and(eq(serviceTypes.orgId, this.orgId), eq(serviceTypes.id, input.serviceTypeId)))
+      : [undefined];
+    return {
+      branding: this.documentBrandingOf(org),
+      customerName: this.customerDisplayName(customer),
+      serviceLocation: location ? describeServiceLocation(location) : null,
+      locationName: location?.name.trim() || null,
+      serviceTypeName: serviceType?.name ?? null,
+    };
+  }
+
+  private async serviceReportFileNameTx(reader: DbReader, record: ServiceRecord): Promise<string> {
+    const [location] = record.locationId
+      ? await reader.select({ name: locations.name }).from(locations).where(and(eq(locations.orgId, this.orgId), eq(locations.id, record.locationId)))
+      : [undefined];
+    return serviceReportFileName({ serviceDate: record.serviceDate, locationName: location?.name.trim() || null });
+  }
+
+  private async serviceReportContextForRecordTx(reader: DbReader, record: ServiceRecord): Promise<{ context: ServiceReportDocumentContext; fileName: string }> {
+    const parties = await this.serviceReportPartiesTx(reader, { customerId: record.customerId, locationId: record.locationId ?? null, serviceTypeId: record.serviceTypeId ?? null });
+    const rows = await reader.select().from(productApplications).where(and(eq(productApplications.orgId, this.orgId), eq(productApplications.serviceRecordId, record.id)));
+    // The compliance snapshot (canon §12): the name and license copied onto
+    // the ticket at post. TRANSITIONAL: a row from before the snapshot
+    // existed carries neither, and for it alone the live profile stands in,
+    // as the review queue shows it.
+    let technicianName = record.technicianName?.trim() || null;
+    let technicianLicenseNumber = record.technicianLicenseNumber?.trim() || null;
+    if (!technicianName && !technicianLicenseNumber && record.technicianId) {
+      const [technician] = await reader.select().from(technicians).where(and(eq(technicians.orgId, this.orgId), eq(technicians.id, record.technicianId)));
+      technicianName = technician?.displayName ?? null;
+      technicianLicenseNumber = technician?.licenseId ?? null;
+    }
+    const context: ServiceReportDocumentContext = {
+      serviceDate: serviceReportDay(record.serviceDate),
+      preview: false,
+      customerName: parties.customerName,
+      serviceLocation: parties.serviceLocation,
+      serviceTypeName: parties.serviceTypeName,
+      technicianName,
+      technicianLicenseNumber,
+      targetPests: targetPestsOf(record),
+      areasServiced: record.areasServiced?.trim() || null,
+      materials: rows.map((row) => this.serviceReportMaterialLine(row)),
+      notes: record.notes?.trim() || null,
+      conditionsFound: record.conditionsFound?.trim() || null,
+      recommendations: record.recommendations?.trim() || null,
+      followUpRequired: !!record.followUpRequired,
+      followUpNotes: record.followUpRequired ? record.followUpNotes?.trim() || null : null,
+      customerSignature: !!record.customerSignature,
+      branding: parties.branding,
+    };
+    return { context, fileName: serviceReportFileName({ serviceDate: record.serviceDate, locationName: parties.locationName }) };
+  }
+
+  async getServiceReportDocumentContext(serviceRecordId: string): Promise<ServiceReportDocumentContext | undefined> {
+    const [record] = await db.select().from(serviceRecords).where(and(eq(serviceRecords.orgId, this.orgId), eq(serviceRecords.id, serviceRecordId)));
+    if (!record) {
+      return undefined;
+    }
+    return (await this.serviceReportContextForRecordTx(db, record)).context;
+  }
+
+  // Idempotent: one SERVICE_REPORT document per ticket (the partial unique
+  // index in document-bootstrap.ts). The stored row answers until a write to
+  // the ticket's content retires it (invalidateServiceReportTx); a request
+  // then finds no row and renders the ticket as it now stands.
+  async getOrCreateServiceReportDocument(serviceRecordId: string): Promise<ServiceReportDocumentResult | undefined> {
+    const [record] = await db.select().from(serviceRecords).where(and(eq(serviceRecords.orgId, this.orgId), eq(serviceRecords.id, serviceRecordId)));
+    if (!record) {
+      return undefined;
+    }
+    const [existing] = await db
+      .select()
+      .from(documents)
+      .where(and(eq(documents.orgId, this.orgId), eq(documents.kind, "SERVICE_REPORT"), eq(documents.serviceRecordId, serviceRecordId)));
+    if (existing) {
+      return { document: existing, fileName: await this.serviceReportFileNameTx(db, record) };
+    }
+
+    const { context, fileName } = await this.serviceReportContextForRecordTx(db, record);
+    const pdfBuffer = await renderServiceReportPdf(context);
+    const contentHash = createHash("sha256").update(pdfBuffer).digest("hex");
+    const contentBase64 = pdfBuffer.toString("base64");
+    try {
+      const [document] = await db
+        .insert(documents)
+        .values({
+          orgId: this.orgId,
+          kind: "SERVICE_REPORT",
+          invoiceId: null,
+          serviceRecordId: record.id,
+          customerId: record.customerId,
+          locationId: record.locationId ?? null,
+          contentHash,
+          contentBase64,
+          mimeType: "application/pdf",
+        })
+        .returning();
+      return { document, fileName };
+    } catch (err: any) {
+      if (err?.code === "23505") {
+        const [raceWinner] = await db
+          .select()
+          .from(documents)
+          .where(and(eq(documents.orgId, this.orgId), eq(documents.kind, "SERVICE_REPORT"), eq(documents.serviceRecordId, serviceRecordId)));
+        if (raceWinner) {
+          return { document: raceWinner, fileName };
+        }
+      }
+      throw err;
+    }
+  }
+
+  // The collect step's "Preview report": the report of an UNPOSTED ticket,
+  // rendered from the dialog's content exactly as a post would store it -
+  // the materials in the org's vocabulary, the target pests as the picks plus
+  // every row's, the technician resolved as the post resolves them (the
+  // body's, else the service's, else the appointment's, name and license from
+  // the profile) - and never stored. The body's service type is printed as
+  // sent: the post applies it only under its override rule, but the preview
+  // writes nothing, so nothing is at stake in showing what was picked.
+  async renderServiceReportPreview(input: ServiceReportPreviewInput): Promise<ServiceReportPreviewResult | undefined> {
+    const [service] = await db.select().from(services).where(and(eq(services.orgId, this.orgId), eq(services.id, input.serviceId)));
+    if (!service) {
+      return undefined;
+    }
+    const appointmentId = input.appointmentId || service.appointmentId || null;
+    const [appointment] = appointmentId
+      ? await db.select().from(appointments).where(and(eq(appointments.orgId, this.orgId), eq(appointments.id, appointmentId)))
+      : [undefined];
+    const vocabulary = await this.readMaterialVocabularyTx(db as any);
+    const rows = normalizeProductApplicationInputs(input.productApplications, vocabulary);
+    const technicianSnapshot = await this.resolveServiceRecordTechnicianSnapshot(db as any, {
+      serviceId: service.id,
+      appointmentId: appointment?.id ?? null,
+      technicianId: input.technicianId || service.assignedTechnicianId || appointment?.assignedTechnicianId || null,
+      technicianName: null,
+      technicianLicenseNumber: null,
+    });
+    const parties = await this.serviceReportPartiesTx(db, {
+      customerId: service.customerId,
+      locationId: service.locationId,
+      serviceTypeId: input.serviceTypeId ?? service.serviceTypeId ?? null,
+    });
+    const followUpRequired = input.followUpRequired ?? false;
+    const context: ServiceReportDocumentContext = {
+      serviceDate: serviceReportDay(input.serviceDate),
+      preview: true,
+      customerName: parties.customerName,
+      serviceLocation: parties.serviceLocation,
+      serviceTypeName: parties.serviceTypeName,
+      technicianName: technicianSnapshot.technicianName,
+      technicianLicenseNumber: technicianSnapshot.technicianLicenseNumber,
+      targetPests: deriveStoredTargetPests(vocabulary.pests, input.targetPests, rows) ?? [],
+      areasServiced: deriveAreasServiced(rows) ?? (input.areasServiced?.trim() || null),
+      materials: rows.map((row) => this.serviceReportMaterialLine(row)),
+      notes: input.notes?.trim() || null,
+      conditionsFound: input.conditionsFound?.trim() || null,
+      recommendations: input.recommendations?.trim() || null,
+      followUpRequired,
+      followUpNotes: followUpRequired ? input.followUpNotes?.trim() || null : null,
+      customerSignature: input.customerSignature ?? false,
+      branding: parties.branding,
+    };
+    const pdf = await renderServiceReportPdf(context);
+    return { pdf, fileName: serviceReportFileName({ serviceDate: input.serviceDate, locationName: parties.locationName }) };
+  }
+
+  // ---------------------------------------------------------------------------
   // Statements (PLAN_ROADMAP_V2.md C2.5, Pass 15; B5). The invoice document's
   // pattern: storage assembles the context once - the customer's ledger rows
   // handed to the pure summarizers in shared/statements.ts, the parties
@@ -9714,6 +10044,7 @@ export class DatabaseStorage implements IStorage {
     orgId: documents.orgId,
     kind: documents.kind,
     invoiceId: documents.invoiceId,
+    serviceRecordId: documents.serviceRecordId,
     statementVariant: documents.statementVariant,
     customerId: documents.customerId,
     locationId: documents.locationId,
