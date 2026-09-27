@@ -252,11 +252,16 @@ export async function registerRoutes(
   // applied to the Service by storage under the post's rule (ADJUST_PRICE_AGREEMENT
   // on an agreement-generated service, 403 otherwise) and the price logged
   // `price_overridden` - never through the ungated PATCH /api/services/:id.
-  // Pass 20 (C3.4a): a material row carries applicationAreas[] (its
-  // applicationLocation is written as the first area, transitional); when
+  // Pass 20 (C3.4a): a material row carries applicationAreas[]; when
   // materials are sent, areasServiced is derived from them by storage and
   // the body's areasServiced counts only if no row names an area. Units and
   // areas are put in the org's lists' spelling; an off-list value is kept.
+  // Pass 21 (C3.4b): a row carries targetPests[] too (drizzle-zod reads the
+  // column into the row schema below), spelled from the target_pests list
+  // the same way; the ticket's targetPests as stored are the body's picks
+  // (the stored set when omitted) plus every row's pests - the rows sent, or
+  // the existing rows when none are. applicationLocation left the row's
+  // shape with its column.
   const updateServiceRecordSchema = z.object({
     serviceDate: z.coerce.date().optional(),
     technicianId: z.string().nullable().optional(),
@@ -274,7 +279,8 @@ export async function registerRoutes(
   }).strict();
   // The post. Pass 20: the same material rule as the PATCH above -
   // areasServiced derives from the rows' applicationAreas, the body's text
-  // only when no row names an area.
+  // only when no row names an area. Pass 21: targetPests as stored are the
+  // technician's picks plus every row's targetPests.
   const completeServiceSchema = z.object({
     appointmentId: z.string().nullable().optional(),
     technicianId: z.string().nullable().optional(),

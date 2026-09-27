@@ -472,6 +472,10 @@ export const serviceRecords = pgTable("service_records", {
   technicianName: text("technician_name"),
   technicianLicenseNumber: text("technician_license_number"),
   notes: text("notes"),
+  // The ticket-level target pests: the ticket's own picks plus - since
+  // Pass 21 (C3.4b) - every product application row's pests, in the
+  // target_pests list's spelling; derived by storage on every post and on
+  // every office edit (shared/material-lists.ts deriveTicketTargetPests).
   targetPests: text("target_pests").array(),
   areasServiced: text("areas_serviced"),
   conditionsFound: text("conditions_found"),
@@ -630,12 +634,16 @@ export const productApplications = pgTable("product_applications", {
   // list - the product's allowed areas, or the org's application_areas
   // settings list when the product names none (shared/material-lists.ts).
   // A value off the list is kept, never refused. service_records.areasServiced
-  // derives from every row's list. Target pests per row are C3.4b's.
+  // derives from every row's list. The single application_location the rows
+  // carried before Pass 20 was dropped in Pass 21 (C3.4b): every reader and
+  // writer had moved to this list.
   applicationAreas: text("application_areas").array(),
-  // TRANSITIONAL (dev rule 4): the single area rows carried before Pass 20.
-  // Written as the first entry of applicationAreas since; read only by
-  // surfaces that predate the list. C3.4b (Pass 21) decides its fate.
-  applicationLocation: text("application_location"),
+  // Pass 21 (C3.4b): the pests this product was applied for - the compliance
+  // record per row, from the org's target_pests list (below) in its spelling
+  // where the match is case-insensitive, kept as sent otherwise (Pass 20's
+  // rule). service_records.targetPests is the ticket's own picks plus every
+  // row's pests, derived by storage whenever a ticket is posted or edited.
+  targetPests: text("target_pests").array(),
   notes: text("notes"),
 });
 

@@ -17,7 +17,7 @@ import { BillingPlanPill, useBillingPlanById } from "@/components/billing-plan-p
 import { can, PERMISSIONS, rolesWithPermission } from "@shared/permissions";
 import { computeProductionValueCents } from "@shared/production-value";
 import { describeTicketLifecycle } from "@shared/ticket-status";
-import { applicationAreasOf, formatApplicationAreas, matchListEntry } from "@shared/material-lists";
+import { applicationAreasOf, deriveTicketTargetPests, formatApplicationAreas, formatTargetPests, matchListEntry, targetPestsOf } from "@shared/material-lists";
 import { ListMultiSelect } from "@/components/list-multi-select";
 import type { Agreement, Appointment, CustomerNote, MaterialProduct, ProductApplication, Service, ServiceRecord, ServiceType, TargetPest, Technician } from "@shared/schema";
 
@@ -25,10 +25,11 @@ import type { Agreement, Appointment, CustomerNote, MaterialProduct, ProductAppl
 // the org's unit list and `applicationAreas` from the product's allowed areas
 // (the org's area list when the product names none); a value already on the
 // row that the list does not name is shown marked, never dropped. The server
-// writes the transitional single applicationLocation as the first area, so
-// the dialog never sends it, and derives areasServiced from every row's
-// areas, so neither body sends that either. C3.4b (Pass 21) adds the row's
-// targetPests[] beside applicationAreas.
+// derives areasServiced from every row's areas, so neither body sends that.
+// Pass 21 (C3.4b): `targetPests` picks from the org's target-pest list - the
+// compliance record of what the product was applied for; the server derives
+// the ticket's own targetPests as the ticket-level picks plus every row's,
+// and the summary line in the header shows the same union.
 interface MaterialLine {
   key: string;
   collapsed: boolean;
@@ -41,6 +42,7 @@ interface MaterialLine {
   applicationMethod: string;
   device: string;
   applicationAreas: string[];
+  targetPests: string[];
   epaRegNumber: string;
   activeIngredientAmount: string;
   notes: string;
@@ -91,6 +93,7 @@ function emptyMaterial(): MaterialLine {
     applicationMethod: "",
     device: "",
     applicationAreas: [],
+    targetPests: [],
     epaRegNumber: "",
     activeIngredientAmount: "",
     notes: "",
@@ -98,14 +101,16 @@ function emptyMaterial(): MaterialLine {
 }
 
 // A locally saved draft may predate Pass 20 (a single applicationLocation
-// string and no applicationAreas); it reads as one area, as the server reads
-// such a body.
+// string and no applicationAreas); it reads as one area. Pass 21 dropped that
+// column and the body field with it, so this restore is the one reader left.
+// A draft from before Pass 21 names no row pests.
 function materialFromDraft(draft: Partial<MaterialLine> & { applicationLocation?: string | null }): MaterialLine {
-  const { applicationLocation, applicationAreas, ...rest } = draft;
+  const { applicationLocation, applicationAreas, targetPests, ...rest } = draft;
   return {
     ...emptyMaterial(),
     ...rest,
     applicationAreas: applicationAreasOf({ applicationAreas: Array.isArray(applicationAreas) ? applicationAreas : null, applicationLocation }),
+    targetPests: targetPestsOf({ targetPests: Array.isArray(targetPests) ? targetPests : null }),
   };
 }
 
@@ -122,6 +127,7 @@ function materialFromApplication(application: ProductApplication): MaterialLine 
     applicationMethod: application.applicationMethod || "",
     device: application.device || "",
     applicationAreas: applicationAreasOf(application),
+    targetPests: targetPestsOf(application),
     epaRegNumber: application.epaRegNumber || "",
     activeIngredientAmount: application.activeIngredientAmount || "",
     notes: application.notes || "",
@@ -206,14 +212,15 @@ export function ServiceCompletionDialog({
   const [technicianId, setTechnicianId] = useState("");
   const [serviceDate, setServiceDate] = useState(formatDateTimeLocalValue(new Date()));
   const [notes, setNotes] = useState("");
-  const [targetPests, setTargetPests] = useState("");
+  // Pass 21 (C3.4b): the ticket-level picks - the "selected" part of the
+  // ticket's set; the union with every row's pests is ticketTargetPests below.
+  const [targetPests, setTargetPests] = useState<string[]>([]);
   const [conditionsFound, setConditionsFound] = useState("");
   const [recommendations, setRecommendations] = useState("");
   const [followUpRequired, setFollowUpRequired] = useState(false);
   const [followUpNotes, setFollowUpNotes] = useState("");
   const [deviceNotes, setDeviceNotes] = useState("");
   const [materials, setMaterials] = useState<MaterialLine[]>([emptyMaterial()]);
-  const [targetPestSearch, setTargetPestSearch] = useState("");
   const [ticketServiceTypeId, setTicketServiceTypeId] = useState("");
   const [ticketPrice, setTicketPrice] = useState("");
   // Pass 19 (C3.3): the price as last COMMITTED - seeded with the box, then
@@ -300,12 +307,19 @@ export function ServiceCompletionDialog({
   }, [allowServiceOverride, committedPrice, computedProductionValueCents, isAgreementGeneratedService, service]);
   const { data: visitBilling, isLoading: visitBillingLoading, isError: visitBillingError } = useVisitBillingSummary(open ? visitAppointmentId : null, draftPrice);
   const serviceBilling = visitBilling?.services.find((line) => line.serviceId === service?.id) ?? null;
-  const selectedTargetPests = useMemo(() => targetPests.split(",").map((value) => value.trim()).filter(Boolean), [targetPests]);
   const targetPestOptions = useMemo(() => {
     const configured = (configuredTargetPests ?? []).map((pest) => pest.label);
     return configured.length ? configured : FALLBACK_TARGET_PEST_OPTIONS;
   }, [configuredTargetPests]);
-  const filteredTargetPests = targetPestOptions.filter((pest) => pest.toLowerCase().includes(targetPestSearch.toLowerCase()));
+  // Pass 21 (C3.4b): the ticket's set as the server will store it - the
+  // picks, then every material row's pests, in the list's spelling, deduped
+  // (shared/material-lists.ts, the same function storage uses). The header's
+  // summary line shows it; the ticket-level control edits only the picks.
+  const ticketTargetPests = useMemo(() => deriveTicketTargetPests(targetPestOptions, targetPests, materials), [materials, targetPestOptions, targetPests]);
+  const materialOnlyTargetPests = useMemo(
+    () => ticketTargetPests.filter((pest) => !targetPests.some((pick) => matchListEntry([pest], pick) !== null)),
+    [targetPests, ticketTargetPests],
+  );
 
   useEffect(() => {
     if (!open || !service) return;
@@ -321,7 +335,12 @@ export function ServiceCompletionDialog({
         setTechnicianId(parsed.technicianId || nextTechnicianId);
         setServiceDate(parsed.serviceDate || nextServiceDate);
         setNotes(parsed.notes || "");
-        setTargetPests(parsed.targetPests || "");
+        // A draft from before Pass 21 saved the picks comma-joined.
+        setTargetPests(Array.isArray(parsed.targetPests)
+          ? parsed.targetPests.filter((value: unknown): value is string => typeof value === "string")
+          : typeof parsed.targetPests === "string"
+            ? parsed.targetPests.split(",").map((value: string) => value.trim()).filter(Boolean)
+            : []);
         setConditionsFound(parsed.conditionsFound || "");
         setRecommendations(parsed.recommendations || "");
         setFollowUpRequired(!!parsed.followUpRequired);
@@ -341,7 +360,9 @@ export function ServiceCompletionDialog({
     setTechnicianId(nextTechnicianId);
     setServiceDate(nextServiceDate);
     setNotes(existingServiceRecord?.notes || "");
-    setTargetPests(existingServiceRecord?.targetPests?.join(", ") || "");
+    // The stored set is the union; on an edit it seeds the picks whole, so a
+    // pest that arrived through a material stays until someone removes it.
+    setTargetPests(existingServiceRecord?.targetPests ?? []);
     setConditionsFound(existingServiceRecord?.conditionsFound || "");
     setRecommendations(existingServiceRecord?.recommendations || "");
     setFollowUpRequired(existingServiceRecord?.followUpRequired ?? false);
@@ -403,8 +424,9 @@ export function ServiceCompletionDialog({
       activeIngredientAmount: material.activeIngredientAmount || null,
       applicationMethod: material.applicationMethod || null,
       device: material.device || null,
-      // The server writes applicationLocation as the first area (transitional).
       applicationAreas: material.applicationAreas.filter((area) => area.trim()),
+      // Pass 21: the row's pests; the server folds them into the ticket's set.
+      targetPests: material.targetPests.filter((pest) => pest.trim()),
       notes: material.notes || null,
     }));
 
@@ -476,7 +498,7 @@ export function ServiceCompletionDialog({
         serviceDate,
         ...serviceOverridePayload(),
         notes: [notes, deviceNotes ? `Device notes: ${deviceNotes}` : null].filter(Boolean).join("\n\n"),
-        targetPests: targetPests.split(",").map((value) => value.trim()).filter(Boolean),
+        targetPests,
         conditionsFound,
         recommendations,
         followUpRequired,
@@ -515,7 +537,7 @@ export function ServiceCompletionDialog({
         serviceDate,
         ...serviceOverridePayload(),
         notes: [notes, deviceNotes ? `Device notes: ${deviceNotes}` : null].filter(Boolean).join("\n\n"),
-        targetPests: targetPests.split(",").map((value) => value.trim()).filter(Boolean),
+        targetPests,
         conditionsFound,
         recommendations,
         followUpRequired,
@@ -544,13 +566,6 @@ export function ServiceCompletionDialog({
         activeIngredientAmount: calculateActiveIngredientAmount(next.amountApplied, getConcentration(selectedProduct, dilution)),
       };
     }));
-  };
-
-  const toggleTargetPest = (pest: string) => {
-    const next = selectedTargetPests.includes(pest)
-      ? selectedTargetPests.filter((value) => value !== pest)
-      : [...selectedTargetPests, pest];
-    setTargetPests(next.join(", "));
   };
 
   const collapseMaterial = (index: number, collapsed: boolean) => {
@@ -599,6 +614,10 @@ export function ServiceCompletionDialog({
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <p className="font-medium">{serviceTypeName}</p>
+                  {/* Pass 21 (C3.4b): the ticket's target pests - the picks plus every material's - as the server will store them; absent when empty. */}
+                  {ticketTargetPests.length > 0 && (
+                    <p className="text-sm" data-testid="text-ticket-target-pests"><span className="text-muted-foreground">Target pests:</span> {ticketTargetPests.join(", ")}</p>
+                  )}
                   {appointment?.scheduledDate && <p className="text-muted-foreground">Scheduled {new Date(appointment.scheduledDate).toLocaleString()}</p>}
                   <p className="text-xs text-muted-foreground">{isOfficeEdit ? "A saved change is recorded in the ticket's history as Ticket edited." : "Ticket drafts autosave locally on this device."}</p>
                 </div>
@@ -707,27 +726,9 @@ export function ServiceCompletionDialog({
               <Textarea value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="What was performed?" />
             </div>
 
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div className="space-y-2">
-                <Label>Target Pests</Label>
-                <Input value={targetPestSearch} onChange={(event) => setTargetPestSearch(event.target.value)} placeholder="Search pests" />
-                <div className="flex flex-wrap gap-2">
-                  {filteredTargetPests.map((pest) => (
-                    <button
-                      key={pest}
-                      type="button"
-                      className={`rounded-full border px-3 py-1 text-xs ${selectedTargetPests.includes(pest) ? "border-primary bg-primary text-primary-foreground" : "bg-background"}`}
-                      onClick={() => toggleTargetPest(pest)}
-                    >
-                      {pest}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <div className="space-y-2">
-                <Label>Device Notes</Label>
-                <Input value={deviceNotes} onChange={(event) => setDeviceNotes(event.target.value)} placeholder="Device IDs/types staged for future tracking" />
-              </div>
+            <div className="space-y-2">
+              <Label>Device Notes</Label>
+              <Input value={deviceNotes} onChange={(event) => setDeviceNotes(event.target.value)} placeholder="Device IDs/types staged for future tracking" />
             </div>
 
             <div className="grid gap-4 sm:grid-cols-2">
@@ -770,11 +771,34 @@ export function ServiceCompletionDialog({
               <div className="flex items-center justify-between">
                 <div>
                   <Label>Structured Materials / Chemicals</Label>
-                  <p className="text-xs text-muted-foreground">Areas serviced are derived from every row's application areas when the ticket is saved.</p>
+                  <p className="text-xs text-muted-foreground">Areas serviced and the ticket's target pests are derived from every row when the ticket is saved.</p>
                 </div>
                 <Button type="button" variant="outline" size="sm" onClick={() => setMaterials((current) => [emptyMaterial(), ...current])}>
                   Add Material
                 </Button>
+              </div>
+              {/* Pass 21 (C3.4b): the ticket-level target pests, in the Materials
+                  section as a searchable multi-select over the org's list (the
+                  pill toggles and their search box are gone). These are the
+                  picks; the ticket's set is these plus every row's pests, shown
+                  in the header. A pick the list does not name (a ticket from
+                  before the list, or a deactivated pest) is kept and marked. */}
+              <div className="space-y-1.5 rounded-lg border p-3" data-testid="block-ticket-target-pests">
+                <Label>Target Pests</Label>
+                <ListMultiSelect
+                  options={targetPestOptions}
+                  value={targetPests}
+                  onChange={setTargetPests}
+                  placeholder="Select target pests"
+                  searchPlaceholder="Search pests"
+                  offListCaption="not on the pest list"
+                  testId="multiselect-ticket-target-pests"
+                />
+                <p className="text-xs text-muted-foreground">
+                  {materialOnlyTargetPests.length
+                    ? `The ticket also records the materials' pests: ${materialOnlyTargetPests.join(", ")}.`
+                    : "The ticket records these plus every material's target pests."}
+                </p>
               </div>
               {materials.map((material, index) => {
                 const selectedProduct = materialProducts?.find((product) => product.id === material.materialProductId);
@@ -796,7 +820,7 @@ export function ServiceCompletionDialog({
                         <span>
                           <span className="block font-medium">{material.productName || "Material"}</span>
                           <span className="block text-xs text-muted-foreground">
-                            {[material.amountApplied && `${material.amountApplied} ${material.unit}`.trim(), material.dilutionLabel, formatApplicationAreas(material), material.activeIngredientAmount && `AI ${material.activeIngredientAmount}`].filter(Boolean).join(" - ") || "Tap to edit"}
+                            {[material.amountApplied && `${material.amountApplied} ${material.unit}`.trim(), material.dilutionLabel, formatApplicationAreas(material), formatTargetPests(material) && `for ${formatTargetPests(material)}`, material.activeIngredientAmount && `AI ${material.activeIngredientAmount}`].filter(Boolean).join(" - ") || "Tap to edit"}
                           </span>
                         </span>
                         <span className="text-xs text-primary">Edit</span>
@@ -896,6 +920,19 @@ export function ServiceCompletionDialog({
                           testId={`multiselect-material-areas-${index}`}
                         />
                         <p className="text-xs text-muted-foreground">{productAreaOptions.length ? "This product's allowed areas." : "The company's application areas (Settings)."}</p>
+                      </div>
+                      <div className="space-y-1.5">
+                        <Label>Target Pests</Label>
+                        <ListMultiSelect
+                          options={targetPestOptions}
+                          value={material.targetPests}
+                          onChange={(pests) => updateMaterial(index, "targetPests", pests)}
+                          placeholder="Select pests"
+                          searchPlaceholder="Search pests"
+                          offListCaption="not on the pest list"
+                          testId={`multiselect-material-pests-${index}`}
+                        />
+                        <p className="text-xs text-muted-foreground">What this product was applied for; added to the ticket's target pests.</p>
                       </div>
                       <div className="space-y-1.5">
                         <Label>Active Ingredient Applied</Label>

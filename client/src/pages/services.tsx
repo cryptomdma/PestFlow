@@ -34,7 +34,7 @@ import {
 } from "lucide-react";
 import { Link } from "wouter";
 import { describeTicketLifecycle, isTicketFinalized } from "@shared/ticket-status";
-import { formatApplicationAreas } from "@shared/material-lists";
+import { formatApplicationAreas, formatTargetPests } from "@shared/material-lists";
 import type { Appointment, Customer, Service, ServiceRecord, ProductApplication, ServiceType, Location, Technician } from "@shared/schema";
 
 function toDateTimeLocalValue(value?: string | Date | null) {
@@ -61,14 +61,14 @@ function ProductApplicationForm({
     amountApplied: string;
     applicationMethod: string;
     device: string;
-    applicationLocation: string;
+    applicationArea: string;
   }>;
   setProducts: (p: typeof products) => void;
 }) {
   const addProduct = () => {
     setProducts([
       ...products,
-      { productName: "", epaRegNumber: "", dilutionRate: "", amountApplied: "", applicationMethod: "", device: "", applicationLocation: "" },
+      { productName: "", epaRegNumber: "", dilutionRate: "", amountApplied: "", applicationMethod: "", device: "", applicationArea: "" },
     ]);
   };
 
@@ -108,7 +108,7 @@ function ProductApplicationForm({
             </div>
             <div className="grid grid-cols-2 gap-2">
               <div className="space-y-1"><Label className="text-xs">Device</Label><Input value={p.device} onChange={(e) => updateProduct(idx, "device", e.target.value)} /></div>
-              <div className="space-y-1"><Label className="text-xs">Application Location</Label><Input value={p.applicationLocation} onChange={(e) => updateProduct(idx, "applicationLocation", e.target.value)} /></div>
+              <div className="space-y-1"><Label className="text-xs">Application Area</Label><Input value={p.applicationArea} onChange={(e) => updateProduct(idx, "applicationArea", e.target.value)} /></div>
             </div>
           </CardContent>
         </Card>
@@ -145,7 +145,7 @@ function ServiceRecordForm({ onClose }: { onClose: () => void }) {
 
   const [products, setProducts] = useState<Array<{
     productName: string; epaRegNumber: string; dilutionRate: string;
-    amountApplied: string; applicationMethod: string; device: string; applicationLocation: string;
+    amountApplied: string; applicationMethod: string; device: string; applicationArea: string;
   }>>([]);
   const { data: locationServices } = useQuery<Service[]>({
     queryKey: ["/api/services/by-location", form.locationId],
@@ -179,9 +179,14 @@ function ServiceRecordForm({ onClose }: { onClose: () => void }) {
 
       for (const product of products) {
         if (product.productName) {
+          // Pass 21 (C3.4b): the row's area travels as applicationAreas - the
+          // single applicationLocation column is gone. Still free text here
+          // (the one surface left with a freeform area field).
+          const { applicationArea, ...rest } = product;
           await apiRequest("POST", "/api/product-applications", {
             serviceRecordId: record.id,
-            ...product,
+            ...rest,
+            applicationAreas: applicationArea.trim() ? [applicationArea.trim()] : null,
           });
         }
       }
@@ -420,6 +425,7 @@ export default function Services() {
                                 {app.amountApplied && <span> | Amt: {app.amountApplied}</span>}
                                 {app.device && <span> | Device: {app.device}</span>}
                                 {formatApplicationAreas(app) && <span> | Areas: {formatApplicationAreas(app)}</span>}
+                                {formatTargetPests(app) && <span> | Pests: {formatTargetPests(app)}</span>}
                               </div>
                             ))}
                           </div>

@@ -102,6 +102,9 @@ import {
   MATERIAL_UNITS_SETTING_KEY,
   applicationAreasOf,
   deriveAreasServiced,
+  deriveTicketTargetPests,
+  targetPestsOf,
+  type MaterialRowPests,
   normalizeApplicationAreas,
   normalizeMaterialUnits,
   sanitizeMaterialList,
@@ -433,22 +436,24 @@ export interface UpdateServiceRecordInput {
 }
 
 // The org's material vocabularies (Pass 20, C3.4a; shared/material-lists.ts):
-// the two app_settings lists, the defaults when the org has not saved one.
+// the two app_settings lists, the defaults when the org has not saved one,
+// and (Pass 21, C3.4b) the target-pest list - the target_pests table's
+// active rows, in the order GET /api/target-pests offers them.
 export interface MaterialVocabulary {
   units: string[];
   areas: string[];
+  pests: string[];
 }
 
 // What a post and an edit both do to the materials they were sent: trim the
-// name, drop nameless rows, trim the notes to null, and (Pass 20) put the
-// row's vocabulary in the org's spelling - the unit and each application
-// area rewritten to the list's entry where they match one apart from casing
-// or whitespace, kept as written otherwise (never refused; see
-// shared/material-lists.ts for why). applicationAreas is the row's areas - a
-// body naming only applicationLocation (a client from before the list) reads
-// as one area - deduped, order kept, null when there are none;
-// applicationLocation is written as the first area: the transitional single
-// value (dev rule 4) until C3.4b decides its fate.
+// name, drop nameless rows, trim the notes to null, and put the row's
+// vocabulary in the org's spelling (Pass 20) - the unit, each application
+// area and (Pass 21, C3.4b) each target pest rewritten to the list's entry
+// where they match one apart from casing or whitespace, kept as written
+// otherwise (never refused; see shared/material-lists.ts for why).
+// applicationAreas and targetPests are each deduped, order kept, null when
+// there are none. The single applicationLocation the rows carried before
+// Pass 20 is gone (Pass 21 dropped the column); a body naming it is not read.
 function normalizeProductApplicationInputs(
   list: Array<Omit<InsertProductApplication, "serviceRecordId">> | null | undefined,
   vocabulary: MaterialVocabulary,
@@ -456,16 +461,34 @@ function normalizeProductApplicationInputs(
   return (list ?? [])
     .map((application) => {
       const areas = toListSpellings(vocabulary.areas, applicationAreasOf(application));
+      const pests = toListSpellings(vocabulary.pests, targetPestsOf(application));
       return {
         ...application,
         productName: application.productName?.trim() ?? "",
         unit: toListSpelling(vocabulary.units, application.unit),
         applicationAreas: areas.length ? areas : null,
-        applicationLocation: areas[0] ?? null,
+        targetPests: pests.length ? pests : null,
         notes: application.notes?.trim() || null,
       };
     })
     .filter((application) => application.productName);
+}
+
+// The ticket-level target pests as stored (Pass 21, C3.4b): the ticket's own
+// picks - the body's, or the stored set when the body omits them - plus every
+// material row's pests, in the list's spelling (shared/material-lists.ts
+// deriveTicketTargetPests). The rows are the ones the ticket ends up with:
+// the body's when materials are sent, the existing rows otherwise, so the
+// set never names fewer pests than the rows do. An empty union keeps the
+// picks' own shape (null stays null, [] stays []), so a re-save changes nothing.
+function deriveStoredTargetPests(
+  list: readonly string[],
+  selected: readonly string[] | null | undefined,
+  rows: readonly MaterialRowPests[],
+): string[] | null {
+  const union = deriveTicketTargetPests(list, selected, rows);
+  if (union.length) return union;
+  return selected == null ? null : [];
 }
 
 // The `ticket_edited` snapshot (D9, Pass 16): the ticket row plus its
@@ -484,7 +507,7 @@ const PRODUCT_APPLICATION_SNAPSHOT_FIELDS = [
   "applicationMethod",
   "device",
   "applicationAreas",
-  "applicationLocation",
+  "targetPests",
   "notes",
 ] as const;
 type ProductApplicationSnapshot = Record<(typeof PRODUCT_APPLICATION_SNAPSHOT_FIELDS)[number], string | string[] | null>;
@@ -4753,19 +4776,27 @@ export class DatabaseStorage implements IStorage {
       // union of every row's areas in row order, else the body's own text,
       // else nothing. Without materials in the body the field is the content
       // edit it always was.
+      const vocabulary = await this.readMaterialVocabularyTx(tx);
       const nextApplications = input.productApplications === undefined
         ? null
-        : normalizeProductApplicationInputs(input.productApplications, await this.readMaterialVocabularyTx(tx));
+        : normalizeProductApplicationInputs(input.productApplications, vocabulary);
       const nextAreasServiced = nextApplications !== null
         ? deriveAreasServiced(nextApplications) ?? (input.areasServiced?.trim() || null)
         : input.areasServiced === undefined ? existingRecord.areasServiced : input.areasServiced?.trim() || null;
+      // Pass 21 (C3.4b): the ticket's picks (the body's, else the stored set)
+      // plus the pests of the rows the ticket ends up with.
+      const nextTargetPests = deriveStoredTargetPests(
+        vocabulary.pests,
+        input.targetPests === undefined ? existingRecord.targetPests : input.targetPests,
+        nextApplications ?? previousApplications,
+      );
       const nextFields = {
         serviceDate: input.serviceDate ?? existingRecord.serviceDate,
         technicianId,
         technicianName,
         technicianLicenseNumber,
         notes: input.notes === undefined ? existingRecord.notes : input.notes?.trim() || null,
-        targetPests: input.targetPests === undefined ? existingRecord.targetPests : input.targetPests?.filter((value) => value.trim()) ?? null,
+        targetPests: nextTargetPests,
         areasServiced: nextAreasServiced,
         conditionsFound: input.conditionsFound === undefined ? existingRecord.conditionsFound : input.conditionsFound?.trim() || null,
         recommendations: input.recommendations === undefined ? existingRecord.recommendations : input.recommendations?.trim() || null,
@@ -4923,7 +4954,8 @@ export class DatabaseStorage implements IStorage {
       // serviced derived from them (canon §12) - the union of every row's
       // areas in row order; the body's own text only when no row names an
       // area (a post with no materials).
-      const normalizedApplications = normalizeProductApplicationInputs(input.productApplications, await this.readMaterialVocabularyTx(tx));
+      const vocabulary = await this.readMaterialVocabularyTx(tx);
+      const normalizedApplications = normalizeProductApplicationInputs(input.productApplications, vocabulary);
       const recordPayload: Omit<InsertServiceRecord, "orgId"> = {
         serviceId: effectiveService.id,
         appointmentId: appointment?.id ?? effectiveService.appointmentId ?? null,
@@ -4935,7 +4967,8 @@ export class DatabaseStorage implements IStorage {
         technicianName: null,
         technicianLicenseNumber: null,
         notes: input.notes?.trim() || null,
-        targetPests: input.targetPests?.filter((value) => value.trim()) ?? null,
+        // Pass 21 (C3.4b): the technician's picks plus every row's pests.
+        targetPests: deriveStoredTargetPests(vocabulary.pests, input.targetPests, normalizedApplications),
         areasServiced: deriveAreasServiced(normalizedApplications) ?? (input.areasServiced?.trim() || null),
         conditionsFound: input.conditionsFound?.trim() || null,
         recommendations: input.recommendations?.trim() || null,
@@ -5420,9 +5453,18 @@ export class DatabaseStorage implements IStorage {
       .select()
       .from(appSettings)
       .where(and(eq(appSettings.orgId, this.orgId), inArray(appSettings.key, [MATERIAL_UNITS_SETTING_KEY, APPLICATION_AREAS_SETTING_KEY])));
+    // Pass 21 (C3.4b): the pest list is a table, not a settings row - its
+    // active rows, in the order GET /api/target-pests offers them, read in
+    // the same transaction as the materials they spell.
+    const pests = await tx
+      .select({ label: targetPests.label })
+      .from(targetPests)
+      .where(and(eq(targetPests.orgId, this.orgId), eq(targetPests.isActive, true)))
+      .orderBy(asc(targetPests.sortOrder), asc(targetPests.label));
     return {
       units: normalizeMaterialUnits(rows.find((row) => row.key === MATERIAL_UNITS_SETTING_KEY)?.value),
       areas: normalizeApplicationAreas(rows.find((row) => row.key === APPLICATION_AREAS_SETTING_KEY)?.value),
+      pests: pests.map((row) => row.label),
     };
   }
 
@@ -5487,14 +5529,30 @@ export class DatabaseStorage implements IStorage {
   }
 
   async createProductApplication(data: InsertProductApplication): Promise<ProductApplication> {
-    // The same vocabulary rule as a post's materials (Pass 20), so a row
-    // written by this legacy route carries applicationAreas too.
-    const [normalized] = normalizeProductApplicationInputs([data], await this.readMaterialVocabularyTx(db as any));
-    if (!normalized) {
-      throw new Error("Product name is required");
-    }
-    const [pa] = await db.insert(productApplications).values({ ...normalized, serviceRecordId: data.serviceRecordId, orgId: this.orgId }).returning();
-    return pa;
+    return db.transaction(async (tx) => {
+      // The same vocabulary rule as a post's materials (Pass 20), so a row
+      // written by this legacy route carries applicationAreas and (Pass 21)
+      // targetPests in the lists' spelling too.
+      const vocabulary = await this.readMaterialVocabularyTx(tx);
+      const [normalized] = normalizeProductApplicationInputs([data], vocabulary);
+      if (!normalized) {
+        throw new Error("Product name is required");
+      }
+      const [pa] = await tx.insert(productApplications).values({ ...normalized, serviceRecordId: data.serviceRecordId, orgId: this.orgId }).returning();
+      // Pass 21 (C3.4b): the ticket's set names every row's pests, this
+      // route's row included - the ticket keeps its own picks and gains the
+      // row's. Not audited: this pre-Phase-1 route never was.
+      if (targetPestsOf(pa).length) {
+        const [record] = await tx.select().from(serviceRecords).where(and(eq(serviceRecords.orgId, this.orgId), eq(serviceRecords.id, pa.serviceRecordId)));
+        if (record) {
+          const nextTargetPests = deriveStoredTargetPests(vocabulary.pests, record.targetPests, [pa]);
+          if (!ticketFieldsEqual(nextTargetPests, record.targetPests)) {
+            await tx.update(serviceRecords).set({ targetPests: nextTargetPests }).where(and(eq(serviceRecords.orgId, this.orgId), eq(serviceRecords.id, record.id)));
+          }
+        }
+      }
+      return pa;
+    });
   }
 
   async getOrganization(): Promise<Organization | undefined> {

@@ -24,8 +24,8 @@ the owner's note of 2026-09-25) is merged (PR #88); Pass 17 (the reopen-reason p
 first Phase 3 row in phase order, the recommended order being exhausted) is merged (PR #89); Pass
 18 (the office Edit on the review modal, C3.1b) is merged (PR #90); Pass 19 (the technician
 ticket modal's money and instructions, C3.3) is merged (PR #91); Pass 20 (material units and
-application areas, C3.4a) is pushed, awaiting merge; **next pass: 21, target pests at two
-levels** (C3.4b). The roadmap sequences every
+application areas, C3.4a) is merged (PR #92); Pass 21 (target pests at two levels, C3.4b) is
+pushed, awaiting merge; **next pass: 22, the service report document** (C3.5). The roadmap sequences every
 remaining item below; this file keeps the status pointer and, as its last section, the handoff
 prompt that starts the next session.
 
@@ -956,7 +956,7 @@ the re-pricing on blur, the instructions block, the pill and the time-in prompt 
 rendered by anyone: the repo has no browser automation and the session had no browser.**
 Signatures and behavior are under "Shipped in Pass 19" at the end of `PLAN_ROADMAP_V2.md` Part D.
 
-Pass 20 (`feature/phase-3-material-units-areas`, 2026-09-26, C3.4a) pushed, awaiting merge.
+Pass 20 (`feature/phase-3-material-units-areas`, 2026-09-26, C3.4a) merged (PR #92, 2026-09-27).
 **Material units and application areas.** Two Settings-managed lists in the reopen list's shape
 (`shared/material-lists.ts`; one `app_settings` row each, `material_units` and
 `application_areas`, the defaults until Settings saves one - oz / fl oz / gal / lb / g / mL / L /
@@ -997,16 +997,58 @@ two Settings cards have not been rendered by anyone: the repo has no browser aut
 session had no browser.** Signatures and behavior are under "Shipped in Pass 20" at the end of
 `PLAN_ROADMAP_V2.md` Part D.
 
-Next up: **Pass 21** — target pests at two levels (`PLAN_ROADMAP_V2.md` Phase 3 table, C3.4b,
-B12): `productApplications.targetPests[]` per material row from the target-pest list
-(compliance), beside Pass 20's `applicationAreas`; the ticket-level target pests stay on the
-ticket, selectable from a searchable multi-select placed in the Materials section, and are
-**selected ∪ every material's pests**; the summary line at the top of the ticket shows that
-union; the fate of the transitional `applicationLocation` is decided there. Phase order continues
-after it (Pass 22, C3.5 → ..., with Pass 26 (C4.1b) and Pass 28 (C4.3a) in Phase 4's turn).
-Branch from `origin/main` after confirming it contains Pass 20's merge. The handoff prompt for
-Pass 21 is the last section of this file; the Pass 21 session writes Pass 22's (the C3.5 row
-carries the spec).
+Pass 21 (`feature/phase-3-target-pests-two-levels`, 2026-09-27, C3.4b) pushed, awaiting merge.
+**Target pests at two levels.** Each material row carries its own target pests
+(`productApplications.targetPests text[]`, beside Pass 20's `applicationAreas`) - the compliance
+record of what a product was applied for - picked in the ticket dialog from the org's target-pest
+list through a Target Pests multi-select per row (the Pass 20 `<ListMultiSelect>`); the
+ticket-level control left its pill toggles and search box for the same multi-select, placed at the
+top of the Materials section, and holds the ticket's own picks. **The ticket's set is derived by
+the server** (B13: one rule in the route): on every post and every office edit,
+`service_records.targetPests` = the picks (the body's, or the stored set when the body omits them)
+∪ every material row's pests - the picks first in the order picked, then the rows' in row order,
+each in the pest list's spelling where the match is case-insensitive and kept as written
+otherwise (Pass 20's rule: "Crickets" on an old ticket, "Squirrels" on a row stay and are shown
+marked), deduped; the rows are the ones the ticket ends up with (the body's when materials are
+sent, the existing rows otherwise), so the set never names fewer pests than the rows. Only the
+union is stored: on an office edit the stored set seeds the picks whole, so a pest that arrived
+through a material stays until someone removes it - never silently dropped. **The summary line**
+at the top of the ticket (the header card, under the service type, both modes, absent when empty)
+shows the same union, computed by the shared `deriveTicketTargetPests()` storage uses; the review
+modal's Target Pests line reads the stored union, and every material line (review modal, customer
+screen, Service History page) prints the row's pests. **Decided: `applicationLocation` is
+dropped** - a guarded `DROP COLUMN` in the bootstrap after a safety copy of any row whose location
+was its only area (0 on the dev DB), the effect printed once. Every reader already went through
+`applicationAreasOf()` / `formatApplicationAreas()`, every writer wrote `applicationAreas`, no
+service worker caches an older client, and the one in-repo writer still sending the old field
+(the Service History page's legacy "New Service Record" form) now sends `applicationAreas`; the
+field left the API with its column (a body naming it is not read), the `ticket_edited` snapshot
+carries `targetPests` in its place, and the dialog's restore of a pre-Pass-20 local draft is the
+one reader left of the name. **Migration** (`bootstrapMaterialTargetPests`, two guarded steps
+printed once): `target_pests text[]` added with no backfill (no row carried a pest; 45 rows on the
+dev DB); `application_location` dropped. **It has NOT run against the shared dev DB: this pass's
+verification ran against a copy (`pestflow_verify`, dropped afterwards - the recipe is in
+`DEV_NOTES.md`), because a column drop breaks any server still running the previous code against
+the same database; the owner's `npm run dev:full` restart runs it and prints both lines.** The
+legacy `POST /api/product-applications` row goes through the same normalizer and folds its pests
+into its ticket's set. Not touched: the unit and area lists (Pass 20), the post's price / type
+path, the service report (C3.5), the target-pests routes' gating (none, as before), the legacy
+form's freeform Areas Serviced. **Restart `npm run dev:full` before manually testing - this pass
+adds a column, drops one and changes two bodies; the two multi-selects, the summary line and the
+material lines' pest captions have not been rendered by anyone: the repo has no browser automation
+and the session had no browser.** Signatures and behavior are under "Shipped in Pass 21" at the
+end of `PLAN_ROADMAP_V2.md` Part D.
+
+Next up: **Pass 22** — the service report document (`PLAN_ROADMAP_V2.md` Phase 3 table, C3.5,
+B11): a customer-facing PDF of a posted / finalized ticket (technician + license, date, services,
+target pests, materials, notes, recommendations, a signature placeholder) through the document
+renderer, stored like invoices; Open / Download on the review modal and the Services tab, Preview
+in the collect step; the Settings toggle "Attach service report to visit invoices" appending the
+report(s) to a visit-anchored invoice's PDF. Phase order continues after it (Pass 23, C3.6 → ...,
+with Pass 26 (C4.1b) and Pass 28 (C4.3a) in Phase 4's turn). Branch from `origin/main` after
+confirming it contains Pass 21's merge. The handoff prompt for Pass 22 is the last section of
+this file; the Pass 22 session writes Pass 23's (the C3.6 row and this file's field-surcharge
+unit carry the spec).
 
 Phase 1's ordered plan, impact analysis, conflict resolutions, and per-pass verification steps live in
 `PLAN_BILLING_V1_1_EXECUTION.md` — read it when a pass builds on a Phase 1 helper (its "Shipped in
@@ -1239,106 +1281,169 @@ pointer and that prompt.
 
 Replaced at the end of every pass (`AGENT_WORKING_AGREEMENT.md`, the end-of-pass step). The owner
 pastes it verbatim to start the next session; it is also the last thing in the finishing session's
-final message. Written 2026-09-26, after Pass 20 was pushed as
-`feature/phase-3-material-units-areas`.
+final message. Written 2026-09-27, after Pass 21 was pushed as
+`feature/phase-3-target-pests-two-levels`.
 
 ```text
-Start Pass 21 — Target pests at two levels
-(PLAN_ROADMAP_V2.md Phase 3 table, row C3.4b; B12 and decision-log row 5. Phase order: the next
-open Phase 3 row after Pass 20.) Read the CLAUDE.md docs in order first; CURRENT_FOCUS.md's last
-two entries (Pass 20 and "Next up") are the ones that matter.
+Start Pass 22 — Service report document
+(PLAN_ROADMAP_V2.md Phase 3 table, row C3.5; B11 and the decision-log row for B11. Phase order:
+the next open Phase 3 row after Pass 21.) Read the CLAUDE.md docs in order first;
+CURRENT_FOCUS.md's last two entries (Pass 21 and "Next up") are the ones that matter.
 
-Branch feature/phase-3-target-pests-two-levels from origin/main. Confirm main contains the Pass 20
-merge (feature/phase-3-material-units-areas) before branching.
+Branch feature/phase-3-service-report-document from origin/main. Confirm main contains the Pass 21
+merge (feature/phase-3-target-pests-two-levels) before branching.
 
-The decision is recorded (the C3.4b row and B12, owner 2026-09-19: target pests stay at the
-service-ticket level, selectable from the modal, AND each material application carries its own
-target pests for compliance; the ticket-level set is selected ∪ every material's pests and is what
-the summary shows; the ticket-level control becomes a searchable multi-select placed in the
-Materials section. Canon §12: target pests are Settings-managed reference data for internal
-treatment context, not warranted pests. B13's rule: every field action is a route and every screen
-is data from a read. Pass 20's rule for a value outside a list - kept, never refused, shown marked,
-a case-insensitive match written in the list's spelling - and its shared/material-lists.ts helpers
-(matchListEntry / toListSpellings / isOnList) are the pattern to reuse. Dev rule 4:
-applicationLocation is the transitional single area and this row decides its fate.) Ground truth
-today (line numbers from origin/main at the Pass 20 merge; they drift, the names do not):
-- Data: service_records.targetPests text[] (shared/schema.ts:475) is the ticket-level set;
-  product_applications (:615) carries applicationAreas text[] (:634) and the transitional
-  applicationLocation (:638) and NO pest column; target_pests (:667 - label, isActive, isFavorite,
-  sortOrder, notes; org-scoped; created and seeded with 12 pests in
-  server/service-scheduling-bootstrap.ts:212, unique on lower(label)). Routes: GET / POST / PATCH
-  /api/target-pests (routes.ts:2143-2170, ungated; the Settings card at settings.tsx:1583 with
-  TargetPestForm :350); the post and the PATCH accept targetPests: z.array(z.string()) on the
-  ticket (routes.ts:264, :285) and storage trims / filters them (storage.ts:4768 the edit, :4938
-  the post). The material row's write path is storage normalizeProductApplicationInputs (:452 -
-  the place to add the row's pests in the pest list's spelling) and
-  PRODUCT_APPLICATION_SNAPSHOT_FIELDS (:475 - the ticket_edited diff's shape; add the field);
-  readMaterialVocabularyTx (:5418) reads the two Pass 20 lists inside the post / edit transaction -
-  the pest list is a table, not an app_settings row, so it is a select on target_pests (active
-  rows) in the same transaction. The dev DB: 71 service_records, 45 product_applications, 12
-  target_pests (Ants ... Occasional Invaders); the tickets' targetPests are free strings that match
-  the labels.
-- The dialog (client/src/components/service-completion-dialog.tsx): the ticket-level control is a
-  search Input plus pill toggles (:712-730; state targetPests as a comma-joined string :209,
-  targetPestSearch :216, configuredTargetPests from GET /api/target-pests :237 with
-  FALLBACK_TARGET_PEST_OPTIONS :131 when the org has none, selectedTargetPests / targetPestOptions
-  / filteredTargetPests :303-308, toggleTargetPest :549); both bodies send targetPests.split(",")
-  (:479 the post, :518 the office edit). The material line is MaterialLine (:32; applicationAreas:
-  string[] :43 - the comment there reserves room for targetPests[]), materialFromDraft (:103,
-  migrates an older local draft), materialFromApplication (:112), materialsPayload (:393),
-  selectProduct (:564), the row UI with Unit (:853) and Application Areas (:888, a
-  <ListMultiSelect> from client/src/components/list-multi-select.tsx - options, value, onChange,
-  placeholder, searchPlaceholder, offListCaption, testId; off-list values shown as marked chips)
-  and the collapsed summary line (:799). The Materials section header is :772 ("Structured
-  Materials / Chemicals"). There is NO summary line at the top of the ticket today: the header
-  card (:~600) shows the service type, the schedule, the mode badge, the billing-plan pill and
-  the billing block.
-- Readers of the ticket's pests: the review modal prints them joined (service-ticket-review.tsx:757)
-  and each material's line (:776, formatApplicationAreas from shared/material-lists.ts); the
-  Service History page prints pills (services.tsx:403-406) and its legacy "New Service Record"
-  form takes them comma-separated (:288); the customer screen's service history prints the
-  record's derived areas and its materials (customer-detail.tsx ~2856, ~2882) but not its pests.
+The decision is recorded (the C3.5 row; B11, owner 2026-09-19: the invoice and the service report
+stay separate documents, and a Settings toggle "Attach service report to visit invoices" appends
+the report(s) to a visit-anchored invoice's PDF - a schedule-driven or manual invoice has no visit
+and appends nothing, "omit on null". The C3.5 row: a customer-facing summary of a posted /
+finalized ticket - technician + license, date, services, target pests, materials, notes,
+recommendations, a signature placeholder - through the document renderer, stored like invoices;
+Open / Download on the review modal and the Services tab, Preview in the collect step. Canon §12:
+the Service Record is the compliance snapshot (technician name / license copied at post) and its
+target pests are the ticket's picks ∪ every material's since Pass 21; Pass 10 / Pass 15: documents
+are rendered by pure functions, stored base64 in `documents` with a sha256 contentHash, opened by
+a session-gated GET. Dev rule 6: no dead control. B13: every field action is a route.) Ground
+truth today (line numbers from origin/main at the Pass 21 merge; they drift, the names do not):
+- The renderer: server/documents/ holds invoice-pdf.ts (renderInvoicePdf(context:
+  InvoiceDocumentContext): Promise<Buffer> - pdfkit LETTER / margin 50, CreationDate and ModDate
+  pinned to the issue date so the bytes are deterministic, no pagination, no footer),
+  statement-pdf.ts (renderStatementPdf - the better template: module constants LEFT / WIDTH /
+  TEXT / MUTED / RULE, a paginating drawTable(), paragraph / sectionHeading / rule / partyBlock /
+  footerNote closures, all local: no shared layout helpers exist), types.ts
+  (InvoiceDocumentBranding { orgName, logoUrl, primaryColorHex, remitTo* } - logoUrl is carried
+  and drawn by no renderer; InvoiceDocumentContext; StatementDocumentContext) and invoice-html.ts
+  (renderInvoiceHtml, no consumer - do not build an HTML twin). pdfkit is the only PDF dependency:
+  there is no pdf-lib, so "append the report to the invoice PDF" is either drawing the report's
+  pages inside the same pdfkit document or a new dependency - decide and state.
+- Document storage: `documents` (shared/schema.ts:985-1010) - kind "INVOICE | STATEMENT",
+  invoiceId (partial unique index documents_invoice_id_uidx where kind = 'INVOICE'),
+  statementVariant, customerId, locationId, periodFrom / periodTo, generatedByUserId / Label,
+  contentHash, contentBase64, mimeType; server/document-bootstrap.ts creates it and added the
+  statement columns with a guarded print (a report's identity column follows that pattern).
+  storage.ts: getInvoiceDocumentContext (:9458 - parties from billingProfileSnapshot, branding
+  built inline), getOrCreateInvoiceDocument (:9551 - the stored INVOICE row if any, else render /
+  hash / insert; a DRAFT answers a synthetic unstored `draft-preview-<id>` row :9574-9592, with a
+  23505 race recovery), getDocument (:9621), documentBrandingOf(org) (:9671 - the reusable
+  branding builder statements use), storeStatementDocument (:9787), the statement generators and
+  reads (:9818-9948); batchSendInvoices (:6370) pins the invoice document before stamping sentAt
+  (:6382). An INVOICE document is never re-rendered once stored (:9552-9558), so the attach
+  toggle's value at first render is frozen into that PDF - the Settings card must say so.
+- Document routes (routes.ts): GET /api/invoices/:id/document (:2779, session-gated, inline PDF,
+  `?download=1` for attachment, filename invoice-<number>.pdf), GET /api/invoices/:id/document-info
+  (:2793), POST /api/invoices/batch-send (:2381, SEND_INVOICE), the statement routes (:2821-2876:
+  GENERATE_INVOICE to create, a session to read, GET /api/statements/:id/document inline /
+  download). Nothing serves a document for a service record today.
+- Client document actions: client/src/components/invoice-document-actions.tsx
+  (invoiceDocumentUrl(); InvoiceDocumentActions { invoice, compact } - Open PDF is window.open of
+  the route, Download an <a download>, Mark Sent behind SEND_INVOICE; used by
+  invoice-detail-dialog.tsx:609) and statement-document-actions.tsx (StatementDocumentActions
+  { statement, compact } - Open and Download only: the closest template for a report-actions
+  component).
+- The review modal (client/src/pages/service-ticket-review.tsx) loads everything in bulk
+  (/api/service-records, /api/services, /api/appointments, /api/product-applications, ...
+  :379-386) and filters on the client; selectedRecord / selectedMaterials :404-409; the footer
+  :796-822 has "Open Location" on the left (:797) and Close / Edit (EDIT_TICKET, disabled when
+  finalized) / Reopen / Finalize on the right (:798-821) - the report's Open / Download sit beside
+  Open Location. It prints Notes and Target Pests (:750-759) and Materials (:766-783, each line
+  with areas and pests since Pass 21) but not areasServiced, conditionsFound or recommendations.
+- The Services tab (client/src/pages/customer-detail.tsx): ServiceDetailModal (:2769-2912)
+  prints the ticket (:2841-2873) and its materials (:2874-2888); its action row (:2865-2871) holds
+  Reopen Ticket / Finalize Ticket - the report's buttons go there; ServicesTab (:2914) reads
+  /api/services/by-location and /api/product-applications and maps serviceRecordByServiceId
+  (:2961).
+- The collect step (client/src/components/collect-payment-dialog.tsx, 277 lines): props open /
+  onOpenChange / appointmentId / locationId / designatedAgreementId / onPostTicket / postingTicket
+  / draftPrice (:42-60); it holds billing data only - no notes, pests, materials or technician -
+  and the ticket is NOT posted when it opens (no service_records row exists yet), so a Preview
+  needs the unposted ticket passed in from ServiceCompletionDialog's state (:206-226: notes,
+  targetPests string[], conditionsFound, recommendations, followUp*, materials: MaterialLine[]
+  with applicationAreas[] and targetPests[] per row, technicianId, serviceDate) and rendered
+  unstored - the invoice DRAFT preview (:9574-9592) is the precedent for a render-only answer;
+  its footer (:263-272) holds Back / Post Service Ticket.
+- The Settings toggle pattern: invoice_on_finalize - shared/invoice-on-finalize.ts (key, modes,
+  normalize), storage getInvoiceOnFinalizeMode / readInvoiceOnFinalizeModeTx /
+  setInvoiceOnFinalizeMode (:5464-5483, an upsert on (org_id, key)), routes GET / PATCH
+  /api/settings/invoice-on-finalize (:2096 open / :2101 MANAGE_SETTINGS), the Settings card
+  "Invoicing on Finalization" (settings.tsx:1788-1814 - a Select disabled for anyone but an admin,
+  "Only an admin can change this setting."); the Pass 20 lists are the second example
+  (material-lists.ts keys; storage :5418-5460; routes :2061-2082; settings.tsx cards :1823-1883).
+  A boolean toggle has client/src/components/ui/switch.tsx (used only by schedule.tsx today).
+- The invoice PDF path and visit anchoring: invoices.appointmentId is set for visit work and
+  serviceRecordId for an appointment-less one-off (schema.ts:737-748); manual
+  (createManualInvoice :6419), schedule-driven (:7615) and initial-charge invoices set neither.
+  invoice_line_items.serviceRecordId (schema.ts:934) is set by buildVisitInvoiceLinesTx (:6969) on
+  SERVICE and AGREEMENT_COVERED lines (:7008, :7029) and null on INITIAL_CHARGE (:7054);
+  getInvoiceDocumentContext reads the lines (:9466-9470) but drops serviceRecordId (:9520-9526).
+  The invoice PDF is rendered lazily on the first GET or on Mark Sent, never at issue.
+- Service record reads: GET /api/service-records (:1925), /:id (:1930),
+  /by-location/:locationId (:1206); GET /api/product-applications (:2173, every row for the
+  org); getProductApplicationsByServiceRecord exists (storage :5485) with no route. The
+  compliance snapshot: technicianName / technicianLicenseNumber (schema.ts:472-473), resolved at
+  post by resolveServiceRecordTechnicianSnapshot (:2004-2034); content: notes, targetPests (the
+  union), areasServiced (derived), conditionsFound, recommendations, followUpRequired / Notes,
+  customerSignature boolean (:474-481); a material row: productName, epaRegNumber, dilutionLabel /
+  Rate, amountApplied, unit, activeIngredientAmount, applicationMethod, device,
+  applicationAreas[], targetPests[], notes (applicationLocation is gone since Pass 21).
+- Branding: organizations.logoUrl / primaryColorHex / remitTo* (schema.ts:1065-1070), GET
+  /api/organization (:2199), PATCH /api/organization/branding (:2205, MANAGE_SETTINGS),
+  OrganizationBrandingCard (settings.tsx:74-145).
+- No code names a "service report" today; the docs do (roadmap Part A :100 and :133, B11, the
+  C3.5 row; C6.3 sends it by email later).
 
-Build per C3.4b: (1) productApplications.targetPests text[] beside applicationAreas - a guarded
-ALTER in service-scheduling-bootstrap.ts with the effect printed once (no backfill: no row carried
-a pest; say so in the print); the post / PATCH bodies accepting it on each row (the row schema is
-insertProductApplicationSchema minus serviceRecordId, so drizzle-zod picks the column up -
-confirm); storage writing each row's pests in the target-pest list's spelling where the match is
-case-insensitive and keeping anything else (Pass 20's rule, stated); the snapshot field added so
-ticket_edited carries before / after. (2) The ticket-level set = selected ∪ every material's
-pests: decide and state where the union is computed - the server, on the post and the PATCH
-whenever materials are sent (B13: one rule in the route, as Pass 20 did for areasServiced), with
-the technician's own picks preserved as the "selected" part so removing a material's pest never
-silently drops a ticket-level pick; the client shows the same union. (3) The ticket-level control
-moves into the Materials section as a searchable multi-select over the target-pest list (the
-<ListMultiSelect>, searchable already; the pill toggles and the separate search box go), and each
-material row gains a Target Pests multi-select over the same list; a pest already on a row or a
-ticket that the list does not name is kept and marked. (4) The summary line at the top of the
-ticket - the union, in the header card under the service type - on both modes (post and office
-edit), absent when empty (dev rule 6); the review modal's Target Pests line reads the stored
-union. (5) The fate of applicationLocation: this row decides it - either drop the column (a
-guarded ALTER after the readers are gone: service-ticket-review / customer-detail / services.tsx
-all read formatApplicationAreas already, the seed and storage write both) or keep it another pass
-with the reason stated; say which and why. Not touched: the unit and area lists (Pass 20), the
-post's price / type path, the service report (C3.5), the target-pests routes' gating (none, as
-before).
+Build per C3.5: (1) The document: a `documents.kind = 'SERVICE_REPORT'` row keyed by a new
+nullable serviceRecordId column with a partial unique index on (service_record_id) where kind =
+'SERVICE_REPORT' (document-bootstrap.ts, the effect printed once); a pure
+renderServiceReportPdf(context) in server/documents/service-report-pdf.ts modeled on
+statement-pdf.ts (paginating; the org header from documentBrandingOf; the customer and the
+service location; technician + license from the record's snapshot; the service date; the service
+type; the ticket's target pests (the stored union); the materials table - product, EPA #,
+amount + unit, dilution, method, areas, pests; notes, conditions found, recommendations,
+follow-up; a signature placeholder line that states whether a signature was captured), dates
+pinned as invoice-pdf.ts pins them; storage getServiceReportDocumentContext(recordId) and
+getOrCreateServiceReportDocument(recordId) in the invoice document's shape; decide and state how
+a ticket edited or re-posted after its report was stored gets a fresh report (re-render when a
+fresh render's contentHash differs, or invalidate the stored row from updateServiceRecord /
+completeService / reopen); a render-only preview of an unposted ticket (a POST in
+completeServiceSchema's content shape, answering the PDF, storing nothing). (2) Routes: GET
+/api/service-records/:id/report (session-gated like the invoice document, inline / ?download=1,
+filename service-report-<date>-<location>.pdf), GET /api/service-records/:id/report-info, POST
+/api/service-records/preview-report (any session role - the technician's preview). (3) Client: a
+ServiceReportActions component (Open / Download, the statement component's shape) on the review
+modal's footer and in ServiceDetailModal's action row; "Preview report" in the collect step's
+footer, fed the unposted state through new props from ServiceCompletionDialog. (4) The Settings
+toggle "Attach service report to visit invoices" (an app_settings key, boolean, default off; GET
+open / PATCH MANAGE_SETTINGS; a Switch card in Settings disabled for anyone but an admin, saying
+that an invoice PDF already rendered keeps what it rendered): when on, getOrCreateInvoiceDocument
+for an invoice with appointmentId set appends the report pages for the distinct non-null
+serviceRecordIds of its lines, in line order (inside the same pdfkit document or through a merge
+dependency - decide and state); a DRAFT preview follows the same rule unstored; an invoice
+without appointmentId appends nothing. Both documents stay separately openable. Not touched: the
+invoice document's own layout, email delivery (C6.3), the ticket dialog's fields, the legacy
+Service History form, the target-pests routes' gating.
 
-Environment: Node 24.21.0, npm run dev:full (restart it before manually testing - this pass adds a
-column and changes two bodies), DEV_NOTES.md for the DB backup/restore and PowerShell traps, gh
-logged in so the session can open the PR. Verify on PORT=5001 as the previous passes did: npm run
-check; double boot (boot 1 prints the migration's effect once and boot 2 prints only "serving on
-port 5001" with every table count unchanged); the pass's API smoke test as all four roles (a
-ticket posted through the real routes with two material rows carrying targetPests[] and a
-ticket-level pick -> the stored ticket set is the union in the stated order and the rows' pests
-are in the list's spelling; an office edit replacing the rows -> ticket_edited's before / after
-carry the rows' targetPests and the ticket set follows; a pest outside the list handled as
-decided; the technician's PATCH 403; every fixture deleted and counts back at baseline) and a
-Vite 200 on every touched client module; state plainly what was not rendered - the multi-selects
-and the summary line cannot be exercised without a browser.
+Environment: Node 24.21.0, npm run dev:full (restart it before manually testing - this pass adds
+a column, an index, a settings key and routes), DEV_NOTES.md for the DB backup / restore, the
+PowerShell traps and the copy-database verification recipe, gh logged in so the session can open
+the PR. Verify on PORT=5001 as the previous passes did: npm run check; double boot (boot 1 prints
+the document-bootstrap effect once and boot 2 prints only "serving on port 5001" with every table
+count unchanged); the pass's API smoke test as all four roles (a ticket posted through the real
+routes with two material rows carrying areas and pests -> GET .../report 200 with a PDF whose text
+(the pdfkit extraction recipe) prints the technician, license, date, the ticket's pests, each
+material's product / EPA / areas / pests and the signature line; the same GET again answers the
+same contentHash and inserts no second row; the preview POST answers a PDF and stores nothing;
+the toggle's GET open, PATCH 403 for technician / support / manager and 200 for admin; a
+two-ticket visit invoiced through the real routes (the Pass 19 recipe) with the toggle on -> the
+invoice PDF's page count and text carry both reports, and with it off (a second invoice) the
+invoice alone; a manual invoice appends nothing either way; every fixture deleted, the settings
+row restored, counts back at baseline) and a Vite 200 on every touched client module; state
+plainly what was not rendered - the buttons, the Switch and the PDF's look cannot be judged
+without a browser.
 
 Working agreement as always: one pass, one branch, update CURRENT_FOCUS and the roadmap's pass
 table at the end, replace the handoff prompt at the end of CURRENT_FOCUS.md with the one for the
-next pass (phase order: Pass 22, the service report document, C3.5, whose spec is its row, unless
-I say otherwise), push, open the PR and stop. I merge.
+next pass (phase order: Pass 23, the field surcharge line, C3.6, whose spec is its row and
+CURRENT_FOCUS.md's field-surcharge unit, unless I say otherwise), push, open the PR and stop.
+I merge.
 ```
 

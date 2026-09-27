@@ -80,3 +80,27 @@ Fix (converting a dump you already have; the LF normalize matters for `COPY` dat
 
 `[IO.File]` resolves a relative path against .NET's working directory, not the shell's, so pass
 `$PWD` explicitly or the file lands somewhere unexpected.
+
+## Verifying a migration against a copy of the dev database
+A bootstrap that only adds nullable columns is safe to run on PORT=5001 against the shared dev
+database while `npm run dev:full` keeps running (its old code selects only the columns it knows).
+A bootstrap that **drops or renames a column** is not: the running server selects the column by
+name and every read of that table fails until it is restarted. Verify such a pass against a copy
+(Pass 21 was the first):
+
+- `docker exec pestflow-db pg_dump -U pestflow -d pestflow -f /tmp/verify.sql`
+- `docker exec pestflow-db psql -U pestflow -d postgres -c "CREATE DATABASE pestflow_verify OWNER pestflow;"`
+- `docker exec pestflow-db psql -U pestflow -d pestflow_verify -q -v ON_ERROR_STOP=1 -f /tmp/verify.sql`
+- boot with `DATABASE_URL` pointing at `/pestflow_verify` (the server reads only `DATABASE_URL`;
+  the `PG*` variables are for tools) and `PORT=5001`; run the smoke test and the table counts with
+  `psql ... -d pestflow_verify`
+- afterwards `DROP DATABASE pestflow_verify` and delete `/tmp/verify.sql` in the container
+
+The shared database is then untouched, and the owner's `npm run dev:full` restart runs the
+migration and prints its effect.
+
+Git Bash trap: `docker exec ... /tmp/verify.sql` has its path rewritten to a Windows temp path
+unless `MSYS_NO_PATHCONV=1` is set - and with it set, `taskkill //F` is no longer translated, so
+write `taskkill /F /T /PID <pid>`. The `/T` matters: it kills the `tsx` child that actually holds
+the port; killing the `npm` wrapper alone leaves the port bound and the next boot fails with
+`EADDRINUSE`.
