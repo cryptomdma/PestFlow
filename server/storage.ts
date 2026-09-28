@@ -113,6 +113,16 @@ import {
   toListSpellings,
 } from "@shared/material-lists";
 import { computeProductionValueCents } from "@shared/production-value";
+import {
+  defaultWorkKindForService,
+  isCallbackKind,
+  normalizeServiceWorkKind,
+  productionBasisForService,
+  resolveCallbackLinkShape,
+  resolveCallbackLinkTarget,
+  resolveWorkKindOverrideGate,
+  type ServiceWorkKind,
+} from "@shared/service-kind";
 import { formatCents } from "@shared/money";
 import { buildBillingPlanSnapshot as buildSharedBillingPlanSnapshot, isScheduleBilledPlan } from "@shared/billing-plan";
 import { sortUsersByName, userDisplayName } from "@shared/users";
@@ -398,6 +408,27 @@ export class VisitBillingDraftError extends Error {
     super(message);
     this.name = "VisitBillingDraftError";
   }
+}
+
+// Pass 24 (PLAN_ROADMAP_V2.md C3.7): a Service's work kind or its callback
+// link refused - 400 for the link's shape or target (shared/service-kind.ts
+// CallbackLinkRefusalCode), 403 WORK_KIND_FORBIDDEN for a role that may not
+// set the kind away from the type's default or change it later (the price's
+// permission), 409 SERVICE_KIND_LOCKED once the ticket is finalized or the
+// visit invoiced. The routes answer { code, message }.
+export class ServiceKindError extends Error {
+  constructor(readonly status: 400 | 403 | 409, readonly code: string, message: string) {
+    super(message);
+    this.name = "ServiceKindError";
+  }
+}
+
+// Pass 24: who is writing a Service - the session's role decides whether a
+// kind override is allowed, the actor signs the `work_kind_changed` audit
+// row. Absent on a server-driven write (generation, the seed).
+export interface ServiceWriteContext {
+  actorRole?: UserRole | null;
+  actor?: AuditActor | null;
 }
 
 // Pass 19 (C3.3): the price typed on the technician's ticket but not yet
@@ -1047,8 +1078,8 @@ export interface IStorage {
   getServicesByLocation(locationId: string): Promise<Service[]>;
   getPendingServices(window?: DispatchBoardWindow): Promise<Service[]>;
   getService(id: string): Promise<Service | undefined>;
-  createService(data: InsertService): Promise<Service>;
-  updateService(id: string, data: Partial<InsertService>): Promise<Service | undefined>;
+  createService(data: InsertService, context?: ServiceWriteContext): Promise<Service>;
+  updateService(id: string, data: Partial<InsertService>, context?: ServiceWriteContext): Promise<Service | undefined>;
   updateServiceType(id: string, data: Partial<InsertServiceType>): Promise<ServiceType | undefined>;
   deleteService(id: string): Promise<boolean>;
   getOpportunities(filters?: OpportunityFilters): Promise<Opportunity[]>;
@@ -2061,6 +2092,101 @@ export class DatabaseStorage implements IStorage {
     return payload;
   }
 
+  // Pass 24 (PLAN_ROADMAP_V2.md C3.7; canon §10): the one place a Service's
+  // work kind and its callback link are decided, for every writer -
+  // createService (the customer screen's form, the dispatch board's prefill,
+  // the API), updateService (the edit form) and convertOpportunityToService;
+  // generateServiceForAgreement takes the same default through
+  // defaultWorkKindForService. The kind defaults from the type (an
+  // agreement's own visit never defaults to CALLBACK - nothing to answer);
+  // setting it away from that default at creation, or changing it or the
+  // link later, is the price's permission (resolveWorkKindOverrideGate) and,
+  // on a change, is refused once the ticket is finalized (its production
+  // entry was written from the kind) or the visit is invoiced (its line is
+  // frozen) - 409 SERVICE_KIND_LOCKED; a posted, unfinalized ticket is the
+  // review moment and may still be re-designated. The link's rule is one
+  // shape check and one target check, both shared with the picker. A kind
+  // moving off CALLBACK takes its link with it unless the body names one.
+  private async resolveServiceWorkKindTx(
+    tx: DbTransaction,
+    input: {
+      /** The Service being changed, or null while it is being created. */
+      serviceId: string | null;
+      locationId: string;
+      agreementId: string | null;
+      source: string;
+      serviceTypeId: string | null;
+      /** undefined = the body said nothing about the kind. */
+      requestedWorkKind: string | null | undefined;
+      /** undefined = the body said nothing about the link. */
+      requestedAnswersServiceId: string | null | undefined;
+      /** The row as stored, on an update; null on a create. */
+      current: { workKind: string; answersServiceId: string | null } | null;
+      actorRole: UserRole | null | undefined;
+    },
+  ): Promise<{ workKind: ServiceWorkKind; answersServiceId: string | null; changed: boolean }> {
+    const [serviceType] = input.serviceTypeId
+      ? await tx.select().from(serviceTypes).where(and(eq(serviceTypes.orgId, this.orgId), eq(serviceTypes.id, input.serviceTypeId)))
+      : [undefined];
+    const defaultKind = defaultWorkKindForService({ typeKind: serviceType?.workKind, source: input.source, hasAgreement: !!input.agreementId });
+    const isAgreementService = !!input.agreementId;
+
+    let workKind: ServiceWorkKind;
+    let answersServiceId: string | null;
+    let changed = false;
+    if (!input.current) {
+      workKind = input.requestedWorkKind != null ? normalizeServiceWorkKind(input.requestedWorkKind) : defaultKind;
+      answersServiceId = input.requestedAnswersServiceId || null;
+      if (input.requestedWorkKind != null && workKind !== defaultKind) {
+        const refusal = resolveWorkKindOverrideGate({ actorRole: input.actorRole, isAgreementService });
+        if (refusal) throw new ServiceKindError(403, refusal.code, refusal.message);
+      }
+    } else {
+      const currentKind = normalizeServiceWorkKind(input.current.workKind);
+      const currentAnswers = input.current.answersServiceId ?? null;
+      workKind = input.requestedWorkKind != null ? normalizeServiceWorkKind(input.requestedWorkKind) : currentKind;
+      answersServiceId = input.requestedAnswersServiceId !== undefined
+        ? input.requestedAnswersServiceId || null
+        : workKind === "CALLBACK" ? currentAnswers : null;
+      changed = workKind !== currentKind || answersServiceId !== currentAnswers;
+      if (changed) {
+        const refusal = resolveWorkKindOverrideGate({ actorRole: input.actorRole, isAgreementService });
+        if (refusal) throw new ServiceKindError(403, refusal.code, refusal.message);
+        await this.assertServiceKindUnlockedTx(tx, input.serviceId!);
+      }
+    }
+
+    const shape = resolveCallbackLinkShape(workKind, answersServiceId);
+    if (shape) throw new ServiceKindError(400, shape.code, shape.message);
+    if (answersServiceId) {
+      const [answered] = await tx.select().from(services).where(and(eq(services.orgId, this.orgId), eq(services.id, answersServiceId)));
+      const target = resolveCallbackLinkTarget({ serviceId: input.serviceId, locationId: input.locationId, answered });
+      if (target) throw new ServiceKindError(400, target.code, target.message);
+    }
+    return { workKind, answersServiceId, changed };
+  }
+
+  // The lock behind a kind change: a finalized ticket wrote the production
+  // entry from the kind; an issued invoice froze the line. Either way the
+  // kind is history - a correction is a credit memo (money) or Phase 7's
+  // adjustment entry (credit), never a re-designation. A DRAFT is re-priced
+  // at issue and does not lock.
+  private async assertServiceKindUnlockedTx(tx: DbTransaction, serviceId: string): Promise<void> {
+    const records = await tx.select().from(serviceRecords).where(and(eq(serviceRecords.orgId, this.orgId), eq(serviceRecords.serviceId, serviceId)));
+    if (records.some((record) => isTicketFinalized(record))) {
+      throw new ServiceKindError(
+        409,
+        "SERVICE_KIND_LOCKED",
+        "This service's ticket is finalized: its production credit and its invoice line were written from the kind it had. The kind is frozen - a correction is a credit memo, not a re-designation.",
+      );
+    }
+    const [service] = await tx.select().from(services).where(and(eq(services.orgId, this.orgId), eq(services.id, serviceId)));
+    const invoice = await this.findInvoiceForVisitTx(tx, service?.appointmentId ?? null, records.map((record) => record.id));
+    if (invoice && isInvoiceIssued(invoice.status)) {
+      throw new ServiceKindError(409, "SERVICE_KIND_LOCKED", `This visit is invoiced (${invoice.invoiceNumber}): the kind is frozen - a difference is a correction on the invoice.`);
+    }
+  }
+
   private async getLinkedServicesForAppointmentTx(
     tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
     appointmentId: string,
@@ -2425,12 +2551,20 @@ export class DatabaseStorage implements IStorage {
       return null;
     }
 
+    // Pass 24: the agreement's visit takes its type's kind - PRODUCTION when
+    // the type is a CALLBACK type, since a scheduled visit answers nothing
+    // (shared/service-kind.ts defaultWorkKindForService).
+    const [agreementServiceType] = agreement.serviceTypeId
+      ? await tx.select().from(serviceTypes).where(and(eq(serviceTypes.orgId, this.orgId), eq(serviceTypes.id, agreement.serviceTypeId)))
+      : [undefined];
     const [createdService] = await tx.insert(services).values({
       orgId: this.orgId,
       customerId: agreement.customerId,
       locationId: agreement.locationId,
       agreementId: agreement.id,
       serviceTypeId: agreement.serviceTypeId,
+      workKind: defaultWorkKindForService({ typeKind: agreementServiceType?.workKind, source: "AGREEMENT_GENERATED", hasAgreement: true }),
+      answersServiceId: null,
       dueDate: nextServiceDate as any,
       generatedForDate: nextServiceDate as any,
       serviceWindowStart: serviceWindowStart as any,
@@ -2525,15 +2659,20 @@ export class DatabaseStorage implements IStorage {
   // refinalize cycle, which resets confirmed to false and would otherwise
   // double-count through that same call site.
   //
-  // Basis: an agreement-linked service counts toward
-  // SCHEDULED_AGREEMENT_SERVICE until the agreement's expectedServiceCount
-  // slots are full (production value = contractPrice / expectedServiceCount,
-  // same formula as shared/production-value.ts); anything finalized after
-  // that is an unplanned extra visit - a callback - which gets basis
-  // CALLBACK and $0, so the ledger's total for an agreement can never
-  // exceed its contract price no matter how many callbacks occur. A
-  // service with no agreementId is a genuine one-time job and is credited
-  // its own full price.
+  // Basis (Pass 24, PLAN_ROADMAP_V2.md C3.7; canon §10): read from the
+  // Service's WORK KIND and its agreement link, never from a slot counter
+  // (shared/service-kind.ts productionBasisForService). A CALLBACK is basis
+  // CALLBACK at $0, priced or not - a callback earns no production. An
+  // agreement's PRODUCTION or SERVICE visit is SCHEDULED_AGREEMENT_SERVICE
+  // at contractPrice / expectedServiceCount (shared/production-value.ts)
+  // whatever its position in the count: the counter that used to classify
+  // the visit past expectedServiceCount as CALLBACK $0 is gone, so an extra
+  // scheduled visit credits the per-visit value like any other and the
+  // ledger's per-agreement total is no longer capped at the contract price -
+  // the office's designation is the control, and a wrongly credited visit
+  // shows in the ledger rather than a real visit vanishing from it. A
+  // service with no agreement is a one-time job at its own price. The three
+  // CALLBACK rows the counter wrote before this pass stand as history.
   private async createProductionValueEntriesForFinalizedRecord(
     tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
     record: ServiceRecord,
@@ -2565,32 +2704,12 @@ export class DatabaseStorage implements IStorage {
     }
 
     if (!hasMainEntry) {
-      let basis: string;
-      let productionValueCents: number;
-
-      if (agreement) {
-        const expectedCount = agreement.expectedServiceCount ?? 1;
-        const [scheduledCountRow] = await tx
-          .select({ count: sql<number>`count(*)::int` })
-          .from(productionValueEntries)
-          .where(and(
-            eq(productionValueEntries.orgId, this.orgId),
-            eq(productionValueEntries.agreementId, agreement.id),
-            eq(productionValueEntries.basis, "SCHEDULED_AGREEMENT_SERVICE"),
-          ));
-        const scheduledCount = scheduledCountRow?.count ?? 0;
-
-        if (scheduledCount < expectedCount) {
-          basis = "SCHEDULED_AGREEMENT_SERVICE";
-          productionValueCents = computeProductionValueCents(agreement.priceCents, agreement.expectedServiceCount) ?? 0;
-        } else {
-          basis = "CALLBACK";
-          productionValueCents = 0;
-        }
-      } else {
-        basis = "ONE_TIME_SERVICE";
-        productionValueCents = service.priceCents ?? 0;
-      }
+      const basis = productionBasisForService({ workKind: service.workKind, hasAgreement: !!agreement });
+      const productionValueCents = basis === "CALLBACK"
+        ? 0
+        : basis === "SCHEDULED_AGREEMENT_SERVICE" && agreement
+          ? computeProductionValueCents(agreement.priceCents, agreement.expectedServiceCount) ?? 0
+          : service.priceCents ?? 0;
 
       await tx.insert(productionValueEntries).values({
         orgId: this.orgId,
@@ -3343,10 +3462,23 @@ export class DatabaseStorage implements IStorage {
     return service;
   }
 
-  async createService(data: InsertService): Promise<Service> {
+  async createService(data: InsertService, context?: ServiceWriteContext): Promise<Service> {
     return db.transaction(async (tx) => {
       const payload = this.normalizeServiceInsert(data);
-      const [service] = await tx.insert(services).values({ ...payload, orgId: this.orgId }).returning();
+      // Pass 24: the kind and the callback link, decided once - the type's
+      // default unless the body says otherwise, under the price's rule.
+      const kind = await this.resolveServiceWorkKindTx(tx, {
+        serviceId: null,
+        locationId: payload.locationId,
+        agreementId: payload.agreementId ?? null,
+        source: payload.source ?? "MANUAL",
+        serviceTypeId: payload.serviceTypeId ?? null,
+        requestedWorkKind: data.workKind,
+        requestedAnswersServiceId: data.answersServiceId,
+        current: null,
+        actorRole: context?.actorRole ?? null,
+      });
+      const [service] = await tx.insert(services).values({ ...payload, workKind: kind.workKind, answersServiceId: kind.answersServiceId, orgId: this.orgId }).returning();
 
       if (service.appointmentId) {
         const [appointment] = await tx.select().from(appointments).where(and(eq(appointments.orgId, this.orgId), eq(appointments.id, service.appointmentId)));
@@ -3373,12 +3505,56 @@ export class DatabaseStorage implements IStorage {
     });
   }
 
-  async updateService(id: string, data: Partial<InsertService>): Promise<Service | undefined> {
+  async updateService(id: string, data: Partial<InsertService>, context?: ServiceWriteContext): Promise<Service | undefined> {
     return db.transaction(async (tx) => {
+      const [existing] = await tx.select().from(services).where(and(eq(services.orgId, this.orgId), eq(services.id, id)));
+      if (!existing) {
+        return undefined;
+      }
       const payload = this.normalizeServiceUpdate(data);
+      // Pass 24: the kind and the link are resolved only when the body names
+      // one of them. A type change alone leaves the kind as it is (an
+      // instance's kind is its own once set), and the board's placement
+      // PATCH never touches either. A change is gated, locked and audited.
+      delete payload.workKind;
+      delete payload.answersServiceId;
+      let kindChange: { before: { workKind: string; answersServiceId: string | null }; after: { workKind: string; answersServiceId: string | null } } | null = null;
+      if (data.workKind !== undefined || data.answersServiceId !== undefined) {
+        const kind = await this.resolveServiceWorkKindTx(tx, {
+          serviceId: id,
+          locationId: payload.locationId ?? existing.locationId,
+          agreementId: payload.agreementId !== undefined ? payload.agreementId ?? null : existing.agreementId,
+          source: payload.source ?? existing.source,
+          serviceTypeId: payload.serviceTypeId !== undefined ? payload.serviceTypeId ?? null : existing.serviceTypeId,
+          requestedWorkKind: data.workKind,
+          requestedAnswersServiceId: data.answersServiceId,
+          current: { workKind: existing.workKind, answersServiceId: existing.answersServiceId },
+          actorRole: context?.actorRole ?? null,
+        });
+        payload.workKind = kind.workKind;
+        payload.answersServiceId = kind.answersServiceId;
+        if (kind.changed) {
+          kindChange = {
+            before: { workKind: existing.workKind, answersServiceId: existing.answersServiceId },
+            after: { workKind: kind.workKind, answersServiceId: kind.answersServiceId },
+          };
+        }
+      }
       const [service] = await tx.update(services).set({ ...payload, updatedAt: new Date() }).where(and(eq(services.orgId, this.orgId), eq(services.id, id))).returning();
       if (!service) {
         return undefined;
+      }
+      if (kindChange) {
+        // D7: the kind decides whether the visit's line is $0 and what the
+        // ledger credits - a money mutation, logged with the two fields.
+        await this.recordAuditLogTx(tx, {
+          entityType: "service",
+          entityId: service.id,
+          action: "work_kind_changed",
+          actor: context?.actor ?? null,
+          before: kindChange.before,
+          after: kindChange.after,
+        });
       }
 
       if (payload.appointmentId !== undefined && service.appointmentId) {
@@ -3843,6 +4019,37 @@ export class DatabaseStorage implements IStorage {
         ? await tx.select().from(services).where(and(eq(services.orgId, this.orgId), eq(services.id, opportunity.sourceServiceId)))
         : [undefined];
 
+      // Pass 24 (C3.7): the converted service takes its type's kind. A
+      // CALLBACK type answers the opportunity's SOURCE service - the visit
+      // this follow-up came from - when that service qualifies (completed,
+      // same location, not itself a callback). With no source at all the
+      // conversion is refused rather than silently re-kinded: the office
+      // creates the callback from the location's Services tab and picks the
+      // service it answers.
+      const convertedKind = linkedGeneratedService?.source === "AGREEMENT_GENERATED"
+        ? null
+        : await (async () => {
+            const typeKind = defaultWorkKindForService({ typeKind: serviceType?.workKind, source: "MANUAL", hasAgreement: false });
+            if (typeKind === "CALLBACK" && !opportunity.sourceServiceId) {
+              throw new ServiceKindError(
+                400,
+                "CALLBACK_LINK_REQUIRED",
+                `"${serviceType?.name ?? "This service type"}" is a callback type and this opportunity has no source service to answer. Create the callback from the location's Services tab and pick the service it answers.`,
+              );
+            }
+            return this.resolveServiceWorkKindTx(tx, {
+              serviceId: null,
+              locationId: location.id,
+              agreementId: null,
+              source: "MANUAL",
+              serviceTypeId: opportunity.serviceTypeId || null,
+              requestedWorkKind: undefined,
+              requestedAnswersServiceId: typeKind === "CALLBACK" ? opportunity.sourceServiceId ?? null : undefined,
+              current: null,
+              actorRole: null,
+            });
+          })();
+
       const service = linkedGeneratedService?.source === "AGREEMENT_GENERATED"
         ? linkedGeneratedService
         : (await tx.insert(services).values({
@@ -3850,6 +4057,8 @@ export class DatabaseStorage implements IStorage {
             customerId: location.customerId,
             locationId: location.id,
             serviceTypeId: opportunity.serviceTypeId || null,
+            workKind: convertedKind!.workKind,
+            answersServiceId: convertedKind!.answersServiceId,
             dueDate: opportunity.dueDate,
             expectedDurationMinutes: serviceType?.estimatedDuration ?? null,
             priceCents: serviceType?.defaultPriceCents ?? null,
@@ -5055,6 +5264,9 @@ export class DatabaseStorage implements IStorage {
       let effectiveService = service;
       const isAgreementGeneratedService = !!service.agreementId || service.source === "AGREEMENT_GENERATED";
       const allowFieldServiceOverride = !isAgreementGeneratedService || can(input.actorRole, PERMISSIONS.ADJUST_PRICE_AGREEMENT);
+      // Pass 24: a type change here never re-derives the Service's work kind -
+      // the kind is the instance's own once set, and a callback's link is
+      // chosen at scheduling, not on the ticket.
       if (allowFieldServiceOverride && (input.serviceTypeId !== undefined || input.priceCents !== undefined)) {
         const [updatedService] = await tx
           .update(services)
@@ -6164,8 +6376,7 @@ export class DatabaseStorage implements IStorage {
     for (const record of eligible) {
       const service = record.serviceId ? serviceById.get(record.serviceId) : undefined;
       try {
-        const billing = await this.resolveServiceLineBillingTx(db as any, {
-          record,
+        const billing = await this.resolveServiceLineBillingTx({
           service,
           agreementContext: service?.agreementId ? agreementContextById.get(service.agreementId) : undefined,
         });
@@ -6490,8 +6701,7 @@ export class DatabaseStorage implements IStorage {
           ? { ...service, priceCents: draftEcho.priceCents }
           : service;
         try {
-          const billing = await this.resolveServiceLineBillingTx(db as any, {
-            record,
+          const billing = await this.resolveServiceLineBillingTx({
             service: pricedService,
             agreementContext: service.agreementId ? agreementContextById.get(service.agreementId) : undefined,
           });
@@ -7043,28 +7253,36 @@ export class DatabaseStorage implements IStorage {
   // how work gets silently performed for free, so the fallbacks below only ever
   // reach $0 by an explicit decision, never by absence of data.
   //
-  // Callbacks: the production ledger already classified this record at
-  // finalization (basis CALLBACK once the agreement's contracted service slots
-  // are full - see createProductionValueEntriesForFinalizedRecord). This reads
-  // that classification but NOT its amount; production value is technician
-  // credit and billable is what the customer owes (D6's PRODUCTION vs BILLABLE),
-  // and they must stay free to diverge. A callback with no price set is warranty
-  // work at no charge; one with a price set is charged that price, which is how
-  // a "chargeable callback" service type is configured.
-  //
-  // `record` is optional because a DRAFT (D3) prices a service before its
-  // ticket exists. With no record there is no production entry to classify,
-  // so the callback branch is simply skipped - the draft shows the contracted
-  // amount, and issue re-prices from the finalized record.
+  // Callbacks (Pass 24, PLAN_ROADMAP_V2.md C3.7; canon §10): a CALLBACK is
+  // what the Service's work kind SAYS it is, read here before any plan is
+  // consulted - the same kind the production ledger credits from, so billable
+  // and production always agree on what a callback is while staying free to
+  // diverge on amounts (D6: production is technician credit, billable is what
+  // the customer owes). No price means warranty work at no charge - an
+  // AGREEMENT_COVERED "warranty callback - no charge" line on every plan,
+  // schedule-billed or not, agreement or not (a warranty return on a
+  // one-time job is a callback too): the more specific truth than "covered
+  // by agreement", and what the batch preview's CALLBACK kind and the
+  // ticket's note read. A price means the office decided to charge for this
+  // callback (non-compliance), and that bills as a SERVICE "callback" line on
+  // every plan - it is not one of the plan's paid visits. Reading the kind
+  // rather than a production entry is also what lets a DRAFT (D3) price a
+  // callback $0 before its ticket exists; before this pass the DRAFT showed
+  // the contracted amount and only issue corrected it.
   private async resolveServiceLineBillingTx(
-    tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
     input: {
-      record: ServiceRecord | undefined;
       service: Service | undefined;
       agreementContext: { agreement: Agreement; plan: BillingPlan | undefined } | undefined;
     },
   ): Promise<{ lineType: "SERVICE" | "AGREEMENT_COVERED"; amountCents: number; coverageNote: string | null }> {
-    const { record, service, agreementContext } = input;
+    const { service, agreementContext } = input;
+
+    if (isCallbackKind(service?.workKind)) {
+      const callbackPriceCents = service?.priceCents ?? null;
+      return callbackPriceCents != null && callbackPriceCents > 0
+        ? { lineType: "SERVICE", amountCents: callbackPriceCents, coverageNote: "callback" }
+        : { lineType: "AGREEMENT_COVERED", amountCents: 0, coverageNote: "warranty callback - no charge" };
+    }
 
     if (!agreementContext) {
       // Non-agreement / COD work: the service's own price is the only source.
@@ -7085,22 +7303,6 @@ export class DatabaseStorage implements IStorage {
     }
 
     const priceCents = service?.priceCents ?? null;
-
-    const [productionEntry] = record
-      ? await tx
-        .select()
-        .from(productionValueEntries)
-        .where(and(
-          eq(productionValueEntries.orgId, this.orgId),
-          eq(productionValueEntries.serviceRecordId, record.id),
-          ne(productionValueEntries.basis, "SURCHARGE"),
-        ))
-      : [undefined];
-    if (productionEntry?.basis === "CALLBACK") {
-      return priceCents != null && priceCents > 0
-        ? { lineType: "SERVICE", amountCents: priceCents, coverageNote: "callback" }
-        : { lineType: "AGREEMENT_COVERED", amountCents: 0, coverageNote: "warranty callback - no charge" };
-    }
 
     // A contracted visit on a plan the nightly run does not bill. The per-visit
     // price is the contract price spread across the agreement's snapshotted
@@ -7341,8 +7543,7 @@ export class DatabaseStorage implements IStorage {
       const serviceTypeId = record?.serviceTypeId ?? service?.serviceTypeId ?? null;
       const serviceType = serviceTypeId ? serviceTypeById.get(serviceTypeId) : undefined;
       const baseDescription = `${serviceType?.name ?? "Service"} - ${unit.serviceDate.toLocaleDateString()}`;
-      const billing = await this.resolveServiceLineBillingTx(tx, {
-        record,
+      const billing = await this.resolveServiceLineBillingTx({
         service,
         agreementContext: service?.agreementId ? agreementContextById.get(service.agreementId) : undefined,
       });

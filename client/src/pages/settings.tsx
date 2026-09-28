@@ -34,6 +34,8 @@ import { INVOICE_ON_FINALIZE_MODES, describeInvoiceOnFinalizeMode, normalizeInvo
 import { isOnList, matchListEntry } from "@shared/material-lists";
 import { ListMultiSelect } from "@/components/list-multi-select";
 import { Switch } from "@/components/ui/switch";
+import { ServiceWorkKindBadge } from "@/components/service-work-kind-badge";
+import { SERVICE_WORK_KINDS, describeServiceWorkKind, formatServiceWorkKind, normalizeServiceWorkKind, type ServiceWorkKind } from "@shared/service-kind";
 import { Plus, Settings as SettingsIcon, Wrench, FileText, Users, ShieldCheck, FlaskConical, Bug, CreditCard, CalendarClock, Percent, Scale, Building2, Receipt } from "lucide-react";
 import type { AgreementCancellationPolicy, AgreementTemplate, BillingPlan, BillingProfileTemplate, MaterialProduct, OpportunityCategory, OpportunityDisposition, Organization, ServiceType, TargetPest, TaxRate, TaxRule, Technician, UserSummary } from "@shared/schema";
 
@@ -153,6 +155,8 @@ function ServiceTypeForm({ serviceType, onClose }: { serviceType?: ServiceType |
     defaultPrice: serviceType?.defaultPriceCents != null ? centsToDollarString(serviceType.defaultPriceCents) : "",
     estimatedDuration: serviceType?.estimatedDuration ? String(serviceType.estimatedDuration) : "",
     category: serviceType?.category ?? "",
+    // Pass 24 (C3.7): the type's default work kind (shared/service-kind.ts).
+    workKind: normalizeServiceWorkKind(serviceType?.workKind) as ServiceWorkKind,
     opportunityLeadDays: serviceType?.opportunityLeadDays ? String(serviceType.opportunityLeadDays) : "",
     opportunityLabel: serviceType?.opportunityLabel ?? "",
   });
@@ -192,6 +196,18 @@ function ServiceTypeForm({ serviceType, onClose }: { serviceType?: ServiceType |
         <div className="space-y-1.5"><Label>Duration (min)</Label><Input type="number" value={form.estimatedDuration} onChange={(e) => setForm((p) => ({ ...p, estimatedDuration: e.target.value }))} /></div>
       </div>
       <div className="space-y-1.5"><Label>Category</Label><Input placeholder="e.g., General, Termite, Wildlife" value={form.category} onChange={(e) => setForm((p) => ({ ...p, category: e.target.value }))} /></div>
+      {/* Pass 24 (C3.7): the work kind every service created from this type starts with. Category above stays the
+          free-text display grouping; this decides what the visit credits and bills (a Callback is $0 unless priced). */}
+      <div className="space-y-1.5">
+        <Label>Work Kind</Label>
+        <Select value={form.workKind} onValueChange={(value) => setForm((p) => ({ ...p, workKind: normalizeServiceWorkKind(value) }))}>
+          <SelectTrigger data-testid="select-st-work-kind"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            {SERVICE_WORK_KINDS.map((kind) => <SelectItem key={kind} value={kind}>{formatServiceWorkKind(kind)}</SelectItem>)}
+          </SelectContent>
+        </Select>
+        <p className="text-xs text-muted-foreground" data-testid="text-st-work-kind-help">{describeServiceWorkKind(form.workKind)} Each service starts with this kind and may be re-designated per service.</p>
+      </div>
       <div className="grid grid-cols-2 gap-3">
         <div className="space-y-1.5"><Label>Opportunity Lead Days</Label><Input type="number" min="0" value={form.opportunityLeadDays} onChange={(e) => setForm((p) => ({ ...p, opportunityLeadDays: e.target.value }))} /></div>
         <div className="space-y-1.5"><Label>Opportunity Label</Label><Input placeholder="e.g., Annual Renewal" value={form.opportunityLabel} onChange={(e) => setForm((p) => ({ ...p, opportunityLabel: e.target.value }))} /></div>
@@ -1564,10 +1580,16 @@ export default function Settings() {
       <Card>
         <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
           <CardTitle className="text-base font-semibold flex items-center gap-2"><Wrench className="h-4 w-4" /> Service Types</CardTitle>
-          <Dialog open={dialogOpen} onOpenChange={(open) => { setDialogOpen(open); if (!open) setEditingServiceType(null); }}>
-            <DialogTrigger asChild><Button size="sm" data-testid="button-add-service-type" onClick={() => setEditingServiceType(null)}><Plus className="h-3 w-3 mr-1" /> Add Type</Button></DialogTrigger>
-            <DialogContent><DialogHeader><DialogTitle>{editingServiceType ? "Edit Service Type" : "New Service Type"}</DialogTitle></DialogHeader><ServiceTypeForm serviceType={editingServiceType} onClose={() => { setDialogOpen(false); setEditingServiceType(null); }} /></DialogContent>
-          </Dialog>
+          {/* Pass 24 (C3.7): the type routes' writes are MANAGE_SETTINGS (admin) since this pass - a type's work
+              kind decides what every service made from it credits and bills. Everyone else reads the list. */}
+          {canManageSettings ? (
+            <Dialog open={dialogOpen} onOpenChange={(open) => { setDialogOpen(open); if (!open) setEditingServiceType(null); }}>
+              <DialogTrigger asChild><Button size="sm" data-testid="button-add-service-type" onClick={() => setEditingServiceType(null)}><Plus className="h-3 w-3 mr-1" /> Add Type</Button></DialogTrigger>
+              <DialogContent><DialogHeader><DialogTitle>{editingServiceType ? "Edit Service Type" : "New Service Type"}</DialogTitle></DialogHeader><ServiceTypeForm serviceType={editingServiceType} onClose={() => { setDialogOpen(false); setEditingServiceType(null); }} /></DialogContent>
+            </Dialog>
+          ) : (
+            <p className="text-xs text-muted-foreground" data-testid="text-service-types-admin-only">Admins manage service types.</p>
+          )}
         </CardHeader>
         <CardContent>
           {isLoading ? (
@@ -1576,7 +1598,7 @@ export default function Settings() {
             <div className="text-center py-8">
               <Wrench className="h-8 w-8 mx-auto text-muted-foreground/30 mb-2" />
               <p className="text-sm text-muted-foreground">No service types configured</p>
-              <Button variant="outline" size="sm" className="mt-3" onClick={() => setDialogOpen(true)}>Add Service Type</Button>
+              {canManageSettings ? <Button variant="outline" size="sm" className="mt-3" onClick={() => setDialogOpen(true)}>Add Service Type</Button> : null}
             </div>
           ) : (
             <div className="space-y-2">
@@ -1586,6 +1608,7 @@ export default function Settings() {
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className="text-sm font-medium">{st.name}</span>
                       {st.category && <Badge variant="outline" className="text-xs">{st.category}</Badge>}
+                      <ServiceWorkKindBadge workKind={st.workKind} className="text-xs" />
                       {st.opportunityLeadDays ? <Badge variant="secondary" className="text-xs">{st.opportunityLeadDays}d opportunity</Badge> : null}
                     </div>
                     {st.description && <p className="text-xs text-muted-foreground mt-0.5">{st.description}</p>}
@@ -1594,7 +1617,7 @@ export default function Settings() {
                   <div className="flex items-center gap-3 shrink-0 text-sm">
                     {st.defaultPriceCents != null && <span className="font-semibold">{formatCents(st.defaultPriceCents)}</span>}
                     {st.estimatedDuration && <span className="text-xs text-muted-foreground">{st.estimatedDuration} min</span>}
-                    <Button variant="outline" size="sm" onClick={() => { setEditingServiceType(st); setDialogOpen(true); }}>
+                    <Button variant="outline" size="sm" onClick={() => { setEditingServiceType(st); setDialogOpen(true); }} disabled={!canManageSettings} title={canManageSettings ? undefined : "Admins manage service types"}>
                       Edit
                     </Button>
                   </div>

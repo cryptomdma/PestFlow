@@ -53,7 +53,12 @@ export type AuditEntityType =
  *  was recorded, changed or removed by a post or an office edit - a money
  *  mutation of its own beside the content's `ticket_edited`. The snapshots
  *  are the two surcharge fields only ({ surchargeCents, surchargeLabel }),
- *  both null before a first post, so the diff shows exactly what moved. */
+ *  both null before a first post, so the diff shows exactly what moved.
+ *  `work_kind_changed` (Pass 24, C3.7): a Service's work kind or its callback
+ *  link changed after creation (PATCH /api/services/:id) - it decides whether
+ *  the visit's line is $0 and what the ledger credits, so it is a money
+ *  mutation (D7). The snapshots are { workKind, answersServiceId } before and
+ *  after; a creation writes nothing (the row is its own record). */
 export type AuditAction =
   | "update"
   | "invoice_drafted"
@@ -76,7 +81,8 @@ export type AuditAction =
   | "prefinalization_issue_override"
   | "appointment_cancelled"
   | "appointment_rescheduled"
-  | "surcharge_recorded";
+  | "surcharge_recorded"
+  | "work_kind_changed";
 
 const ENTITY_TYPE_LABELS: Record<AuditEntityType, string> = {
   customer: "Customer",
@@ -115,6 +121,7 @@ const ACTION_LABELS: Record<AuditAction, string> = {
   appointment_cancelled: "Appointment cancelled",
   appointment_rescheduled: "Appointment rescheduled",
   surcharge_recorded: "Surcharge recorded",
+  work_kind_changed: "Work kind changed",
 };
 
 // Both take plain strings, not the unions: they render rows already in the

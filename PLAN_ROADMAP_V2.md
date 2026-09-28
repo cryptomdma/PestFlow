@@ -370,7 +370,7 @@ so every field action is a route and every screen is data from a read — no pag
 | C3.4b (**Pass 21**) — **done** (`feature/phase-3-target-pests-two-levels`, 2026-09-27; see "Shipped in Pass 21" at the end of Part D) | **Target pests, two levels** (B12): `productApplications.targetPests[]` per material row from the target-pest list (compliance); the ticket-level target pests stay on the ticket, selectable from a searchable multi-select placed in the Materials section, and are **selected ∪ every material's pests**; the summary line at the top of the ticket shows that union. Decided there: `applicationLocation` dropped. | Target pests; pest per application | C3.4a | — |
 | C3.5 (**Pass 22**) — **done** (`feature/phase-3-service-report-document`, 2026-09-27; see "Shipped in Pass 22" at the end of Part D) | **Service report document** — customer-facing summary of a posted/finalized ticket (technician + license, date, services, pests, materials, notes, recommendations, signature placeholder) through the document renderer, stored like invoices; Open / Download on the review modal and the Services tab, Preview in the collect step. **Settings toggle "Attach service report to visit invoices"** (B11): when on, a visit-anchored invoice's PDF appends the report(s) for its lines; schedule-driven and manual invoices have no visit and append nothing. Both documents stay separately openable. | "Preview/print/save/send service summary"; "sends invoice / service report" | — | — |
 | C3.6 (**Pass 23**) — **done** (`feature/phase-3-field-surcharge-line`, 2026-09-27; see "Shipped in Pass 23" at the end of Part D) | **Field surcharge line** — as specified in `CURRENT_FOCUS.md`: SURCHARGE line on the ticket → invoice line; allow/reject toggle moves from plan to template; `CLEANOUT_SURCHARGE` / `PREPAY_FULL` leave the initial-charge vocabulary; test-data defaults migrated; `ADD_FIELD_SURCHARGE` gets its UI. **Transitional credit rule until Phase 7:** a recorded SURCHARGE line always credits the posting technician, marked transitional (dev rule 4), replacing today's permission inference in `createSurchargeEntryIfConfigured()`. As built: the surcharge lives on the ticket (`service_records.surchargeCents` / `surchargeLabel`), audited as `surcharge_recorded`; the gate is `ADD_FIELD_SURCHARGE` plus the template's toggle for an agreement service (a non-agreement service: the permission alone); the migration decided each template's default from its agreements' plans (agree → that flag; none → its default plan's; disagree → off); the four unit-15 credit rows stand as history. | (owner-specified 2026-09-13) | — | — |
-| C3.7 (**Pass 24**) | **Service designation + callback attribution** — `ServiceType.category` (CALLBACK / PRODUCTION / SERVICE) in Settings, instance designation on Service defaulted from the type, a required "answers Service …" link on a CALLBACK chosen at scheduling; production basis and invoice $0 read the designation instead of the slot counter. Canon §10. Its urgency in `CURRENT_FOCUS.md` came from plan-less agreements billing per visit; that drops once Pass 12 lands, so it sequences after it (COD-plan callbacks remain the case it fixes). | (roadmap note in canon) | C2.2 | — |
+| C3.7 (**Pass 24**) — **done** (`feature/phase-3-service-designation-callbacks`, 2026-09-27; see "Shipped in Pass 24" at the end of Part D) | **Service designation + callback attribution** — `ServiceType.category` (CALLBACK / PRODUCTION / SERVICE) in Settings, instance designation on Service defaulted from the type, a required "answers Service …" link on a CALLBACK chosen at scheduling; production basis and invoice $0 read the designation instead of the slot counter. Canon §10. Its urgency in `CURRENT_FOCUS.md` came from plan-less agreements billing per visit; that drops once Pass 12 lands, so it sequences after it (COD-plan callbacks remain the case it fixes). As built: the new thing is the **work kind** (`serviceTypes.workKind` / `services.workKind`, `shared/service-kind.ts`) - `category` already existed as free text and "designation" is the billing badge's word; the link is `services.answersServiceId` (same location, COMPLETED, not a callback); the override is the price's permission, frozen once the ticket is finalized or the visit invoiced, audited `work_kind_changed`; the slot counter is gone (an extra visit credits the per-visit value); an unpriced callback reads "warranty callback - no charge" on every plan and a priced one bills "callback" on every plan; the type routes' writes are MANAGE_SETTINGS. | (roadmap note in canon) | C2.2 | — |
 
 ### Phase 4 — Scheduling and dispatch (D8's deferred scheduling pass, split)
 
@@ -2685,6 +2685,159 @@ Behavior worth knowing before the next pass touches it:
   the Service History legacy form (`POST /api/service-records`) writes no surcharge; a surcharge
   on a ticket with no service is refused rather than modelled; the invoice document prints the
   SURCHARGE line as any line, with no badge of its own.
+
+**Shipped in Pass 24** (`feature/phase-3-service-designation-callbacks`, 2026-09-27) — the C3.7
+row as built, plus what it decided.
+
+```ts
+// shared/service-kind.ts (new) - the work kind's vocabulary, defaults, link rule, gate and basis, read by the server and the client
+SERVICE_WORK_KINDS = ["SERVICE", "PRODUCTION", "CALLBACK"]; type ServiceWorkKind; DEFAULT_SERVICE_WORK_KIND = "SERVICE"
+isServiceWorkKind(v); normalizeServiceWorkKind(v)            // an unknown or null stored value reads as SERVICE
+isCallbackKind(v); formatServiceWorkKind(k)                  // "Service" | "Production" | "Callback"
+describeServiceWorkKind(k); formatServiceWorkKindBadge(k)    // the Select's caption; "Kind: <label>" - never read as the BILLABLE / PRODUCTION billing badge
+defaultWorkKindForService({ typeKind, source, hasAgreement }) // the type's kind; an agreement's AGREEMENT_GENERATED / AGREEMENT_INITIAL visit on a CALLBACK type -> PRODUCTION
+resolveCallbackLinkShape(workKind, answersServiceId)         // CALLBACK_LINK_REQUIRED | CALLBACK_LINK_NOT_ALLOWED | null
+canAnswerService({ status, workKind })                        // the picker's predicate: COMPLETED and not a callback
+resolveCallbackLinkTarget({ serviceId, locationId, answered }) // CALLBACK_LINK_NOT_FOUND | _SELF | _LOCATION_MISMATCH | _IS_CALLBACK | _NOT_COMPLETED | null
+describeAnswersLink(typeName, dateText)                       // "Answers <type> on <date>"
+workKindOverridePermission(isAgreementService)                // ADJUST_PRICE_AGREEMENT | ADJUST_PRICE_NON_AGREEMENT - the price's rule
+resolveWorkKindOverrideGate({ actorRole, isAgreementService }) // { code: "WORK_KIND_FORBIDDEN", message } | null; a null actor (a server path) always may
+productionBasisForService({ workKind, hasAgreement })         // CALLBACK | SCHEDULED_AGREEMENT_SERVICE | ONE_TIME_SERVICE - never a counter
+
+// shared/schema.ts
+serviceTypes.workKind                                         // text NOT NULL DEFAULT 'SERVICE' - the type's default; `category` (free text) untouched
+services.workKind                                             // text NOT NULL DEFAULT 'SERVICE' - the instance's kind
+services.answersServiceId                                     // varchar, self FK -> services(id), nullable - the Service a CALLBACK answers
+
+// shared/audit.ts
+AuditAction + "work_kind_changed"                             // "Work kind changed": entity service, before / after { workKind, answersServiceId }
+
+// server/storage.ts
+class ServiceKindError(status: 400 | 403 | 409, code, message) // the link codes (400), WORK_KIND_FORBIDDEN (403), SERVICE_KIND_LOCKED (409); routes answer { code, message }
+interface ServiceWriteContext { actorRole?: UserRole | null; actor?: AuditActor | null }
+createService(data, context?) / updateService(id, data, context?)   // both resolve the kind and the link through resolveServiceWorkKindTx; an update audits a change
+resolveServiceWorkKindTx(tx, { serviceId, locationId, agreementId, source, serviceTypeId, requestedWorkKind, requestedAnswersServiceId, current, actorRole })
+                                                              // -> { workKind, answersServiceId, changed }. Create: the type's default unless requested (gated when it differs).
+                                                              //    Update: unchanged unless requested; a kind leaving CALLBACK drops its link; a change is gated, locked, audited.
+assertServiceKindUnlockedTx(tx, serviceId)                    // 409 SERVICE_KIND_LOCKED on a finalized ticket (isTicketFinalized) or an issued visit invoice; a DRAFT does not lock
+generateServiceForAgreement                                   // workKind = defaultWorkKindForService(type, AGREEMENT_GENERATED, true); answersServiceId null
+convertOpportunityToService                                   // a CALLBACK-type conversion answers opportunity.sourceServiceId (validated); no source -> 400 CALLBACK_LINK_REQUIRED
+createProductionValueEntriesForFinalizedRecord                // basis = productionBasisForService(service.workKind, !!agreement); the scheduled-count query is gone
+resolveServiceLineBillingTx({ service, agreementContext })     // the `record` parameter is dropped; isCallbackKind(service.workKind) first: priced -> SERVICE "callback",
+                                                              //    unpriced -> AGREEMENT_COVERED "warranty callback - no charge" - before the plan, and with no agreement too
+completeService                                               // a type change on the ticket never re-derives the kind (comment only)
+
+// server/routes.ts
+serviceWorkKindSchema = z.enum(SERVICE_WORK_KINDS); serviceTypeSchema = insertServiceTypeSchema.extend({ workKind: optional })
+POST /api/service-types, PATCH /api/service-types/:id         // requirePermission(MANAGE_SETTINGS) - the first gate on these routes; GET stays open
+POST /api/services, PATCH /api/services/:id                   // + workKind? (enum), answersServiceId? (nullable); { actorRole, actor } passed to storage; ServiceKindError -> { code, message }
+POST /api/opportunities/:id/convert                           // ServiceKindError -> { code, message }
+
+// server/service-scheduling-bootstrap.ts
+bootstrapServiceWorkKind()                                    // service_types.work_kind (every type printed once), services.work_kind (backfilled from the type, printed once,
+                                                              //    then NOT NULL DEFAULT 'SERVICE'), services.answers_service_id + partial index + FK (printed once); called last
+// server/seed.ts
+serviceTypes                                                  // the five carry workKind SERVICE; + "Warranty Callback" (CALLBACK, no default price, 30 min) - fresh databases only
+
+// client
+components/service-work-kind-badge.tsx (new)                  // ServiceWorkKindBadge ("Kind: <label>"; amber CALLBACK, sky PRODUCTION, muted SERVICE; badge-service-work-kind-<kind>)
+                                                              //    and ServiceWorkKindListBadge (null for SERVICE - lists show the kind only when it is not the plain one)
+settings.tsx                                                  // ServiceTypeForm: Work Kind Select (select-st-work-kind) with a caption; the card: a kind badge per type; Add Type and
+                                                              //    Edit only for canManageSettings, "Admins manage service types." otherwise (text-service-types-admin-only)
+customer-detail.tsx                                           // ServiceWorkKindFields (Work Kind Select + Answers Select; select-service-work-kind-<n|edit>, select-service-answers-<n|edit>)
+                                                              //    on every New Service line with a type and on the Edit form, disabled with the reason (role, or a completed service);
+                                                              //    the kind follows the type until touched; submit disabled while a CALLBACK line has no answer; the POST and PATCH
+                                                              //    bodies carry both fields. ServicesTab: answerCandidates (the location's COMPLETED non-callback services, most
+                                                              //    recent first, "<type> on <date>"), answersLabelFor(service), the row's ServiceWorkKindListBadge under the type;
+                                                              //    ServiceDetailModal: a Work Kind cell (the badge) with "Answers <type> on <date>" (text-service-answers-<id>)
+schedule.tsx                                                  // the queue card's ServiceWorkKindListBadge and answers line (text-queue-answers-<id>); ServiceDetailDialog: a Work Kind
+                                                              //    cell; AppointmentSheet: a "Work kind per service" block (sheet-service-kinds) above the billing rows, with the
+                                                              //    caption that the Billable / Production badge below is the invoice line; prefillServiceMutation gains an onError toast
+```
+
+Behavior worth knowing before the next pass touches it:
+- **Two collisions, both resolved by naming.** `serviceTypes.category` was already free text
+  ("General / Termite / Rodent / Commercial", every row set, edited as a text input) and stays the
+  display grouping; the canon's "category" is the new `workKind` column beside it. "Designation"
+  was already `ServiceBillingDesignation` (BILLABLE / PRODUCTION - what the invoice LINE is), so the
+  new thing is the **work kind** everywhere: the column, the type, the badge ("Kind: Callback") and
+  the audit action. Where both badges show (the dispatch sheet) the kind block's caption says the
+  billing badge below is the invoice line.
+- **PRODUCTION and SERVICE drive nothing yet.** Only CALLBACK changes what a visit credits and
+  bills; PRODUCTION vs SERVICE is the office's classification (an agreement's visit vs billable
+  one-off work), kept for the badge and for later analytics. The ledger basis follows the agreement
+  link and billing follows the plan for both, exactly as before. The migration defaulted every
+  existing type to SERVICE and printed them; the office sets its program types to PRODUCTION and
+  its callback types to CALLBACK in Settings.
+- **The default has one exception.** An agreement's own AGREEMENT_GENERATED or AGREEMENT_INITIAL
+  visit never defaults to CALLBACK (nothing to answer) - a CALLBACK type there reads PRODUCTION. A
+  MANUAL service on an agreement customer keeps the type's CALLBACK; that is the warranty callback
+  this pass exists for, and it needs no override and no permission beyond creating a service.
+- **The link's target rule is strict on purpose.** COMPLETED, same location, not itself a callback,
+  not itself. A callback answering a callback is refused so the callback rate per original service
+  is one group-by; the picker (the location's completed non-callback services) can never offer a
+  refused row. The board's prefill offers no picker because its only caller is the agreement's
+  initial service, which never defaults to a callback; a hand-built prefill URL for a CALLBACK type
+  gets a toast naming the Services tab.
+- **The override is the price's permission, and it freezes with the money.** Every role may set or
+  change a non-agreement service's kind (ADJUST_PRICE_NON_AGREEMENT); manager+ an agreement
+  service's (ADJUST_PRICE_AGREEMENT). A change on a service with a finalized ticket or an issued
+  visit invoice is 409 SERVICE_KIND_LOCKED (a credit memo or Phase 7's adjustment entry is the
+  correction); a DRAFT does not lock, and a posted, unfinalized ticket may still be re-designated -
+  the reviewer's moment. A kind moving off CALLBACK drops its link unless the body names one. A
+  type change alone, on the form or on the ticket, never re-derives the kind. The board's placement
+  PATCH names neither field and touches neither.
+- **The counter is gone, and so is the cap.** An agreement's PRODUCTION or SERVICE visit past
+  `expectedServiceCount` now credits SCHEDULED_AGREEMENT_SERVICE at the per-visit value, so a
+  ledger's per-agreement total can exceed the contract price when the office schedules more visits
+  than it expected or forgets to designate a callback. Decided: the designation is the control; a
+  wrongly credited visit is visible in the ledger, a real visit credited $0 was not. A CALLBACK
+  credits $0 priced or not - no production on callbacks (canon §13).
+- **The kind precedes the plan.** An unpriced callback on a schedule-billed plan reads "warranty
+  callback - no charge" (not "covered by agreement"), and a priced one bills "callback" on a
+  schedule-billed plan too - it is not one of the plan's paid visits. Non-agreement work follows
+  the same rule, so a price-less one-time callback no longer throws "Service has no price set" and
+  a DRAFT for its visit prices it $0 before the ticket exists. `describeBatchTicketBilling`'s
+  CALLBACK kind and the ticket's "(warranty callback - no charge)" note follow without a change.
+- **The three CALLBACK rows stand.** The slot counter's entries on Unit 15 Ledger Test (two test
+  rows and the misclassified 2026-07-16 visit) and their $0 lines on PAID invoices are history; the
+  ledger is append-only and Phase 7 owns adjustment entries. Their services read SERVICE like every
+  other row. The seed's "Warranty Callback" type exists on fresh databases only.
+- **Verified 2026-09-27** (PORT=5001 against a copy of the dev DB, `pestflow_verify`, dropped
+  afterwards): `npm run check` clean; boot 1 printed the migration once (six types -> SERVICE, 102
+  services from their type, the three counter CALLBACK entries noted as history, the FK) with all
+  44 table counts unchanged; boot 2 printed only the serving line with every count unchanged; 101
+  API / SQL assertions as the four roles - the pure module (defaults, basis, link shape, gate,
+  picker predicate, badge text); the type routes (403 for tech / support / manager, 400 on an
+  unknown kind, admin 201 / 200, a type without a kind is SERVICE, every pre-existing type
+  SERVICE); the link (REQUIRED, LOCATION_MISMATCH, NOT_COMPLETED, NOT_FOUND, NOT_ALLOWED,
+  IS_CALLBACK, SELF, nothing written by a refusal); the technician creating a callback from the
+  type's default; the DRAFT pricing a one-time callback $0 before its ticket, its ticket credited
+  CALLBACK $0, the DRAFT issued at $0 and the invoiced read pairing it; a COD agreement's visit 1
+  and visit 2 (past expectedServiceCount 1) both SCHEDULED_AGREEMENT_SERVICE 40000; an agreement's
+  initial visit on a CALLBACK type reading PRODUCTION; a technician's kind override on an agreement
+  service 403 and a manager's 201; a priced callback BILLABLE 5000 "callback" credited CALLBACK $0
+  and invoiced SERVICE 5000 "(callback)"; an unpriced one PRODUCTION $0 "warranty callback - no
+  charge" invoiced AGREEMENT_COVERED 0; the batch preview's AMOUNT and CALLBACK kinds; a
+  schedule-billed plan's visit "covered by agreement" beside its callbacks "warranty callback - no
+  charge" / "callback" 2500; the override rule (technician 200 on a one-time service with the audit
+  row, an unchanged kind writing none, a placement PATCH touching nothing, a type change alone
+  keeping the kind, CALLBACK without a link 400, off-CALLBACK dropping the link, support / tech 403
+  on an agreement service, manager 200, a finalized ticket 409, a DRAFT not locking, an issued
+  pre-finalization invoice 409 naming the invoice); the opportunity conversion (a CALLBACK type
+  answering its source, no source 400 and nothing changed, a SERVICE type unchanged); every fixture
+  deleted (the three types included), every count back at the run's start (`session` +4); a Vite
+  200 with the new symbols on the three touched pages, the badge component and the three shared
+  modules. **Nothing was rendered in a browser** - the repo has no browser automation and the
+  session had no browser - so the Work Kind Select, the badges, the Answers picker and the sheet's
+  kind block reach the owner first.
+- **Known follow-up.** A callback rate / warranty report per original service (the group-by now
+  exists; no screen reads it); an "extra visit past the count" report (Phase 7, with the
+  adjustment entries); the technician's ticket carries no kind and no link (by design - the
+  office re-designates from the Services tab before finalization); the board's prefill offers no
+  picker (no caller needs one); `GET /api/services` is unfiltered, so the picker's candidates are
+  filtered client-side from the location's services; the `Service History` legacy form and the
+  seed's services carry the column default.
 
 ---
 

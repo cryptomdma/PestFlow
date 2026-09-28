@@ -344,6 +344,82 @@ export async function bootstrapServiceSchedulingFoundation(): Promise<void> {
 
   await bootstrapOpportunityTaxonomy();
   await bootstrapAppointmentDisposition();
+  await bootstrapServiceWorkKind();
+}
+
+interface ServiceTypeKindRow {
+  id: string;
+  name: string;
+  category: string | null;
+}
+
+// Pass 24 (PLAN_ROADMAP_V2.md C3.7; canon §10 "Service designation and
+// warranty callbacks"). Three guarded steps, each quiet once done, so the
+// second boot prints nothing:
+//   1. service_types.work_kind - the type's default kind (SERVICE |
+//      PRODUCTION | CALLBACK, shared/service-kind.ts), NOT NULL DEFAULT
+//      'SERVICE'. Every existing type is defaulted to SERVICE (billable) and
+//      printed, so the office knows which to re-kind in Settings. Beside the
+//      free-text `category`, which stays the display grouping it is.
+//   2. services.work_kind - the instance kind, backfilled from each row's
+//      type (all SERVICE today), SERVICE where the row has no type, then
+//      NOT NULL DEFAULT 'SERVICE' so a raw insert still carries one. The
+//      production entries the slot counter classified CALLBACK stand as
+//      history (append-only); their services read the default like every
+//      other row - the rule is forward-looking.
+//   3. services.answers_service_id - the callback link, a self FK (any FK on
+//      the column counts, whatever its name) with a partial index. No
+//      backfill: nothing before this pass recorded which visit answered what.
+async function bootstrapServiceWorkKind(): Promise<void> {
+  if (!(await columnExists("service_types", "work_kind"))) {
+    await db.execute(sql`ALTER TABLE service_types ADD COLUMN work_kind text NOT NULL DEFAULT 'SERVICE'`);
+    const types = await db.execute(sql`SELECT id, name, category FROM service_types ORDER BY name, id`);
+    const rows = types.rows as unknown as ServiceTypeKindRow[];
+    console.log(
+      `[service-scheduling-bootstrap] Pass 24: service_types.work_kind added; ${rows.length} service type(s) defaulted to SERVICE (billable work). ` +
+        `Set an agreement program's type to PRODUCTION and a callback / re-treatment type to CALLBACK in Settings -> Service Types.`,
+    );
+    for (const row of rows) {
+      console.log(`[service-scheduling-bootstrap]   ${row.name}  (category: ${row.category ?? "none"})  -> SERVICE`);
+    }
+  }
+
+  if (!(await columnExists("services", "work_kind"))) {
+    await db.execute(sql`ALTER TABLE services ADD COLUMN work_kind text`);
+    const fromType = await db.execute(sql`
+      UPDATE services s SET work_kind = st.work_kind
+      FROM service_types st
+      WHERE st.id = s.service_type_id AND s.work_kind IS NULL
+    `);
+    const noType = await db.execute(sql`UPDATE services SET work_kind = 'SERVICE' WHERE work_kind IS NULL`);
+    await db.execute(sql`ALTER TABLE services ALTER COLUMN work_kind SET DEFAULT 'SERVICE'`);
+    await db.execute(sql`ALTER TABLE services ALTER COLUMN work_kind SET NOT NULL`);
+    let counterCallbacks = "";
+    try {
+      const callbackEntries = await db.execute(sql`SELECT count(*)::int AS c FROM production_value_entries WHERE basis = 'CALLBACK'`);
+      const c = Number((callbackEntries.rows[0] as { c: number } | undefined)?.c ?? 0);
+      counterCallbacks = ` ${c} production entr${c === 1 ? "y" : "ies"} the slot counter classified CALLBACK stand as history; their services carry the type's kind like every other row.`;
+    } catch {
+      counterCallbacks = "";
+    }
+    console.log(
+      `[service-scheduling-bootstrap] Pass 24: services.work_kind added; ${fromType.rowCount ?? 0} service(s) took their type's kind, ` +
+        `${noType.rowCount ?? 0} with no type defaulted to SERVICE; the column is NOT NULL DEFAULT 'SERVICE'.${counterCallbacks}`,
+    );
+  }
+
+  await db.execute(sql`ALTER TABLE services ADD COLUMN IF NOT EXISTS answers_service_id varchar`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS services_answers_service_id_idx ON services (answers_service_id) WHERE answers_service_id IS NOT NULL`);
+  const answersFk = await db.execute(sql`
+    SELECT 1
+    FROM pg_constraint c
+    JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey)
+    WHERE c.conrelid = 'services'::regclass AND c.contype = 'f' AND a.attname = 'answers_service_id'
+  `);
+  if (!answersFk.rows.length) {
+    await db.execute(sql`ALTER TABLE services ADD CONSTRAINT services_answers_service_id_fkey FOREIGN KEY (answers_service_id) REFERENCES services(id)`);
+    console.log("[service-scheduling-bootstrap] Pass 24: services.answers_service_id added, indexed, and referencing services(id) - the service a callback answers.");
+  }
 }
 
 interface UnmappedOpportunityRow {
