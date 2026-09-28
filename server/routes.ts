@@ -22,7 +22,8 @@ import { OPPORTUNITY_ASSIGNEE_ME, OPPORTUNITY_ASSIGNEE_UNASSIGNED, OPPORTUNITY_W
 import { ZodError, z } from "zod";
 import type { Request } from "express";
 import { requirePermission } from "./auth";
-import { AppointmentDispositionError, DraftInvoiceDecisionRequiredError, PrefinalizationIssueError, StatementRefusedError, TicketEditError, TicketLockedError, TicketReopenError, VisitBillingDraftError } from "./storage";
+import { AppointmentDispositionError, DraftInvoiceDecisionRequiredError, PrefinalizationIssueError, ServiceKindError, StatementRefusedError, TicketEditError, TicketLockedError, TicketReopenError, VisitBillingDraftError } from "./storage";
+import { SERVICE_WORK_KINDS } from "@shared/service-kind";
 import { isUtcDay, statementFileName } from "@shared/statements";
 import { APPOINTMENT_DISPOSITION_MODES, DISPOSITION_OPPORTUNITY_CHOICES } from "@shared/appointment-disposition";
 import { can, PERMISSIONS, type UserRole } from "@shared/permissions";
@@ -181,6 +182,13 @@ export async function registerRoutes(
   // CANCELLED - appointments and services keep separate vocabularies.
   const appointmentStatusSchema = z.enum(["SCHEDULED", "IN_PROGRESS", "COMPLETED", "CANCELED"]);
   const serviceSourceSchema = z.enum(["MANUAL", "AGREEMENT_GENERATED", "AGREEMENT_INITIAL"]);
+  // Pass 24 (C3.7): the work kind on a type (its default) and on a service
+  // (the instance); the callback link rides the service body. Absent on a
+  // service means "the type's default"; storage decides and refuses.
+  const serviceWorkKindSchema = z.enum(SERVICE_WORK_KINDS);
+  const serviceTypeSchema = insertServiceTypeSchema.extend({
+    workKind: serviceWorkKindSchema.optional(),
+  });
   const agreementSchedulingModeSchema = z.enum(["AUTO_ELIGIBLE", "CONTACT_REQUIRED", "MANUAL"]);
   // Pass 12: userId is the technician -> user bridge (C2.2); an empty string
   // is refused rather than stored, null clears the link.
@@ -207,6 +215,8 @@ export async function registerRoutes(
     serviceWindowStart: z.string().nullable().optional(),
     serviceWindowEnd: z.string().nullable().optional(),
     schedulingMode: agreementSchedulingModeSchema.nullable().optional(),
+    workKind: serviceWorkKindSchema.optional(),
+    answersServiceId: z.string().min(1).nullable().optional(),
   }).superRefine((value, ctx) => {
     if (!value.customerId) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["customerId"], message: "customerId is required" });
     if (!value.locationId) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["locationId"], message: "locationId is required" });
@@ -220,6 +230,8 @@ export async function registerRoutes(
     serviceWindowStart: z.string().nullable().optional(),
     serviceWindowEnd: z.string().nullable().optional(),
     schedulingMode: agreementSchedulingModeSchema.nullable().optional(),
+    workKind: serviceWorkKindSchema.optional(),
+    answersServiceId: z.string().min(1).nullable().optional(),
   }).partial();
   const appointmentSchema = insertAppointmentSchema.extend({
     generatedForDate: nullableDateSchema.optional(),
@@ -1251,15 +1263,18 @@ export async function registerRoutes(
     res.json(data);
   });
 
-  // Service Types
+  // Service Types. Reads are open; since Pass 24 (C3.7) the writes are
+  // MANAGE_SETTINGS (admin), as the other Settings cards are: a type's work
+  // kind decides what every service created from it credits and bills, and
+  // the routes carried no gate at all before.
   app.get("/api/service-types", async (req, res) => {
     const data = await req.storage.getServiceTypes();
     res.json(data);
   });
 
-  app.post("/api/service-types", async (req, res) => {
+  app.post("/api/service-types", requirePermission(PERMISSIONS.MANAGE_SETTINGS), async (req, res) => {
     try {
-      const validated = insertServiceTypeSchema.parse(req.body);
+      const validated = serviceTypeSchema.parse(req.body);
       const data = await req.storage.createServiceType(validated);
       res.status(201).json(data);
     } catch (e: any) {
@@ -1268,9 +1283,9 @@ export async function registerRoutes(
     }
   });
 
-  app.patch("/api/service-types/:id", async (req, res) => {
+  app.patch("/api/service-types/:id", requirePermission(PERMISSIONS.MANAGE_SETTINGS), async (req, res) => {
     try {
-      const validated = insertServiceTypeSchema.partial().parse(req.body);
+      const validated = serviceTypeSchema.partial().parse(req.body);
       const data = await req.storage.updateServiceType(req.params.id, validated);
       if (!data) return res.status(404).json({ message: "Service type not found" });
       res.json(data);
@@ -1506,17 +1521,24 @@ export async function registerRoutes(
       if (!data) return res.status(404).json({ message: "Opportunity not found" });
       res.status(201).json(data);
     } catch (e: any) {
+      if (e instanceof ServiceKindError) return res.status(e.status).json({ code: e.code, message: e.message });
       res.status(400).json({ message: e.message });
     }
   });
 
+  // Pass 24 (C3.7): the body may name a work kind (else the type's default)
+  // and, on a callback, the service it answers; storage refuses with a code
+  // (400 the link, 403 WORK_KIND_FORBIDDEN, 409 SERVICE_KIND_LOCKED). The
+  // session's role is the gate's input and the actor signs the audit row;
+  // the rest of the PATCH stays ungated as before (C5.6's role profiles).
   app.post("/api/services", async (req, res) => {
     try {
       const validated = serviceSchema.parse(req.body);
-      const data = await req.storage.createService(validated);
+      const data = await req.storage.createService(validated, { actorRole: req.user!.role as UserRole, actor: getAuditActor(req) });
       res.status(201).json(data);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
+      if (e instanceof ServiceKindError) return res.status(e.status).json({ code: e.code, message: e.message });
       res.status(400).json({ message: e.message });
     }
   });
@@ -1524,11 +1546,12 @@ export async function registerRoutes(
   app.patch("/api/services/:id", async (req, res) => {
     try {
       const validated = updateServiceSchema.parse(req.body);
-      const data = await req.storage.updateService(req.params.id, validated);
+      const data = await req.storage.updateService(req.params.id, validated, { actorRole: req.user!.role as UserRole, actor: getAuditActor(req) });
       if (!data) return res.status(404).json({ message: "Service not found" });
       res.json(data);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
+      if (e instanceof ServiceKindError) return res.status(e.status).json({ code: e.code, message: e.message });
       res.status(400).json({ message: e.message });
     }
   });

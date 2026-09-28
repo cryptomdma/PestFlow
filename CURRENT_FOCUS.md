@@ -26,10 +26,11 @@ first Phase 3 row in phase order, the recommended order being exhausted) is merg
 ticket modal's money and instructions, C3.3) is merged (PR #91); Pass 20 (material units and
 application areas, C3.4a) is merged (PR #92); Pass 21 (target pests at two levels, C3.4b) is
 merged (PR #93); Pass 22 (the service report document, C3.5) is merged (PR #94); Pass 23 (the
-field surcharge line, C3.6) is pushed, awaiting merge; **next pass: 24, service designation and
-callback attribution** (C3.7). The roadmap sequences every
-remaining item below; this file keeps the status pointer and, as its last section, the handoff
-prompt that starts the next session.
+field surcharge line, C3.6) is merged (PR #95); Pass 24 (service designation and callback
+attribution, C3.7 - the last Phase 3 row) is pushed, awaiting merge; **next pass: 26, opportunity
+assignment rules and zones** (C4.1b, the first open Phase 4 row in phase order). The roadmap
+sequences every remaining item below; this file keeps the status pointer and, as its last
+section, the handoff prompt that starts the next session.
 
 ## Status
 Pass 1 (`feature/phase-1-appointment-status-enum`, D1a) merged as PR #56.
@@ -1083,7 +1084,7 @@ Download pairs, the Preview button, the Switch card and the PDF's look have not 
 anyone: the repo has no browser automation and the session had no browser.** Signatures and
 behavior are under "Shipped in Pass 22" at the end of `PLAN_ROADMAP_V2.md` Part D.
 
-Pass 23 (`feature/phase-3-field-surcharge-line`, 2026-09-27, C3.6) pushed, awaiting merge.
+Pass 23 (`feature/phase-3-field-surcharge-line`, 2026-09-27, C3.6) merged as PR #95.
 **Field surcharge line.** A cleanout surcharge is a line the technician adds on the ticket, not
 a term of the sale (owner, 2026-09-13, the Pass 5.5 review under D4): `service_records.
 surchargeCents` / `surchargeLabel` (nullable; the label defaults to "Cleanout surcharge";
@@ -1161,14 +1162,84 @@ and the report row have not been rendered by anyone: the repo has no browser aut
 session had no browser.** Signatures and behavior are under "Shipped in Pass 23" at the end of
 `PLAN_ROADMAP_V2.md` Part D.
 
-Next up: **Pass 24** — service designation and callback attribution (`PLAN_ROADMAP_V2.md` Phase 3
-table, C3.7; canon §10's "Service designation and warranty callbacks"): `ServiceType.category`
-(CALLBACK / PRODUCTION / SERVICE) in Settings, the instance designation on Service defaulted from
-the type, a required "answers Service …" link on a CALLBACK chosen at scheduling, and the
-production basis and the invoice's $0 decision reading the designation instead of the slot
-counter. Phase order continues after it (Pass 26 (C4.1b) and Pass 28 (C4.3a) in Phase 4's turn).
-Branch from `origin/main` after confirming it contains Pass 23's merge. The handoff prompt for
-Pass 24 is the last section of this file; the Pass 24 session writes the next one.
+Pass 24 (`feature/phase-3-service-designation-callbacks`, 2026-09-27, C3.7) pushed, awaiting merge.
+**Service designation and callback attribution.** A callback is a kind of work, not a position in
+a counter (canon §10). Built as the **work kind** - `serviceTypes.workKind` (the type's default,
+set in Settings → Service Types) and `services.workKind` (the instance, defaulted from the type on
+every creation path: the customer screen's form, the dispatch board's prefill, agreement
+generation, an opportunity's conversion, the seed), vocabulary `SERVICE | PRODUCTION | CALLBACK`
+in `shared/service-kind.ts`. **Decided: the name.** The canon's "category" collided with
+`serviceTypes.category`, which already exists as free text ("General / Termite / Rodent") and
+stays the display grouping; "designation" collided with `ServiceBillingDesignation` (BILLABLE /
+PRODUCTION - what the invoice LINE is). So the new thing is the work kind everywhere, and its
+badge reads "Kind: Callback"; on the dispatch sheet, where both badges show, the kind block's
+caption says the Billable / Production badge below is the invoice line. **Decided: the default's
+one exception** - an agreement's own AGREEMENT_GENERATED / AGREEMENT_INITIAL visit never defaults
+to CALLBACK (nothing to answer), so a CALLBACK type there reads PRODUCTION; a MANUAL service on an
+agreement customer keeps the type's CALLBACK. **The link** is `services.answersServiceId` (a self
+FK): required on a CALLBACK, refused on anything else, the answered service at the same location,
+COMPLETED and not itself a callback (so the callback rate per original service is one group-by) -
+seven refusal codes (`CALLBACK_LINK_REQUIRED` / `_NOT_ALLOWED` / `_NOT_FOUND` / `_SELF` /
+`_LOCATION_MISMATCH` / `_NOT_COMPLETED` / `_IS_CALLBACK`), chosen on the customer screen's New
+Service line and Edit form (an Answers Select over the location's completed non-callback services)
+and shown as "Answers <type> on <date>" on the Service Details, the queue and the dispatch sheet;
+an opportunity of a CALLBACK type converts into a callback answering its source service, and one
+with no source is refused rather than re-kinded. **Decided: the override is the price's rule** -
+`ADJUST_PRICE_NON_AGREEMENT` (every role) on a non-agreement service, `ADJUST_PRICE_AGREEMENT`
+(manager+) on an agreement one, at creation when the kind differs from the type's default and on
+any later change of the kind or the link; a change is refused 409 `SERVICE_KIND_LOCKED` once the
+ticket is finalized or the visit is invoiced (a DRAFT does not lock; a posted, unfinalized ticket
+is the review moment) and audited as `work_kind_changed` ({ workKind, answersServiceId } before and
+after); a type change never re-derives the kind and the ticket does not carry it. **Decided: the
+type routes' writes are MANAGE_SETTINGS** (admin), as the other Settings cards are - they had no
+gate at all; the card says "Admins manage service types." to everyone else. **The credit reads the
+kind** (`productionBasisForService`): CALLBACK → basis CALLBACK $0, priced or not (no production on
+callbacks); an agreement's PRODUCTION / SERVICE visit → SCHEDULED_AGREEMENT_SERVICE at the per-visit
+value **whatever the count** - **decided: the slot counter goes and so does the cap**; an extra
+visit past `expectedServiceCount` credits the per-visit value like any other, the designation is
+the control, and a wrongly credited visit is visible where a real visit credited $0 was not. **The
+$0 decision reads the kind before the plan** (`resolveServiceLineBillingTx` no longer reads a
+production entry): an unpriced callback is AGREEMENT_COVERED "warranty callback - no charge" on
+every plan - **decided: "warranty callback", not "covered by agreement", on a schedule-billed plan
+too**, the more specific truth - and with no agreement at all (a warranty return on a one-time
+job); a priced callback bills SERVICE "callback" on every plan, since it is not one of the plan's
+paid visits; a DRAFT prices a callback $0 before its ticket exists (before this pass the DRAFT
+showed the contracted amount and a price-less one-time service could not be drafted at all); the
+batch preview's CALLBACK kind follows through the note. **PRODUCTION vs SERVICE drives nothing
+yet** - the office's classification for the badge and later analytics; the ledger basis follows
+the agreement link and billing follows the plan for both, as before. **Decided: the three CALLBACK
+rows and their $0 lines stand as history** (append-only; Phase 7 owns adjustment entries); their
+services carry the type's kind. **Migration** (`bootstrapServiceWorkKind`, three guarded steps,
+each printed once): `service_types.work_kind` NOT NULL DEFAULT 'SERVICE' with every type printed
+(all six → SERVICE; the office re-kinds its program and callback types in Settings),
+`services.work_kind` backfilled from the type then NOT NULL DEFAULT 'SERVICE' (102 from their
+type, 0 without one), `services.answers_service_id` with a partial index and the FK. **It has NOT
+run against the shared dev DB: this pass's verification ran against a copy (`pestflow_verify`,
+dropped afterwards); the migration is additive and safe under the owner's running server, and the
+owner's `npm run dev:full` restart runs it and prints its ten lines.** Client: the Work Kind Select
+on the Service Types form and the kind badge on the card; `ServiceWorkKindBadge` /
+`ServiceWorkKindListBadge` (lists show the kind only when it is not the plain SERVICE; detail views
+always); the Work Kind + Answers controls on the New Service lines and the Edit form (the kind
+follows the type until touched; disabled with the reason; submit disabled while a callback has no
+answer); the Services tab row's badge; the Service Details' Work Kind cell and answers line; the
+dispatch queue's badge and answers line; the dispatch sheet's "Work kind per service" block; the
+board's service dialog's Work Kind cell; an onError toast on the board's prefill. Not touched: the
+technician's ticket (its Service Type select and its badges are unchanged), the surcharge line
+(C3.6), the comp engine (Phase 7), C4.3b's add a service in the field, the opportunity flow beyond
+the conversion's link, the billing-plan predicate, the technician's day. **Restart `npm run
+dev:full` before manually testing - this pass adds three columns and changes the service bodies;
+the Select, the badges, the picker and the sheet's block have not been rendered by anyone: the repo
+has no browser automation and the session had no browser.** Signatures and behavior are under
+"Shipped in Pass 24" at the end of `PLAN_ROADMAP_V2.md` Part D.
+
+Next up: **Pass 26** — opportunity assignment rules and zones (`PLAN_ROADMAP_V2.md` Phase 4 table,
+C4.1b): Settings-managed `zones` (named zip-code lists, reusable later by dispatch and Smart
+Schedule) and `opportunity_assignment_rules` (category / work type / zone / source → user, ordered,
+first match wins); auto-assign at creation through the four writers, unassigned when no rule
+matches; reassignment logged. Phase 3 is closed by Pass 24; phase order continues in Phase 4
+(Pass 26, then Pass 28 (C4.3a)). Branch from `origin/main` after confirming it contains Pass 24's
+merge. The handoff prompt for Pass 26 is the last section of this file; the Pass 26 session writes
+the next one.
 
 Phase 1's ordered plan, impact analysis, conflict resolutions, and per-pass verification steps live in
 `PLAN_BILLING_V1_1_EXECUTION.md` — read it when a pass builds on a Phase 1 helper (its "Shipped in
@@ -1239,12 +1310,18 @@ pointer and that prompt.
     had any billing data and sit past their term end, so the attach rule starts no schedule for them. **Carry sale attribution with it** — a sold-by reference on the agreement,
     assignable to any user and role-gated — per the compensation entry below: same form, same zod,
     same propagation path, and it is basis that cannot be reconstructed later.
-  - **Service designation + callback attribution** `[Roadmap: Pass 24, C3.7]` — `ServiceType.category`
+  - ~~**Service designation + callback attribution**~~ **Done — Pass 24**
+    (`feature/phase-3-service-designation-callbacks`, 2026-09-27, C3.7): the **work kind**
+    (`serviceTypes.workKind` / `services.workKind`, `SERVICE | PRODUCTION | CALLBACK`; the canon's
+    "category" was renamed because `serviceTypes.category` already exists as free text and
+    "designation" is the billing badge's word), the required `services.answersServiceId` link on a
+    callback, the override under the price's permissions, the ledger basis and the invoice's $0
+    decision reading the kind with the slot counter gone. See `CANONICAL_DOMAIN_RULES_V1.md` §10.
+    `[Roadmap: Pass 24, C3.7]` As specified: `ServiceType.category`
     (`CALLBACK | PRODUCTION | SERVICE`) in Settings, instance designation on Service, and a required
-    link from a callback to the Service it answers. See `CANONICAL_DOMAIN_RULES_V1.md` §10. More
-    urgent than it first looked: because every agreement is currently plan-less (above), the
-    slot-counter proxy can charge a customer for a warranty callback performed inside the service
-    interval.
+    link from a callback to the Service it answers. Its urgency once came from plan-less agreements
+    (every agreement carries a plan since Pass 12); the case it fixes is a COD-plan callback
+    charged as a scheduled visit, and the scheduled visit past the count credited $0.
   - **Service-level cancel / return-to-queue** `[Roadmap: Pass 28, C4.3a]` — cancelling or rescheduling ONE service on a
     multi-service appointment. Only the appointment-wide path exists: since Pass 27 the dispatch
     sheet's buttons are **Cancel appointment** and **Reschedule** and act on the whole visit, as they
@@ -1410,216 +1487,210 @@ pointer and that prompt.
 
 Replaced at the end of every pass (`AGENT_WORKING_AGREEMENT.md`, the end-of-pass step). The owner
 pastes it verbatim to start the next session; it is also the last thing in the finishing session's
-final message. Written 2026-09-27, after Pass 23 was pushed as
-`feature/phase-3-field-surcharge-line`. Its ground truth came from a read-only Explore subagent's
-inventory of the working tree at the end of Pass 23; run the SQL before trusting any data claim.
+final message. Written 2026-09-27, after Pass 24 was pushed as
+`feature/phase-3-service-designation-callbacks`. Its ground truth came from a read-only Explore
+subagent's inventory of the working tree during Pass 24, plus the SQL it ran; the line numbers are
+that tree's, so run the SQL and grep the names before trusting any claim.
 
 ```text
-Start Pass 24 — Service designation and callback attribution
-(PLAN_ROADMAP_V2.md Phase 3 table, row C3.7; CANONICAL_DOMAIN_RULES_V1.md §10 "Service designation
-and warranty callbacks (not yet modeled — roadmap)"; CURRENT_FOCUS.md's "Service designation +
-callback attribution" bullet under the constraints. Phase order: the last open Phase 3 row, after
-Pass 23.) Read the CLAUDE.md docs in order first; CURRENT_FOCUS.md's last two entries (Pass 23 and
+Start Pass 26 — Opportunity assignment rules and zones
+(PLAN_ROADMAP_V2.md Phase 4 table, row C4.1b; CANONICAL_DOMAIN_RULES_V1.md "Opportunities",
+"Canonical rule — two axes and an assignee", whose last sentence is "New opportunities are
+unassigned; auto-assignment by rules and zones is C4.1b"; shared/permissions.ts's
+ASSIGN_OPPORTUNITY comment: auto-assignment "will write the same column under the system actor,
+not a person's permission". Phase order: Phase 3 closed with Pass 24, so the first open Phase 4
+row.) Read the CLAUDE.md docs in order first; CURRENT_FOCUS.md's last two entries (Pass 24 and
 "Next up") are the ones that matter.
 
-Branch feature/phase-3-service-designation-callbacks from origin/main. Confirm main contains the
-Pass 23 merge (feature/phase-3-field-surcharge-line) before branching.
+Branch feature/phase-4-opportunity-assignment-rules from origin/main. Confirm main contains the
+Pass 24 merge (feature/phase-3-service-designation-callbacks) before branching.
 
-The decision is recorded (canon §10, "Resolved design, to be built": a callback is a kind of work,
-not a position in a counter - a re-treatment, a warranty return, a follow-up on conducive
-conditions stays $0 covered whether it falls inside or outside the agreement's interval;
-ServiceType carries a category CALLBACK | PRODUCTION | SERVICE (billable) set in Settings →
-Service Types; the instance designation lives on Service, defaulted from its type - the same shape
-as price, type default and instance override; a CALLBACK Service MUST link to a previous Service
-it answers, chosen at scheduling, so warranty history and callback rates are answerable per
-original service; chargeability stays per instance - no price means warranty work at no charge, a
-price bills that amount (a deliberate charge for non-compliance); the production basis and the
-invoice's $0 decision read the designation instead of today's slot-counter proxy, which is wrong
-in both directions. The C3.7 row: its urgency came from plan-less agreements; that dropped with
-Pass 12, and COD-plan callbacks remain the case it fixes. B13: every field action is a route. D6:
-price is never mutated. D7: a change that moves money is audited.) Two collisions the row does
-not know about - decide and state:
-- `service_types.category` ALREADY EXISTS as free text ("General / Termite / Rodent /
-  Commercial": shared/schema.ts:155, DB column `category text`, all 6 rows set; edited as a text
-  Input at settings.tsx:194, shown as a badge :1588, seeded seed.ts:51-55). The canon's `category`
-  needs another column name or a migration of the existing column - recommend a new column (a
-  "kind"), the free-text category staying the display grouping it is.
-- "designation" is already the billing vocabulary: `ServiceBillingDesignation = "BILLABLE" |
-  "PRODUCTION"` (shared/visit-billing.ts:23; `ServiceDesignationBadge` visit-billing-summary.tsx:
-  64-78) says what the invoice LINE is (BILLABLE = the canon's SERVICE; PRODUCTION = a covered
-  line), not what the WORK is (the canon's CALLBACK | PRODUCTION | SERVICE). Name the new thing so
-  the two cannot be confused, and say which badge is which wherever both show.
-Ground truth today (line numbers from origin/main at the Pass 23 merge; they drift, the names do
-not):
-- The schema: serviceTypes (shared/schema.ts:148-158: id, orgId, name, description,
-  defaultPriceCents, estimatedDuration, category :155, opportunityLeadDays, opportunityLabel; no
-  kind column); services (:184-216: appointmentId :189, lastAppointmentId :199, agreementId :200 -
-  no FK in the schema or the DB, serviceTypeId :201, priceCents :208, status :209 default
-  PENDING_SCHEDULING, source :211 default MANUAL - MANUAL | AGREEMENT_GENERATED |
-  AGREEMENT_INITIAL; no designation and no "answers" link); serviceRecords.serviceTypeId :485
-  (serviceId :481, no FK); opportunities.sourceServiceId :562 / sourceServiceRecordId :563 /
-  convertedServiceId :575; productionValueEntries :1074-1095 (basis :1089, the vocabulary comment
-  :1082); insertServiceTypeSchema :1185, insertServiceSchema :1188 (omits lastAppointmentId).
-- The slot counter: createProductionValueEntriesForFinalizedRecord (server/storage.ts:2537-2638,
-  comment :2521-2536; the branch :2571-2593 - SCHEDULED_AGREEMENT_SERVICE while the agreement's
-  SCHEDULED count < expectedServiceCount, else CALLBACK at $0; ONE_TIME_SERVICE = service.priceCents
-  for a service with no agreement; the insert :2595-2607; the SURCHARGE entry :2622-2637 is Pass
-  23's and independent), called only from finalizeServiceRecord (:5254, at :5289, under
-  !existingRecord.confirmed). computeProductionValueCents shared/production-value.ts:5-14 (used at
-  storage :2585, :5237, :7114, shared/billing-plan.ts:133, service-completion-dialog.tsx:323).
-- The invoice's $0 decision: resolveServiceLineBillingTx (storage.ts:7059-7131, comment
-  :7046-7058): non-agreement work prices the service or throws (:7069-7076); a schedule-billed plan
-  returns AGREEMENT_COVERED "covered by agreement" (:7078-7085) BEFORE the callback check, so the
-  CALLBACK branch (:7089-7103 - reads the ticket's non-SURCHARGE production entry; priced → SERVICE
-  "callback", unpriced → AGREEMENT_COVERED "warranty callback - no charge") runs only for the 4
-  agreements on plans the nightly run does not bill; else the per-visit remaining price
-  (:7114-7130). Callers: the batch preview :6167, getVisitBillingSummary :6493 (the method :6306),
-  buildVisitInvoiceLinesTx :7344. The only reads of basis CALLBACK: storage :2587 (the write) and
-  :7099 (the read); by note string shared/batch-invoice.ts:253-254 (describeBatchTicketBilling's
-  CALLBACK kind) and batch-invoice-dialog.tsx:270; the "callback" note suffix
-  visit-billing-summary.tsx:217. The server's BILLABLE / PRODUCTION mapping: storage :6359, :6410,
-  :6508 (AGREEMENT_COVERED → PRODUCTION, everything else BILLABLE).
-- Attribution today: ensureOpportunityForServiceRecordTx (storage.ts:2149-2194; the early return
-  `if (!linkedService || linkedService.agreementId) return;` :2158; inserts sourceServiceId /
-  sourceServiceRecordId :2183-2184; called :5294) - agreement work never gets an opportunity;
-  serviceRecords.followUpRequired / followUpNotes record that a follow-up is needed, never which
-  visit answered it. DB: 29 opportunities - 6 with source_service_record_id, 22 with
-  source_service_id, 14 with converted_service_id.
-- Service writes: normalizeServiceInsert (storage.ts ~:2030-2044, the source default :2040),
-  normalizeServiceUpdate :2046-2062, createService :3346-3374 (syncs status and technician from an
-  appointmentId), updateService :3376-3405, deleteService :3407+ (refuses with records :3416 or
-  opportunities :3419-3421), getPendingServices :3333-3339; generateServiceForAgreement :2382-2457
-  (source AGREEMENT_GENERATED :2450, priceCents null :2447, serviceTypeId = the agreement's :2433;
-  reached from advanceAgreementForCompletedAppointment :2459-2488,
-  advanceAgreementForCompletedService :2490-2519, generateAgreementServicesForLocation
-  :4297-4311); convertOpportunityToService :3813+ (a MANUAL service priced from the type default
-  :3848-3859, or the AGREEMENT_GENERATED source service :3846); createAppointment :4326-4403 (sets
-  services.appointmentId :4338-4340, syncServicesForAppointmentTx :4342 / :2083-2115 over
-  getLinkedServicesForAppointmentTx :2064-2081 - dev rule 10, the one appointment↔services rollup;
-  converts reschedule / cancel-review opportunities :4344-4385). Routes (server/routes.ts):
-  serviceStatusSchema :179, serviceSourceSchema :183, serviceSchema :202-214 (superRefine:
-  customerId, locationId, serviceTypeId), updateServiceSchema :215-223 (.partial()),
-  appointmentSchema :224-233; GET /api/services :1333, by-location :1338, pending :1343, :id :1351,
-  POST :1513, PATCH :1524 (ungated - the comment at :256 says so), DELETE :1536, complete :1546;
-  the opportunity convert ~:1505; POST /api/appointments :1844 (answers initialChargeDue), PATCH
-  :1864, billing-summary :1827, disposition :1907. Service types: getServiceTypes /
-  createServiceType / updateServiceType (storage :3232 / :3236 / :3241 - a plain insert and
-  update, no validation, no delete); GET :1255, POST :1260 (insertServiceTypeSchema :1262), PATCH
-  :1271 (.partial() :1273) - NO permission gate on any of them; requirePermission is
-  server/auth.ts:109. routes.ts has no literal "CALLBACK".
-- Client: Settings → Service Types - ServiceTypeForm settings.tsx:147-202 (name, description,
-  defaultPrice, estimatedDuration, category as a text Input :194, opportunityLeadDays,
-  opportunityLabel; the payload :161-174 to POST / PATCH /api/service-types), the card list
-  :1564-1604 (the category badge :1588, Edit :1597), not gated (canManageSettings :1402 gates other
-  cards only). Where a Service is created from the UI: the customer screen's ServiceForm
-  (customer-detail.tsx:2504-~2770: serviceLines [serviceTypeId, expectedDurationMinutes, price]
-  :2520-2537, the type's defaults filling the line :2559-2571 / :2687-2693, the PATCH body
-  :2600-2615, POST /api/services per line :2621-2634 with agreementId null / status
-  PENDING_SCHEDULING / source MANUAL, the "schedule" submit redirecting to
-  /schedule?serviceId=&serviceIds= :2647-2663); the ServiceDetailModal :2771-2922 (the grid Service
-  Type / Status / Date / Technician / Cost / Duration / Time Window :2812-2820, Linked Appointment
-  :2821-2827 - where a kind badge and an "answers Service …" link belong); ServicesTab :2924 (the
-  New Service dialog :3156-3162, the row grid :3168-3272 with the service-type cell :3210-3218
-  beside the "Shared visit" badge, Schedule / Reschedule :3266, the detail modal :3275-3290);
-  AgreementForm's "schedule initial service" link :1761-1764; the dispatch board (schedule.tsx:
-  prefillServiceMutation :720-755 POSTing /api/services with source AGREEMENT_INITIAL or MANUAL
-  :742 from URL params; scheduleMutation :788-844 POSTing /api/appointments :791-807 then PATCHing
-  the grouped services' appointmentId :813-819; attachServiceToAppointmentMutation :854+;
-  ServiceDetailDialog :537-606; the Pending Dispatch Queue card :1376-1428 with per-service badges
-  :1404-1406 - a kind badge belongs there); opportunity-convert-dialog.tsx:54 converts server-side;
-  technician-work.tsx creates no service. The ticket dialog's Service Type select
-  service-completion-dialog.tsx:806-820 (editable only under allowServiceOverride :304), sent as
-  serviceTypeId :499 / :652; the PRODUCTION note :828-830.
-- Bootstraps: server/service-scheduling-bootstrap.ts owns the services / service_types ALTERs
-  (columnExists :13-18; services CREATE TABLE IF NOT EXISTS :47-68; service_types ADD COLUMNs
-  :72-73; services ADD COLUMNs :75-80; Pass 27's last_appointment_id column, FK and logged backfill
-  :681-709 is the model for a new FK column); service_types has no CREATE TABLE in any bootstrap
-  (db:push made it); seed.ts:50-56 seeds five types (General Pest Control / General, Termite
-  Inspection and Termite Treatment / Termite, Rodent Control / Rodent, Commercial Kitchen Service /
-  Commercial), the seed services :212-218 all MANUAL. Identical columnExists helpers sit in
-  agreement-bootstrap.ts:7, billing-profile-bootstrap.ts:4 and document-bootstrap.ts:4.
-- DB today: service_types 6 rows (the five seeded plus "One-Time GPC" / General, $199.95, lead
-  days 3, label "Quarterly"); none named or categorized callback or warranty. Services 102 (56 with
-  an agreement, 71 priced): AGREEMENT_GENERATED 33 (7 CANCELLED / 17 COMPLETED / 9 SCHEDULED),
-  AGREEMENT_INITIAL 17 (4 / 11 / 2), MANUAL 52 (3 / 40 / 9), no PENDING_SCHEDULING row.
-  production_value_entries: CALLBACK 3 ($0), ONE_TIME_SERVICE 31 ($5,698.75),
-  SCHEDULED_AGREEMENT_SERVICE 19 ($1,655.61), SURCHARGE 4 ($349.85). The 3 CALLBACK rows are all
-  on "Unit 15 Ledger Test" (ACTIVE, $399.95, 4 visits, plan "Unit 15 Surcharge Test Plan" -
-  RECURRING_INTERVAL, schedule-billed): records 4732cdd0 and 6a373438 (Austin Lowe, 2026-07-16;
-  services c580047e / 81dd4a1b - MANUAL, agreement set, no price, no appointment) and 26bad7f3
-  (John Doe, 2026-09-09; service 6d112449 - source AGREEMENT_GENERATED, generated for 2026-07-16:
-  a real scheduled visit classified CALLBACK because the test rows had filled the four slots,
-  exactly canon §10's failure); their invoice lines are all AGREEMENT_COVERED $0 "(covered by
-  agreement)" on PAID invoices INV-000043 / 44 / 48, and no invoice line anywhere says "callback"
-  - the CALLBACK billing branch has never produced a line. Agreements by plan: 21
-  RECURRING_INTERVAL/ON_SCHEDULE, 3 PREPAID_TERM/ON_SERVICE_COMPLETION, 1
-  PER_SERVICE/ON_SERVICE_COMPLETION, 0 plan-less (this file's bullet still says "every agreement is
-  currently plan-less" - stale since Pass 12).
-- Permissions (shared/permissions.ts:3-73): no scheduling, dispatch or designation permission;
-  MANAGE_SETTINGS is admin-only (:130); ADJUST_PRICE_AGREEMENT (manager+) is the "instance override
-  of a type / agreement default" pattern; can() :133, rolesWithPermission() :138.
-- Docs to carry: the C3.7 row (PLAN_ROADMAP_V2.md:373; :1051 mentions describeBatchTicketBilling's
-  CALLBACK kind); canon §10 :740-785 (the resolved design :749-761; "what the code does in the
-  meantime" :763-776 - :766 "invoice generation reads that basis" is true only off schedule-billed
-  plans; "attribution today" :778-785; the Service source / status vocabulary :703-704); this
-  file's bullet (:1166-1171; the stale plan-less claim :1169) and the ledger counts under the
-  Pass 23 handoff's ground truth (ONE_TIME_SERVICE is 31, not 30); PLAN_BILLING_V1_1_EXECUTION.md:
-  443-446, :1040, :1046, :1095-1096 (callbacks bill $0 unless priced; the designation / note
-  vocabulary); PLAN_BILLING_V1.md :161, :179-213, :512 (historical, do not cite);
-  PLAN_BILLING_V1_1.md has no callback mention.
+The row: Settings gains `zones` (named zip-code lists, reusable later by dispatch and Smart
+Schedule - Phase 9 names "the zones from C4.1b" as the one Smart Schedule prerequisite that will
+exist) and `opportunity_assignment_rules` (category / work type / zone / source → user, ordered,
+first match wins); an opportunity is auto-assigned at creation, left unassigned when no rule
+matches; reassignment is logged. The owner's recorded decisions around it: one users table for
+everyone (2026-09-19; `assignedUserId` is a users FK); the five categories only; B7 (roadmap
+:222-230) - assignees are sales reps, office reps and managers, a technician sees the queue and
+"My opportunities" but hands work to nobody; D8 "Opportunity taxonomy" (PLAN_BILLING_V1_1.md
+:309-311). Decide and state, in the pass: (1) the storage pattern - recommend two org-scoped
+TABLES on the target_pests / opportunity_categories pattern, not `app_settings` JSON lists (rules
+need a stable zone FK, several typed columns and an order; a JSON blob has no row ids and nothing
+can reference it): `zones` (name, zip_codes text[], is_active, sort_order) and
+`opportunity_assignment_rules` (sort_order for first-match-wins; nullable matchers category_key,
+work_type, zone_id FK zones, source; assigned_user_id FK users NOT NULL; is_active); both added to
+TABLES_REQUIRING_ORG_ID in server/tenancy-bootstrap.ts:18 (the opportunity tables sit at :36-39).
+(2) Matching - a null matcher matches anything; a zone matches when the opportunity's location zip
+is IN the zone's list (exact zips; decide whether a 5-digit prefix of a ZIP+4 counts - recommend
+comparing the first five characters); rules are evaluated in sort_order and the first match
+assigns; no match leaves the row unassigned exactly as today. (3) The actor - the auto-assignment
+writes `assignedUserId` / `assignedAt` at insert and logs one audit row on the opportunity naming
+the rule and the user, under a SYSTEM actor (`AuditActor { userId: null, actorLabel }`; canon §17:
+a null actor is a system-driven write) - no such constant exists yet; decide whether the action is
+the existing `update` (what updateOpportunity writes for an assignee change, snapshot
+{ assignedUserId, assignedTo, assignedAt, categoryKey, workType }) or a new `opportunity_auto_assigned`
+- recommend the new action so the queue's history can tell a rule from a person. (4) Who edits
+zones and rules - MANAGE_SETTINGS (admin) like the other Settings cards, or ASSIGN_OPPORTUNITY
+(support+) because it is dispatch of follow-up work - recommend MANAGE_SETTINGS for both (they are
+Settings; the manual assign stays ASSIGN_OPPORTUNITY). (5) Whether a later category / work-type
+change re-runs the rules - recommend no: the row says "at creation"; a manual reassignment is a
+person's act and stays logged as today. (6) Whether an inactive user on a rule is refused at save
+(recommend yes, as updateOpportunity's assertActiveOrgUserTx already refuses) and what happens to
+rules naming a user who later goes inactive (recommend: the rule is skipped and reported on the
+card, never silently reassigned).
 
-Build per C3.7: (1) The type-level kind: a column on service_types (named against the collision
-above) with the vocabulary CALLBACK | PRODUCTION | SERVICE in one shared module (the zod enum for
-the routes, the labels and predicates for the settings card, the badges and the server), set on
-the Service Types card and form as a Select, existing rows defaulted to SERVICE by a guarded,
-printed migration; decide and state whether the type routes gain MANAGE_SETTINGS (admin-only
-today; recommend gating the writes and saying so on the card). (2) The instance kind on Service,
-defaulted from its type on every creation path (the customer screen's ServiceForm, the dispatch
-board's prefill, generateServiceForAgreement, convertOpportunityToService, the seed) and
-overridable per instance under a stated rule (the price's shape: who may change it on a MANUAL
-service, who on an agreement one; a change on a Service with a posted ticket or an invoiced visit
-is refused or audited - decide and state). (3) The callback link: a nullable FK on services
-(the Service it answers - decide the column name), REQUIRED when the kind is CALLBACK and refused
-with a code otherwise, never set on a non-callback, the linked Service at the same location;
-chosen where a Service is created or scheduled (the ServiceForm and the dispatch board's create
-paths offer the location's previous Services), shown on the ServiceDetailModal, the queue and the
-dispatch sheet as "Answers <type> on <date>". (4) The credit and the $0 decision read the kind:
-createProductionValueEntriesForFinalizedRecord assigns basis CALLBACK from the Service's kind,
-never from the slot counter (an agreement's PRODUCTION / SERVICE visit is SCHEDULED_AGREEMENT_SERVICE
-whatever the count - decide and state what an extra scheduled visit past expectedServiceCount
-credits, since the counter goes); resolveServiceLineBillingTx reads the kind (a CALLBACK: priced →
-SERVICE "callback", unpriced → AGREEMENT_COVERED "warranty callback - no charge" - decide and state
-whether a callback on a schedule-billed plan reads "covered by agreement" or "warranty callback"),
-the DRAFT path included (it has no record to read an entry from today - the kind fixes that);
-the batch preview's CALLBACK kind follows. (5) The three CALLBACK rows and their $0 lines: decide
-and state (leave as history - the ledger is append-only; the misclassified scheduled visit
-6d112449 is the case the rule fixes going forward). (6) Client: the kind on the Service Types card
-and form; the kind badge on the queue, the Services tab row, the ServiceDetailModal and the
-dispatch sheet, distinct from the BILLABLE / PRODUCTION billing badge; the "answers" picker where
-a Service is created or scheduled and the link where it is shown; the ticket dialog's Service Type
-select unchanged. Not touched: the surcharge line (C3.6), the comp engine (Phase 7), C4.3b's add a
-service in the field, the opportunity flow beyond reading the new link, the billing-plan
-predicate, the technician's day.
+Ground truth today (line numbers from the working tree at the end of Pass 24; they drift, the
+names do not):
+- Schema (shared/schema.ts): locations :51, `zip: text NOT NULL` :62 (no index on zip);
+  appSettings :579-586 (pk orgId+key); opportunities :588-629 - locationId NOT NULL :591,
+  agreementId :592, sourceServiceId / sourceServiceRecordId :593-594, serviceTypeId :595, source
+  :596 (default NON_CONTRACT_FOLLOW_UP), opportunityType (free-text label) :597, categoryKey /
+  workType NOT NULL :617-618, the assignee comment :619-624 ("Auto-assignment by rules and zones
+  is C4.1b (Pass 26)"), assignedUserId (users FK) :625, assignedAt :626; opportunityDispositions
+  :631; opportunityCategories :653-664 (id, orgId, key, label, isActive, sortOrder, timestamps;
+  unique (orgId, key)); opportunityActivities :666; targetPests :735 (label, isActive,
+  isFavorite, sortOrder, notes); users :1164-1175 (firstName, lastName, email unique, role,
+  status default 'active'); insertOpportunitySchema :1227; insertOpportunityCategorySchema :1229;
+  insertTargetPestSchema :1233; UserSummary = Omit<User, "passwordHash"> :1333.
+- shared/opportunities.ts (148 lines): the header names C4.1b :17-19; OPPORTUNITY_WORK_TYPES
+  :21; OPPORTUNITY_CATEGORY_KEYS / OPPORTUNITY_CATEGORY_SEED :35-44; OPPORTUNITY_SOURCES (7,
+  APPOINTMENT_CANCELLATION_WINBACK included) :69-78 with labels :80-90; taxonomyForSource(source,
+  hasAgreement) :120-138; OPPORTUNITY_STATUSES :140; OPPORTUNITY_ASSIGNEE_ME / _UNASSIGNED
+  :146-147. shared/appointment-disposition.ts opportunitySourceForDisposition(mode, effect) :93.
+  shared/users.ts: userDisplayName :7, sortUsersByName :13, describeUserRole :27,
+  selectableUsers(list, currentId) :36 (active users plus the current one).
+- The four runtime writers, every one inside a tx, none stamping assignedUserId
+  (server/storage.ts): ensureOpportunityForServiceRecordTx (:2149, insert :2180,
+  NON_CONTRACT_FOLLOW_UP, opportunityTaxonomyColumns(..., false) :2188),
+  ensureAgreementContactRequiredOpportunityTx (:2342, insert :2365, AGREEMENT_CONTACT_REQUIRED),
+  cancelAgreement's retention branch (:4090, insert :4211, AGREEMENT_CANCELLATION_RETENTION,
+  `.returning()` then an activity), dispositionAppointment (:4449, insert :4599, source from
+  opportunitySourceForDisposition :4594, only on CREATE or UPDATE_EXISTING with no open row
+  :4568-4592). opportunityTaxonomyColumns :1387-1390 wraps taxonomyForSource - the natural hook is
+  a sibling resolveAssigneeTx(tx, { categoryKey, workType, source, locationId }) spread into the
+  same four inserts, reading the zip from locations. createOpportunity (:3583) is DEAD CODE: no
+  route and no caller - there is NO POST /api/opportunities. updateOpportunity :3600-3647 (the
+  assignee change :3621-3628 through assertActiveOrgUserTx :3663-3672 - same org, status
+  'active'; sets assignedAt now or null; one audit `update` :3635-3644 when the snapshot from
+  opportunityAuditSnapshotTx :3651-3659 changed). getOpportunities' zip filter is a subquery on
+  locations.zip LIKE prefix :3527-3538; OpportunityFilters :816-831 (assignedUserId null =
+  unassigned, zip = prefix, location = text); OpportunityUpdateInput :836-844. recordAuditLogTx
+  :1443-1454; AuditActor :264 (no system-actor constant anywhere).
+- Routes (server/routes.ts): GET /api/opportunities :1363-1387 (status, dueFrom, dueTo,
+  serviceTypeId, categoryKey, workType - a bad value is 400 -, assignee = user id | "me" |
+  "unassigned", source, zip, location; "ALL" or empty = unfiltered); PATCH /api/opportunities/:id
+  :1466-1483 (opportunityUpdateSchema :389-396, strict: notes, dueDate, nextActionDate,
+  categoryKey, workType, assignedUserId string|null; 403 when the assignee changes without
+  ASSIGN_OPPORTUNITY :1469-1474); categories GET :1429 / PATCH :1434 (schema :399-403, ungated),
+  POST and DELETE 405 :1446 / :1452; target pests GET :2248, POST :2254, PATCH :2265 (schemas
+  :329 / :332, ungated); the app_settings lists - appointment-cancel-reasons GET/PATCH :2103/:2108
+  (ungated), ticket-reopen-reasons :2124/:2129, material-units :2145/:2150, application-areas
+  :2161/:2166 (all three requirePermission(MANAGE_SETTINGS); zod :367-378); GET /api/users :1286
+  (open to every role); POST /api/appointments/:id/disposition :1907-1928 (schema :353-359: mode
+  CANCEL | RESCHEDULE, reasonCode?, notes?, opportunity UPDATE_EXISTING | CREATE | NONE,
+  voidDraftInvoices?) and the technician alias :1937; getAuditActor :56; requirePermission is
+  server/auth.ts:109.
+- Storage for the patterns: getOpportunityCategories :3714 / updateOpportunityCategory :3725;
+  target pests :5515 / :5522 / :5527; the app_settings readers and writers :5553-5640
+  (writeMaterialList :5640 is the upsert shape). Bootstraps: opportunities tables are
+  server/service-scheduling-bootstrap.ts's (CREATE :256, ALTERs :274-287, dispositions :290,
+  activities :307, app_settings :165, target_pests CREATE :223 with a unique lower(label) index
+  :234 and a seed :237, bootstrapOpportunityTaxonomy :376-483 - the categories CREATE :377-389,
+  the per-org seed :391-409, the backfill :411-467, indexes :469-470, the assigned_user_id FK
+  :473-482; called at :345); Pass 24's bootstrapServiceWorkKind is the newest model of a guarded,
+  printed migration in that file. columnExists duplicates: agreement-bootstrap.ts:7,
+  billing-profile-bootstrap.ts:4, document-bootstrap.ts:4, service-scheduling-bootstrap.ts:13.
+  server/index.ts call order :84-118 (ServiceSchedulingFoundation :99, Tenancy :109).
+- Client: the Opportunities screen (client/src/pages/opportunities.tsx, 467 lines) - filter state
+  :74-84, the query string :90-104, useQuery on `/api/opportunities${qs}` :106, categories :110,
+  users :111, all-locations :112; the filter UI :209-293 (assignee Anyone / Me / Unassigned /
+  active users :241-252, zip prefix :290-293), presets and "My Opportunities" :294-303; the inline
+  assign Select :368-392 (disabled without canAssign :73, options UNASSIGNED + selectableUsers,
+  patchOpportunity PATCH :140-151, invalidates /api/audit-logs). opportunity-taxonomy-chips.tsx
+  (OpportunityTaxonomyChips :31, describeOpportunityAssignee :21); opportunity-disposition-dialog
+  .tsx (POST /:id/disposition :84); opportunity-history-dialog.tsx (activities :21);
+  opportunity-convert-dialog.tsx (convert :54). Settings cards to model on: "Opportunity
+  Categories" settings.tsx:1986 (OpportunityCategoryForm :739, query :1392), "Target Pests" :1610
+  (TargetPestForm :351), "Ticket Reopen Reasons" :2279-2306 (a Textarea, disabled unless
+  canManageSettings :1402; mutation :1486); the Service Types card (Pass 24) shows the
+  admin-only header caption pattern.
+- Permissions (shared/permissions.ts): PERMISSIONS :3-73, ASSIGN_OPPORTUNITY :55 (comment
+  :47-54), MANAGE_SETTINGS :72; holders - support :98 / manager :119 / admin :130 for
+  ASSIGN_OPPORTUNITY, admin only for MANAGE_SETTINGS; can :133, rolesWithPermission :138. Audit
+  (shared/audit.ts): AuditEntityType includes `opportunity` :34; AuditAction :62-86 has `update`
+  (the assignee change's action today) and `work_kind_changed` (Pass 24) last; labels
+  ACTION_LABELS :95.
+- No zone, territory or service-area concept exists anywhere (grep across shared/, server/,
+  client/src: only comments, timezone text and a "FlowZone" placeholder in settings.tsx:308).
+- DB today (run the SQL, never trust a doc's data claim): 30 opportunities - by source/status
+  AGREEMENT_CANCELLATION_RETENTION 1 CONVERTED / 1 DISMISSED / 5 OPEN, APPOINTMENT_CANCELLATION_REVIEW
+  8 CONVERTED, APPOINTMENT_CANCELLATION_WINBACK 2 OPEN, APPOINTMENT_RESCHEDULE_REQUIRED 4 CONVERTED
+  / 2 OPEN, NON_CONTRACT_FOLLOW_UP 1 CONVERTED / 6 OPEN; by category/work type RESCHEDULE/AGREEMENT
+  5, RESCHEDULE/ONE_TIME 9, RETENTION/AGREEMENT 7, SERVICE_DUE/ONE_TIME 7, WINBACK/ONE_TIME 2;
+  assigned_user_id set on 0 of 30. Their locations span 8 zips (76053: 8, 75696: 6, 62703: 4,
+  62705: 4, 71968: 3, 62702: 2, 76102: 2, 76969: 1); 14 locations over 11 distinct zips (62705,
+  76053, 76969 twice each; 00000, 62701, 62702, 62703, 62704, 71968, 75696 once). Users: the four
+  seed logins (admin / manager / support / tech @heritage.local, all active, "Heritage Admin"
+  etc.). opportunity_categories: the five keys, all active. `\d opportunities`: 27 columns,
+  indexes on agreement+source_service (partial), assigned_user_id, category_key, location_id,
+  org_id, status; FK opportunities_assigned_user_id_fkey → users(id). One org.
+- Docs to carry: the C4.1b row (PLAN_ROADMAP_V2.md:380; the C4.1 row :379; B7 :222-230; Smart
+  Schedule's "zones from C4.1b" :388-389 and :434); "Shipped in Pass 25" :1264-1409 (its "Not
+  built: auto-assignment rules and zones (C4.1b, Pass 26)" :1374; STALE on one point: :1328-1330
+  names requestAppointmentCancelOrReschedule as the fourth writer - since Pass 27 it is
+  dispositionAppointment); canon "Opportunities" :1046-1085 (the assignee rule :1079-1084);
+  CURRENT_FOCUS.md :671 and :713 (Pass 25 / 27 not-built lists naming Pass 26) and the Pass 24
+  entry's "Next up"; PLAN_BILLING_V1_1.md D8 :309-311; shared/permissions.ts :47-54 and
+  shared/schema.ts :619-624 (the comments promising C4.1b - update them to "built").
 
-Environment: Node 24.21.0, npm run dev:full (restart it before manually testing - this pass adds
-columns and changes bodies; an additive migration is safe under the running server, but if a
-column is RENAMED verify against a copy per DEV_NOTES.md), DEV_NOTES.md for the DB backup /
-restore and the PowerShell traps, gh logged in so the session can open the PR. Verify on
-PORT=5001 as the previous passes did: npm run check; double boot (boot 1 prints the migration's
-effect once - the default kind on every type and any backfill - and boot 2 prints only "serving
-on port 5001" with every table count unchanged); the pass's API smoke test as all four roles (a
-CALLBACK type; a MANUAL callback service refused without its link and accepted with one at the
-same location, refused with another location's; an agreement's extra visit past
-expectedServiceCount credited as decided, a designated callback credited CALLBACK $0 with the
-link, a priced callback billed "callback" on a COD plan and an unpriced one $0 "warranty
-callback"; the type routes' gate as decided; the instance override rule as decided; the DRAFT
-pricing a callback $0 before its ticket exists; every fixture deleted, counts back at baseline)
-and a Vite 200 on every touched client module; state plainly what was not rendered - the Select,
-the badges and the picker cannot be judged without a browser.
+Build per C4.1b: (1) `zones` - the table, org-scoped, with a guarded CREATE in
+service-scheduling-bootstrap (no seed: the office names its own zones; print nothing on a quiet
+boot), zod + routes (GET / POST / PATCH; DELETE or deactivate - decide; a zip list normalized to
+unique 5-digit strings, refused otherwise), a Settings → Zones card (name, the zip list as a
+textarea or chips, active) gated as decided, and `shared/zones.ts` (or a section of
+shared/opportunities.ts) for the normalization and the match predicate the server and the card
+share. (2) `opportunity_assignment_rules` - the table with its FKs and order, routes (GET / POST /
+PATCH / reorder or a sort_order on PATCH; DELETE or deactivate), a Settings → Opportunity
+Assignment card listing rules in order with their matchers ("Any" for null), the user, active,
+and Move up / Move down; the rule evaluation as ONE shared pure function
+(`resolveAssignmentRule(rules, zones, { categoryKey, workType, source, zip })` → the first
+matching active rule or null) read by the server and shown by the card ("this rule would assign
+…" is optional). (3) Auto-assign at creation in the four writers through one storage helper that
+loads the active rules and zones once per transaction, resolves the location's zip, stamps
+assignedUserId / assignedAt on the insert and writes the audit row under the system actor as
+decided - never a person's permission; a rule naming an inactive user is skipped and the skip is
+visible on the card. (4) Reassignment logged - already true through updateOpportunity's `update`
+row; confirm it still names the users before and after, and that a manual reassignment of an
+auto-assigned row reads as a person overriding a rule in the History. (5) The Opportunities
+screen: nothing new to filter on (assignee filters exist), but the chips' assignee should say
+"(auto)" or show the rule when the row was assigned by one - decide and state how the read knows
+(a stored `assignedByRuleId` nullable FK on opportunities is the honest way; recommend it, nulled
+by a manual reassignment). (6) Docs: canon "Opportunities" gains the rule; the roadmap row and a
+"Shipped in Pass 26" record; the two comments promising C4.1b; the stale Pass 25 writer name.
+Not touched: the disposition flow's opportunity choices (C4.2), Smart Schedule (Phase 9), the
+categories' keys (owner: the five only), the technician's view, `createOpportunity` (leave dead
+or delete - decide and state).
+
+Environment: Node 24.21.0, npm run dev:full (restart it before manually testing), DEV_NOTES.md for
+the DB backup / restore and the PowerShell traps, gh logged in so the session can open the PR.
+Verify on PORT=5001 as the previous passes did (an additive migration may run against the shared
+dev DB under the owner's server, or against a copy per DEV_NOTES.md - Pass 24 used the copy so
+the owner's restart prints the migration): npm run check; double boot (boot 1 prints the two
+CREATEs' effect once if anything is printed at all, boot 2 prints only "serving on port 5001" with
+every table count unchanged); the pass's API smoke test as all four roles (zones and rules
+created / refused per the gate decided; a rule with a zone, a rule with a category only, an
+ordering where the first match wins; an opportunity created through a REAL writer - the
+disposition route with CREATE on a fixture appointment, or a ticket posted on a one-time service
+whose type has opportunityLeadDays - lands assigned to the rule's user with the audit row under
+the system actor; one whose zip matches no zone stays unassigned; a manual reassignment logs
+`update` naming both users; a rule naming an inactive user is skipped; every fixture deleted,
+counts back at baseline - remember there is no POST /api/opportunities) and a Vite 200 on every
+touched client module; state plainly what was not rendered - the two cards and the chips cannot be
+judged without a browser.
 
 Working agreement as always: one pass, one branch, update CURRENT_FOCUS and the roadmap's pass
 table at the end, replace the handoff prompt at the end of CURRENT_FOCUS.md with the one for the
-next pass (phase order: C3.7 closes Phase 3, so Pass 26, opportunity assignment rules and zones,
-C4.1b, whose spec is its row in the Phase 4 table, unless I say otherwise), push, open the PR and
+next pass (phase order: Pass 28, appointment composition on the server and the dispatch sheet,
+C4.3a, whose spec is its row in the Phase 4 table, unless I say otherwise), push, open the PR and
 stop. I merge.
 ```

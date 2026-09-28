@@ -422,7 +422,9 @@ Master list of service offerings.
 * id
 * name
 * code nullable
-* category nullable
+* category nullable — free text, the display grouping ("General / Termite / Rodent")
+* workKind (`SERVICE` | `PRODUCTION` | `CALLBACK`, default `SERVICE`) — the default work kind of
+  every Service created from this type (Pass 24; §10 "Service designation and warranty callbacks")
 * isRecurringEligible boolean
 * defaultDurationMinutes nullable
 * requiresInspection boolean nullable
@@ -702,6 +704,10 @@ A Service may exist before it is scheduled. Services are the queueable work unit
 * serviceWindowEnd nullable
 * status (`DRAFT` | `PENDING_SCHEDULING` | `SCHEDULED` | `COMPLETED` | `CANCELLED`)
 * source (`MANUAL` | `AGREEMENT_GENERATED` | `AGREEMENT_INITIAL`)
+* workKind (`SERVICE` | `PRODUCTION` | `CALLBACK`) — what the work is, defaulted from the
+  ServiceType (Pass 24; "Service designation and warranty callbacks" below)
+* answersServiceId nullable — the Service a `CALLBACK` answers; required on a callback, never set
+  otherwise (Pass 24)
 * schedulingMode nullable
 * createdAt
 * updatedAt
@@ -737,7 +743,7 @@ with the row before and after (PLAN_BILLING_V1.1 D7). The office's edit follows 
 post's rule: an agreement price needs `ADJUST_PRICE_AGREEMENT`, and without it the
 edit is refused, never silently dropped.
 
-### Service designation and warranty callbacks (not yet modeled — roadmap)
+### Service designation and warranty callbacks — the work kind (PLAN_ROADMAP_V2.md C3.7; Pass 24)
 
 **A callback is a kind of work, not a position in a counter.** A re-treatment, a
 warranty return, a follow-up on a conducive-conditions problem — it is a callback
@@ -746,43 +752,86 @@ agreement's service interval or outside it. An Agreement schedules interval-base
 Services (quarterly, monthly); a callback within that window is still covered
 work, not the next scheduled visit.
 
-**Resolved design, to be built.** `ServiceType` carries a **category** —
-`CALLBACK | PRODUCTION | SERVICE` (billable) — set in Settings → Service Types.
-The instance-level designation lives on **Service**, defaulted from its
-ServiceType, the same shape as price (type default, instance override). A
-CALLBACK Service **must** link to a previous Service — agreement or otherwise —
-chosen at scheduling time, so warranty history and callback rates are answerable
-per original service. That attribution is required, not optional: an unattributed
-callback is invisible to exactly the analysis callbacks exist to support.
+**As built (Pass 24).** Every Service carries a **work kind** — `workKind`:
+`SERVICE` (billable work priced on its own) | `PRODUCTION` (an agreement's
+scheduled visit) | `CALLBACK` (answers an earlier Service) — the vocabulary of
+`shared/service-kind.ts`. It is called the work kind, not "category" and not
+"designation", because both words were taken: `serviceTypes.category` is the
+free-text display grouping ("General / Termite / Rodent") and stays so, and the
+**billing designation** (`shared/visit-billing.ts`, `BILLABLE` | `PRODUCTION`)
+says what the invoice LINE is, not what the work is. The kind badge reads
+"Kind: Callback" so the two are never read as one where both show (the dispatch
+sheet). The ServiceType carries the default (`serviceTypes.workKind`, set in
+Settings → Service Types, whose writes are `MANAGE_SETTINGS` since this pass);
+the instance carries its own, defaulted from the type on every creation path —
+the customer screen's form, the dispatch board's prefill, agreement generation,
+an opportunity's conversion, the seed — the same shape as price (type default,
+instance override). One exception in the default: an agreement's own generated
+or initial visit is never a callback (there is nothing for it to answer), so a
+CALLBACK type there reads PRODUCTION; a MANUAL Service on an agreement customer
+keeps the type's CALLBACK — that is the warranty callback.
 
-Chargeability stays per-instance: no price set means warranty work at no charge,
-a price set means it bills that amount (some operators deliberately charge for
-callbacks caused by customer non-compliance — a messy structure on a German roach
-job — as a behavioral lever).
+**The callback link is required, not optional.** A CALLBACK names the Service it
+answers (`services.answersServiceId`, a self FK), chosen where the callback is
+created: a COMPLETED Service at the same location that is not itself a callback
+— a second callback on the same problem answers the original too, so the
+callback rate per original Service is one group-by, never a chain walk. Refused
+with a code otherwise (`CALLBACK_LINK_REQUIRED`; `CALLBACK_LINK_NOT_ALLOWED` on a
+non-callback; `_NOT_FOUND`, `_SELF`, `_LOCATION_MISMATCH`, `_NOT_COMPLETED`,
+`_IS_CALLBACK`), and shown as "Answers <type> on <date>" on the Service Details,
+the dispatch queue and the dispatch sheet. An unattributed callback is invisible
+to exactly the analysis callbacks exist to support. An Opportunity of a CALLBACK
+type converts into a callback answering its source Service; with no source the
+conversion is refused rather than silently re-kinded.
 
-**What the code does in the meantime, and why it is wrong.** Callbacks are
-currently *inferred*, not declared: `createProductionValueEntriesForFinalizedRecord()`
-assigns basis `CALLBACK` (and $0 production value) once the Agreement's
-`expectedServiceCount` slots are full, and invoice generation reads that basis to
-decide a line is no-charge. The proxy is wrong in both directions:
+**The instance override is the price's rule.** Setting a Service's kind away from
+its type's default, or changing it or its link later, needs the price's
+permission — `ADJUST_PRICE_NON_AGREEMENT` (every role) on a non-agreement
+Service, `ADJUST_PRICE_AGREEMENT` (manager+) on an agreement one — because the
+kind decides what the price decides: whether the line is $0. A change is
+refused (409 `SERVICE_KIND_LOCKED`) once the ticket is finalized (its production
+entry was written from the kind) or the visit is invoiced (its line is frozen);
+a DRAFT does not lock, and a posted, unfinalized ticket is the review moment. A
+change is recorded in the audit log (§17) as `work_kind_changed` with
+`{ workKind, answersServiceId }` before and after (PLAN_BILLING_V1.1 D7). A type
+change never re-derives the kind, and the technician's ticket does not carry it.
 
-* a genuine callback performed *inside* the interval consumes a scheduled slot,
-  so it is credited and **billed** as a scheduled visit
-* the last genuine scheduled visit is then classified `CALLBACK` and credited $0
+**The credit and the $0 decision read the kind, never a counter.** The production
+ledger's basis is `productionBasisForService`: a CALLBACK is basis `CALLBACK` at
+$0, priced or not — a callback earns no production (§13); a deliberate charge is
+billing, and Phase 7's comp plans can pay on collected revenue. An agreement's
+PRODUCTION or SERVICE visit is `SCHEDULED_AGREEMENT_SERVICE` at contract price ÷
+expected visits **whatever its position in the count**: the slot counter is
+gone, so an extra scheduled visit past `expectedServiceCount` credits the
+per-visit value like any other and the per-agreement total is no longer capped
+at the contract price — the office's designation is the control, and a wrongly
+credited visit shows in the ledger rather than a real visit vanishing from it.
+The invoice's resolver reads the kind before it consults the plan (§13): an
+unpriced CALLBACK is an `AGREEMENT_COVERED` "warranty callback - no charge" line
+on every plan, schedule-billed or not, agreement or not (a warranty return on a
+one-time job is a callback too) — the more specific truth than "covered by
+agreement", and what the batch preview's CALLBACK kind and the ticket's note
+read; a priced CALLBACK bills a `SERVICE` "callback" line on every plan, since it
+is not one of the plan's paid visits. A DRAFT prices a callback $0 before its
+ticket exists. Chargeability stays per instance: no price set means warranty
+work at no charge, a price set means it bills that amount (some operators
+deliberately charge for callbacks caused by customer non-compliance — a messy
+structure on a German roach job — as a behavioral lever).
 
-The agreement total stays correctly capped at contract price, but per-technician
-attribution is wrong and — on any agreement the nightly run does not bill — a
-warranty callback can be charged to the customer. Until the designation exists,
-office review before sending is the only guard.
-
-**Attribution today** exists only for non-agreement follow-up, and only via the
-Opportunity flow: `opportunities.sourceServiceRecordId` / `sourceServiceId` point
-back at the originating record and `convertedServiceId` points forward at the new
-Service. Agreement work never gets an Opportunity at all
-(`ensureOpportunityForServiceRecordTx()` returns early when
-`linkedService.agreementId` is set), and a callback placed directly on the board
-has no link either way. `serviceRecords.followUpRequired` / `followUpNotes` record
-that a follow-up is *needed*, never which visit a later Service *answered*.
+**History.** Before this pass callbacks were *inferred*, not declared:
+`createProductionValueEntriesForFinalizedRecord()` assigned basis CALLBACK once
+the Agreement's `expectedServiceCount` slots were full, and invoice generation
+read that entry — wrong in both directions (a genuine callback inside the
+interval consumed a paid slot and was billed as a scheduled visit; the last
+genuine scheduled visit was then credited $0), reachable only off schedule-billed
+plans, and blind to a DRAFT. The three CALLBACK entries the counter wrote and
+their $0 lines stand as history (the ledger is append-only); their Services
+carry the type's kind like every other row. Attribution before this pass existed
+only for non-agreement follow-up through the Opportunity flow
+(`opportunities.sourceServiceId` / `sourceServiceRecordId` / `convertedServiceId`);
+`serviceRecords.followUpRequired` / `followUpNotes` still record that a
+follow-up is *needed*, and the answers link is what records which visit a later
+Service *answered*.
 
 ---
 
@@ -1118,8 +1167,9 @@ run and the invoice can never disagree about who charges for a visit.)
 * **No** (`ON_SERVICE_COMPLETION`, `PER_SERVICE`, `ON_AGREEMENT_START`, `INSTALLMENT`, or no plan) —
   the **visit is the billing event** and the line carries a real amount: the Service's own price if
   one is stamped, otherwise the contract price spread across the Agreement's snapshotted
-  `expectedServiceCount`. A warranty callback is the one $0 case here, and it is $0 by explicit
-  decision rather than by absence of data.
+  `expectedServiceCount`. A warranty callback — a Service whose work kind is `CALLBACK` with no
+  price (§10, Pass 24) — is the one $0 case here, decided by the kind before the plan is consulted
+  and never by absence of data; a priced callback bills its price on every plan.
 
 Never infer coverage from the mere presence of an `agreementId`. An agreement whose plan the nightly
 run skips is billed by nobody if the visit invoice also zeroes it, and that failure is silent.

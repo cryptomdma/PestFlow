@@ -21,6 +21,8 @@ import { VisitBillingRows, useVisitBillingSummary } from "@/components/visit-bil
 import { InitialChargeDuePrompt, type WithInitialChargeDue } from "@/components/initial-charge-due-prompt";
 import type { InitialChargeDue } from "@shared/initial-charge";
 import { formatCents, dollarsToCents } from "@shared/money";
+import { describeAnswersLink } from "@shared/service-kind";
+import { ServiceWorkKindBadge, ServiceWorkKindListBadge } from "@/components/service-work-kind-badge";
 import {
   CalendarDays,
   ChevronLeft,
@@ -77,6 +79,14 @@ function addDays(date: Date, days: number) {
   const next = new Date(date);
   next.setDate(next.getDate() + days);
   return next;
+}
+
+// Pass 24 (C3.7): the date in "Answers <type> on <date>" - a date-only due
+// date is parsed as local time so it does not slip a day.
+function formatAnswersDate(value: string | Date | null | undefined) {
+  if (!value) return "an unknown date";
+  const date = typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value) ? new Date(`${value}T00:00:00`) : new Date(value);
+  return Number.isNaN(date.getTime()) ? "an unknown date" : date.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 }
 
 function formatCurrency(cents: number | null | undefined) {
@@ -186,6 +196,8 @@ function AppointmentSheet({
   onDisposition,
   isSaving,
   isDispositioning,
+  serviceTypeNameById,
+  answersLabelFor,
 }: {
   appointment: Appointment | null;
   service: Service | null;
@@ -193,6 +205,10 @@ function AppointmentSheet({
   linkedServices: Service[];
   technicianOptions: Technician[];
   serviceTypeName: string;
+  /** Pass 24 (C3.7): the kind block names each service on the visit. */
+  serviceTypeNameById: Map<string, string>;
+  /** Pass 24 (C3.7): "Answers <type> on <date>" for a callback, else null. */
+  answersLabelFor: (service: Service) => string | null;
   customerLabel: string;
   locationLabel: string;
   /** The settings list a cancel reason must come from. */
@@ -292,6 +308,25 @@ function AppointmentSheet({
                   <Badge variant="outline">{describeAppointmentStatus(appointment)}</Badge>
                 </div>
                 <p className="mt-2 text-xs text-muted-foreground">{locationLabel}</p>
+                {/* Pass 24 (C3.7): what each service on the visit IS (its work kind) and, for a callback, the
+                    service it answers. The Billable / Production badge in the billing rows below is the
+                    invoice LINE, not the kind - the caption says so where both show. */}
+                <div className="mt-3 space-y-1.5" data-testid="sheet-service-kinds">
+                  <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Work kind per service</p>
+                  {(linkedServices.length ? linkedServices : service ? [service] : []).map((linked) => {
+                    const answers = answersLabelFor(linked);
+                    return (
+                      <div key={linked.id} className="text-xs" data-testid={`sheet-service-kind-${linked.id}`}>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="font-medium">{serviceTypeNameById.get(linked.serviceTypeId || "") || "Service"}</span>
+                          <ServiceWorkKindBadge workKind={linked.workKind} className="text-[10px]" />
+                        </div>
+                        {answers ? <p className="mt-0.5 text-muted-foreground">{answers}</p> : null}
+                      </div>
+                    );
+                  })}
+                  <p className="text-[11px] text-muted-foreground">Billing below shows each service's invoice line (Billable / Production), not its kind.</p>
+                </div>
                 <div className="mt-3">
                   <VisitBillingRows summary={visitBilling} isLoading={visitBillingLoading} isError={visitBillingError} />
                 </div>
@@ -540,6 +575,7 @@ function ServiceDetailDialog({
   customerLabel,
   locationLabel,
   technicianName,
+  answersLabel,
   open,
   onOpenChange,
 }: {
@@ -548,6 +584,8 @@ function ServiceDetailDialog({
   customerLabel: string;
   locationLabel: string;
   technicianName: string;
+  /** Pass 24 (C3.7): "Answers <type> on <date>" when the service is a callback. */
+  answersLabel: string | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
@@ -574,6 +612,11 @@ function ServiceDetailDialog({
               <div>
                 <p className="text-xs uppercase tracking-wide text-muted-foreground">Status</p>
                 <p className="mt-1 font-medium">{service.status}</p>
+              </div>
+              <div>
+                <p className="text-xs uppercase tracking-wide text-muted-foreground">Work Kind</p>
+                <div className="mt-1"><ServiceWorkKindBadge workKind={service.workKind} /></div>
+                {answersLabel ? <p className="mt-1 text-xs text-muted-foreground" data-testid={`text-service-answers-${service.id}`}>{answersLabel}</p> : null}
               </div>
               <div>
                 <p className="text-xs uppercase tracking-wide text-muted-foreground">Due / Service Date</p>
@@ -650,6 +693,21 @@ export default function Schedule() {
     }
     return map;
   }, [serviceRecords]);
+  // Pass 24 (C3.7): "Answers <type> on <date>" for a callback - the queue,
+  // the sheet and the service dialog. The date is the answered visit's ticket
+  // date, else its appointment's, else its due date.
+  const appointmentById = useMemo(() => new Map((appointments ?? []).map((appointment) => [appointment.id, appointment])), [appointments]);
+  const answersLabelFor = (service: Service): string | null => {
+    if (!service.answersServiceId) return null;
+    const answered = serviceById.get(service.answersServiceId);
+    if (!answered) return "Answers a service that is no longer listed";
+    const record = serviceRecordByServiceId.get(answered.id);
+    const appointment = answered.appointmentId ? appointmentById.get(answered.appointmentId) : undefined;
+    return describeAnswersLink(
+      serviceTypeNameById.get(answered.serviceTypeId || "") || "Service",
+      formatAnswersDate(record?.serviceDate ?? appointment?.scheduledDate ?? answered.dueDate),
+    );
+  };
   const servicesByAppointmentId = useMemo(() => {
     const map = new Map<string, Service[]>();
     for (const service of allServices ?? []) {
@@ -752,6 +810,15 @@ export default function Schedule() {
       nextParams.set("serviceId", service.id);
       setLocation(`/schedule?${nextParams.toString()}`);
     },
+    // Pass 24 (C3.7): the prefill takes the type's kind. Its only caller today
+    // is the agreement's initial service, which never defaults to a callback,
+    // so a CALLBACK_LINK_REQUIRED refusal here means a link built by hand -
+    // say so instead of failing silently.
+    onError: (error: Error) => toast({
+      title: "Unable to create the pending service",
+      description: `${getApiErrorMessage(error)} A callback is created from the location's Services tab, where the service it answers is picked.`,
+      variant: "destructive",
+    }),
   });
 
   useEffect(() => {
@@ -1404,8 +1471,10 @@ export default function Schedule() {
                         <Badge variant="outline" className="text-xs">{service.status}</Badge>
                         {service.source === "AGREEMENT_GENERATED" ? <Badge variant="secondary" className="text-xs">Agreement</Badge> : null}
                         {service.schedulingMode ? <Badge variant="outline" className="text-xs">{service.schedulingMode}</Badge> : null}
+                        <ServiceWorkKindListBadge workKind={service.workKind} className="text-xs" />
                       </div>
                       <p className="mt-1 text-xs text-muted-foreground">{serviceTypeNameById.get(service.serviceTypeId || "") || "Service"} | {service.expectedDurationMinutes ? `${service.expectedDurationMinutes} min` : "Duration not set"} | Due {service.dueDate || "Not set"}</p>
+                      {answersLabelFor(service) ? <p className="mt-1 text-xs text-muted-foreground" data-testid={`text-queue-answers-${service.id}`}>{answersLabelFor(service)}</p> : null}
                       {service.serviceWindowStart ? (
                         <p className="mt-1 text-xs text-muted-foreground">
                           Service window: {service.serviceWindowStart}{service.serviceWindowEnd ? ` to ${service.serviceWindowEnd}` : ""}
@@ -1461,6 +1530,8 @@ export default function Schedule() {
         }}
         isSaving={updateAppointmentMutation.isPending}
         isDispositioning={dispositionMutation.isPending}
+        serviceTypeNameById={serviceTypeNameById}
+        answersLabelFor={answersLabelFor}
       />
 
       <InitialChargeDuePrompt due={initialChargePrompt?.due ?? null} onClose={closeInitialChargePrompt} />
@@ -1496,6 +1567,7 @@ export default function Schedule() {
 
       <ServiceDetailDialog
         service={detailService}
+        answersLabel={detailService ? answersLabelFor(detailService) : null}
         serviceTypeName={detailService ? serviceTypeNameById.get(detailService.serviceTypeId || "") || "Service" : "Service"}
         customerLabel={detailService ? getCustomerLabel(customerById.get(detailService.customerId), locationById.get(detailService.locationId)) : "Location service"}
         locationLabel={detailService ? getLocationLabel(locationById.get(detailService.locationId)) : "Location"}

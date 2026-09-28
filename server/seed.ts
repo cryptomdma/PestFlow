@@ -47,12 +47,18 @@ export async function seedDatabase() {
     { customerId: null, locationId: l1.id, scope: "LOCATION", pinned: false, body: "Check garage eaves for wasp nests in summer months.", createdBy: "Sam Torres" },
   ].map(withOrg));
 
+  // Pass 24 (C3.7): each type carries its work kind (shared/service-kind.ts).
+  // The five service types are billable SERVICE work; "Warranty Callback" is
+  // the CALLBACK type - no default price (warranty work at no charge unless
+  // the office prices the instance), and a service created from it must name
+  // the completed service it answers.
   const [st1, st2, st3, st4, st5] = await db.insert(serviceTypes).values([
-    { name: "General Pest Control", description: "Standard interior/exterior pest prevention treatment", defaultPriceCents: 12500, estimatedDuration: 45, category: "General", opportunityLeadDays: 90, opportunityLabel: "General Pest Follow-up" },
-    { name: "Termite Inspection", description: "Comprehensive WDI/WDO inspection with report", defaultPriceCents: 20000, estimatedDuration: 60, category: "Termite", opportunityLeadDays: 365, opportunityLabel: "Annual Termite Renewal" },
-    { name: "Termite Treatment", description: "Liquid or bait station termite treatment", defaultPriceCents: 150000, estimatedDuration: 240, category: "Termite", opportunityLeadDays: 365, opportunityLabel: "Termite Renewal" },
-    { name: "Rodent Control", description: "Interior/exterior rodent baiting and exclusion", defaultPriceCents: 17500, estimatedDuration: 60, category: "Rodent", opportunityLeadDays: 60, opportunityLabel: "Rodent Follow-up" },
-    { name: "Commercial Kitchen Service", description: "Monthly commercial pest management service", defaultPriceCents: 25000, estimatedDuration: 90, category: "Commercial" },
+    { name: "General Pest Control", description: "Standard interior/exterior pest prevention treatment", defaultPriceCents: 12500, estimatedDuration: 45, category: "General", workKind: "SERVICE", opportunityLeadDays: 90, opportunityLabel: "General Pest Follow-up" },
+    { name: "Termite Inspection", description: "Comprehensive WDI/WDO inspection with report", defaultPriceCents: 20000, estimatedDuration: 60, category: "Termite", workKind: "SERVICE", opportunityLeadDays: 365, opportunityLabel: "Annual Termite Renewal" },
+    { name: "Termite Treatment", description: "Liquid or bait station termite treatment", defaultPriceCents: 150000, estimatedDuration: 240, category: "Termite", workKind: "SERVICE", opportunityLeadDays: 365, opportunityLabel: "Termite Renewal" },
+    { name: "Rodent Control", description: "Interior/exterior rodent baiting and exclusion", defaultPriceCents: 17500, estimatedDuration: 60, category: "Rodent", workKind: "SERVICE", opportunityLeadDays: 60, opportunityLabel: "Rodent Follow-up" },
+    { name: "Commercial Kitchen Service", description: "Monthly commercial pest management service", defaultPriceCents: 25000, estimatedDuration: 90, category: "Commercial", workKind: "SERVICE" },
+    { name: "Warranty Callback", description: "Re-treatment or warranty return answering an earlier service - no charge unless priced", defaultPriceCents: null, estimatedDuration: 30, category: "General", workKind: "CALLBACK" },
   ].map(withOrg)).returning();
 
   await db.insert(billingProfileTemplates).values([

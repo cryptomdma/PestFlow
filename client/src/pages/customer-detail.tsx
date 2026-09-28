@@ -57,6 +57,8 @@ import { formatPhoneDisplay } from "@shared/phone";
 import { AuditLogEntryCard } from "@/components/audit-log-entry-card";
 import { dollarsToCents, centsToDollars, centsToDollarString, formatCents } from "@shared/money";
 import { describeSurcharge } from "@shared/field-surcharge";
+import { SERVICE_WORK_KINDS, canAnswerService, defaultWorkKindForService, describeAnswersLink, describeServiceWorkKind, formatServiceWorkKind, normalizeServiceWorkKind, workKindOverridePermission } from "@shared/service-kind";
+import { ServiceWorkKindBadge, ServiceWorkKindListBadge } from "@/components/service-work-kind-badge";
 import { describeBillingPlanBehavior } from "@shared/billing-plan";
 import { describeInitialCharge, formatInitialChargeType, initialChargeFromTemplate, type AgreementInitialChargeStatus, type InitialChargeDue } from "@shared/initial-charge";
 import { InitialChargeFormFields, initialChargeFieldsFrom, initialChargeFormStateFrom, validateInitialChargeFormState } from "@/components/initial-charge-fields";
@@ -2501,19 +2503,79 @@ function AgreementsTab({
   );
 }
 
+// Pass 24 (PLAN_ROADMAP_V2.md C3.7): the work kind of a service line and, for a
+// callback, the completed service it answers - the same two controls on the
+// New Service lines and the Edit form. The kind defaults from the type until
+// the user touches it (shared/service-kind.ts defaultWorkKindForService); a
+// CALLBACK line cannot be saved without its answer (the server refuses
+// CALLBACK_LINK_REQUIRED too). Disabled with the reason, never hidden, when
+// the role may not re-designate this service or its ticket is finalized.
+function ServiceWorkKindFields({
+  workKind,
+  answersServiceId,
+  candidates,
+  disabled,
+  disabledReason,
+  onChange,
+  testIdSuffix,
+}: {
+  workKind: string;
+  answersServiceId: string;
+  candidates: Array<{ id: string; label: string }>;
+  disabled?: boolean;
+  disabledReason?: string | null;
+  onChange: (updates: { workKind?: string; workKindTouched?: boolean; answersServiceId?: string }) => void;
+  testIdSuffix: string;
+}) {
+  const isCallback = normalizeServiceWorkKind(workKind) === "CALLBACK";
+  return (
+    <div className="grid gap-3 sm:grid-cols-2">
+      <div className="space-y-1.5">
+        <Label>Work Kind</Label>
+        <Select value={normalizeServiceWorkKind(workKind)} onValueChange={(value) => onChange({ workKind: normalizeServiceWorkKind(value), workKindTouched: true, answersServiceId: value === "CALLBACK" ? answersServiceId : "" })} disabled={disabled}>
+          <SelectTrigger data-testid={`select-service-work-kind-${testIdSuffix}`}><SelectValue /></SelectTrigger>
+          <SelectContent>
+            {SERVICE_WORK_KINDS.map((kind) => <SelectItem key={kind} value={kind}>{formatServiceWorkKind(kind)}</SelectItem>)}
+          </SelectContent>
+        </Select>
+        <p className="text-xs text-muted-foreground">{disabledReason ?? describeServiceWorkKind(workKind)}</p>
+      </div>
+      {isCallback ? (
+        <div className="space-y-1.5">
+          <Label>Answers</Label>
+          <Select value={answersServiceId || "NONE"} onValueChange={(value) => onChange({ answersServiceId: value === "NONE" ? "" : value })} disabled={disabled}>
+            <SelectTrigger data-testid={`select-service-answers-${testIdSuffix}`}><SelectValue placeholder="Pick the service this callback answers" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="NONE">Pick the service this callback answers</SelectItem>
+              {candidates.map((candidate) => <SelectItem key={candidate.id} value={candidate.id}>{candidate.label}</SelectItem>)}
+            </SelectContent>
+          </Select>
+          <p className="text-xs text-muted-foreground">
+            {candidates.length ? "Required - a callback answers one of this location's completed services." : "No completed service at this location to answer - a callback needs one."}
+          </p>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function ServiceForm({
   customerId,
   locationId,
   service,
   onClose,
+  answerCandidates = [],
 }: {
   customerId: string;
   locationId: string;
   service?: Service | null;
   onClose: () => void;
+  /** Pass 24 (C3.7): the location's completed, non-callback services a callback may answer, most recent first. */
+  answerCandidates?: Array<{ id: string; label: string }>;
 }) {
   const { toast } = useToast();
   const [, setLocation] = useLocation();
+  const { user } = useAuth();
   const isEditMode = !!service;
   const { data: serviceTypes } = useQuery<ServiceType[]>({ queryKey: ["/api/service-types"] });
   const [submitMode, setSubmitMode] = useState<"pending" | "schedule">("pending");
@@ -2527,14 +2589,31 @@ function ServiceForm({
     serviceTypeId: string;
     expectedDurationMinutes: string;
     price: string;
+    workKind: string;
+    workKindTouched: boolean;
+    answersServiceId: string;
   }>>([
     {
       key: service?.id ?? "line-1",
       serviceTypeId: service?.serviceTypeId ?? "",
       expectedDurationMinutes: service?.expectedDurationMinutes ? String(service.expectedDurationMinutes) : "",
       price: service?.priceCents != null ? centsToDollarString(service.priceCents) : "",
+      workKind: normalizeServiceWorkKind(service?.workKind),
+      workKindTouched: !!service,
+      answersServiceId: service?.answersServiceId ?? "",
     },
   ]);
+  // Pass 24: who may set the kind away from the type's default, or change it
+  // later - the price's rule (every role on a one-time service, manager+ on
+  // an agreement one); a completed service's kind is frozen with its ticket.
+  const canChangeKind = can(user?.role ?? "", workKindOverridePermission(!!service?.agreementId));
+  const kindFrozen = isEditMode && service?.status === "COMPLETED";
+  const kindDisabledReason = kindFrozen
+    ? "Frozen - this service's ticket is finalized, so its kind is history."
+    : !canChangeKind
+      ? (service?.agreementId ? "An agreement service's kind is locked - a manager or an admin may change it." : "Your role may not change a service's kind.")
+      : null;
+  const hasUnansweredCallback = serviceLines.some((line) => line.serviceTypeId && normalizeServiceWorkKind(line.workKind) === "CALLBACK" && !line.answersServiceId);
 
   const updateServiceLine = (key: string, updates: Partial<(typeof serviceLines)[number]>) => {
     setServiceLines((current) => current.map((line) => line.key === key ? { ...line, ...updates } : line));
@@ -2548,6 +2627,9 @@ function ServiceForm({
         serviceTypeId: "",
         expectedDurationMinutes: "",
         price: "",
+        workKind: "SERVICE",
+        workKindTouched: false,
+        answersServiceId: "",
       },
     ]);
   };
@@ -2566,6 +2648,7 @@ function ServiceForm({
         ...line,
         expectedDurationMinutes: line.expectedDurationMinutes || (selectedServiceType.estimatedDuration ? String(selectedServiceType.estimatedDuration) : ""),
         price: line.price || (selectedServiceType.defaultPriceCents != null ? centsToDollarString(selectedServiceType.defaultPriceCents) : ""),
+        workKind: line.workKindTouched ? line.workKind : defaultWorkKindForService({ typeKind: selectedServiceType.workKind, source: "MANUAL", hasAgreement: false }),
       };
     }));
   }, [isEditMode, serviceLines.length, serviceTypes]);
@@ -2581,6 +2664,9 @@ function ServiceForm({
         serviceTypeId: "",
         expectedDurationMinutes: "",
         price: "",
+        workKind: "SERVICE",
+        workKindTouched: false,
+        answersServiceId: "",
       }]);
       await queryClient.invalidateQueries({ queryKey: ["/api/services/by-location", locationId] });
       await queryClient.invalidateQueries({ queryKey: ["/api/services"] });
@@ -2610,6 +2696,10 @@ function ServiceForm({
           assignedTechnicianId: service.assignedTechnicianId ?? null,
           source: service.source ?? "MANUAL",
           notes: form.notes.trim() || null,
+          // Pass 24: the kind and its answer ride the same PATCH; the server
+          // gates, locks and audits a change and ignores an unchanged value.
+          workKind: normalizeServiceWorkKind(line.workKind),
+          answersServiceId: normalizeServiceWorkKind(line.workKind) === "CALLBACK" ? line.answersServiceId || null : null,
         };
 
         const response = await apiRequest("PATCH", `/api/services/${service.id}`, payload);
@@ -2631,6 +2721,8 @@ function ServiceForm({
           assignedTechnicianId: null,
           source: "MANUAL",
           notes: form.notes.trim() || null,
+          workKind: normalizeServiceWorkKind(line.workKind),
+          answersServiceId: normalizeServiceWorkKind(line.workKind) === "CALLBACK" ? line.answersServiceId || null : null,
         });
         createdServices.push(await response.json() as Service);
       }
@@ -2686,10 +2778,13 @@ function ServiceForm({
                   <Label>Service Type</Label>
                   <Select value={line.serviceTypeId} onValueChange={(value) => {
                     const serviceType = serviceTypes?.find((item) => item.id === value);
+                    const nextKind = line.workKindTouched ? line.workKind : defaultWorkKindForService({ typeKind: serviceType?.workKind, source: "MANUAL", hasAgreement: false });
                     updateServiceLine(line.key, {
                       serviceTypeId: value,
                       expectedDurationMinutes: line.expectedDurationMinutes || (serviceType?.estimatedDuration ? String(serviceType.estimatedDuration) : ""),
                       price: line.price || (serviceType?.defaultPriceCents != null ? centsToDollarString(serviceType.defaultPriceCents) : ""),
+                      workKind: nextKind,
+                      answersServiceId: normalizeServiceWorkKind(nextKind) === "CALLBACK" ? line.answersServiceId : "",
                     });
                   }}>
                     <SelectTrigger><SelectValue placeholder="Select service type" /></SelectTrigger>
@@ -2709,6 +2804,17 @@ function ServiceForm({
                   <Input type="number" min="0" step="0.01" value={line.price} onChange={(e) => updateServiceLine(line.key, { price: e.target.value })} />
                 </div>
               </div>
+              {line.serviceTypeId ? (
+                <ServiceWorkKindFields
+                  workKind={line.workKind}
+                  answersServiceId={line.answersServiceId}
+                  candidates={answerCandidates}
+                  disabled={!canChangeKind}
+                  disabledReason={kindDisabledReason}
+                  onChange={(updates) => updateServiceLine(line.key, updates)}
+                  testIdSuffix={String(index + 1)}
+                />
+              ) : null}
             </div>
           ))}
           <Button type="button" variant="outline" size="sm" onClick={addServiceLine}>Add Service</Button>
@@ -2733,6 +2839,18 @@ function ServiceForm({
         </div>
       )}
 
+      {isEditMode && serviceLines[0] ? (
+        <ServiceWorkKindFields
+          workKind={serviceLines[0].workKind}
+          answersServiceId={serviceLines[0].answersServiceId}
+          candidates={answerCandidates}
+          disabled={!canChangeKind || kindFrozen}
+          disabledReason={kindDisabledReason}
+          onChange={(updates) => updateServiceLine(serviceLines[0].key, updates)}
+          testIdSuffix="edit"
+        />
+      ) : null}
+
       <div className="grid gap-3 sm:grid-cols-2">
         <div className="space-y-1.5"><Label>Target Date</Label><Input type="date" value={form.dueDate} onChange={(e) => setForm((prev) => ({ ...prev, dueDate: e.target.value }))} /></div>
         <div className="space-y-1.5">
@@ -2756,11 +2874,11 @@ function ServiceForm({
           </Button>
         )}
         {!isEditMode && (
-          <Button type="submit" variant="outline" onClick={() => setSubmitMode("pending")} disabled={mutation.isPending || serviceLines.every((line) => !line.serviceTypeId)}>
+          <Button type="submit" variant="outline" onClick={() => setSubmitMode("pending")} disabled={mutation.isPending || serviceLines.every((line) => !line.serviceTypeId) || hasUnansweredCallback}>
             {mutation.isPending && submitMode === "pending" ? "Saving..." : "Save as Pending"}
           </Button>
         )}
-        <Button type="submit" onClick={() => setSubmitMode(isEditMode ? "pending" : "schedule")} disabled={mutation.isPending || serviceLines.every((line) => !line.serviceTypeId)}>
+        <Button type="submit" onClick={() => setSubmitMode(isEditMode ? "pending" : "schedule")} disabled={mutation.isPending || serviceLines.every((line) => !line.serviceTypeId) || hasUnansweredCallback} title={hasUnansweredCallback ? "A callback must name the service it answers" : undefined}>
           {mutation.isPending ? "Saving..." : isEditMode ? "Save Service" : "Schedule Now"}
         </Button>
       </div>
@@ -2784,6 +2902,7 @@ function ServiceDetailModal({
   onReopenTicket,
   onOpenInvoice,
   locationName = null,
+  answersLabel = null,
 }: {
   service: Service;
   serviceTypeName: string;
@@ -2794,6 +2913,8 @@ function ServiceDetailModal({
   invoice?: Invoice | null;
   siblingServices?: Service[];
   serviceTypeNameById: Map<string, string>;
+  /** Pass 24 (C3.7): "Answers <type> on <date>" when this service is a callback. */
+  answersLabel?: string | null;
   /** Pass 27: the schedule state's label (Scheduled / Pending scheduling / Rescheduling / Cancelled) in place of the raw status. */
   statusLabel?: string;
   onCompleteService?: (service: Service) => void;
@@ -2812,6 +2933,12 @@ function ServiceDetailModal({
       <div className="grid gap-3 sm:grid-cols-2">
         <div><p className="text-xs uppercase tracking-wide text-muted-foreground">Service Type</p><p className="mt-1 font-medium">{serviceTypeName}</p></div>
         <div><p className="text-xs uppercase tracking-wide text-muted-foreground">Status</p><p className="mt-1">{statusLabel ?? service.status}</p></div>
+        {/* Pass 24 (C3.7): what the work IS. The Billable / Production badge on the ticket is the invoice line, not this. */}
+        <div>
+          <p className="text-xs uppercase tracking-wide text-muted-foreground">Work Kind</p>
+          <div className="mt-1"><ServiceWorkKindBadge workKind={service.workKind} /></div>
+          {answersLabel ? <p className="mt-1 text-xs text-muted-foreground" data-testid={`text-service-answers-${service.id}`}>{answersLabel}</p> : null}
+        </div>
         <div><p className="text-xs uppercase tracking-wide text-muted-foreground">Service Date</p><p className="mt-1">{displayDate.label}</p></div>
         <div><p className="text-xs uppercase tracking-wide text-muted-foreground">Technician</p><p className="mt-1">{technicianName || "Unassigned"}</p></div>
         <div><p className="text-xs uppercase tracking-wide text-muted-foreground">Cost</p><p className="mt-1">{service.priceCents != null ? formatCurrency(centsToDollars(service.priceCents)) : "Not set"}</p></div>
@@ -2985,6 +3112,35 @@ function ServicesTab({
     }
     return map;
   }, [invoices]);
+  // Pass 24 (C3.7): the callback link. "Answers <type> on <date>" for a
+  // callback row and the Service Details, and the picker's candidates - this
+  // location's completed, non-callback services (shared/service-kind.ts
+  // canAnswerService), most recent first, labelled "<type> on <date>".
+  const serviceById = useMemo(() => new Map((services ?? []).map((service) => [service.id, service])), [services]);
+  const answeredServiceParts = (answered: Service) => {
+    const record = serviceRecordByServiceId.get(answered.id) ?? null;
+    const appointment = appointmentByServiceId.get(answered.id) ?? null;
+    return {
+      typeName: serviceTypeNameById.get(answered.serviceTypeId || "") || "Service",
+      dateLabel: getServiceDisplayDate(answered, appointment, record).label,
+      sortKey: String(record?.serviceDate ?? appointment?.scheduledDate ?? answered.dueDate ?? ""),
+    };
+  };
+  const answersLabelFor = (service: Service): string | null => {
+    if (!service.answersServiceId) return null;
+    const answered = serviceById.get(service.answersServiceId);
+    if (!answered) return "Answers a service that is no longer listed at this location";
+    const parts = answeredServiceParts(answered);
+    return describeAnswersLink(parts.typeName, parts.dateLabel);
+  };
+  const answerCandidates = useMemo(() => (services ?? [])
+    .filter((candidate) => canAnswerService(candidate))
+    .map((candidate) => {
+      const parts = answeredServiceParts(candidate);
+      return { id: candidate.id, label: `${parts.typeName} on ${parts.dateLabel}`, sortKey: parts.sortKey };
+    })
+    .sort((a, b) => b.sortKey.localeCompare(a.sortKey))
+    .map(({ id, label }) => ({ id, label })), [services, serviceTypeNameById, appointmentByServiceId, serviceRecordByServiceId]);
   // Both anchors (D1): the per-service-record one for appointment-less work and
   // for invoices issued before the visit anchor existed, then the appointment
   // one, where a single invoice covers every service on the visit. The
@@ -3157,7 +3313,7 @@ function ServicesTab({
           <DialogTrigger asChild><Button size="sm" onClick={openCreate}><Plus className="h-3 w-3 mr-1" /> New Service</Button></DialogTrigger>
           <DialogContent>
             <DialogHeader><DialogTitle>{editingService ? "Edit Service" : "New Service"}</DialogTitle></DialogHeader>
-            <ServiceForm customerId={customerId} locationId={locationId} service={editingService} onClose={() => setDialogOpen(false)} />
+            <ServiceForm customerId={customerId} locationId={locationId} service={editingService} onClose={() => setDialogOpen(false)} answerCandidates={answerCandidates.filter((candidate) => candidate.id !== editingService?.id)} />
           </DialogContent>
         </Dialog>
       </div>
@@ -3209,6 +3365,7 @@ function ServicesTab({
                 </span>
                 <span className="min-w-0">
                   <span className="block truncate">{serviceTypeNameById.get(service.serviceTypeId || "") || "Service"}</span>
+                  <ServiceWorkKindListBadge workKind={service.workKind} className="mt-1 h-5 px-1.5 text-[10px]" />
                   {hasSharedVisit ? (
                     <span className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
                       <Badge variant="outline" className="h-5 px-1.5 text-[10px]">Shared visit</Badge>
@@ -3295,6 +3452,7 @@ function ServicesTab({
               onReopenTicket={(serviceRecord) => reopenTicketMutation.mutate(serviceRecord)}
               onOpenInvoice={onOpenInvoice}
               locationName={locationName}
+              answersLabel={answersLabelFor(detailService)}
             />
           )}
         </DialogContent>

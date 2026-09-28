@@ -440,10 +440,13 @@ Behavior worth knowing before Pass 4/5 touches it:
 - **Live-testing finding: no UI attaches a Billing Plan to an Agreement**, so every agreement had
   `billingPlanId = null` and the schedule-billed branch above was unreachable outside the API.
   **Resolved by Pass 3.5** — see "Shipped in Pass 3.5" below. Pass 5 (D2) is no longer blocked on it.
-- Callbacks bill $0 unless a price is stamped. Generation reads the production ledger's `CALLBACK`
-  **basis** (not its amount) so billable and production always agree on what a callback is. That basis
-  is itself inferred from a filled-slot counter and is order-dependent — see the roadmap note in
-  `CANONICAL_DOMAIN_RULES_V1.md` §10 on making the designation explicit on Service.
+- Callbacks bill $0 unless a price is stamped. Generation read the production ledger's `CALLBACK`
+  **basis** (not its amount) so billable and production always agreed on what a callback is. That basis
+  was itself inferred from a filled-slot counter and was order-dependent. **Since Pass 24**
+  (`PLAN_ROADMAP_V2.md` C3.7, 2026-09-27) both read the Service's **work kind**
+  (`services.workKind`, `shared/service-kind.ts`) - the resolver checks it before the plan and reads
+  no production entry, the ledger's basis is `productionBasisForService`, and the counter is gone.
+  See `CANONICAL_DOMAIN_RULES_V1.md` §10.
 
 **Shipped in Pass 3.5, for every later pass that touches an agreement's plan** — the agreement form
 (`customer-detail.tsx`) and the agreement-template form (`settings.tsx`) now carry a real Billing Plan
@@ -1094,7 +1097,9 @@ Behavior worth knowing before the next passes touch it:
 - **Designation** is the line type, nothing else: `AGREEMENT_COVERED` (a schedule-billed plan per
   `isScheduleBilledPlan()`, or a warranty callback) is `PRODUCTION`; every `SERVICE` line, including
   a chargeable callback and a COD-plan agreement visit at remaining price / expected visits, is
-  `BILLABLE`. The production-value ledger is not read and not changed.
+  `BILLABLE`. The production-value ledger is not read and not changed. Since Pass 24 the warranty
+  callback is a Service whose **work kind** is `CALLBACK` (`shared/service-kind.ts`) - a different
+  word from this billing designation on purpose, and read by the resolver before the plan.
 - **Where it shows.** Service ticket header (designation, the three figures, source sentence; the
   "Service Price" field on a PRODUCTION service gains a caption saying it is production value and is
   not billed on the visit - the field itself is untouched). Technician appointment details (per

@@ -1,5 +1,5 @@
 ﻿import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, integer, boolean, timestamp, decimal, jsonb, date, primaryKey, uniqueIndex } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, integer, boolean, timestamp, decimal, jsonb, date, primaryKey, uniqueIndex, type AnyPgColumn } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 import { relations } from "drizzle-orm";
@@ -152,9 +152,21 @@ export const serviceTypes = pgTable("service_types", {
   description: text("description"),
   defaultPriceCents: integer("default_price_cents"),
   estimatedDuration: integer("estimated_duration"),
+  // Free text - the display grouping ("General / Termite / Rodent /
+  // Commercial"), edited as a text input in Settings. NOT the canon §10
+  // "category": that is workKind below (Pass 24), a new column so this one
+  // keeps meaning what it always meant.
   category: text("category"),
   opportunityLeadDays: integer("opportunity_lead_days"),
   opportunityLabel: text("opportunity_label"),
+  // Pass 24 (PLAN_ROADMAP_V2.md C3.7; canon §10): the type's default WORK
+  // KIND - SERVICE (billable) | PRODUCTION (an agreement's scheduled visit) |
+  // CALLBACK (answers an earlier service; $0 unless priced, no production).
+  // shared/service-kind.ts is the vocabulary. Every instance (services.workKind)
+  // defaults from this and may be overridden per instance, the price's shape.
+  // Existing rows were defaulted to SERVICE by the Pass 24 migration
+  // (service-scheduling-bootstrap); the office sets the rest in Settings.
+  workKind: text("work_kind").notNull().default("SERVICE"),
 });
 
 export const technicians = pgTable("technicians", {
@@ -211,6 +223,25 @@ export const services = pgTable("services", {
   source: text("source").notNull().default("MANUAL"),
   schedulingMode: text("scheduling_mode"),
   notes: text("notes"),
+  // Pass 24 (PLAN_ROADMAP_V2.md C3.7; canon §10): what this WORK is -
+  // SERVICE | PRODUCTION | CALLBACK (shared/service-kind.ts), defaulted from
+  // the type on every creation path (the customer screen's form, the
+  // dispatch board's prefill, agreement generation, an opportunity's
+  // conversion, the seed) and overridable per instance under the price's
+  // permissions (ADJUST_PRICE_NON_AGREEMENT / ADJUST_PRICE_AGREEMENT), frozen
+  // once the ticket is finalized or the visit invoiced, every change audited
+  // as `work_kind_changed`. The production ledger's basis and the visit
+  // invoice's $0 decision read THIS, never a slot counter: a CALLBACK is
+  // basis CALLBACK $0 and an AGREEMENT_COVERED "warranty callback - no charge"
+  // line unless a price is stamped, whatever the agreement's plan. Rows from
+  // before Pass 24 carry SERVICE (the migration copied each type's default).
+  workKind: text("work_kind").notNull().default("SERVICE"),
+  // The Service this callback ANSWERS - required when workKind is CALLBACK,
+  // refused otherwise, at the same location, COMPLETED and not itself a
+  // callback (so the callback rate per original service is one group-by).
+  // Chosen where the callback is created; the queue, the dispatch sheet and
+  // the Service Details show it as "Answers <type> on <date>".
+  answersServiceId: varchar("answers_service_id").references((): AnyPgColumn => services.id),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
