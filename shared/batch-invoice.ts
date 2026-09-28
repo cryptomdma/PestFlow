@@ -36,22 +36,35 @@ export interface BatchInvoicePreviewTicket extends ServiceRecord {
 }
 
 /**
- * A down payment the visit's invoice will carry beside its service lines
- * (Pass 11d's INITIAL_CHARGE line), resolved for the preview so the office
- * sees the deposit generate is about to bill instead of finding it on the
- * invoice afterwards. Keyed to the visit's anchor: `appointmentId`, or the
- * ticket itself for appointment-less work. Listed once per agreement across
- * the whole preview, on the first visit that would carry it - a second visit
- * of the same agreement in the batch finds the event live and bills nothing.
+ * A charge the visit's invoice will carry beside its service lines, resolved
+ * for the preview so the office sees what generate is about to bill instead
+ * of finding it on the invoice afterwards. Keyed to the visit's anchor:
+ * `appointmentId`, or the ticket itself (`serviceRecordId`) for
+ * appointment-less work. Two kinds:
+ *  - INITIAL_CHARGE: a down payment (Pass 11d's line), listed once per
+ *    agreement across the whole preview, on the first visit that would carry
+ *    it - a second visit of the same agreement in the batch finds the event
+ *    live and bills nothing. `agreementId` / `agreementName` are set.
+ *  - SURCHARGE (Pass 23, C3.6): the field surcharge a ticket on the visit
+ *    carries - every finalized ticket of the visit, not only those inside
+ *    the window, because generate bills the whole visit. `ticketServiceRecordId`
+ *    names the ticket; the agreement fields are null.
  */
 export interface BatchInvoicePreviewCharge {
+  kind: "INITIAL_CHARGE" | "SURCHARGE";
   appointmentId: string | null;
   serviceRecordId: string | null;
-  agreementId: string;
-  agreementName: string;
+  agreementId: string | null;
+  agreementName: string | null;
+  ticketServiceRecordId: string | null;
   description: string;
   amountCents: number;
   taxCents: number;
+}
+
+/** A stable key per charge for lists: the agreement's id for a down payment, "surcharge-<ticket id>" for a surcharge. */
+export function batchChargeKey(charge: Pick<BatchInvoicePreviewCharge, "kind" | "agreementId" | "ticketServiceRecordId">): string {
+  return charge.kind === "INITIAL_CHARGE" ? charge.agreementId ?? "" : `surcharge-${charge.ticketServiceRecordId ?? ""}`;
 }
 
 export interface BatchInvoicePreview {
@@ -92,7 +105,7 @@ export interface BatchPreviewVisit {
   /** The earliest UTC service day among this group's tickets on the visit. */
   serviceDate: string;
   tickets: BatchInvoicePreviewTicket[];
-  /** The visit's down payment lines; attached to the first group the visit appears in, empty elsewhere. */
+  /** The visit's down payment and surcharge lines; attached to the first group the visit appears in, empty elsewhere. */
   charges: BatchInvoicePreviewCharge[];
   /** Billable service lines plus charges, before tax. */
   amountCents: number;

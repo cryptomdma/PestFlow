@@ -103,7 +103,7 @@ export function InitialChargeFormFields({
             ))}
           </SelectContent>
         </Select>
-        <p className="text-xs text-muted-foreground">A down payment or prepayment agreed at the sale. A down payment is billed as its own line on the first visit's invoice, whoever collects it, and counts toward the contract price unless marked otherwise below; the agreement card can issue it up front instead. A cleanout surcharge or prepayment is issued only from the agreement card.</p>
+        <p className="text-xs text-muted-foreground">A down payment agreed at the sale: billed as its own line on the first visit's invoice, whoever collects it, and counting toward the contract price unless marked otherwise below; the agreement card can issue it up front instead. A cleanout surcharge is not a term of the sale - the technician adds it on the ticket when the template allows - and paid-in-full is a billing plan.</p>
       </div>
       {hasCharge && (
         <>
@@ -164,7 +164,7 @@ export function InitialChargeFormFields({
               </SelectContent>
             </Select>
             <p className="text-xs text-muted-foreground">
-              Who may take the money, not who did. It never changes regular production value (contract price divided by expected visits). Until a collected surcharge is recorded on the ticket, the separate cleanout-surcharge credit is inferred from this and given only when the technician is the sole permitted collector.
+              Who may take the money, not who did. It never changes production value (contract price divided by expected visits) and infers no credit: a field surcharge is recorded on the ticket and credited from there.
             </p>
           </div>
           <p className={`text-xs ${validationMessage ? "text-destructive" : "text-muted-foreground"}`} data-testid={`text-${testIdPrefix}-initial-charge-summary`}>

@@ -60,27 +60,16 @@ export interface VisitServiceBilling {
   note: string | null;
 }
 
-/**
- * A charge on the visit that is not a service: the agreement's down payment
- * (Pass 11d, owner review 2026-09-21). It rides the first visit's invoice
- * as an INITIAL_CHARGE line whoever collects it, so before the visit is
- * invoiced it is priced here exactly as generation will price it (a live
- * INITIAL_CHARGE event - issued up front, settled outside the ledger, or
- * already on an earlier visit - means no line and no entry here), and once
- * invoiced it is the invoice's own line. Always BILLABLE: money is owed on
- * this visit even when every service is covered.
- */
-export interface VisitChargeBilling {
-  kind: "INITIAL_CHARGE";
-  agreementId: string;
-  agreementName: string;
-  /** The invoice line's description: "Down payment - <agreement>". */
+/** The figures every charge on the visit carries - the service line's, less the nullable price. */
+interface VisitChargeBillingBase {
+  /** The invoice line's description. */
   description: string;
   /**
    * Who MAY collect it (shared/initial-charge.ts): OFFICE_AT_SIGNING,
    * TECH_AT_FIRST_SERVICE, or null for either. The technician's collect step
-   * calls the charge out unless the office is the only collector; never a
-   * record of who did.
+   * calls a down payment out unless the office is the only collector; never
+   * a record of who did. Always null for a surcharge - the technician
+   * recorded it on the ticket and collects it with the service.
    */
   collectedBy: string | null;
   priceCents: number;
@@ -88,6 +77,55 @@ export interface VisitChargeBilling {
   coaAppliedCents: number;
   coaAvailableCents: number;
   dueTodayCents: number;
+}
+
+/**
+ * The agreement's down payment (Pass 11d, owner review 2026-09-21). It rides
+ * the first visit's invoice as an INITIAL_CHARGE line whoever collects it, so
+ * before the visit is invoiced it is priced here exactly as generation will
+ * price it (a live INITIAL_CHARGE event - issued up front, settled outside
+ * the ledger, or already on an earlier visit - means no line and no entry
+ * here), and once invoiced it is the invoice's own line. Always BILLABLE:
+ * money is owed on this visit even when every service is covered.
+ */
+export interface VisitInitialChargeBilling extends VisitChargeBillingBase {
+  kind: "INITIAL_CHARGE";
+  agreementId: string;
+  agreementName: string;
+}
+
+/**
+ * The field surcharge a ticket carries (Pass 23, C3.6; shared/field-surcharge.ts):
+ * the SURCHARGE line the visit invoice will carry beside that ticket's
+ * service line - or does carry, once invoiced - "<label> - <service type> -
+ * <date>", taxed as the service line is. Always BILLABLE, even when the
+ * service itself is covered: it is charged in addition to the contract
+ * price. Before the ticket is posted the read prices the dialog's unposted
+ * surcharge the same way (VisitBillingDraft.surchargeCents).
+ */
+export interface VisitSurchargeBilling extends VisitChargeBillingBase {
+  kind: "SURCHARGE";
+  /** The service whose ticket carries it - the service line it sits beside. */
+  serviceId: string;
+  serviceRecordId: string | null;
+  serviceTypeName: string;
+  label: string;
+}
+
+/**
+ * A charge on the visit that is not a service. Discriminated on `kind`;
+ * `visitChargeKey` gives each a stable identity for lists.
+ */
+export type VisitChargeBilling = VisitInitialChargeBilling | VisitSurchargeBilling;
+
+/** A stable key per charge: the agreement's id for a down payment (unchanged from Pass 11d), "surcharge-<serviceId>" for a surcharge. */
+export function visitChargeKey(charge: VisitChargeBilling): string {
+  return charge.kind === "INITIAL_CHARGE" ? charge.agreementId : `surcharge-${charge.serviceId}`;
+}
+
+/** The charge as a short noun for a reconciling sentence: "down payment" / "surcharge". */
+export function describeVisitChargeKind(charge: VisitChargeBilling): string {
+  return charge.kind === "INITIAL_CHARGE" ? "down payment" : "surcharge";
 }
 
 export interface VisitBillingInvoiceRef {
@@ -109,12 +147,24 @@ export interface VisitBillingInvoiceRef {
  * priced at: `applied` false means the stored figures stand, and `note` says
  * why (an agreement price the role may not re-price - the post's rule - or a
  * visit already invoiced, whose figures are the invoice's).
+ *
+ * Pass 23 (C3.6): the surcharge typed on the ticket rides the same read
+ * (`&surchargeCents=`, alone or beside the price; 0 previews its removal)
+ * under the post's gate - ADD_FIELD_SURCHARGE, and the agreement template's
+ * toggle for an agreement service (shared/field-surcharge.ts) - and is
+ * priced as the SURCHARGE charge the invoice will carry. `surchargeApplied`
+ * false means the read priced the stored surcharge instead, `surchargeNote`
+ * says why (the same message the ticket dialog disables its input with).
+ * Either half may be absent (null) when the read was not asked for it.
  */
 export interface VisitBillingDraft {
   serviceId: string;
-  priceCents: number;
+  priceCents: number | null;
   applied: boolean;
   note: string | null;
+  surchargeCents: number | null;
+  surchargeApplied: boolean;
+  surchargeNote: string | null;
 }
 
 export interface VisitBillingSummary {
@@ -128,10 +178,14 @@ export interface VisitBillingSummary {
    * or no invoice: the figures are what generation would produce now.
    */
   invoiced: boolean;
-  /** The draft price this read was asked to price (Pass 19), or null when it carried none. */
+  /** The draft price / surcharge this read was asked to price (Passes 19 and 23), or null when it carried neither. */
   draft: VisitBillingDraft | null;
   services: VisitServiceBilling[];
-  /** Charges on the visit that are not services: the pending or invoiced down payment (Pass 11d). Counted in totals. */
+  /**
+   * Charges on the visit that are not services, in invoice-line order: each
+   * ticket's field surcharge (Pass 23) after the service lines, then the
+   * pending or invoiced down payment (Pass 11d). Counted in totals.
+   */
   charges: VisitChargeBilling[];
   totals: {
     priceCents: number;
@@ -160,7 +214,8 @@ export function describeServiceDesignation(designation: ServiceBillingDesignatio
  * What the technician's collect step defaults to: the visit's due today less
  * any down payment only the office may collect (Pass 11d). The charge is
  * still owed and still on the invoice; it is just not the technician's to
- * take, so it must not be the amount the field is handed to collect.
+ * take, so it must not be the amount the field is handed to collect. A
+ * surcharge (Pass 23) is always the technician's to collect and stays in.
  */
 export function technicianCollectibleCents(summary: VisitBillingSummary): number {
   const officeOnlyCents = summary.charges

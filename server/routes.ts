@@ -28,6 +28,7 @@ import { APPOINTMENT_DISPOSITION_MODES, DISPOSITION_OPPORTUNITY_CHOICES } from "
 import { can, PERMISSIONS, type UserRole } from "@shared/permissions";
 import { INVOICE_ON_FINALIZE_MODES, normalizeInvoiceOnFinalizeMode } from "@shared/invoice-on-finalize";
 import { normalizeAttachServiceReport } from "@shared/service-report";
+import { MAX_SURCHARGE_LABEL_LENGTH } from "@shared/field-surcharge";
 import {
   INITIAL_CHARGE_AMOUNT_MODES,
   INITIAL_CHARGE_COLLECTORS,
@@ -277,6 +278,13 @@ export async function registerRoutes(
     productApplications: z.array(insertProductApplicationSchema.omit({ serviceRecordId: true })).optional(),
     serviceTypeId: z.string().nullable().optional(),
     priceCents: z.number().int().nullable().optional(),
+    // Pass 23 (C3.6): the field surcharge line - omitted keeps it, null or
+    // 0 removes it, a positive amount records or changes it (the label
+    // defaulting to "Cleanout surcharge"); gated by ADD_FIELD_SURCHARGE and
+    // the agreement template's toggle (403 with a code), logged
+    // `surcharge_recorded`. A negative or fractional amount is a 400.
+    surchargeCents: z.number().int().min(0).nullable().optional(),
+    surchargeLabel: z.string().max(MAX_SURCHARGE_LABEL_LENGTH).nullable().optional(),
   }).strict();
   // The post. Pass 20: the same material rule as the PATCH above -
   // areasServiced derives from the rows' applicationAreas, the body's text
@@ -298,6 +306,11 @@ export async function registerRoutes(
     customerSignature: z.boolean().nullable().optional(),
     confirmed: z.boolean().nullable().optional(),
     productApplications: z.array(insertProductApplicationSchema.omit({ serviceRecordId: true })).optional(),
+    // Pass 23 (C3.6): the surcharge line; a post writes the ticket whole, so
+    // an omitted or zero amount means none. Same gate and audit row as the
+    // PATCH's.
+    surchargeCents: z.number().int().min(0).nullable().optional(),
+    surchargeLabel: z.string().max(MAX_SURCHARGE_LABEL_LENGTH).nullable().optional(),
   });
   // Pass 22 (C3.5): the service report preview of an unposted ticket - the
   // post's content shape plus the service it belongs to; rendered, never stored.
@@ -1545,6 +1558,9 @@ export async function registerRoutes(
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
       if (e instanceof TicketLockedError) return respondTicketLocked(res, e);
+      // Pass 23 (C3.6): a surcharge the actor or the template forbids - 403
+      // SURCHARGE_FORBIDDEN / SURCHARGE_NOT_ALLOWED, before anything is written.
+      if (e instanceof TicketEditError) return respondTicketEditError(res, e);
       res.status(400).json({ message: e.message });
     }
   });
@@ -1787,27 +1803,32 @@ export async function registerRoutes(
   // (never refused - the read previews what Post will do, and Post ignores it
   // too); a service not on the visit is 400 DRAFT_SERVICE_NOT_ON_VISIT.
   // priceCents is whole cents, digits only, so an empty or fractional value
-  // is a 400 rather than a $0 preview.
+  // is a 400 rather than a $0 preview. Pass 23 (C3.6): surchargeCents rides
+  // the same draft, alone or beside priceCents (0 previews the surcharge's
+  // removal), priced under the post's gate (shared/field-surcharge.ts).
+  const wholeCentsParam = (name: string) => z
+    .string()
+    .regex(/^\d+$/, `${name} must be a whole number of cents`)
+    .transform((value) => Number(value))
+    .refine((value) => Number.isSafeInteger(value), `${name} is out of range`)
+    .optional();
   const billingSummaryQuerySchema = z
     .object({
       serviceId: z.string().min(1).optional(),
-      priceCents: z
-        .string()
-        .regex(/^\d+$/, "priceCents must be a whole number of cents")
-        .transform((value) => Number(value))
-        .refine((value) => Number.isSafeInteger(value), "priceCents is out of range")
-        .optional(),
+      priceCents: wholeCentsParam("priceCents"),
+      surchargeCents: wholeCentsParam("surchargeCents"),
     })
     .superRefine((value, ctx) => {
-      if ((value.serviceId === undefined) !== (value.priceCents === undefined)) {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["priceCents"], message: "serviceId and priceCents go together" });
+      const hasDraft = value.priceCents !== undefined || value.surchargeCents !== undefined;
+      if ((value.serviceId === undefined) !== !hasDraft) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["serviceId"], message: "serviceId goes with priceCents and/or surchargeCents" });
       }
     });
   app.get("/api/appointments/:id/billing-summary", async (req, res) => {
     try {
       const query = billingSummaryQuerySchema.parse(req.query);
-      const draft = query.serviceId !== undefined && query.priceCents !== undefined
-        ? { serviceId: query.serviceId, priceCents: query.priceCents, actorRole: req.user!.role as UserRole }
+      const draft = query.serviceId !== undefined && (query.priceCents !== undefined || query.surchargeCents !== undefined)
+        ? { serviceId: query.serviceId, priceCents: query.priceCents, surchargeCents: query.surchargeCents, actorRole: req.user!.role as UserRole }
         : null;
       const data = await req.storage.getVisitBillingSummary(req.params.id, draft);
       if (!data) return res.status(404).json({ message: "Appointment not found" });

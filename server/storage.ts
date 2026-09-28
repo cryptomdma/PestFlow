@@ -144,7 +144,6 @@ import {
   initialChargeFromTemplate,
   initialChargeSkipsFirstPeriod,
   initialChargeToTemplate,
-  isTechnicianCollectedCleanoutSurcharge,
   normalizeInitialCharge,
   resolveInitialChargeCents,
   resolveRemainingContractPriceCents,
@@ -156,6 +155,16 @@ import {
   type InitialChargeInvoiceRef,
 } from "@shared/initial-charge";
 import { computeInvoiceRollup, deriveInvoiceStatus, isFullyAgreementCovered, isInvoiceIssued } from "@shared/invoice-status";
+import {
+  DEFAULT_SURCHARGE_LABEL,
+  SURCHARGE_CREDIT_RULE,
+  normalizeSurcharge,
+  resolveFieldSurchargeGate,
+  surchargeChanged,
+  surchargeLineDescription,
+  surchargeOf,
+  type FieldSurchargeRefusal,
+} from "@shared/field-surcharge";
 import {
   CASH_CONFIRM_AUTHORITY_MESSAGE,
   isCreditMemoReasonCode,
@@ -392,11 +401,14 @@ export class VisitBillingDraftError extends Error {
 }
 
 // Pass 19 (C3.3): the price typed on the technician's ticket but not yet
-// posted, priced on the read and written nowhere.
+// posted, priced on the read and written nowhere. Pass 23 (C3.6): the
+// surcharge typed on the ticket rides the same read, alone or beside the
+// price (0 previews its removal), under the post's gate.
 export interface VisitBillingDraftInput {
   serviceId: string;
-  priceCents: number;
-  /** The session's role: the post's rule (ADJUST_PRICE_AGREEMENT) decides whether an agreement-generated service is re-priced. */
+  priceCents?: number;
+  surchargeCents?: number;
+  /** The session's role: the post's rule (ADJUST_PRICE_AGREEMENT) decides whether an agreement-generated service is re-priced; ADD_FIELD_SURCHARGE and the template's toggle whether the surcharge is priced. */
   actorRole: UserRole | string;
 }
 
@@ -438,6 +450,16 @@ export interface UpdateServiceRecordInput {
   serviceTypeId?: string | null;
   /** The Service's stamped price; null clears the stamp (an agreement service back to its derived amount). */
   priceCents?: number | null;
+  /**
+   * Pass 23 (C3.6): the ticket's field surcharge. Omitted, it stays as
+   * stored; null or 0 removes it; a positive amount records or changes it
+   * (the label defaulting to "Cleanout surcharge"). A change is gated by
+   * ADD_FIELD_SURCHARGE and, for an agreement service, the template's toggle
+   * (403 SURCHARGE_FORBIDDEN / SURCHARGE_NOT_ALLOWED before anything is
+   * written) and logged `surcharge_recorded`.
+   */
+  surchargeCents?: number | null;
+  surchargeLabel?: string | null;
   /** The session user's role (routes.ts) - a price or type on an agreement-generated service needs ADJUST_PRICE_AGREEMENT. */
   actorRole?: UserRole;
   actor?: AuditActor | null;
@@ -559,6 +581,14 @@ export interface CompleteServiceInput {
   customerSignature?: boolean | null;
   confirmed?: boolean | null;
   productApplications?: Array<Omit<InsertProductApplication, "serviceRecordId">>;
+  /**
+   * Pass 23 (C3.6): the field surcharge line. A post writes the ticket
+   * whole, so an omitted or zero amount means none (a re-post without it
+   * removes one the ticket carried). Gated as the office edit's is when it
+   * records, changes or removes one; logged `surcharge_recorded`.
+   */
+  surchargeCents?: number | null;
+  surchargeLabel?: string | null;
 }
 
 export interface CompleteServiceResult {
@@ -601,6 +631,9 @@ export interface ServiceReportPreviewInput {
   followUpNotes?: string | null;
   customerSignature?: boolean | null;
   productApplications?: Array<Omit<InsertProductApplication, "serviceRecordId">>;
+  /** Pass 23 (C3.6): the surcharge as typed, printed as the post would store it; nothing is gated here because nothing is written. */
+  surchargeCents?: number | null;
+  surchargeLabel?: string | null;
 }
 
 export interface ServiceReportPreviewResult {
@@ -743,7 +776,7 @@ interface VisitBillingUnit {
 interface VisitInvoiceLine {
   serviceId: string | null;
   serviceRecordId: string | null;
-  lineType: "SERVICE" | "AGREEMENT_COVERED" | "INITIAL_CHARGE";
+  lineType: "SERVICE" | "AGREEMENT_COVERED" | "INITIAL_CHARGE" | "SURCHARGE";
   description: string;
   unitPriceCents: number;
   amountCents: number;
@@ -2507,15 +2540,22 @@ export class DatabaseStorage implements IStorage {
     service: Service,
     finalizedAt: Date,
   ): Promise<void> {
-    const [existingEntry] = await tx
+    // Both entries a ticket can carry are checked independently: the main
+    // allocation once per ticket (the partial unique index backs this), and
+    // the SURCHARGE credit once per ticket by this check alone (the index
+    // excludes SURCHARGE). A reopen that adds a surcharge and re-finalizes
+    // still earns the credit; one that changes an already-credited amount
+    // does not re-credit - the ledger is append-only and carries no
+    // adjustment entry until Phase 7.
+    const existingEntries = await tx
       .select()
       .from(productionValueEntries)
-      .where(and(
-        eq(productionValueEntries.orgId, this.orgId),
-        eq(productionValueEntries.serviceRecordId, record.id),
-        ne(productionValueEntries.basis, "SURCHARGE"),
-      ));
-    if (existingEntry) {
+      .where(and(eq(productionValueEntries.orgId, this.orgId), eq(productionValueEntries.serviceRecordId, record.id)));
+    const hasMainEntry = existingEntries.some((entry) => entry.basis !== "SURCHARGE");
+    const hasSurchargeEntry = existingEntries.some((entry) => entry.basis === "SURCHARGE");
+    const surchargeCents = surchargeOf(record).surchargeCents;
+    const wantsSurchargeEntry = !hasSurchargeEntry && surchargeCents != null;
+    if (hasMainEntry && !wantsSurchargeEntry) {
       return;
     }
 
@@ -2524,125 +2564,100 @@ export class DatabaseStorage implements IStorage {
       [agreement] = await tx.select().from(agreements).where(and(eq(agreements.orgId, this.orgId), eq(agreements.id, service.agreementId)));
     }
 
-    let basis: string;
-    let productionValueCents: number;
-    let scheduledCount = 0;
+    if (!hasMainEntry) {
+      let basis: string;
+      let productionValueCents: number;
 
-    if (agreement) {
-      const expectedCount = agreement.expectedServiceCount ?? 1;
-      const [scheduledCountRow] = await tx
-        .select({ count: sql<number>`count(*)::int` })
-        .from(productionValueEntries)
-        .where(and(
-          eq(productionValueEntries.orgId, this.orgId),
-          eq(productionValueEntries.agreementId, agreement.id),
-          eq(productionValueEntries.basis, "SCHEDULED_AGREEMENT_SERVICE"),
-        ));
-      scheduledCount = scheduledCountRow?.count ?? 0;
+      if (agreement) {
+        const expectedCount = agreement.expectedServiceCount ?? 1;
+        const [scheduledCountRow] = await tx
+          .select({ count: sql<number>`count(*)::int` })
+          .from(productionValueEntries)
+          .where(and(
+            eq(productionValueEntries.orgId, this.orgId),
+            eq(productionValueEntries.agreementId, agreement.id),
+            eq(productionValueEntries.basis, "SCHEDULED_AGREEMENT_SERVICE"),
+          ));
+        const scheduledCount = scheduledCountRow?.count ?? 0;
 
-      if (scheduledCount < expectedCount) {
-        basis = "SCHEDULED_AGREEMENT_SERVICE";
-        productionValueCents = computeProductionValueCents(agreement.priceCents, agreement.expectedServiceCount) ?? 0;
+        if (scheduledCount < expectedCount) {
+          basis = "SCHEDULED_AGREEMENT_SERVICE";
+          productionValueCents = computeProductionValueCents(agreement.priceCents, agreement.expectedServiceCount) ?? 0;
+        } else {
+          basis = "CALLBACK";
+          productionValueCents = 0;
+        }
       } else {
-        basis = "CALLBACK";
-        productionValueCents = 0;
+        basis = "ONE_TIME_SERVICE";
+        productionValueCents = service.priceCents ?? 0;
       }
-    } else {
-      basis = "ONE_TIME_SERVICE";
-      productionValueCents = service.priceCents ?? 0;
+
+      await tx.insert(productionValueEntries).values({
+        orgId: this.orgId,
+        serviceRecordId: record.id,
+        technicianId: record.technicianId,
+        technicianName: record.technicianName,
+        agreementId: agreement?.id ?? null,
+        serviceTypeId: record.serviceTypeId,
+        basis,
+        productionValueCents,
+        contractPriceCentsSnapshot: agreement?.priceCents ?? null,
+        expectedServiceCountSnapshot: agreement?.expectedServiceCount ?? null,
+        finalizedAt,
+      });
     }
 
-    await tx.insert(productionValueEntries).values({
-      orgId: this.orgId,
-      serviceRecordId: record.id,
-      technicianId: record.technicianId,
-      technicianName: record.technicianName,
-      agreementId: agreement?.id ?? null,
-      serviceTypeId: record.serviceTypeId,
-      basis,
-      productionValueCents,
-      contractPriceCentsSnapshot: agreement?.priceCents ?? null,
-      expectedServiceCountSnapshot: agreement?.expectedServiceCount ?? null,
-      finalizedAt,
-    });
-
-    if (agreement && basis === "SCHEDULED_AGREEMENT_SERVICE" && scheduledCount === 0) {
-      await this.createSurchargeEntryIfConfigured(tx, agreement, record, finalizedAt);
+    // TRANSITIONAL (development rule 4) - shared/field-surcharge.ts
+    // SURCHARGE_CREDIT_RULE: a surcharge line recorded on the ticket ALWAYS
+    // credits the posting technician with its amount as a separate, additive
+    // basis SURCHARGE entry, until Phase 7's comp engine carries the per-plan
+    // selector "earns production on surcharge lines: yes / no" (owner,
+    // 2026-09-13) and reads it here instead. This replaced Pass 5.5's
+    // createSurchargeEntryIfConfigured(), which inferred the credit from the
+    // agreement's initial-charge collector permission - a configuration,
+    // never a recorded line. The credit keys off what was RECORDED to have
+    // happened (the ticket's own surcharge, canon §12) and never off who
+    // collected the money (D4 item 3): production is earned by doing the
+    // work. The technician is the ticket's snapshot, as the main entry's is.
+    if (wantsSurchargeEntry && surchargeCents != null) {
+      void SURCHARGE_CREDIT_RULE;
+      await tx.insert(productionValueEntries).values({
+        orgId: this.orgId,
+        serviceRecordId: record.id,
+        technicianId: record.technicianId,
+        technicianName: record.technicianName,
+        agreementId: agreement?.id ?? null,
+        serviceTypeId: record.serviceTypeId,
+        basis: "SURCHARGE",
+        productionValueCents: surchargeCents,
+        contractPriceCentsSnapshot: agreement?.priceCents ?? null,
+        expectedServiceCountSnapshot: null,
+        finalizedAt,
+      });
     }
   }
 
-  // "an initialChargeCollectedBy = TECH_AT_FIRST_SERVICE field surcharge
-  // produces a basis = SURCHARGE entry credited to the collecting
-  // technician." Reads the agreement's own initialCharge* columns - the terms
-  // of THIS sale (PLAN_BILLING_V1_1.md D4), which is where the charge lives
-  // since Pass 5.5; the billingPlanSnapshot no longer carries it. Fires once
-  // per agreement, at the finalization that fills the agreement's first
-  // SCHEDULED_AGREEMENT_SERVICE slot - there is no separate "collect a
-  // surcharge in the field" action in this codebase yet, so this is the one
-  // point where TECH_AT_FIRST_SERVICE actually resolves to an event.
-  //
-  // This is a SEPARATE credit from the visit's own production value (contract
-  // price / expected visits, createProductionValueEntriesForFinalizedRecord),
-  // which never depends on who collected anything. It exists only for a
-  // cleanout surcharge - extra work priced on top of the contract. A down
-  // payment or prepayment is part of the contract price the technician is
-  // already credited for, so it earns nothing here (owner review 2026-09-13;
-  // unit 15 credited any initial charge type, which double-paid a
-  // tech-collected down payment).
-  //
-  // The credit is INFERRED from a permission, and that inference is only
-  // sound when the technician is the sole permitted collector
-  // (isTechnicianCollectedCleanoutSurcharge). "Either role may collect"
-  // (null) gets no credit: the office may have banked the money at signing,
-  // and a wrong credit is silent while a missing one surfaces at payout.
-  // Transitional, twice over: the field-surcharge unit makes the surcharge a
-  // line the technician adds on the ticket and this keys off that recorded
-  // line, gated by the technician's comp-plan selector for whether surcharge
-  // lines earn production at all (CURRENT_FOCUS.md, compensation entry);
-  // D5's payments ledger records who collected what.
-  //
-  // The amount is resolved through the same shared resolver the forms and
-  // Pass 6's receivable use, so a percent-of-price charge on an agreement
-  // with no price resolves to nothing here too - withheld, not guessed.
-  private async createSurchargeEntryIfConfigured(
+  // Pass 23 (C3.6): whether this actor may record this surcharge on this
+  // service - the post's, the office edit's and the billing read's one gate,
+  // decided before anything is written (shared/field-surcharge.ts). The
+  // agreement's template is read here so the server's refusal and the ticket
+  // dialog's disabled input answer from the same rows.
+  private async resolveFieldSurchargeGateTx(
     tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
-    agreement: Agreement,
-    record: ServiceRecord,
-    finalizedAt: Date,
-  ): Promise<void> {
-    if (!isTechnicianCollectedCleanoutSurcharge(agreement)) {
-      return;
+    input: { actorRole: string; service: Service; adding: boolean },
+  ): Promise<FieldSurchargeRefusal | null> {
+    const isAgreementService = !!input.service.agreementId || input.service.source === "AGREEMENT_GENERATED";
+    let template: AgreementTemplate | undefined;
+    if (input.adding && isAgreementService && input.service.agreementId) {
+      const [agreement] = await tx.select().from(agreements).where(and(eq(agreements.orgId, this.orgId), eq(agreements.id, input.service.agreementId)));
+      if (agreement?.agreementTemplateId) {
+        [template] = await tx
+          .select()
+          .from(agreementTemplates)
+          .where(and(eq(agreementTemplates.orgId, this.orgId), eq(agreementTemplates.id, agreement.agreementTemplateId)));
+      }
     }
-    const initialChargeCents = resolveInitialChargeCents(agreement, agreement.priceCents);
-    if (initialChargeCents == null || initialChargeCents <= 0) {
-      return;
-    }
-
-    const [existingSurcharge] = await tx
-      .select()
-      .from(productionValueEntries)
-      .where(and(
-        eq(productionValueEntries.orgId, this.orgId),
-        eq(productionValueEntries.agreementId, agreement.id),
-        eq(productionValueEntries.basis, "SURCHARGE"),
-      ));
-    if (existingSurcharge) {
-      return;
-    }
-
-    await tx.insert(productionValueEntries).values({
-      orgId: this.orgId,
-      serviceRecordId: record.id,
-      technicianId: record.technicianId,
-      technicianName: record.technicianName,
-      agreementId: agreement.id,
-      serviceTypeId: record.serviceTypeId,
-      basis: "SURCHARGE",
-      productionValueCents: initialChargeCents,
-      contractPriceCentsSnapshot: agreement.priceCents ?? null,
-      expectedServiceCountSnapshot: null,
-      finalizedAt,
-    });
+    return resolveFieldSurchargeGate({ actorRole: input.actorRole, isAgreementService, template: template ?? null, adding: input.adding });
   }
 
   async getProductionValueEntriesByAgreement(agreementId: string): Promise<ProductionValueEntry[]> {
@@ -4805,6 +4820,33 @@ export class DatabaseStorage implements IStorage {
       const nextPriceCents = service ? (input.priceCents === undefined ? service.priceCents : input.priceCents ?? null) : null;
       const serviceChanged = !!service && (nextServiceTypeId !== service.serviceTypeId || nextPriceCents !== service.priceCents);
 
+      // Pass 23 (C3.6): the surcharge line. Omitted, it stays; sent, it is
+      // normalized (no amount clears the label too) and, when that records,
+      // changes or removes one, gated before anything is written - the same
+      // gate as the post's, so the office edits under the technician's rule.
+      const previousSurcharge = surchargeOf(existingRecord);
+      const nextSurcharge = input.surchargeCents === undefined && input.surchargeLabel === undefined
+        ? previousSurcharge
+        : normalizeSurcharge({
+          surchargeCents: input.surchargeCents === undefined ? existingRecord.surchargeCents : input.surchargeCents,
+          surchargeLabel: input.surchargeLabel === undefined ? existingRecord.surchargeLabel : input.surchargeLabel,
+        });
+      const surchargeMoved = surchargeChanged(previousSurcharge, nextSurcharge);
+      if (surchargeMoved) {
+        const [surchargeService] = service
+          ? [service]
+          : existingRecord.serviceId
+            ? await tx.select().from(services).where(and(eq(services.orgId, this.orgId), eq(services.id, existingRecord.serviceId)))
+            : [undefined];
+        if (!surchargeService) {
+          throw new TicketEditError(400, "SERVICE_NOT_FOUND", "This ticket is not linked to a service, so no surcharge line can sit beside its service line.");
+        }
+        const refusal = await this.resolveFieldSurchargeGateTx(tx, { actorRole: input.actorRole ?? "", service: surchargeService, adding: nextSurcharge.surchargeCents != null });
+        if (refusal) {
+          throw new TicketEditError(403, refusal.code, refusal.message);
+        }
+      }
+
       const previousApplications = await tx
         .select()
         .from(productApplications)
@@ -4860,6 +4902,8 @@ export class DatabaseStorage implements IStorage {
         followUpRequired,
         followUpNotes: !followUpRequired ? null : input.followUpNotes === undefined ? existingRecord.followUpNotes : input.followUpNotes?.trim() || null,
         customerSignature: input.customerSignature === undefined ? existingRecord.customerSignature : input.customerSignature ?? false,
+        surchargeCents: nextSurcharge.surchargeCents,
+        surchargeLabel: nextSurcharge.surchargeLabel,
         // The ticket's type is the Service's, copied at post; a type change
         // on the Service follows onto the ticket the same way.
         serviceTypeId: nextServiceTypeId,
@@ -4926,6 +4970,21 @@ export class DatabaseStorage implements IStorage {
         await this.invalidateServiceReportTx(tx, record.id);
       }
 
+      // D7 (Pass 23): a surcharge recorded, changed or removed is a money
+      // mutation of its own beside the content's `ticket_edited` - one row,
+      // the two surcharge fields before and after, so the diff shows exactly
+      // what moved.
+      if (surchargeMoved) {
+        await this.recordAuditLogTx(tx, {
+          entityType: "service_record",
+          entityId: record.id,
+          action: "surcharge_recorded",
+          actor: input.actor,
+          before: previousSurcharge,
+          after: nextSurcharge,
+        });
+      }
+
       if (record.serviceId && record.technicianId !== existingRecord.technicianId) {
         await tx
           .update(services)
@@ -4969,6 +5028,21 @@ export class DatabaseStorage implements IStorage {
       const previousApplications = existingRecord
         ? await tx.select().from(productApplications).where(and(eq(productApplications.orgId, this.orgId), eq(productApplications.serviceRecordId, existingRecord.id)))
         : [];
+
+      // Pass 23 (C3.6): the surcharge line as the body sends it - a post
+      // writes the ticket whole, so an omitted amount means none and a
+      // re-post without it removes one - gated before anything is written
+      // whenever it records, changes or removes one (ADD_FIELD_SURCHARGE;
+      // the agreement template's toggle when adding to an agreement service).
+      const previousSurcharge = surchargeOf(existingRecord);
+      const nextSurcharge = normalizeSurcharge(input);
+      const surchargeMoved = surchargeChanged(previousSurcharge, nextSurcharge);
+      if (surchargeMoved) {
+        const refusal = await this.resolveFieldSurchargeGateTx(tx, { actorRole: input.actorRole, service, adding: nextSurcharge.surchargeCents != null });
+        if (refusal) {
+          throw new TicketEditError(403, refusal.code, refusal.message);
+        }
+      }
 
       let appointment: Appointment | undefined;
       const appointmentId = input.appointmentId || service.appointmentId || null;
@@ -5036,6 +5110,8 @@ export class DatabaseStorage implements IStorage {
         followUpRequired: input.followUpRequired ?? false,
         followUpNotes: input.followUpRequired ? input.followUpNotes?.trim() || null : null,
         customerSignature: input.customerSignature ?? false,
+        surchargeCents: nextSurcharge.surchargeCents,
+        surchargeLabel: nextSurcharge.surchargeLabel,
         confirmed: false,
         ticketStatus: "OFFICE_REVIEW_PENDING",
         postedAt: new Date(),
@@ -5105,6 +5181,19 @@ export class DatabaseStorage implements IStorage {
         // Pass 22 (C3.5): a re-post rewrites the ticket, so its stored
         // service report is retired with it.
         await this.invalidateServiceReportTx(tx, serviceRecord.id);
+      }
+
+      // D7 (Pass 23): the surcharge recorded on a first post, or changed or
+      // removed by a re-post - one row, the two fields before and after.
+      if (surchargeMoved) {
+        await this.recordAuditLogTx(tx, {
+          entityType: "service_record",
+          entityId: serviceRecord.id,
+          action: "surcharge_recorded",
+          actor: input.actor,
+          before: previousSurcharge,
+          after: nextSurcharge,
+        });
       }
 
       const [postedService] = await tx
@@ -6088,9 +6177,10 @@ export class DatabaseStorage implements IStorage {
       }
     }
 
-    // Visits in the listed tickets' order - generate's order - each with the
-    // agreements behind all of its finalized tickets.
-    const visits = new Map<string, { appointmentId: string | null; serviceRecordId: string | null; locationId: string | null; agreementIds: Set<string> }>();
+    // Visits in the listed tickets' order - generate's order - each with its
+    // finalized tickets (the whole visit, as generate bills it) and the
+    // agreements behind them.
+    const visits = new Map<string, { appointmentId: string | null; serviceRecordId: string | null; locationId: string | null; members: ServiceRecord[]; agreementIds: Set<string> }>();
     for (const record of eligible) {
       const key = record.appointmentId ? `appointment:${record.appointmentId}` : `serviceRecord:${record.id}`;
       if (visits.has(key)) continue;
@@ -6104,6 +6194,7 @@ export class DatabaseStorage implements IStorage {
         appointmentId: record.appointmentId ?? null,
         serviceRecordId: record.appointmentId ? null : record.id,
         locationId: record.locationId ?? null,
+        members,
         agreementIds,
       });
     }
@@ -6114,25 +6205,67 @@ export class DatabaseStorage implements IStorage {
       : [];
     const accountIdByLocationId = new Map(locationRows.map((location) => [location.id, location.accountId ?? null]));
 
+    // Pass 23 (C3.6): the service type names the surcharge descriptions carry.
+    const surchargeTypeIds = Array.from(new Set(
+      Array.from(recordsInPlay.values())
+        .filter((record) => surchargeOf(record).surchargeCents != null)
+        .map((record) => record.serviceTypeId)
+        .filter((id): id is string => !!id),
+    ));
+    const surchargeTypeRows = surchargeTypeIds.length
+      ? await db.select().from(serviceTypes).where(and(eq(serviceTypes.orgId, this.orgId), inArray(serviceTypes.id, surchargeTypeIds)))
+      : [];
+    const serviceTypeNameById = new Map(surchargeTypeRows.map((row) => [row.id, row.name]));
+
     const charges: BatchInvoicePreviewCharge[] = [];
     const chargedAgreementIds = new Set<string>();
     for (const visit of Array.from(visits.values())) {
+      const accountId = visit.locationId ? accountIdByLocationId.get(visit.locationId) ?? null : null;
+
+      // Pass 23 (C3.6): each finalized ticket's field surcharge - the
+      // SURCHARGE line generate appends beside its service line, taxed the
+      // same way - listed on its visit, in ticket order.
+      for (const member of visit.members) {
+        const surcharge = surchargeOf(member);
+        if (surcharge.surchargeCents == null) continue;
+        const taxDecision = await this.resolveTaxDecision(db as any, {
+          accountId,
+          locationId: member.locationId ?? null,
+          serviceTypeId: member.serviceTypeId ?? null,
+          amountCents: surcharge.surchargeCents,
+        });
+        charges.push({
+          kind: "SURCHARGE",
+          appointmentId: visit.appointmentId,
+          serviceRecordId: visit.serviceRecordId,
+          agreementId: null,
+          agreementName: null,
+          ticketServiceRecordId: member.id,
+          description: surchargeLineDescription(
+            surcharge.surchargeLabel ?? DEFAULT_SURCHARGE_LABEL,
+            serviceTypeNameById.get(member.serviceTypeId ?? "") ?? "Service",
+            new Date(member.serviceDate).toLocaleDateString(),
+          ),
+          amountCents: surcharge.surchargeCents,
+          taxCents: taxDecision.taxCents,
+        });
+      }
+
       const candidates = Array.from(visit.agreementIds)
         .filter((agreementId) => !chargedAgreementIds.has(agreementId))
         .map((agreementId) => agreementContextById.get(agreementId)?.agreement)
         .filter((agreement): agreement is Agreement => !!agreement);
       if (!candidates.length) continue;
-      const pending = await this.resolvePendingInitialChargesTx(db, {
-        agreements: candidates,
-        accountId: visit.locationId ? accountIdByLocationId.get(visit.locationId) ?? null : null,
-      });
+      const pending = await this.resolvePendingInitialChargesTx(db, { agreements: candidates, accountId });
       for (const charge of pending) {
         chargedAgreementIds.add(charge.agreement.id);
         charges.push({
+          kind: "INITIAL_CHARGE",
           appointmentId: visit.appointmentId,
           serviceRecordId: visit.serviceRecordId,
           agreementId: charge.agreement.id,
           agreementName: charge.agreement.agreementName,
+          ticketServiceRecordId: null,
           description: charge.description,
           amountCents: charge.amountCents,
           taxCents: charge.taxDecision.taxCents,
@@ -6195,21 +6328,24 @@ export class DatabaseStorage implements IStorage {
       }
       const isAgreementGeneratedService = !!draftService.agreementId || draftService.source === "AGREEMENT_GENERATED";
       const mayReprice = !isAgreementGeneratedService || can(draft.actorRole, PERMISSIONS.ADJUST_PRICE_AGREEMENT);
-      draftEcho = invoice && invoiced
-        ? {
-          serviceId: draft.serviceId,
-          priceCents: draft.priceCents,
-          applied: false,
-          note: `The visit is invoiced (${invoice.invoiceNumber}): the figures are the invoice's, and a price difference is a correction on the invoice.`,
-        }
-        : !mayReprice
-          ? {
-            serviceId: draft.serviceId,
-            priceCents: draft.priceCents,
-            applied: false,
-            note: `Agreement price is locked - ${rolesWithPermission(PERMISSIONS.ADJUST_PRICE_AGREEMENT).join(" or ")} may re-price it; the stored figures stand.`,
-          }
-          : { serviceId: draft.serviceId, priceCents: draft.priceCents, applied: true, note: null };
+      const invoicedNote = invoice && invoiced
+        ? `The visit is invoiced (${invoice.invoiceNumber}): the figures are the invoice's, and a price difference is a correction on the invoice.`
+        : null;
+      const lockedNote = `Agreement price is locked - ${rolesWithPermission(PERMISSIONS.ADJUST_PRICE_AGREEMENT).join(" or ")} may re-price it; the stored figures stand.`;
+      // Pass 23 (C3.6): the surcharge half under the post's own gate, so the
+      // figures preview exactly what Post will accept or refuse.
+      const surchargeRefusal = draft.surchargeCents === undefined || invoicedNote
+        ? null
+        : await this.resolveFieldSurchargeGateTx(db as any, { actorRole: draft.actorRole, service: draftService, adding: draft.surchargeCents > 0 });
+      draftEcho = {
+        serviceId: draft.serviceId,
+        priceCents: draft.priceCents ?? null,
+        applied: draft.priceCents !== undefined && !invoicedNote && mayReprice,
+        note: draft.priceCents === undefined ? null : invoicedNote ?? (mayReprice ? null : lockedNote),
+        surchargeCents: draft.surchargeCents ?? null,
+        surchargeApplied: draft.surchargeCents !== undefined && !invoicedNote && !surchargeRefusal,
+        surchargeNote: draft.surchargeCents === undefined ? null : invoicedNote ?? surchargeRefusal?.message ?? null,
+      };
     }
 
     const baseLine = (service: Service): Pick<VisitServiceBilling, "serviceId" | "serviceRecordId" | "serviceTypeName" | "agreementId"> => ({
@@ -6257,8 +6393,10 @@ export class DatabaseStorage implements IStorage {
 
       for (const service of visitServices) {
         const record = recordByServiceId.get(service.id);
-        const line = lineItems.find((item) => item.serviceId === service.id)
-          ?? (record ? lineItems.find((item) => item.serviceRecordId === record.id) : undefined);
+        // The service's own line - a SURCHARGE line carries the same ids and
+        // is paired below.
+        const line = lineItems.find((item) => item.lineType !== "SURCHARGE" && item.serviceId === service.id)
+          ?? (record ? lineItems.find((item) => item.lineType !== "SURCHARGE" && item.serviceRecordId === record.id) : undefined);
         if (!line) {
           // A service that joined the visit after it was invoiced (its ticket
           // is FLAGGED_FOR_REVIEW, Pass 4). Its price is unknown here, not $0.
@@ -6276,6 +6414,29 @@ export class DatabaseStorage implements IStorage {
           coaAvailableCents: 0,
           dueTodayCents: Math.max(line.amountCents + line.taxCents - appliedCents, 0),
           note: noteMatch?.[1] ?? null,
+        });
+      }
+
+      // Pass 23 (C3.6): each ticket's SURCHARGE line, paired with its service
+      // by the ids the line carries, in line order.
+      for (const line of lineItems.filter((item) => item.lineType === "SURCHARGE")) {
+        const service = visitServices.find((candidate) => candidate.id === line.serviceId)
+          ?? visitServices.find((candidate) => !!line.serviceRecordId && recordByServiceId.get(candidate.id)?.id === line.serviceRecordId);
+        const record = line.serviceRecordId ? records.find((candidate) => candidate.id === line.serviceRecordId) : undefined;
+        const appliedCents = appliedByLineId.get(line.id) ?? 0;
+        charges.push({
+          kind: "SURCHARGE",
+          serviceId: service?.id ?? line.serviceId ?? "",
+          serviceRecordId: line.serviceRecordId ?? null,
+          serviceTypeName: service ? baseLine(service).serviceTypeName : "Service",
+          label: surchargeOf(record).surchargeLabel ?? line.description.split(" - ")[0],
+          description: line.description,
+          collectedBy: null,
+          priceCents: line.amountCents,
+          taxCents: line.taxCents,
+          coaAppliedCents: appliedCents,
+          coaAvailableCents: 0,
+          dueTodayCents: Math.max(line.amountCents + line.taxCents - appliedCents, 0),
         });
       }
 
@@ -6356,6 +6517,41 @@ export class DatabaseStorage implements IStorage {
           // Show the service that generation will refuse, with its reason,
           // rather than a $0 the technician would read as "nothing to collect".
           lines.push(unresolved(service, err?.message ?? "Cannot be billed"));
+        }
+
+        // Pass 23 (C3.6): the ticket's field surcharge - the dialog's unposted
+        // one when the draft carries it and the gate allows (0 previews its
+        // removal), else the record's - priced as the SURCHARGE line the
+        // invoice will carry, taxed as the service line is, BILLABLE even when
+        // the service itself is covered. Independent of the service line: a
+        // service that cannot be priced can still carry one.
+        const draftSurcharge = draftEcho?.surchargeApplied && service.id === draftEcho.serviceId ? draftEcho.surchargeCents : null;
+        const storedSurcharge = surchargeOf(record);
+        const surchargeCents = draftSurcharge ?? storedSurcharge.surchargeCents;
+        if (surchargeCents != null && surchargeCents > 0) {
+          const label = storedSurcharge.surchargeLabel ?? DEFAULT_SURCHARGE_LABEL;
+          const serviceTypeName = baseLine(service).serviceTypeName;
+          const serviceDate = record ? new Date(record.serviceDate) : new Date(appointment.scheduledDate);
+          const surchargeTax = (await this.resolveTaxDecision(db as any, {
+            accountId,
+            locationId: record?.locationId ?? service.locationId ?? locationId,
+            serviceTypeId: record?.serviceTypeId ?? service.serviceTypeId ?? null,
+            amountCents: surchargeCents,
+          })).taxCents;
+          charges.push({
+            kind: "SURCHARGE",
+            serviceId: service.id,
+            serviceRecordId: record?.id ?? null,
+            serviceTypeName,
+            label,
+            description: surchargeLineDescription(label, serviceTypeName, serviceDate.toLocaleDateString()),
+            collectedBy: null,
+            priceCents: surchargeCents,
+            taxCents: surchargeTax,
+            coaAppliedCents: 0,
+            coaAvailableCents: 0,
+            dueTodayCents: surchargeCents + surchargeTax,
+          });
         }
       }
 
@@ -7163,27 +7359,56 @@ export class DatabaseStorage implements IStorage {
           taxable: false,
           taxCents: 0,
         });
-        continue;
+      } else {
+        const taxDecision = await this.resolveTaxDecision(tx, {
+          accountId: input.accountId,
+          locationId: record?.locationId ?? service?.locationId ?? input.locationId,
+          serviceTypeId,
+          amountCents: billing.amountCents,
+        });
+        taxSnapshots.push({ serviceRecordId: record?.id ?? null, ...taxDecision.snapshot });
+
+        lines.push({
+          serviceId: service?.id ?? null,
+          serviceRecordId: record?.id ?? null,
+          lineType: "SERVICE",
+          description,
+          unitPriceCents: billing.amountCents,
+          amountCents: billing.amountCents,
+          taxable: taxDecision.taxable,
+          taxCents: taxDecision.taxCents,
+        });
       }
 
-      const taxDecision = await this.resolveTaxDecision(tx, {
-        accountId: input.accountId,
-        locationId: record?.locationId ?? service?.locationId ?? input.locationId,
-        serviceTypeId,
-        amountCents: billing.amountCents,
-      });
-      taxSnapshots.push({ serviceRecordId: record?.id ?? null, ...taxDecision.snapshot });
-
-      lines.push({
-        serviceId: service?.id ?? null,
-        serviceRecordId: record?.id ?? null,
-        lineType: "SERVICE",
-        description,
-        unitPriceCents: billing.amountCents,
-        amountCents: billing.amountCents,
-        taxable: taxDecision.taxable,
-        taxCents: taxDecision.taxCents,
-      });
+      // Pass 23 (C3.6): the ticket's field surcharge as its own SURCHARGE
+      // line right after the service line - "<label> - <service type> -
+      // <date>", carrying the same service and ticket ids, taxed as a
+      // SERVICE line is (the same rule, the same service type), chargeable
+      // even when the service is covered: it is owed in addition to the
+      // contract price (D6) and never reduces it (it is not an initial
+      // charge, so resolveRemainingContractPriceCents never sees it). Only
+      // a ticket carries one - a DRAFT priced before the ticket exists has
+      // no surcharge line, and issue re-prices from the finalized ticket.
+      const surcharge = surchargeOf(record);
+      if (surcharge.surchargeCents != null) {
+        const surchargeTax = await this.resolveTaxDecision(tx, {
+          accountId: input.accountId,
+          locationId: record?.locationId ?? service?.locationId ?? input.locationId,
+          serviceTypeId,
+          amountCents: surcharge.surchargeCents,
+        });
+        taxSnapshots.push({ serviceRecordId: record?.id ?? null, lineType: "SURCHARGE", ...surchargeTax.snapshot });
+        lines.push({
+          serviceId: service?.id ?? null,
+          serviceRecordId: record?.id ?? null,
+          lineType: "SURCHARGE",
+          description: surchargeLineDescription(surcharge.surchargeLabel ?? DEFAULT_SURCHARGE_LABEL, serviceType?.name ?? "Service", unit.serviceDate.toLocaleDateString()),
+          unitPriceCents: surcharge.surchargeCents,
+          amountCents: surcharge.surchargeCents,
+          taxable: surchargeTax.taxable,
+          taxCents: surchargeTax.taxCents,
+        });
+      }
     }
 
     // Pass 11d: the down payment of each agreement behind the visit rides
@@ -9892,6 +10117,9 @@ export class DatabaseStorage implements IStorage {
       followUpRequired: !!record.followUpRequired,
       followUpNotes: record.followUpRequired ? record.followUpNotes?.trim() || null : null,
       customerSignature: !!record.customerSignature,
+      // Pass 23 (C3.6): the field surcharge the ticket carries.
+      surchargeCents: surchargeOf(record).surchargeCents,
+      surchargeLabel: surchargeOf(record).surchargeLabel,
       branding: parties.branding,
     };
     return { context, fileName: serviceReportFileName({ serviceDate: record.serviceDate, locationName: parties.locationName }) };
@@ -10005,6 +10233,9 @@ export class DatabaseStorage implements IStorage {
       followUpRequired,
       followUpNotes: followUpRequired ? input.followUpNotes?.trim() || null : null,
       customerSignature: input.customerSignature ?? false,
+      // Pass 23 (C3.6): the surcharge as typed, as the post would store it.
+      surchargeCents: normalizeSurcharge(input).surchargeCents,
+      surchargeLabel: normalizeSurcharge(input).surchargeLabel,
       branding: parties.branding,
     };
     const pdf = await renderServiceReportPdf(context);

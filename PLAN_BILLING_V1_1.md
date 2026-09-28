@@ -144,6 +144,20 @@ a real issued invoice at agreement start. Three tools, three jobs:
 > price once at start, any term length, visits at $0), so the `PREPAY_FULL` initial-charge type
 > overlaps it and should be folded when item 2 trims the vocabulary.
 >
+> **Items 2 and 3 built as Pass 23** (`feature/phase-3-field-surcharge-line`, 2026-09-27,
+> `PLAN_ROADMAP_V2.md` C3.6): the surcharge is a line the technician adds on the ticket
+> (`service_records.surchargeCents` / `surchargeLabel`, `shared/field-surcharge.ts`), its own
+> `SURCHARGE` line on the visit invoice beside the service line, taxed the same way, never part of
+> the contract price; the template holds only the toggle (`agreementTemplates.fieldSurchargeAllowed`;
+> `billingPlans.fieldAddableSurcharge` dropped); `CLEANOUT_SURCHARGE` and `PREPAY_FULL` left the
+> vocabulary (the one agreement carrying a cleanout was cleared at boot, its old credit row left as
+> history; the fold above is done - `INITIAL_CHARGE_TYPES` is `["DOWN_PAYMENT"]`); and the SURCHARGE
+> production credit keys off the recorded line - until the comp-plan selector exists, a recorded
+> line ALWAYS credits the posting technician (transitional, development rule 4,
+> `SURCHARGE_CREDIT_RULE`), never inferred from who may collect. Every change to a surcharge is
+> audited as `surcharge_recorded` (D7). The as-built record is "Shipped in Pass 23" at the end of
+> `PLAN_ROADMAP_V2.md` Part D.
+>
 > **Owner review of 2026-09-21** (live test on James Peterson (Home), after Pass 11b) — two items,
 > each assessed against the code and answered the same day. Scheduled as Passes 11c and 11d in
 > `PLAN_ROADMAP_V2.md` (C2.1c, C2.1d), ahead of Pass 12.

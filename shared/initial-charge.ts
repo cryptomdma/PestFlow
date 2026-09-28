@@ -1,6 +1,11 @@
 // PLAN_BILLING_V1_1.md D4 (owner correction, 2026-09-09): the initial charge -
-// a down payment, cleanout surcharge, or prepay-in-full owed at agreement
-// start - is a term of ONE sale, derived from that agreement's contract price.
+// a down payment owed at agreement start - is a term of ONE sale, derived
+// from that agreement's contract price. (Two more types once lived here:
+// CLEANOUT_SURCHARGE and PREPAY_FULL left in Pass 23, C3.6 - a cleanout
+// surcharge is not a term of the sale but a line the technician adds on the
+// ticket, shared/field-surcharge.ts, and paid-in-full is a PREPAID_TERM
+// billing plan, shared/billing-plan.ts. The one-shot in
+// server/agreement-bootstrap.ts cleared the rows that carried them.)
 // It lives on the Agreement (the actual) and the Agreement Template (the
 // default), the same defaultPriceCents -> priceCents relationship the rest of
 // the form uses. It does NOT live on the Billing Plan: a plan says how and
@@ -13,7 +18,7 @@
 // resolver, so the credited/invoiced amount and the amount the office saw
 // when selling can never disagree.
 
-export const INITIAL_CHARGE_TYPES = ["DOWN_PAYMENT", "CLEANOUT_SURCHARGE", "PREPAY_FULL"] as const;
+export const INITIAL_CHARGE_TYPES = ["DOWN_PAYMENT"] as const;
 export type InitialChargeType = (typeof INITIAL_CHARGE_TYPES)[number];
 
 /** FLAT is `initialChargeCents`; PERCENT_OF_PRICE is `initialChargePercentBasisPoints` of the contract price. */
@@ -43,9 +48,10 @@ export interface InitialChargeFields {
    * The exception to the owner's rule (D4 review, 2026-09-13) that a down
    * payment COUNTS TOWARD the contract price: $400 agreement, $100 down,
    * $300 remains to bill through the plan. True means the charge is owed on
-   * top of the price instead. Only meaningful for a DOWN_PAYMENT - a cleanout
-   * surcharge is inherently additional and a prepayment in full is the price -
-   * so normalization forces it false for every other type.
+   * top of the price instead. Meaningful only with a DOWN_PAYMENT (the one
+   * type) - normalization forces it false when there is no charge. A field
+   * surcharge (shared/field-surcharge.ts) is inherently additional and is
+   * not an initial charge at all.
    */
   initialChargeInAdditionToPrice: boolean;
 }
@@ -115,15 +121,12 @@ export function normalizeInitialCharge(input: InitialChargeInput): InitialCharge
 
 /**
  * Whether the initial charge is part of the contract price (the default) or
- * owed on top of it. A cleanout surcharge is always additional - it prices
- * work the sale could not see. A down payment counts toward the price unless
- * the sale says otherwise. A prepayment in full IS the price.
+ * owed on top of it. A down payment counts toward the price unless the sale
+ * says otherwise. (A field surcharge is always additional, and it is a
+ * ticket line, never an initial charge - shared/field-surcharge.ts.)
  */
 export function initialChargeCountsTowardPrice(charge: Pick<InitialChargeFields, "initialChargeType" | "initialChargeInAdditionToPrice">): boolean {
   if (!charge.initialChargeType) {
-    return false;
-  }
-  if (charge.initialChargeType === "CLEANOUT_SURCHARGE") {
     return false;
   }
   return !charge.initialChargeInAdditionToPrice;
@@ -196,8 +199,8 @@ export function validateInitialCharge(charge: InitialChargeFields): string | nul
 /**
  * The amount actually owed at start, in cents. Null when there is no charge,
  * or when a percent charge has no contract price to resolve against - the
- * caller decides what that means (the form warns, the surcharge credit
- * withholds, Pass 6's receivable refuses).
+ * caller decides what that means (the form warns, the visit invoice skips
+ * the line, Pass 6's receivable refuses).
  */
 export function resolveInitialChargeCents(
   charge: InitialChargeFields,
@@ -215,33 +218,12 @@ export function resolveInitialChargeCents(
   return charge.initialChargeCents;
 }
 
-/**
- * True only when the technician is the SOLE permitted collector. This is the
- * narrowing D4 requires: the collector field is a permission, not a record of
- * who took the money, so "either may collect" (null) cannot justify crediting
- * the technician - the office may have banked it at signing. Credit keys off
- * the recorded collection event once D5's payments ledger records one; until
- * then a withheld credit is the visible failure and a wrong one is silent.
- */
-export function isTechnicianSoleInitialChargeCollector(charge: Pick<InitialChargeFields, "initialChargeType" | "initialChargeCollectedBy">): boolean {
-  return !!charge.initialChargeType && charge.initialChargeCollectedBy === "TECH_AT_FIRST_SERVICE";
-}
-
-/**
- * The one case that earns the technician a SEPARATE production-value credit
- * (basis SURCHARGE): a cleanout surcharge, which is extra work priced on top
- * of the contract, that only the technician may collect. A down payment or a
- * prepayment is part of the contract price, and the technician's production
- * for that price is already contract price / expected visits - crediting the
- * collection again would pay the same money twice (owner review 2026-09-13).
- * Transitional: goes away once the surcharge is a line the technician adds
- * on the ticket, the credit keys off that recorded line, and the technician's
- * comp plan says whether surcharge lines earn production at all (a per-plan
- * selector, owner 2026-09-13 - see CURRENT_FOCUS.md, compensation entry).
- */
-export function isTechnicianCollectedCleanoutSurcharge(charge: Pick<InitialChargeFields, "initialChargeType" | "initialChargeCollectedBy">): boolean {
-  return charge.initialChargeType === "CLEANOUT_SURCHARGE" && isTechnicianSoleInitialChargeCollector(charge);
-}
+// The two predicates that once sat here - isTechnicianSoleInitialChargeCollector
+// and isTechnicianCollectedCleanoutSurcharge, the transitional SURCHARGE
+// production credit inferred from the collector permission - left in Pass 23
+// (C3.6): the credit keys off the surcharge line recorded on the ticket
+// (shared/field-surcharge.ts, SURCHARGE_CREDIT_RULE), never off who may
+// collect. The collector field is sale logistics only.
 
 type TemplateInitialChargeInput = Partial<Record<keyof TemplateInitialChargeFields, unknown>>;
 
@@ -274,10 +256,6 @@ export function formatInitialChargeType(type: string | null | undefined): string
   switch (type) {
     case "DOWN_PAYMENT":
       return "Down payment";
-    case "CLEANOUT_SURCHARGE":
-      return "Cleanout surcharge";
-    case "PREPAY_FULL":
-      return "Prepay in full";
     default:
       return "No initial charge";
   }
@@ -344,7 +322,7 @@ function describeRemainingContractPrice(charge: InitialChargeFields, contractPri
     return "";
   }
   if (!initialChargeCountsTowardPrice(charge)) {
-    return charge.initialChargeType === "CLEANOUT_SURCHARGE" ? "Charged in addition to the contract price. " : "In addition to the contract price. ";
+    return "In addition to the contract price. ";
   }
   const remaining = resolveRemainingContractPriceCents(charge, contractPriceCents);
   if (remaining == null || contractPriceCents == null) {
@@ -359,11 +337,10 @@ function describeRemainingContractPrice(charge: InitialChargeFields, contractPri
 // it rides the agreement's first visit invoice as an INITIAL_CHARGE line,
 // whoever collects it, and the automatic standalone invoice at agreement
 // creation is gone. The explicit "issue up front" path on the agreement card
-// stays for a customer who wants a deposit invoice before the visit. The
-// other two types never ride a visit - they are issued only from the card
-// until the field-surcharge unit (C3.6) retires them.
+// stays for a customer who wants a deposit invoice before the visit. (The
+// two types that were issued only from the card left in Pass 23, C3.6.)
 
-/** True for the one type that bills on the first visit's invoice. */
+/** True for a charge that bills on the first visit's invoice - every initial charge, now that DOWN_PAYMENT is the one type. */
 export function initialChargeRidesFirstVisit(charge: Pick<InitialChargeFields, "initialChargeType">): boolean {
   return charge.initialChargeType === "DOWN_PAYMENT";
 }
@@ -397,9 +374,9 @@ export interface InitialChargeInvoiceRef {
  * What GET /api/agreements/:id/initial-charge-status answers, and what the
  * agreement card renders. One INITIAL_CHARGE billing event per agreement is
  * the record; it is LIVE when it has no invoice (settled outside the ledger)
- * or its invoice is not VOID. A charge with no live event is PENDING: a down
- * payment rides the next visit invoice, anything else waits for the card's
- * explicit button.
+ * or its invoice is not VOID. A charge with no live event is PENDING: it
+ * rides the next visit invoice, or the card's explicit button issues it up
+ * front.
  */
 export interface AgreementInitialChargeStatus {
   kind: "NONE" | "PENDING" | "ISSUED" | "SETTLED_OUTSIDE_LEDGER";

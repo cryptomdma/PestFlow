@@ -1,4 +1,5 @@
 import PDFDocument from "pdfkit";
+import { formatCents } from "@shared/money";
 import type { ServiceReportDocumentContext, ServiceReportMaterialLine } from "./types";
 
 // The service report (PLAN_ROADMAP_V2.md C3.5, Pass 22; B11; canon §12): the
@@ -213,8 +214,16 @@ export function drawServiceReport(doc: Doc, context: ServiceReportDocumentContex
   ];
   const detailRows: Row[] = [
     { cells: ["Service type", context.serviceTypeName ?? "-"], mutedCells: [0] },
-    { cells: ["Target pests", context.targetPests.length ? context.targetPests.join(", ") : "None recorded"], mutedCells: [0] },
   ];
+  // Pass 23 (C3.6): the field surcharge, as the invoice will carry it - in
+  // addition to the service, its own line.
+  if (context.surchargeCents != null) {
+    detailRows.push({
+      cells: ["Surcharge", `${context.surchargeLabel ?? "Surcharge"} - ${formatCents(context.surchargeCents)} (in addition to the service, billed as its own line on the visit invoice)`],
+      mutedCells: [0],
+    });
+  }
+  detailRows.push({ cells: ["Target pests", context.targetPests.length ? context.targetPests.join(", ") : "None recorded"], mutedCells: [0] });
   if (context.areasServiced) detailRows.push({ cells: ["Areas serviced", context.areasServiced], mutedCells: [0] });
   detailRows.push({
     cells: ["Follow-up", context.followUpRequired ? `Required${context.followUpNotes ? ` - ${context.followUpNotes}` : ""}` : "None required"],

@@ -5,11 +5,14 @@ import { formatCents } from "@shared/money";
 import { formatInitialChargeCollector } from "@shared/initial-charge";
 import {
   describeServiceDesignation,
+  describeVisitChargeKind,
   formatServiceDesignation,
+  visitChargeKey,
   type ServiceBillingDesignation,
   type VisitBillingSummary,
   type VisitChargeBilling,
   type VisitServiceBilling,
+  type VisitSurchargeBilling,
 } from "@shared/visit-billing";
 
 // PLAN_BILLING_V1_1.md D6 - the field's view of money on a visit: Price /
@@ -20,17 +23,30 @@ import {
 // coverage or an amount from agreementId or a plan - that is the drift the
 // server-side resolver exists to prevent.
 
-/** Pass 19 (C3.3): the ticket's unposted price, priced by the read (VisitBillingDraft in shared/visit-billing.ts says what came of it). */
+/**
+ * Pass 19 (C3.3): the ticket's unposted price, priced by the read
+ * (VisitBillingDraft in shared/visit-billing.ts says what came of it). Pass
+ * 23 (C3.6): the unposted surcharge rides the same read, alone or beside the
+ * price; 0 previews its removal.
+ */
 export interface VisitBillingDraftPrice {
   serviceId: string;
-  priceCents: number;
+  priceCents?: number;
+  surchargeCents?: number;
 }
 
 // The draft rides the key's last segment as the query string, so a changed
 // draft is a new read and every ["/api/appointments"] prefix invalidation
 // still reaches it.
 export function visitBillingSummaryQueryKey(appointmentId: string, draft?: VisitBillingDraftPrice | null) {
-  const search = draft ? `?serviceId=${encodeURIComponent(draft.serviceId)}&priceCents=${draft.priceCents}` : "";
+  const params = draft
+    ? [
+      `serviceId=${encodeURIComponent(draft.serviceId)}`,
+      ...(draft.priceCents !== undefined ? [`priceCents=${draft.priceCents}`] : []),
+      ...(draft.surchargeCents !== undefined ? [`surchargeCents=${draft.surchargeCents}`] : []),
+    ]
+    : [];
+  const search = params.length ? `?${params.join("&")}` : "";
   return ["/api/appointments", appointmentId, `billing-summary${search}`] as const;
 }
 
@@ -97,24 +113,41 @@ export function ServiceBillingFigures({ line, invoiced, className, testId }: { l
   );
 }
 
-/** The collector field read as a permission, for the charge row. */
+/** What the charge row says under its description: the collector field read as a permission for a down payment; the ticket for a surcharge. */
 function describeChargeCollector(charge: VisitChargeBilling): string {
+  if (charge.kind === "SURCHARGE") {
+    return `Field surcharge recorded on the ${charge.serviceTypeName} ticket - billed as its own line in addition to the service, collected with it.`;
+  }
   return `Down payment on the agreement's first visit. Collected by ${formatInitialChargeCollector(charge.collectedBy)}.`;
+}
+
+/** "surcharge $54.13 + down payment $99.95": the visit's charges summed by kind, in the order they appear. */
+function describeVisitChargeSum(charges: VisitChargeBilling[]): string {
+  const totals = new Map<string, number>();
+  for (const charge of charges) {
+    const kind = describeVisitChargeKind(charge);
+    totals.set(kind, (totals.get(kind) ?? 0) + charge.dueTodayCents);
+  }
+  return Array.from(totals.entries()).map(([kind, cents]) => `${kind} ${formatCents(cents)}`).join(" + ");
 }
 
 /**
  * The technician's reader of the collector field (Pass 11d): the visit's
  * down payment is called out unless only the office may collect it, in which
  * case the line says so and the collect step leaves it out of the default
- * amount. Nothing when the visit carries no charge.
+ * amount. Nothing when the visit carries no down payment - a surcharge
+ * (Pass 23) needs no callout, it is the technician's own line and sits in
+ * the rows.
  */
 export function VisitInitialChargeCallout({ summary, className }: { summary: VisitBillingSummary | undefined; className?: string }) {
-  if (!summary || !summary.charges.length) {
+  const initialCharges = summary?.charges.filter((charge) => charge.kind === "INITIAL_CHARGE") ?? [];
+  if (!summary || !initialCharges.length) {
     return null;
   }
   return (
     <div className={cn("space-y-1", className)} data-testid="callout-visit-initial-charge">
-      {summary.charges.map((charge) => {
+      {initialCharges.map((charge) => {
+        if (charge.kind !== "INITIAL_CHARGE") return null;
         const officeOnly = charge.collectedBy === "OFFICE_AT_SIGNING";
         const settled = charge.dueTodayCents <= 0;
         const tail = settled
@@ -182,15 +215,18 @@ export function ServiceBillingBlock({
   // The resolver's "covered by agreement" note repeats what the designation
   // sentence already says; the callback notes do not.
   const noteSuffix = line.priceCents != null && line.note && line.note !== "covered by agreement" ? ` (${line.note})` : "";
-  // The figures above are this SERVICE's. When the visit also carries the
-  // agreement's down payment (Pass 11d) the visit owes more than the service
-  // does, so say so here in the service's own words - "nothing due for the
-  // service itself", never "nothing due today" - and reconcile the two
+  // The figures above are this SERVICE's. When the visit also carries a
+  // charge - this ticket's surcharge (Pass 23), another ticket's, or the
+  // agreement's down payment (Pass 11d) - the visit owes more than the
+  // service does, so say so here in the service's own words - "nothing due
+  // for the service itself", never "nothing due today" - and reconcile the
   // numbers in one line, so the ticket (which shows no visit total) and the
   // appointment details (whose visit total sits below several cards) both
   // read the same way as the collect step.
-  const chargeCents = summary.charges.reduce((sum, charge) => sum + charge.dueTodayCents, 0);
   const hasCharges = summary.charges.length > 0;
+  const chargeSum = describeVisitChargeSum(summary.charges);
+  const ownSurcharge = summary.charges.find((charge): charge is VisitSurchargeBilling => charge.kind === "SURCHARGE" && charge.serviceId === serviceId) ?? null;
+  const draft = summary.draft && summary.draft.serviceId === serviceId ? summary.draft : null;
   const designationText = hasCharges && line.designation === "PRODUCTION"
     ? "Covered by agreement - nothing due for the service itself"
     : describeServiceDesignation(line.designation);
@@ -203,18 +239,34 @@ export function ServiceBillingBlock({
       <ServiceBillingFigures line={line} invoiced={summary.invoiced} testId={line.serviceId} />
       {line.priceCents == null && line.note && <p className="text-xs text-destructive">{line.note}</p>}
       {/* Pass 19: what the figures are priced at when the ticket carries an unposted price - applied, or why not. */}
-      {summary.draft && summary.draft.serviceId === serviceId && (
+      {draft && draft.priceCents != null && (
         <p className="text-xs text-muted-foreground" data-testid={`text-service-draft-price-${serviceId}`}>
-          {summary.draft.applied
-            ? `Priced at the ticket's ${formatCents(summary.draft.priceCents)} - not posted yet; the stored price changes when the ticket is posted.${summary.draft.note ? ` ${summary.draft.note}` : ""}`
-            : `The ticket's ${formatCents(summary.draft.priceCents)} is not priced here. ${summary.draft.note ?? ""}`}
+          {draft.applied
+            ? `Priced at the ticket's ${formatCents(draft.priceCents)} - not posted yet; the stored price changes when the ticket is posted.${draft.note ? ` ${draft.note}` : ""}`
+            : `The ticket's ${formatCents(draft.priceCents)} is not priced here. ${draft.note ?? ""}`}
+        </p>
+      )}
+      {/* Pass 23 (C3.6): this ticket's surcharge - its own BILLABLE line beside the service's - and, on the open ticket, whether the typed one is what is priced. */}
+      {ownSurcharge && (
+        <p className="text-xs" data-testid={`text-service-surcharge-${serviceId}`}>
+          <span className="font-medium">Surcharge {formatCents(ownSurcharge.priceCents)}</span>
+          {ownSurcharge.taxCents > 0 ? ` + ${formatCents(ownSurcharge.taxCents)} tax` : ""} - {ownSurcharge.label}, billed as its own line on the visit invoice in addition to the service.
+        </p>
+      )}
+      {draft && draft.surchargeCents != null && (
+        <p className="text-xs text-muted-foreground" data-testid={`text-service-draft-surcharge-${serviceId}`}>
+          {draft.surchargeApplied
+            ? draft.surchargeCents > 0
+              ? `Priced with the ticket's ${formatCents(draft.surchargeCents)} surcharge - not posted yet; it is recorded when the ticket is posted.`
+              : "Priced without a surcharge - the ticket's surcharge is removed when it is posted."
+            : `The ticket's ${formatCents(draft.surchargeCents)} surcharge is not priced here. ${draft.surchargeNote ?? ""}`}
         </p>
       )}
       {hasCharges && (
         <p className="text-xs text-muted-foreground" data-testid={`text-service-visit-due-${serviceId}`}>
           {line.dueTodayCents == null
-            ? `The visit's down payment of ${formatCents(chargeCents)} is due in addition to this service.`
-            : `This service ${formatCents(line.dueTodayCents)} + down payment ${formatCents(chargeCents)} = visit due today ${formatCents(summary.totals.dueTodayCents)}.`}
+            ? `The visit also owes ${chargeSum} in addition to this service.`
+            : `This service ${formatCents(line.dueTodayCents)} + ${chargeSum} = visit due today ${formatCents(summary.totals.dueTodayCents)}.`}
         </p>
       )}
       {!compact && <p className="text-xs text-muted-foreground">{describeBillingSource(summary)}</p>}
@@ -293,8 +345,9 @@ export function VisitBillingTable({ summary, isLoading, isError }: { summary: Vi
             })}
             {summary.charges.map((charge) => {
               const coaCents = summary.invoiced ? charge.coaAppliedCents : charge.coaAvailableCents;
+              const chargeKey = visitChargeKey(charge);
               return (
-                <tr key={`charge-${charge.agreementId}`} className="border-t" data-testid={`row-visit-charge-${charge.agreementId}`}>
+                <tr key={`charge-${chargeKey}`} className="border-t" data-testid={`row-visit-charge-${chargeKey}`}>
                   <td className="py-1.5 pr-3 align-top">
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className="font-medium">{charge.description}</span>
@@ -303,11 +356,11 @@ export function VisitBillingTable({ summary, isLoading, isError }: { summary: Vi
                     <p className="mt-0.5 text-xs text-muted-foreground">{describeChargeCollector(charge)}</p>
                   </td>
                   <td className="py-1.5 pr-3 text-right align-top whitespace-nowrap">
-                    <span className="font-medium" data-testid={`text-service-price-charge-${charge.agreementId}`}>{formatCents(charge.priceCents)}</span>
+                    <span className="font-medium" data-testid={`text-service-price-charge-${chargeKey}`}>{formatCents(charge.priceCents)}</span>
                     {charge.taxCents > 0 && <span className="block text-xs text-muted-foreground">+ {formatCents(charge.taxCents)} tax</span>}
                   </td>
-                  <td className="py-1.5 pr-3 text-right align-top font-medium whitespace-nowrap" data-testid={`text-service-coa-charge-${charge.agreementId}`}>{formatCents(coaCents)}</td>
-                  <td className="py-1.5 text-right align-top font-semibold whitespace-nowrap" data-testid={`text-service-due-today-charge-${charge.agreementId}`}>
+                  <td className="py-1.5 pr-3 text-right align-top font-medium whitespace-nowrap" data-testid={`text-service-coa-charge-${chargeKey}`}>{formatCents(coaCents)}</td>
+                  <td className="py-1.5 text-right align-top font-semibold whitespace-nowrap" data-testid={`text-service-due-today-charge-${chargeKey}`}>
                     {formatCents(charge.dueTodayCents)}
                   </td>
                 </tr>
@@ -356,12 +409,12 @@ export function VisitBillingRows({ summary, isLoading, isError }: { summary: Vis
         </div>
       ))}
       {summary.charges.map((charge) => (
-        <div key={`charge-${charge.agreementId}`} className="rounded-md border bg-background p-2" data-testid={`row-visit-charge-${charge.agreementId}`}>
+        <div key={`charge-${visitChargeKey(charge)}`} className="rounded-md border bg-background p-2" data-testid={`row-visit-charge-${visitChargeKey(charge)}`}>
           <div className="flex items-center justify-between gap-2">
             <span className="text-sm font-medium">{charge.description}</span>
             <ServiceDesignationBadge designation="BILLABLE" />
           </div>
-          <ServiceBillingFigures line={charge} invoiced={summary.invoiced} className="mt-2" testId={`charge-${charge.agreementId}`} />
+          <ServiceBillingFigures line={charge} invoiced={summary.invoiced} className="mt-2" testId={`charge-${visitChargeKey(charge)}`} />
           <p className="mt-1 text-xs text-muted-foreground">{describeChargeCollector(charge)}</p>
         </div>
       ))}

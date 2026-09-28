@@ -135,6 +135,17 @@ export async function bootstrapServiceSchedulingFoundation(): Promise<void> {
   await db.execute(sql`ALTER TABLE service_records ADD COLUMN IF NOT EXISTS flagged_by_user_id varchar`);
   await db.execute(sql`ALTER TABLE service_records ADD COLUMN IF NOT EXISTS flagged_by_label text`);
   await db.execute(sql`ALTER TABLE service_records ADD COLUMN IF NOT EXISTS flag_reason text`);
+  // Pass 23 (PLAN_ROADMAP_V2.md C3.6): the field surcharge line - an amount
+  // and a label the technician records on the ticket (shared/field-surcharge.ts).
+  // Guarded on the column so the effect prints once; no backfill, since no
+  // ticket carried one before the columns existed (the old collector-based
+  // SURCHARGE credits in production_value_entries stand as history).
+  const hadSurcharge = await columnExists("service_records", "surcharge_cents");
+  await db.execute(sql`ALTER TABLE service_records ADD COLUMN IF NOT EXISTS surcharge_cents integer`);
+  await db.execute(sql`ALTER TABLE service_records ADD COLUMN IF NOT EXISTS surcharge_label text`);
+  if (!hadSurcharge) {
+    console.log("[service-scheduling-bootstrap] Pass 23 (C3.6): added service_records.surcharge_cents and surcharge_label (the field surcharge line); no backfill - no ticket carried one.");
+  }
   // Pass 17 (PLAN_ROADMAP_V2.md C3.2): the reopen reason's code beside its
   // free text - a settings-list entry or OTHER (shared/ticket-reopen.ts).
   // Guarded on the column so the effect prints once; the rows reopened

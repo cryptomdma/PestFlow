@@ -209,7 +209,6 @@ export interface BillingPlanSnapshotFields extends BillingPlanChargeFields {
   anchorMode: string;
   anchorDay: number | null;
   prorationRule: string;
-  fieldAddableSurcharge: boolean;
 }
 
 // A type alias rather than an interface so it stays assignable to the loose
@@ -226,7 +225,6 @@ export type BillingPlanSnapshot = {
   anchorDay: number | null;
   prorationRule: string;
   initialChargeCoversFirstPeriod: boolean;
-  fieldAddableSurcharge: boolean;
   snapshottedAt: string;
 };
 
@@ -240,7 +238,9 @@ export type BillingPlanSnapshot = {
  * The initial charge (type / amount / collector) is not a plan fact and is not
  * carried here - it lives on the agreement's own columns (PLAN_BILLING_V1_1.md
  * D4). Snapshots written before Pass 5.5 still hold the old keys as frozen
- * history; nothing reads them.
+ * history, and those written before Pass 23 hold `fieldAddableSurcharge`
+ * the same way (the field-surcharge toggle is the agreement template's,
+ * C3.6); nothing reads either.
  */
 export function buildBillingPlanSnapshot(plan: BillingPlanSnapshotFields | null | undefined, snapshottedAt: Date = new Date()): BillingPlanSnapshot | null {
   if (!plan) return null;
@@ -256,7 +256,6 @@ export function buildBillingPlanSnapshot(plan: BillingPlanSnapshotFields | null 
     anchorDay: plan.anchorDay,
     prorationRule: plan.prorationRule,
     initialChargeCoversFirstPeriod: plan.initialChargeCoversFirstPeriod,
-    fieldAddableSurcharge: plan.fieldAddableSurcharge,
     snapshottedAt: snapshottedAt.toISOString(),
   };
 }

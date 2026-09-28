@@ -16,6 +16,11 @@
 >   with one line per finalized Service Record.
 > - The initial charge living on the Billing Plan is superseded by **D4's owner correction
 >   (2026-09-10)** — type, amount and collected-by move to the Agreement and Agreement Template.
+> - `CLEANOUT_SURCHARGE` / `PREPAY_FULL` (§1.2's `initialChargeType`) and `fieldAddableSurcharge` are
+>   gone since **Pass 23** (PLAN_ROADMAP_V2.md C3.6, 2026-09-27): a cleanout surcharge is a line the
+>   technician records on the ticket, gated by the Agreement Template's toggle; the `SURCHARGE` basis
+>   in §1.6.2 is that line's credit (transitional until the comp engine's per-plan selector), and
+>   open question 6 is answered by the owner's 2026-09-13 decision in `PLAN_BILLING_V1_1.md` D4.
 > - §1.6.2's compensation design is **still the intended direction** and is not superseded — but it
 >   assumes a **single technician per job** and pays every component to a *technician*, so it cannot
 >   express a crew splitting production value, or a non-technician (office, dedicated sales rep)
