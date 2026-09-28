@@ -23,21 +23,24 @@ import {
 } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth";
-import { apiRequest, queryClient } from "@/lib/queryClient";
+import { apiRequest, getApiErrorMessage, queryClient } from "@/lib/queryClient";
 import { dollarsToCents, centsToDollars, centsToDollarString, formatCents } from "@shared/money";
 import { describeBillingPlanBehavior } from "@shared/billing-plan";
 import { describeInitialCharge, initialChargeFromTemplate, initialChargeToTemplate } from "@shared/initial-charge";
 import { InitialChargeFormFields, initialChargeFieldsFrom, initialChargeFormStateFrom, validateInitialChargeFormState } from "@/components/initial-charge-fields";
 import { can, PERMISSIONS } from "@shared/permissions";
 import { describeUserRole, selectableUsers, userDisplayName } from "@shared/users";
+import { OPPORTUNITY_SOURCES, OPPORTUNITY_WORK_TYPES, describeOpportunitySource, describeOpportunityWorkType } from "@shared/opportunities";
+import { describeZipCodes, normalizeZipCodes, splitZipCodeText } from "@shared/zones";
+import { ANY_MATCHER_LABEL, describeRuleMatchers, describeRuleProblems, sortAssignmentRules } from "@shared/opportunity-assignment";
 import { INVOICE_ON_FINALIZE_MODES, describeInvoiceOnFinalizeMode, normalizeInvoiceOnFinalizeMode, type InvoiceOnFinalizeMode } from "@shared/invoice-on-finalize";
 import { isOnList, matchListEntry } from "@shared/material-lists";
 import { ListMultiSelect } from "@/components/list-multi-select";
 import { Switch } from "@/components/ui/switch";
 import { ServiceWorkKindBadge } from "@/components/service-work-kind-badge";
 import { SERVICE_WORK_KINDS, describeServiceWorkKind, formatServiceWorkKind, normalizeServiceWorkKind, type ServiceWorkKind } from "@shared/service-kind";
-import { Plus, Settings as SettingsIcon, Wrench, FileText, Users, ShieldCheck, FlaskConical, Bug, CreditCard, CalendarClock, Percent, Scale, Building2, Receipt } from "lucide-react";
-import type { AgreementCancellationPolicy, AgreementTemplate, BillingPlan, BillingProfileTemplate, MaterialProduct, OpportunityCategory, OpportunityDisposition, Organization, ServiceType, TargetPest, TaxRate, TaxRule, Technician, UserSummary } from "@shared/schema";
+import { Plus, Settings as SettingsIcon, Wrench, FileText, Users, ShieldCheck, FlaskConical, Bug, CreditCard, CalendarClock, Percent, Scale, Building2, Receipt, MapPin, UserCheck, ArrowUp, ArrowDown, AlertTriangle } from "lucide-react";
+import type { AgreementCancellationPolicy, AgreementTemplate, BillingPlan, BillingProfileTemplate, MaterialProduct, OpportunityAssignmentRule, OpportunityCategory, OpportunityDisposition, Organization, ServiceType, TargetPest, TaxRate, TaxRule, Technician, UserSummary, Zone } from "@shared/schema";
 
 function formatTemplateRecurrence(template: AgreementTemplate) {
   const interval = template.defaultRecurrenceInterval || 1;
@@ -1364,6 +1367,271 @@ function AgreementTemplateForm({
   );
 }
 
+// Pass 26 (PLAN_ROADMAP_V2.md C4.1b): a zone - a named ZIP-code list
+// (shared/zones.ts). The list is typed one per line (commas work too); the
+// form previews what will be kept and what will be refused, by the same
+// normalization the server applies, so the save never surprises.
+function ZoneForm({ zone, onClose }: { zone?: Zone | null; onClose: () => void }) {
+  const { toast } = useToast();
+  const isEditMode = !!zone;
+  const [form, setForm] = useState({
+    name: zone?.name ?? "",
+    zipCodesText: (zone?.zipCodes ?? []).join("\n"),
+    isActive: zone?.isActive ?? true,
+    sortOrder: zone?.sortOrder !== undefined ? String(zone.sortOrder) : "0",
+    notes: zone?.notes ?? "",
+  });
+  const preview = useMemo(() => normalizeZipCodes(splitZipCodeText(form.zipCodesText)), [form.zipCodesText]);
+  const invalidateZones = () => {
+    queryClient.invalidateQueries({ predicate: (query) => String(query.queryKey[0]).startsWith("/api/zones") });
+    queryClient.invalidateQueries({ predicate: (query) => String(query.queryKey[0]).startsWith("/api/opportunity-assignment-rules") });
+  };
+
+  const mutation = useMutation({
+    mutationFn: async (data: typeof form) => {
+      const payload = {
+        name: data.name.trim(),
+        zipCodes: splitZipCodeText(data.zipCodesText),
+        isActive: data.isActive,
+        sortOrder: data.sortOrder.trim() ? parseInt(data.sortOrder, 10) : 0,
+        notes: data.notes.trim() || null,
+      };
+      const response = isEditMode
+        ? await apiRequest("PATCH", `/api/zones/${zone.id}`, payload)
+        : await apiRequest("POST", "/api/zones", payload);
+      return response.json();
+    },
+    onSuccess: () => {
+      invalidateZones();
+      toast({ title: isEditMode ? "Zone updated" : "Zone created" });
+      onClose();
+    },
+    onError: (err: unknown) => toast({ title: "Zone not saved", description: getApiErrorMessage(err), variant: "destructive" }),
+  });
+  // A zone named by a rule cannot be deleted (409 ZONE_IN_USE) - the server
+  // says which; deactivating is always allowed.
+  const deleteMutation = useMutation({
+    mutationFn: async () => {
+      await apiRequest("DELETE", `/api/zones/${zone!.id}`);
+    },
+    onSuccess: () => {
+      invalidateZones();
+      toast({ title: "Zone deleted" });
+      onClose();
+    },
+    onError: (err: unknown) => toast({ title: "Zone not deleted", description: getApiErrorMessage(err), variant: "destructive" }),
+  });
+
+  return (
+    <form onSubmit={(e) => { e.preventDefault(); mutation.mutate(form); }} className="space-y-4">
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="space-y-1.5"><Label>Name *</Label><Input value={form.name} onChange={(e) => setForm((p) => ({ ...p, name: e.target.value }))} data-testid="input-zone-name" /></div>
+        <div className="space-y-1.5"><Label>Sort Order</Label><Input type="number" value={form.sortOrder} onChange={(e) => setForm((p) => ({ ...p, sortOrder: e.target.value }))} /></div>
+      </div>
+      <div className="space-y-1.5">
+        <Label>ZIP Codes *</Label>
+        <Textarea
+          value={form.zipCodesText}
+          onChange={(e) => setForm((p) => ({ ...p, zipCodesText: e.target.value }))}
+          rows={6}
+          placeholder={"76053\n76102\n76969"}
+          data-testid="textarea-zone-zip-codes"
+        />
+        <p className="text-xs text-muted-foreground">
+          One five-digit ZIP per line (commas work too). A ZIP+4 is kept as its first five digits.
+          {preview.zipCodes.length ? ` ${preview.zipCodes.length} will be kept: ${describeZipCodes(preview.zipCodes)}.` : ""}
+        </p>
+        {preview.invalid.length ? (
+          <p className="text-xs text-amber-600" data-testid="text-zone-zip-invalid">Not a ZIP code and will be refused: {preview.invalid.join(", ")}</p>
+        ) : null}
+      </div>
+      <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.isActive} onChange={(e) => setForm((p) => ({ ...p, isActive: e.target.checked }))} /> Active (an inactive zone matches nothing, and every rule on it is skipped)</label>
+      <div className="space-y-1.5"><Label>Notes</Label><Textarea value={form.notes} onChange={(e) => setForm((p) => ({ ...p, notes: e.target.value }))} /></div>
+      <div className="flex justify-between gap-2">
+        <div>
+          {isEditMode ? (
+            <Button
+              type="button"
+              variant="destructive"
+              size="sm"
+              disabled={deleteMutation.isPending}
+              onClick={() => { if (window.confirm(`Delete zone "${zone.name}"? A zone named by an assignment rule is refused - deactivate it instead.`)) deleteMutation.mutate(); }}
+              data-testid="button-delete-zone"
+            >
+              {deleteMutation.isPending ? "Deleting..." : "Delete Zone"}
+            </Button>
+          ) : null}
+        </div>
+        <div className="flex gap-2">
+          <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
+          <Button type="submit" disabled={mutation.isPending || !form.name.trim() || !preview.zipCodes.length || preview.invalid.length > 0} data-testid="button-save-zone">
+            {mutation.isPending ? "Saving..." : isEditMode ? "Save Zone" : "Create Zone"}
+          </Button>
+        </div>
+      </div>
+    </form>
+  );
+}
+
+const RULE_ANY = "ANY";
+
+// Pass 26 (C4.1b): an opportunity assignment rule - four matchers (Any
+// matches everything) and one active user (shared/opportunity-assignment.ts).
+// Categories and zones are offered inactive ones included and labeled: a
+// rule may be edited while its zone is off, and the card says it is skipped.
+function OpportunityAssignmentRuleForm({
+  rule,
+  categories,
+  zones,
+  users,
+  onClose,
+}: {
+  rule?: OpportunityAssignmentRule | null;
+  categories: OpportunityCategory[];
+  zones: Zone[];
+  users: UserSummary[];
+  onClose: () => void;
+}) {
+  const { toast } = useToast();
+  const isEditMode = !!rule;
+  const [form, setForm] = useState({
+    categoryKey: rule?.categoryKey ?? RULE_ANY,
+    workType: rule?.workType ?? RULE_ANY,
+    zoneId: rule?.zoneId ?? RULE_ANY,
+    source: rule?.source ?? RULE_ANY,
+    assignedUserId: rule?.assignedUserId ?? "",
+    isActive: rule?.isActive ?? true,
+  });
+  // Active users, plus the rule's current user even when inactive so the
+  // form still names them (the card says the rule is skipped until changed).
+  const assignees = selectableUsers(users, rule?.assignedUserId);
+  const invalidateRules = () => queryClient.invalidateQueries({ predicate: (query) => String(query.queryKey[0]).startsWith("/api/opportunity-assignment-rules") });
+
+  const mutation = useMutation({
+    mutationFn: async (data: typeof form) => {
+      const payload = {
+        categoryKey: data.categoryKey === RULE_ANY ? null : data.categoryKey,
+        workType: data.workType === RULE_ANY ? null : data.workType,
+        zoneId: data.zoneId === RULE_ANY ? null : data.zoneId,
+        source: data.source === RULE_ANY ? null : data.source,
+        assignedUserId: data.assignedUserId,
+        isActive: data.isActive,
+      };
+      const response = isEditMode
+        ? await apiRequest("PATCH", `/api/opportunity-assignment-rules/${rule.id}`, payload)
+        : await apiRequest("POST", "/api/opportunity-assignment-rules", payload);
+      return response.json();
+    },
+    onSuccess: () => {
+      invalidateRules();
+      toast({ title: isEditMode ? "Assignment rule updated" : "Assignment rule created" });
+      onClose();
+    },
+    onError: (err: unknown) => toast({ title: "Rule not saved", description: getApiErrorMessage(err), variant: "destructive" }),
+  });
+  // A rule that has assigned opportunities cannot be deleted (409
+  // RULE_IN_USE): those rows carry it as their history. Deactivate instead.
+  const deleteMutation = useMutation({
+    mutationFn: async () => {
+      await apiRequest("DELETE", `/api/opportunity-assignment-rules/${rule!.id}`);
+    },
+    onSuccess: () => {
+      invalidateRules();
+      toast({ title: "Assignment rule deleted" });
+      onClose();
+    },
+    onError: (err: unknown) => toast({ title: "Rule not deleted", description: getApiErrorMessage(err), variant: "destructive" }),
+  });
+
+  return (
+    <form onSubmit={(e) => { e.preventDefault(); mutation.mutate(form); }} className="space-y-4">
+      <p className="text-xs text-muted-foreground">
+        A rule applies to a new opportunity when every matcher fits; {ANY_MATCHER_LABEL} fits everything. Rules are tried in the order listed on the card and the first match assigns its user.
+      </p>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="space-y-1.5">
+          <Label>Category</Label>
+          <Select value={form.categoryKey} onValueChange={(value) => setForm((p) => ({ ...p, categoryKey: value }))}>
+            <SelectTrigger data-testid="select-rule-category"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value={RULE_ANY}>{ANY_MATCHER_LABEL} category</SelectItem>
+              {categories.map((category) => <SelectItem key={category.key} value={category.key}>{category.label}{category.isActive ? "" : " (inactive)"}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="space-y-1.5">
+          <Label>Work Type</Label>
+          <Select value={form.workType} onValueChange={(value) => setForm((p) => ({ ...p, workType: value }))}>
+            <SelectTrigger data-testid="select-rule-work-type"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value={RULE_ANY}>{ANY_MATCHER_LABEL} work type</SelectItem>
+              {OPPORTUNITY_WORK_TYPES.map((workType) => <SelectItem key={workType} value={workType}>{describeOpportunityWorkType(workType)}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="space-y-1.5">
+          <Label>Zone</Label>
+          <Select value={form.zoneId} onValueChange={(value) => setForm((p) => ({ ...p, zoneId: value }))}>
+            <SelectTrigger data-testid="select-rule-zone"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value={RULE_ANY}>{ANY_MATCHER_LABEL} zone</SelectItem>
+              {zones.map((zone) => <SelectItem key={zone.id} value={zone.id}>{zone.name}{zone.isActive ? "" : " (inactive)"}</SelectItem>)}
+            </SelectContent>
+          </Select>
+          {!zones.length ? <p className="text-xs text-muted-foreground">No zones yet - add one on the Zones card to match by ZIP code.</p> : null}
+        </div>
+        <div className="space-y-1.5">
+          <Label>Source</Label>
+          <Select value={form.source} onValueChange={(value) => setForm((p) => ({ ...p, source: value }))}>
+            <SelectTrigger data-testid="select-rule-source"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value={RULE_ANY}>{ANY_MATCHER_LABEL} source</SelectItem>
+              {OPPORTUNITY_SOURCES.map((source) => <SelectItem key={source} value={source}>{describeOpportunitySource(source)}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+      <div className="space-y-1.5">
+        <Label>Assign to *</Label>
+        <Select value={form.assignedUserId || undefined} onValueChange={(value) => setForm((p) => ({ ...p, assignedUserId: value }))}>
+          <SelectTrigger data-testid="select-rule-assignee"><SelectValue placeholder="Choose a user" /></SelectTrigger>
+          <SelectContent>
+            {assignees.map((candidate) => (
+              <SelectItem key={candidate.id} value={candidate.id}>
+                {userDisplayName(candidate)} ({describeUserRole(candidate.role)}){candidate.status === "active" ? "" : " (inactive)"}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <p className="text-xs text-muted-foreground">Sales reps, office reps and managers take follow-up work. A rule naming a user who later goes inactive is skipped, never re-pointed.</p>
+      </div>
+      <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.isActive} onChange={(e) => setForm((p) => ({ ...p, isActive: e.target.checked }))} /> Active</label>
+      <div className="flex justify-between gap-2">
+        <div>
+          {isEditMode ? (
+            <Button
+              type="button"
+              variant="destructive"
+              size="sm"
+              disabled={deleteMutation.isPending}
+              onClick={() => { if (window.confirm("Delete this assignment rule? A rule that has already assigned opportunities is refused - deactivate it instead.")) deleteMutation.mutate(); }}
+              data-testid="button-delete-rule"
+            >
+              {deleteMutation.isPending ? "Deleting..." : "Delete Rule"}
+            </Button>
+          ) : null}
+        </div>
+        <div className="flex gap-2">
+          <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
+          <Button type="submit" disabled={mutation.isPending || !form.assignedUserId} data-testid="button-save-rule">
+            {mutation.isPending ? "Saving..." : isEditMode ? "Save Rule" : "Create Rule"}
+          </Button>
+        </div>
+      </div>
+    </form>
+  );
+}
+
 export default function Settings() {
   const { toast } = useToast();
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -1378,6 +1646,11 @@ export default function Settings() {
   const [editingDisposition, setEditingDisposition] = useState<OpportunityDisposition | null>(null);
   const [categoryDialogOpen, setCategoryDialogOpen] = useState(false);
   const [editingCategory, setEditingCategory] = useState<OpportunityCategory | null>(null);
+  // Pass 26 (C4.1b): zones and assignment rules.
+  const [zoneDialogOpen, setZoneDialogOpen] = useState(false);
+  const [editingZone, setEditingZone] = useState<Zone | null>(null);
+  const [ruleDialogOpen, setRuleDialogOpen] = useState(false);
+  const [editingRule, setEditingRule] = useState<OpportunityAssignmentRule | null>(null);
   const [materialDialogOpen, setMaterialDialogOpen] = useState(false);
   const [editingMaterialProduct, setEditingMaterialProduct] = useState<MaterialProduct | null>(null);
   const [targetPestDialogOpen, setTargetPestDialogOpen] = useState(false);
@@ -1406,6 +1679,32 @@ export default function Settings() {
   const { data: cancellationPolicies, isLoading: policiesLoading } = useQuery<AgreementCancellationPolicy[]>({ queryKey: ["/api/agreement-cancellation-policies?includeInactive=true"] });
   const { data: opportunityDispositions, isLoading: dispositionsLoading } = useQuery<OpportunityDisposition[]>({ queryKey: ["/api/opportunity-dispositions?includeInactive=true"] });
   const { data: opportunityCategories, isLoading: categoriesLoading } = useQuery<OpportunityCategory[]>({ queryKey: ["/api/opportunity-categories?includeInactive=true"] });
+  // Pass 26 (C4.1b): every zone and every rule, inactive ones included, so
+  // the cards show what is off and why a rule is skipped
+  // (shared/opportunity-assignment.ts describeRuleProblems - the same
+  // function the server's resolver reads).
+  const { data: zones, isLoading: zonesLoading } = useQuery<Zone[]>({ queryKey: ["/api/zones?includeInactive=true"] });
+  const { data: assignmentRules, isLoading: assignmentRulesLoading } = useQuery<OpportunityAssignmentRule[]>({ queryKey: ["/api/opportunity-assignment-rules?includeInactive=true"] });
+  const orderedRules = useMemo(() => sortAssignmentRules(assignmentRules ?? []), [assignmentRules]);
+  const reorderRulesMutation = useMutation({
+    mutationFn: async (ids: string[]) => {
+      const response = await apiRequest("POST", "/api/opportunity-assignment-rules/reorder", { ids });
+      return response.json();
+    },
+    onSuccess: () => queryClient.invalidateQueries({ predicate: (query) => String(query.queryKey[0]).startsWith("/api/opportunity-assignment-rules") }),
+    onError: (err: unknown) => toast({ title: "Rules not reordered", description: getApiErrorMessage(err), variant: "destructive" }),
+  });
+  // Move up / Move down: the whole order is sent, so the server can refuse a
+  // list that names a rule twice or misses one.
+  const moveRule = (index: number, delta: number) => {
+    const ids = orderedRules.map((rule) => rule.id);
+    const target = index + delta;
+    if (target < 0 || target >= ids.length) return;
+    const moved = ids[index];
+    ids[index] = ids[target];
+    ids[target] = moved;
+    reorderRulesMutation.mutate(ids);
+  };
   const { data: billingProfileTemplates, isLoading: billingProfileTemplatesLoading } = useQuery<BillingProfileTemplate[]>({ queryKey: ["/api/billing-profile-templates?includeInactive=true"] });
   const { data: billingPlans, isLoading: billingPlansLoading } = useQuery<BillingPlan[]>({ queryKey: ["/api/billing-plans?includeInactive=true"] });
   const { data: taxRates, isLoading: taxRatesLoading } = useQuery<TaxRate[]>({ queryKey: ["/api/tax-rates?includeInactive=true"] });
@@ -2041,6 +2340,130 @@ export default function Settings() {
                   </Button>
                 </div>
               ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Pass 26 (C4.1b): zones - named ZIP-code lists the assignment rules
+          match on. Writes are MANAGE_SETTINGS (admin); everyone else reads. */}
+      <Card data-testid="card-zones">
+        <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
+          <CardTitle className="text-base font-semibold flex items-center gap-2"><MapPin className="h-4 w-4" /> Zones</CardTitle>
+          {canManageSettings ? (
+            <Dialog open={zoneDialogOpen} onOpenChange={(open) => { setZoneDialogOpen(open); if (!open) setEditingZone(null); }}>
+              <DialogTrigger asChild><Button size="sm" data-testid="button-add-zone" onClick={() => setEditingZone(null)}><Plus className="h-3 w-3 mr-1" /> Add Zone</Button></DialogTrigger>
+              <DialogContent>
+                <DialogHeader><DialogTitle>{editingZone ? "Edit Zone" : "New Zone"}</DialogTitle></DialogHeader>
+                <ZoneForm zone={editingZone} onClose={() => { setZoneDialogOpen(false); setEditingZone(null); }} />
+              </DialogContent>
+            </Dialog>
+          ) : (
+            <p className="text-xs text-muted-foreground" data-testid="text-zones-admin-only">Admins manage zones.</p>
+          )}
+        </CardHeader>
+        <CardContent>
+          <p className="mb-3 text-xs text-muted-foreground">
+            Named ZIP-code lists. The assignment rules below can match on a zone; dispatch and Smart Schedule will read the same zones later.
+          </p>
+          {zonesLoading ? (
+            <div className="space-y-2">{[1, 2].map((i) => <Skeleton key={i} className="h-14" />)}</div>
+          ) : !zones?.length ? (
+            <div className="text-center py-8">
+              <MapPin className="h-8 w-8 mx-auto text-muted-foreground/30 mb-2" />
+              <p className="text-sm text-muted-foreground">No zones yet. Add one to route opportunities by ZIP code.</p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {zones.map((zone) => (
+                <div key={zone.id} className="flex items-center justify-between gap-3 rounded-md bg-muted/50 p-3" data-testid={`row-zone-${zone.id}`}>
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-sm font-medium">{zone.name}</span>
+                      <Badge variant={zone.isActive ? "secondary" : "outline"} className="text-xs">{zone.isActive ? "Active" : "Inactive"}</Badge>
+                      <Badge variant="outline" className="text-xs">{(zone.zipCodes ?? []).length} ZIP code{(zone.zipCodes ?? []).length === 1 ? "" : "s"}</Badge>
+                    </div>
+                    <p className="mt-0.5 text-xs text-muted-foreground">{describeZipCodes(zone.zipCodes)}{zone.notes ? ` | ${zone.notes}` : ""}</p>
+                  </div>
+                  <Button variant="outline" size="sm" onClick={() => { setEditingZone(zone); setZoneDialogOpen(true); }} disabled={!canManageSettings} title={canManageSettings ? undefined : "Admins manage zones"}>
+                    Edit
+                  </Button>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Pass 26 (C4.1b): the assignment rules, listed in the order they are
+          tried. A rule with a problem (inactive user or zone) is skipped by
+          the server and says so here, through the same shared function. */}
+      <Card data-testid="card-opportunity-assignment">
+        <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
+          <CardTitle className="text-base font-semibold flex items-center gap-2"><UserCheck className="h-4 w-4" /> Opportunity Assignment</CardTitle>
+          {canManageSettings ? (
+            <Dialog open={ruleDialogOpen} onOpenChange={(open) => { setRuleDialogOpen(open); if (!open) setEditingRule(null); }}>
+              <DialogTrigger asChild><Button size="sm" data-testid="button-add-assignment-rule" onClick={() => setEditingRule(null)}><Plus className="h-3 w-3 mr-1" /> Add Rule</Button></DialogTrigger>
+              <DialogContent>
+                <DialogHeader><DialogTitle>{editingRule ? "Edit Assignment Rule" : "New Assignment Rule"}</DialogTitle></DialogHeader>
+                <OpportunityAssignmentRuleForm
+                  rule={editingRule}
+                  categories={opportunityCategories ?? []}
+                  zones={zones ?? []}
+                  users={orgUsers ?? []}
+                  onClose={() => { setRuleDialogOpen(false); setEditingRule(null); }}
+                />
+              </DialogContent>
+            </Dialog>
+          ) : (
+            <p className="text-xs text-muted-foreground" data-testid="text-assignment-admin-only">Admins manage assignment rules.</p>
+          )}
+        </CardHeader>
+        <CardContent>
+          <p className="mb-3 text-xs text-muted-foreground">
+            Tried in order when an opportunity is created: the first rule whose matchers all fit assigns its user, and no match leaves the opportunity unassigned. A manual reassignment on the Opportunities screen overrides a rule's, and is logged as one.
+          </p>
+          {assignmentRulesLoading ? (
+            <div className="space-y-2">{[1, 2].map((i) => <Skeleton key={i} className="h-14" />)}</div>
+          ) : !orderedRules.length ? (
+            <div className="text-center py-8">
+              <UserCheck className="h-8 w-8 mx-auto text-muted-foreground/30 mb-2" />
+              <p className="text-sm text-muted-foreground">No assignment rules. New opportunities stay unassigned until one exists.</p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {orderedRules.map((rule, index) => {
+                const assignee = orgUserById.get(rule.assignedUserId);
+                const problems = describeRuleProblems(rule, zones ?? [], orgUsers ?? []);
+                return (
+                  <div key={rule.id} className="flex items-start justify-between gap-3 rounded-md bg-muted/50 p-3" data-testid={`row-assignment-rule-${rule.id}`}>
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-sm font-medium">#{index + 1}</span>
+                        <span className="text-sm">{describeRuleMatchers(rule, { categories: opportunityCategories, zones })}</span>
+                        <span className="text-sm font-medium">-&gt; {assignee ? userDisplayName(assignee) : "Unknown user"}</span>
+                        <Badge variant={rule.isActive ? "secondary" : "outline"} className="text-xs">{rule.isActive ? "Active" : "Inactive"}</Badge>
+                      </div>
+                      {problems.map((problem) => (
+                        <p key={problem.code} className="mt-1 flex items-start gap-1 text-xs text-amber-600" data-testid={`text-rule-problem-${rule.id}-${problem.code}`}>
+                          <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" /> {problem.message}
+                        </p>
+                      ))}
+                    </div>
+                    <div className="flex shrink-0 items-center gap-1">
+                      <Button type="button" variant="ghost" size="sm" title="Move up" disabled={!canManageSettings || index === 0 || reorderRulesMutation.isPending} onClick={() => moveRule(index, -1)} data-testid={`button-rule-up-${rule.id}`}>
+                        <ArrowUp className="h-3 w-3" />
+                      </Button>
+                      <Button type="button" variant="ghost" size="sm" title="Move down" disabled={!canManageSettings || index === orderedRules.length - 1 || reorderRulesMutation.isPending} onClick={() => moveRule(index, 1)} data-testid={`button-rule-down-${rule.id}`}>
+                        <ArrowDown className="h-3 w-3" />
+                      </Button>
+                      <Button variant="outline" size="sm" onClick={() => { setEditingRule(rule); setRuleDialogOpen(true); }} disabled={!canManageSettings} title={canManageSettings ? undefined : "Admins manage assignment rules"}>
+                        Edit
+                      </Button>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           )}
         </CardContent>

@@ -621,9 +621,16 @@ export const opportunities = pgTable("opportunities", {
   // ASSIGN_OPPORTUNITY, assigned_at stamped on every change, each change an
   // audit `update` on the opportunity. The two columns predate the pass
   // (2026-04-26, commit 88674f5) with no reader; the bootstrap adds the
-  // constraint. Auto-assignment by rules and zones is C4.1b (Pass 26).
+  // constraint. Since Pass 26 (C4.1b) the same two columns are also stamped
+  // at creation by the org's assignment rules (opportunity_assignment_rules
+  // below; shared/opportunity-assignment.ts; server/storage.ts
+  // insertOpportunityTx) under the system actor with an
+  // `opportunity_auto_assigned` audit row. assigned_by_rule_id names the
+  // rule that did it and is nulled by a manual reassignment, so a row reads
+  // as assigned by a rule or by a person, never both.
   assignedUserId: varchar("assigned_user_id").references(() => users.id),
   assignedAt: timestamp("assigned_at"),
+  assignedByRuleId: varchar("assigned_by_rule_id").references((): AnyPgColumn => opportunityAssignmentRules.id),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
@@ -662,6 +669,51 @@ export const opportunityCategories = pgTable("opportunity_categories", {
 }, (table) => ({
   orgKey: uniqueIndex("opportunity_categories_org_key_uidx").on(table.orgId, table.key),
 }));
+
+// Pass 26 (PLAN_ROADMAP_V2.md C4.1b): zones - named zip-code lists the
+// office keeps in Settings -> Zones (shared/zones.ts). zip_codes holds
+// unique five-digit ZIPs, normalized and refused otherwise by storage. The
+// assignment rules below are the first reader; dispatch and Smart Schedule
+// (Phase 9) read the same table later, which is why it is its own table on
+// the target_pests / opportunity_categories pattern and not an app_settings
+// JSON list: a rule needs a stable id to reference. Unique on
+// (org_id, lower(name)) - the index is created by the bootstrap, like
+// target_pests'. No seed: the office names its own zones.
+export const zones = pgTable("zones", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: varchar("org_id").notNull(),
+  name: text("name").notNull(),
+  zipCodes: text("zip_codes").array().notNull().default(sql`'{}'::text[]`),
+  isActive: boolean("is_active").notNull().default(true),
+  sortOrder: integer("sort_order").notNull().default(0),
+  notes: text("notes"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+// Pass 26 (C4.1b): the opportunity assignment rules - category / work type
+// / zone / source -> user, evaluated in sort_order at every opportunity's
+// creation, first match wins (shared/opportunity-assignment.ts
+// resolveAssignmentRule, read by server/storage.ts insertOpportunityTx and
+// by the Settings card). A null matcher matches anything. assigned_user_id
+// is a users FK (owner, 2026-09-19: one users table for everyone) and must
+// name an active user of the org at save; a rule whose user or zone later
+// goes inactive is skipped at evaluation and reported on the card, never
+// silently re-pointed. Rules are Settings (MANAGE_SETTINGS); the manual
+// assign on the opportunity stays ASSIGN_OPPORTUNITY.
+export const opportunityAssignmentRules = pgTable("opportunity_assignment_rules", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: varchar("org_id").notNull(),
+  sortOrder: integer("sort_order").notNull().default(0),
+  categoryKey: text("category_key"),
+  workType: text("work_type"),
+  zoneId: varchar("zone_id").references(() => zones.id),
+  source: text("source"),
+  assignedUserId: varchar("assigned_user_id").notNull().references(() => users.id),
+  isActive: boolean("is_active").notNull().default(true),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
 
 export const opportunityActivities = pgTable("opportunity_activities", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -1227,6 +1279,8 @@ export const insertAppSettingSchema = createInsertSchema(appSettings).omit({ org
 export const insertOpportunitySchema = createInsertSchema(opportunities).omit({ orgId: true, id: true, createdAt: true, updatedAt: true });
 export const insertOpportunityDispositionSchema = createInsertSchema(opportunityDispositions).omit({ orgId: true, id: true, createdAt: true, updatedAt: true });
 export const insertOpportunityCategorySchema = createInsertSchema(opportunityCategories).omit({ orgId: true, id: true, createdAt: true, updatedAt: true });
+export const insertZoneSchema = createInsertSchema(zones).omit({ orgId: true, id: true, createdAt: true, updatedAt: true });
+export const insertOpportunityAssignmentRuleSchema = createInsertSchema(opportunityAssignmentRules).omit({ orgId: true, id: true, createdAt: true, updatedAt: true });
 export const insertOpportunityActivitySchema = createInsertSchema(opportunityActivities).omit({ orgId: true, id: true, createdAt: true });
 export const insertProductApplicationSchema = createInsertSchema(productApplications).omit({ orgId: true, id: true });
 export const insertMaterialProductSchema = createInsertSchema(materialProducts).omit({ orgId: true, id: true, createdAt: true, updatedAt: true });
@@ -1291,6 +1345,10 @@ export type OpportunityDisposition = typeof opportunityDispositions.$inferSelect
 export type InsertOpportunityDisposition = z.infer<typeof insertOpportunityDispositionSchema>;
 export type OpportunityCategory = typeof opportunityCategories.$inferSelect;
 export type InsertOpportunityCategory = z.infer<typeof insertOpportunityCategorySchema>;
+export type Zone = typeof zones.$inferSelect;
+export type InsertZone = z.infer<typeof insertZoneSchema>;
+export type OpportunityAssignmentRule = typeof opportunityAssignmentRules.$inferSelect;
+export type InsertOpportunityAssignmentRule = z.infer<typeof insertOpportunityAssignmentRuleSchema>;
 export type OpportunityActivity = typeof opportunityActivities.$inferSelect;
 export type InsertOpportunityActivity = z.infer<typeof insertOpportunityActivitySchema>;
 export type ProductApplication = typeof productApplications.$inferSelect;

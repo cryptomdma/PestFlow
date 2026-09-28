@@ -14,9 +14,12 @@
 // row of the same source cannot disagree. `opportunityType` (free text) stays
 // what it always was - the display label - and is transitional, not an axis.
 //
-// The assignee (`assignedUserId` / `assignedAt`) is manual in this pass:
-// assign, reassign, unassign, and a "My opportunities" view. Auto-assignment
-// rules and zones are C4.1b (Pass 26).
+// The assignee (`assignedUserId` / `assignedAt`) was manual in this pass:
+// assign, reassign, unassign, and a "My opportunities" view. Since Pass 26
+// (C4.1b) a new row is also auto-assigned at creation by the org's
+// assignment rules and zones - shared/opportunity-assignment.ts and
+// shared/zones.ts, read by server/storage.ts insertOpportunityTx; a rule's
+// assignment carries `assignedByRuleId`, which a manual reassignment nulls.
 
 export const OPPORTUNITY_WORK_TYPES = ["AGREEMENT", "ONE_TIME"] as const;
 export type OpportunityWorkType = (typeof OPPORTUNITY_WORK_TYPES)[number];

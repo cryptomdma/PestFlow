@@ -27,8 +27,9 @@ ticket modal's money and instructions, C3.3) is merged (PR #91); Pass 20 (materi
 application areas, C3.4a) is merged (PR #92); Pass 21 (target pests at two levels, C3.4b) is
 merged (PR #93); Pass 22 (the service report document, C3.5) is merged (PR #94); Pass 23 (the
 field surcharge line, C3.6) is merged (PR #95); Pass 24 (service designation and callback
-attribution, C3.7 - the last Phase 3 row) is pushed, awaiting merge; **next pass: 26, opportunity
-assignment rules and zones** (C4.1b, the first open Phase 4 row in phase order). The roadmap
+attribution, C3.7 - the last Phase 3 row) is merged (PR #96); Pass 26 (opportunity assignment
+rules and zones, C4.1b - the first open Phase 4 row in phase order) is pushed, awaiting merge;
+**next pass: 28, appointment composition on the server and the dispatch sheet** (C4.3a). The roadmap
 sequences every remaining item below; this file keeps the status pointer and, as its last
 section, the handoff prompt that starts the next session.
 
@@ -669,7 +670,7 @@ chips are pickers), and an assign Select (Unassigned, Me, then everyone active) 
 hidden - without the permission; the location's Opportunities tab shows the chips; Settings gains
 an Opportunity Categories card beside Dispositions. Found on the way: AGREEMENT_INITIAL is an
 appointments / services source that no writer puts on an opportunity - the mapping carries it for
-completeness and the dev DB has no such row. Not built: auto-assignment rules and zones (Pass 26),
+completeness and the dev DB has no such row. Not built: auto-assignment rules and zones (Pass 26 - since built),
 the board's cancel / reschedule path (Pass 27), dispositions, convert, sale attribution, aging.
 **Restart `npm run dev:full` before manually testing - this pass changes server code and the
 schema, and the chips, the filters, the assign control and the Settings card have not been
@@ -711,7 +712,7 @@ included) and re-linked a representative placed elsewhere; it is now a no-op for
 COMPLETED appointments. Skipped, never touched: a COMPLETED or CANCELLED service and a
 representative placed on another visit. Not built: service-level cancel (C4.3a), an appointment
 cancellation policy (Phase 9), a permission on the disposition (C5.6), un-cancelling from the
-sheet, Pass 26. **Restart `npm run dev:full` before manually testing - this pass changes server
+sheet, Pass 26 (since built). **Restart `npm run dev:full` before manually testing - this pass changes server
 code and the schema, and the two dialogs, the move confirmation, the read-only cancelled state and
 the Services-tab badges have not been rendered by anyone yet.** Signatures and behavior are under
 "Shipped in Pass 27" at the end of `PLAN_ROADMAP_V2.md` Part D. **Owner's live test,
@@ -1162,7 +1163,7 @@ and the report row have not been rendered by anyone: the repo has no browser aut
 session had no browser.** Signatures and behavior are under "Shipped in Pass 23" at the end of
 `PLAN_ROADMAP_V2.md` Part D.
 
-Pass 24 (`feature/phase-3-service-designation-callbacks`, 2026-09-27, C3.7) pushed, awaiting merge.
+Pass 24 (`feature/phase-3-service-designation-callbacks`, 2026-09-27, C3.7) merged as PR #96.
 **Service designation and callback attribution.** A callback is a kind of work, not a position in
 a counter (canon §10). Built as the **work kind** - `serviceTypes.workKind` (the type's default,
 set in Settings → Service Types) and `services.workKind` (the instance, defaulted from the type on
@@ -1232,14 +1233,75 @@ the Select, the badges, the picker and the sheet's block have not been rendered 
 has no browser automation and the session had no browser.** Signatures and behavior are under
 "Shipped in Pass 24" at the end of `PLAN_ROADMAP_V2.md` Part D.
 
-Next up: **Pass 26** — opportunity assignment rules and zones (`PLAN_ROADMAP_V2.md` Phase 4 table,
-C4.1b): Settings-managed `zones` (named zip-code lists, reusable later by dispatch and Smart
-Schedule) and `opportunity_assignment_rules` (category / work type / zone / source → user, ordered,
-first match wins); auto-assign at creation through the four writers, unassigned when no rule
-matches; reassignment logged. Phase 3 is closed by Pass 24; phase order continues in Phase 4
-(Pass 26, then Pass 28 (C4.3a)). Branch from `origin/main` after confirming it contains Pass 24's
-merge. The handoff prompt for Pass 26 is the last section of this file; the Pass 26 session writes
-the next one.
+Pass 26 (`feature/phase-4-opportunity-assignment-rules`, 2026-09-28, C4.1b) pushed, awaiting merge.
+**Opportunity assignment rules and zones.** Two org-scoped Settings tables on the target_pests /
+opportunity_categories pattern - **decided: tables, not `app_settings` JSON lists** (a rule needs a
+stable zone FK, typed columns and an order; a JSON blob has no row ids) - `zones` (name, `zipCodes`
+text[], active, sort order, notes; unique on org + lower(name); `shared/zones.ts`) and
+`opportunity_assignment_rules` (sort order; nullable matchers categoryKey / workType / zoneId FK /
+source; `assignedUserId` users FK NOT NULL; active; `shared/opportunity-assignment.ts`). **Decided:
+matching** - a null matcher matches anything; a zone matches when the first five characters of the
+location's zip are on the zone's list (a ZIP+4 location matches its five-digit ZIP; a zone's list
+is normalized to unique five-digit ZIPs and an entry that is not a ZIP or a ZIP+4 is refused by
+name, never dropped); rules are tried in sort order and the first active, sound match assigns; no
+match leaves the row unassigned exactly as before. **Decided: the actor and the action** - the four
+runtime writers now insert through ONE storage helper, `insertOpportunityTx` (the dead
+`createOpportunity` - no route, no caller - is deleted so nothing can insert around the rules),
+which loads the rules, zones, users and categories once per transaction, reads the location's zip,
+stamps `assignedUserId` / `assignedAt` / the new `opportunities.assignedByRuleId` on the insert and
+writes one audit row `opportunity_auto_assigned` (a new action, not the manual `update`) under
+`SYSTEM_AUDIT_ACTOR` ({ userId: null, actorLabel: "System" }, canon §17) with the manual row's
+snapshot shape plus the rule's id and text ("Any category · Any work type · Zone North · Any source
+-> Heritage Support"), so the History tells a rule from a person. **Decided: MANAGE_SETTINGS for
+both lists' writes** (reads open; the manual assign stays ASSIGN_OPPORTUNITY - support should not
+route every future opportunity to themselves). **Decided: no re-run** on a later category /
+work-type change ("at creation"). **Decided: an inactive user is refused at save**
+(RULE_ASSIGNEE_INVALID on create and on a change of the user) **and a rule whose user or zone later
+goes inactive is skipped and reported on the card** through the same shared `describeRuleProblems`
+the resolver reads, never re-pointed; an inactive rule is not considered. **Decided:
+`assignedByRuleId`** (a nullable FK, nulled by a manual reassignment) is how the read knows: the
+chips' assignee says "(auto)" and the manual `update` diffs the rule going to null beside the users
+before and after - a person overriding a rule. **Decided: DELETE with a guard, plus deactivate** -
+a zone named by a rule is 409 ZONE_IN_USE and a rule that assigned rows is 409 RULE_IN_USE (history
+keeps its references); otherwise DELETE is 204; reordering is one `POST .../reorder { ids }` naming
+every rule once (the card's Move up / Move down). Routes: `GET/POST /api/zones`, `PATCH/DELETE
+/api/zones/:id`, `GET/POST /api/opportunity-assignment-rules`, `POST .../reorder`, `PATCH/DELETE
+.../:id`; storage refusals carry codes (ZIP_CODES_INVALID / ZIP_CODES_REQUIRED / ZONE_NAME_REQUIRED
+/ ZONE_NAME_TAKEN / ZONE_IN_USE / RULE_CATEGORY_UNKNOWN / RULE_ZONE_UNKNOWN / RULE_ASSIGNEE_INVALID
+/ RULE_IN_USE / RULE_ORDER_INVALID). **Migration** (`bootstrapOpportunityAssignment`, three guarded
+steps, each printed once): the two CREATEs with their indexes (no seed: the office names its own
+zones, and with no rule every new opportunity stays unassigned as before) and
+`opportunities.assigned_by_rule_id` with a partial index and the FK (no backfill: 30 rows, none
+assigned). **It has NOT run against the shared dev DB: verification ran against a copy
+(`pestflow_verify`, dropped afterwards); the migration is additive and the owner's `npm run
+dev:full` restart runs it and prints its three lines.** Client: Settings -> Zones card (Add / Edit
+dialog with a ZIP textarea that previews what is kept and, in amber, what will be refused; Delete
+in the dialog; "Admins manage zones." for everyone else) and Settings -> Opportunity Assignment
+card (rules in order with their matchers, "Any" where null, the user, Active, amber problem lines,
+Move up / Move down, an Add / Edit dialog with four Selects and the assignee; "Admins manage
+assignment rules." otherwise), both after Opportunity Categories; the taxonomy chips' assignee
+reads "(auto)" with a title naming the rule's origin, on the queue and the location tab alike.
+Found on the way and corrected in the docs: the follow-up opportunity for a one-time service is
+written at office **finalization** (`finalizeServiceRecord` -> `ensureOpportunityForServiceRecordTx`,
+canon §12), not at the technician's post as the Pass 26 handoff said; and the Pass 25 record named
+the fourth writer `requestAppointmentCancelOrReschedule` (it is `dispositionAppointment` since
+Pass 27). Not touched: the disposition flow's opportunity choices (C4.2), Smart Schedule (Phase
+9), the categories' keys, the technician's view, a "this rule would assign ..." preview on the
+card (the row called it optional), a bulk assignment of the 30 existing rows (the rules are
+forward-only). **Restart `npm run dev:full` before manually testing - this pass adds two tables and
+a column; the two cards, their two dialogs and the "(auto)" chip have not been rendered by anyone:
+the repo has no browser automation and the session had no browser.** Signatures and behavior are
+under "Shipped in Pass 26" at the end of `PLAN_ROADMAP_V2.md` Part D.
+
+Next up: **Pass 28** — appointment composition, server + dispatch sheet (`PLAN_ROADMAP_V2.md`
+Phase 4 table, C4.3a): add a service to an appointment (new or from the pending queue), remove /
+cancel / return ONE service to pending (the last service prompts to reschedule the appointment),
+change a service's type (agreement work stays locked) and duration, appointment instructions
+(`appointments.notes`) editable, all through `getLinkedServicesForAppointmentTx`, on the dispatch
+sheet; plus cancelling a `PENDING_SCHEDULING` service outright from the pending queue and the
+location's Services tab with the disposition's semantics (the owner's review of 2026-09-25,
+finding 5). Branch from `origin/main` after confirming it contains Pass 26's merge. The handoff
+prompt for Pass 28 is the last section of this file; the Pass 28 session writes the next one.
 
 Phase 1's ordered plan, impact analysis, conflict resolutions, and per-pass verification steps live in
 `PLAN_BILLING_V1_1_EXECUTION.md` — read it when a pass builds on a Phase 1 helper (its "Shipped in
@@ -1487,210 +1549,323 @@ pointer and that prompt.
 
 Replaced at the end of every pass (`AGENT_WORKING_AGREEMENT.md`, the end-of-pass step). The owner
 pastes it verbatim to start the next session; it is also the last thing in the finishing session's
-final message. Written 2026-09-27, after Pass 24 was pushed as
-`feature/phase-3-service-designation-callbacks`. Its ground truth came from a read-only Explore
-subagent's inventory of the working tree during Pass 24, plus the SQL it ran; the line numbers are
-that tree's, so run the SQL and grep the names before trusting any claim.
+final message. Written 2026-09-28, after Pass 26 was pushed as
+`feature/phase-4-opportunity-assignment-rules`. Its ground truth came from a read-only Explore
+subagent's inventory of the working tree during Pass 26, plus the SQL it ran, with the storage and
+route line numbers re-read after Pass 26's changes landed; they are that tree's, so run the SQL and
+grep the names before trusting any claim.
 
 ```text
-Start Pass 26 — Opportunity assignment rules and zones
-(PLAN_ROADMAP_V2.md Phase 4 table, row C4.1b; CANONICAL_DOMAIN_RULES_V1.md "Opportunities",
-"Canonical rule — two axes and an assignee", whose last sentence is "New opportunities are
-unassigned; auto-assignment by rules and zones is C4.1b"; shared/permissions.ts's
-ASSIGN_OPPORTUNITY comment: auto-assignment "will write the same column under the system actor,
-not a person's permission". Phase order: Phase 3 closed with Pass 24, so the first open Phase 4
-row.) Read the CLAUDE.md docs in order first; CURRENT_FOCUS.md's last two entries (Pass 24 and
-"Next up") are the ones that matter.
+Start Pass 28 — Appointment composition, server + dispatch sheet
+(PLAN_ROADMAP_V2.md Phase 4 table, row C4.3a; B13 :263-271 "Appointment Details"; the owner's
+review of 2026-09-25, finding 5 (Part E) - cancelling a PENDING_SCHEDULING service outright;
+CANONICAL_DOMAIN_RULES_V1.md §9 "Agreement cancellation vs service cancellation" :508-548, whose
+"As built (Pass 27)" block ends "Cancelling ONE Service on a multi-service Appointment is C4.3a"
+:546, and §11 Appointment :838-900. Phase order: Pass 26 (C4.1b) closed the row before it, so this
+is the next open Phase 4 row.) Read the CLAUDE.md docs in order first; CURRENT_FOCUS.md's last two
+entries (Pass 26 and "Next up") are the ones that matter.
 
-Branch feature/phase-4-opportunity-assignment-rules from origin/main. Confirm main contains the
-Pass 24 merge (feature/phase-3-service-designation-callbacks) before branching.
+Branch feature/phase-4-appointment-composition from origin/main. Confirm main contains the Pass 26
+merge (feature/phase-4-opportunity-assignment-rules) before branching.
 
-The row: Settings gains `zones` (named zip-code lists, reusable later by dispatch and Smart
-Schedule - Phase 9 names "the zones from C4.1b" as the one Smart Schedule prerequisite that will
-exist) and `opportunity_assignment_rules` (category / work type / zone / source → user, ordered,
-first match wins); an opportunity is auto-assigned at creation, left unassigned when no rule
-matches; reassignment is logged. The owner's recorded decisions around it: one users table for
-everyone (2026-09-19; `assignedUserId` is a users FK); the five categories only; B7 (roadmap
-:222-230) - assignees are sales reps, office reps and managers, a technician sees the queue and
-"My opportunities" but hands work to nobody; D8 "Opportunity taxonomy" (PLAN_BILLING_V1_1.md
-:309-311). Decide and state, in the pass: (1) the storage pattern - recommend two org-scoped
-TABLES on the target_pests / opportunity_categories pattern, not `app_settings` JSON lists (rules
-need a stable zone FK, several typed columns and an order; a JSON blob has no row ids and nothing
-can reference it): `zones` (name, zip_codes text[], is_active, sort_order) and
-`opportunity_assignment_rules` (sort_order for first-match-wins; nullable matchers category_key,
-work_type, zone_id FK zones, source; assigned_user_id FK users NOT NULL; is_active); both added to
-TABLES_REQUIRING_ORG_ID in server/tenancy-bootstrap.ts:18 (the opportunity tables sit at :36-39).
-(2) Matching - a null matcher matches anything; a zone matches when the opportunity's location zip
-is IN the zone's list (exact zips; decide whether a 5-digit prefix of a ZIP+4 counts - recommend
-comparing the first five characters); rules are evaluated in sort_order and the first match
-assigns; no match leaves the row unassigned exactly as today. (3) The actor - the auto-assignment
-writes `assignedUserId` / `assignedAt` at insert and logs one audit row on the opportunity naming
-the rule and the user, under a SYSTEM actor (`AuditActor { userId: null, actorLabel }`; canon §17:
-a null actor is a system-driven write) - no such constant exists yet; decide whether the action is
-the existing `update` (what updateOpportunity writes for an assignee change, snapshot
-{ assignedUserId, assignedTo, assignedAt, categoryKey, workType }) or a new `opportunity_auto_assigned`
-- recommend the new action so the queue's history can tell a rule from a person. (4) Who edits
-zones and rules - MANAGE_SETTINGS (admin) like the other Settings cards, or ASSIGN_OPPORTUNITY
-(support+) because it is dispatch of follow-up work - recommend MANAGE_SETTINGS for both (they are
-Settings; the manual assign stays ASSIGN_OPPORTUNITY). (5) Whether a later category / work-type
-change re-runs the rules - recommend no: the row says "at creation"; a manual reassignment is a
-person's act and stays logged as today. (6) Whether an inactive user on a rule is refused at save
-(recommend yes, as updateOpportunity's assertActiveOrgUserTx already refuses) and what happens to
-rules naming a user who later goes inactive (recommend: the rule is skipped and reported on the
-card, never silently reassigned).
+The row: add a service to an appointment (new, or from the pending queue); remove / cancel / return
+ONE service to pending (the last service prompts to reschedule the appointment); change a service's
+type (agreement work stays locked) and duration; appointment instructions (appointments.notes)
+editable; all through getLinkedServicesForAppointmentTx; UI on the dispatch sheet. Also: cancelling
+a PENDING_SCHEDULING service outright, from the pending queue and the location's Services tab, with
+the disposition's semantics - a reason from the settings list, the opportunity choice (WINBACK for a
+one-time service; an agreement service is recycled, or if the agreement itself is ending that is
+the agreement workflow), an audit row on the service - because today the only way to cancel a
+pending service is to place it on the board and cancel the placement. The owner's recorded
+decisions around it: B13 (roadmap :263-271; Part E answer 6: appointment-level instructions to the
+technician; dispatch and tech views both edit services, the tech view behind selectors, which is
+C4.3b); B2 / C4.2 (an Appointment leaves the board only through the disposition; CANCEL requires a
+reason from the list; agreement services recycle with the window reset, one-time services are
+CANCELLED with the opportunity prompt); "who may cancel is C5.6" (Pass 27 left the disposition
+ungated). Decide and state, in the pass: (1) how a detach clears appointments.serviceId - the
+"representative" - since getLinkedServicesForAppointmentTx appends the row appointments.serviceId
+names whatever its appointmentId, syncServicesForAppointmentTx re-links an unlinked representative
+on the next appointment PATCH, and completeService falls back to appointments.serviceId when the
+service has none (recommend: reassign the representative to the first remaining sibling exactly as
+deleteService does, and null it only when the appointment is being rescheduled away); (2) whether a
+cancelled service stays linked to a live appointment (the disposition's convention for one-time
+work) or is detached - finalizeServiceRecord's allFinalized counts CANCELLED linked services while
+the billing group and ready-for-billing exclude them, so a service cancelled off a live visit would
+stop that visit auto-completing (recommend: detach on cancel from a live visit and stamp
+lastAppointmentId, or filter CANCELLED in the rollup - state which); (3) whether adding / removing a
+service moves appointments.scheduledEndDate (today only the client writes it: placement = slot +
+the representative's expectedDurationMinutes; recommend: extend on add by the added service's
+expected duration, never shrink on remove, and say so on the sheet); (4) what
+appointmentAuditSnapshot records (it lacks notes, scheduledEndDate, serviceTypeId,
+expectedDurationMinutes, workKind - extend it so a composition change diffs); (5) the new
+AuditAction(s) on entity `service` - recommend `service_cancelled` for the outright cancel and
+`appointment_composition_changed` on the appointment for add / remove / type / duration / notes,
+one row per request; (6) a gate - everything here is ungated; candidates are C5.6's profiles
+(leave ungated, as the disposition is), ADJUST_PRICE_AGREEMENT for an agreement service's type
+(the price's rule, Pass 24's precedent), or support+ (recommend: leave add / remove / notes /
+duration ungated like the disposition, gate an agreement service's type change on
+ADJUST_PRICE_AGREEMENT, and make the outright cancel follow the disposition - ungated - with the
+reason required); (7) locking serviceTypeId on agreement services server-side - nothing locks it
+today (the customer Edit form offers it for every service and updateService writes it; only
+workKind is gated) - recommend: refuse 409 SERVICE_TYPE_LOCKED for an agreement service unless the
+actor holds ADJUST_PRICE_AGREEMENT, and disable the Select on the customer form the same way; (8)
+opportunity conversion for a service added to an existing visit (createAppointment converts the
+representative's open RESCHEDULE / CANCELLATION_REVIEW opportunities only; attach converts none, so
+a requeued service re-placed as an extra keeps its OPEN opportunity - recommend: convert on attach
+through the same block); (9) the cancel-reasons PATCH is ungated (the reopen list is
+MANAGE_SETTINGS) - recommend gating it now that a second flow reads it.
 
-Ground truth today (line numbers from the working tree at the end of Pass 24; they drift, the
+Ground truth today (line numbers from the working tree at the end of Pass 26; they drift, the
 names do not):
-- Schema (shared/schema.ts): locations :51, `zip: text NOT NULL` :62 (no index on zip);
-  appSettings :579-586 (pk orgId+key); opportunities :588-629 - locationId NOT NULL :591,
-  agreementId :592, sourceServiceId / sourceServiceRecordId :593-594, serviceTypeId :595, source
-  :596 (default NON_CONTRACT_FOLLOW_UP), opportunityType (free-text label) :597, categoryKey /
-  workType NOT NULL :617-618, the assignee comment :619-624 ("Auto-assignment by rules and zones
-  is C4.1b (Pass 26)"), assignedUserId (users FK) :625, assignedAt :626; opportunityDispositions
-  :631; opportunityCategories :653-664 (id, orgId, key, label, isActive, sortOrder, timestamps;
-  unique (orgId, key)); opportunityActivities :666; targetPests :735 (label, isActive,
-  isFavorite, sortOrder, notes); users :1164-1175 (firstName, lastName, email unique, role,
-  status default 'active'); insertOpportunitySchema :1227; insertOpportunityCategorySchema :1229;
-  insertTargetPestSchema :1233; UserSummary = Omit<User, "passwordHash"> :1333.
-- shared/opportunities.ts (148 lines): the header names C4.1b :17-19; OPPORTUNITY_WORK_TYPES
-  :21; OPPORTUNITY_CATEGORY_KEYS / OPPORTUNITY_CATEGORY_SEED :35-44; OPPORTUNITY_SOURCES (7,
-  APPOINTMENT_CANCELLATION_WINBACK included) :69-78 with labels :80-90; taxonomyForSource(source,
-  hasAgreement) :120-138; OPPORTUNITY_STATUSES :140; OPPORTUNITY_ASSIGNEE_ME / _UNASSIGNED
-  :146-147. shared/appointment-disposition.ts opportunitySourceForDisposition(mode, effect) :93.
-  shared/users.ts: userDisplayName :7, sortUsersByName :13, describeUserRole :27,
-  selectableUsers(list, currentId) :36 (active users plus the current one).
-- The four runtime writers, every one inside a tx, none stamping assignedUserId
-  (server/storage.ts): ensureOpportunityForServiceRecordTx (:2149, insert :2180,
-  NON_CONTRACT_FOLLOW_UP, opportunityTaxonomyColumns(..., false) :2188),
-  ensureAgreementContactRequiredOpportunityTx (:2342, insert :2365, AGREEMENT_CONTACT_REQUIRED),
-  cancelAgreement's retention branch (:4090, insert :4211, AGREEMENT_CANCELLATION_RETENTION,
-  `.returning()` then an activity), dispositionAppointment (:4449, insert :4599, source from
-  opportunitySourceForDisposition :4594, only on CREATE or UPDATE_EXISTING with no open row
-  :4568-4592). opportunityTaxonomyColumns :1387-1390 wraps taxonomyForSource - the natural hook is
-  a sibling resolveAssigneeTx(tx, { categoryKey, workType, source, locationId }) spread into the
-  same four inserts, reading the zip from locations. createOpportunity (:3583) is DEAD CODE: no
-  route and no caller - there is NO POST /api/opportunities. updateOpportunity :3600-3647 (the
-  assignee change :3621-3628 through assertActiveOrgUserTx :3663-3672 - same org, status
-  'active'; sets assignedAt now or null; one audit `update` :3635-3644 when the snapshot from
-  opportunityAuditSnapshotTx :3651-3659 changed). getOpportunities' zip filter is a subquery on
-  locations.zip LIKE prefix :3527-3538; OpportunityFilters :816-831 (assignedUserId null =
-  unassigned, zip = prefix, location = text); OpportunityUpdateInput :836-844. recordAuditLogTx
-  :1443-1454; AuditActor :264 (no system-actor constant anywhere).
-- Routes (server/routes.ts): GET /api/opportunities :1363-1387 (status, dueFrom, dueTo,
-  serviceTypeId, categoryKey, workType - a bad value is 400 -, assignee = user id | "me" |
-  "unassigned", source, zip, location; "ALL" or empty = unfiltered); PATCH /api/opportunities/:id
-  :1466-1483 (opportunityUpdateSchema :389-396, strict: notes, dueDate, nextActionDate,
-  categoryKey, workType, assignedUserId string|null; 403 when the assignee changes without
-  ASSIGN_OPPORTUNITY :1469-1474); categories GET :1429 / PATCH :1434 (schema :399-403, ungated),
-  POST and DELETE 405 :1446 / :1452; target pests GET :2248, POST :2254, PATCH :2265 (schemas
-  :329 / :332, ungated); the app_settings lists - appointment-cancel-reasons GET/PATCH :2103/:2108
-  (ungated), ticket-reopen-reasons :2124/:2129, material-units :2145/:2150, application-areas
-  :2161/:2166 (all three requirePermission(MANAGE_SETTINGS); zod :367-378); GET /api/users :1286
-  (open to every role); POST /api/appointments/:id/disposition :1907-1928 (schema :353-359: mode
-  CANCEL | RESCHEDULE, reasonCode?, notes?, opportunity UPDATE_EXISTING | CREATE | NONE,
-  voidDraftInvoices?) and the technician alias :1937; getAuditActor :56; requirePermission is
-  server/auth.ts:109.
-- Storage for the patterns: getOpportunityCategories :3714 / updateOpportunityCategory :3725;
-  target pests :5515 / :5522 / :5527; the app_settings readers and writers :5553-5640
-  (writeMaterialList :5640 is the upsert shape). Bootstraps: opportunities tables are
-  server/service-scheduling-bootstrap.ts's (CREATE :256, ALTERs :274-287, dispositions :290,
-  activities :307, app_settings :165, target_pests CREATE :223 with a unique lower(label) index
-  :234 and a seed :237, bootstrapOpportunityTaxonomy :376-483 - the categories CREATE :377-389,
-  the per-org seed :391-409, the backfill :411-467, indexes :469-470, the assigned_user_id FK
-  :473-482; called at :345); Pass 24's bootstrapServiceWorkKind is the newest model of a guarded,
-  printed migration in that file. columnExists duplicates: agreement-bootstrap.ts:7,
-  billing-profile-bootstrap.ts:4, document-bootstrap.ts:4, service-scheduling-bootstrap.ts:13.
-  server/index.ts call order :84-118 (ServiceSchedulingFoundation :99, Tenancy :109).
-- Client: the Opportunities screen (client/src/pages/opportunities.tsx, 467 lines) - filter state
-  :74-84, the query string :90-104, useQuery on `/api/opportunities${qs}` :106, categories :110,
-  users :111, all-locations :112; the filter UI :209-293 (assignee Anyone / Me / Unassigned /
-  active users :241-252, zip prefix :290-293), presets and "My Opportunities" :294-303; the inline
-  assign Select :368-392 (disabled without canAssign :73, options UNASSIGNED + selectableUsers,
-  patchOpportunity PATCH :140-151, invalidates /api/audit-logs). opportunity-taxonomy-chips.tsx
-  (OpportunityTaxonomyChips :31, describeOpportunityAssignee :21); opportunity-disposition-dialog
-  .tsx (POST /:id/disposition :84); opportunity-history-dialog.tsx (activities :21);
-  opportunity-convert-dialog.tsx (convert :54). Settings cards to model on: "Opportunity
-  Categories" settings.tsx:1986 (OpportunityCategoryForm :739, query :1392), "Target Pests" :1610
-  (TargetPestForm :351), "Ticket Reopen Reasons" :2279-2306 (a Textarea, disabled unless
-  canManageSettings :1402; mutation :1486); the Service Types card (Pass 24) shows the
-  admin-only header caption pattern.
-- Permissions (shared/permissions.ts): PERMISSIONS :3-73, ASSIGN_OPPORTUNITY :55 (comment
-  :47-54), MANAGE_SETTINGS :72; holders - support :98 / manager :119 / admin :130 for
-  ASSIGN_OPPORTUNITY, admin only for MANAGE_SETTINGS; can :133, rolesWithPermission :138. Audit
-  (shared/audit.ts): AuditEntityType includes `opportunity` :34; AuditAction :62-86 has `update`
-  (the assignee change's action today) and `work_kind_changed` (Pass 24) last; labels
-  ACTION_LABELS :95.
-- No zone, territory or service-area concept exists anywhere (grep across shared/, server/,
-  client/src: only comments, timezone text and a "FlowZone" placeholder in settings.tsx:308).
-- DB today (run the SQL, never trust a doc's data claim): 30 opportunities - by source/status
-  AGREEMENT_CANCELLATION_RETENTION 1 CONVERTED / 1 DISMISSED / 5 OPEN, APPOINTMENT_CANCELLATION_REVIEW
-  8 CONVERTED, APPOINTMENT_CANCELLATION_WINBACK 2 OPEN, APPOINTMENT_RESCHEDULE_REQUIRED 4 CONVERTED
-  / 2 OPEN, NON_CONTRACT_FOLLOW_UP 1 CONVERTED / 6 OPEN; by category/work type RESCHEDULE/AGREEMENT
-  5, RESCHEDULE/ONE_TIME 9, RETENTION/AGREEMENT 7, SERVICE_DUE/ONE_TIME 7, WINBACK/ONE_TIME 2;
-  assigned_user_id set on 0 of 30. Their locations span 8 zips (76053: 8, 75696: 6, 62703: 4,
-  62705: 4, 71968: 3, 62702: 2, 76102: 2, 76969: 1); 14 locations over 11 distinct zips (62705,
-  76053, 76969 twice each; 00000, 62701, 62702, 62703, 62704, 71968, 75696 once). Users: the four
-  seed logins (admin / manager / support / tech @heritage.local, all active, "Heritage Admin"
-  etc.). opportunity_categories: the five keys, all active. `\d opportunities`: 27 columns,
-  indexes on agreement+source_service (partial), assigned_user_id, category_key, location_id,
-  org_id, status; FK opportunities_assigned_user_id_fkey → users(id). One org.
-- Docs to carry: the C4.1b row (PLAN_ROADMAP_V2.md:380; the C4.1 row :379; B7 :222-230; Smart
-  Schedule's "zones from C4.1b" :388-389 and :434); "Shipped in Pass 25" :1264-1409 (its "Not
-  built: auto-assignment rules and zones (C4.1b, Pass 26)" :1374; STALE on one point: :1328-1330
-  names requestAppointmentCancelOrReschedule as the fourth writer - since Pass 27 it is
-  dispositionAppointment); canon "Opportunities" :1046-1085 (the assignee rule :1079-1084);
-  CURRENT_FOCUS.md :671 and :713 (Pass 25 / 27 not-built lists naming Pass 26) and the Pass 24
-  entry's "Next up"; PLAN_BILLING_V1_1.md D8 :309-311; shared/permissions.ts :47-54 and
-  shared/schema.ts :619-624 (the comments promising C4.1b - update them to "built").
+- Schema (shared/schema.ts): services :196-247 - appointmentId :201 (FK appointments),
+  lastAppointmentId :211 (FK; written only by the disposition), agreementId :212 (plain varchar,
+  no FK), serviceTypeId :213, dueDate / generatedForDate / serviceWindowStart / End :214-217,
+  timeWindow :218, expectedDurationMinutes :219, priceCents :220, status :221 (default
+  PENDING_SCHEDULING), assignedTechnicianId :222, source :223, schedulingMode :224, notes :225
+  (the customer screen labels it "Instructions"), workKind :238, answersServiceId :244;
+  appointments :249-285 - serviceId :254 (plain varchar, NO FK, NO index: the one
+  "representative"), agreementId :255, serviceTypeId :256, assignedTechnicianId :257, source :258,
+  scheduledDate :260 NOT NULL, scheduledEndDate :261 (the only planned-duration carrier),
+  timeInAt / timeOutAt :262-263, durationMinutes :264 (ACTUAL, from time in / out - not a plan),
+  status :273, cancelReason / cancelNotes / cancelRequestedAt / cancelRequestedByLabel :274-277,
+  rescheduleRequested :278 NOT NULL, rescheduleRequestedAt :279, lockTime / lockTechnician
+  :280-281, assignedTo :282, notes :283; NO updatedAt. serviceTypes.estimatedDuration :154;
+  agreements.defaultDurationMinutes :428 and serviceInstructions :429; agreementTemplates
+  .defaultDurationMinutes :482 / defaultInstructions :502. insertServiceSchema :1271 (omits
+  lastAppointmentId); insertAppointmentSchema :1272 (omits orgId, id, createdAt only - a PATCH may
+  carry serviceId, status, the cancel fields, time in / out, durationMinutes, the reschedule flag).
+- shared/appointment-disposition.ts (165 lines, unchanged since 27b): APPOINTMENT_DISPOSITION_MODES
+  :27, DISPOSITION_OPPORTUNITY_CHOICES :31, APPOINTMENT_DISPOSITION_ORIGINS :35,
+  AppointmentDispositionRequest :39, DispositionServiceEffect REQUEUED | CANCELLED | SKIPPED :50,
+  DispositionServiceOutcome :52, DispositionOpportunityOutcome :60, AppointmentDispositionOutcome
+  :68, the codes :77-83 (CANCEL_DISPOSITION_REQUIRED, DISPOSITION_REASON_REQUIRED,
+  DISPOSITION_REASON_NOT_ON_LIST, APPOINTMENT_NOT_DISPOSITIONABLE), opportunitySourceForDisposition
+  (mode, effect) :93 (CANCELLED -> APPOINTMENT_CANCELLATION_WINBACK; RESCHEDULE ->
+  APPOINTMENT_RESCHEDULE_REQUIRED; else APPOINTMENT_CANCELLATION_REVIEW), describeAppointmentStatus
+  :99, isBoardPlacement :125, ServiceScheduleState :135 + labels :137, resolveServiceScheduleState
+  :146. shared/opportunities.ts taxonomyForSource :123 (WINBACK case :134).
+- Storage (server/storage.ts, 11235 lines): ServiceKindError :431; ServiceWriteContext :441;
+  AppointmentDispositionInput :711; class AppointmentDispositionError(status: 400 | 409, code,
+  message) :737 (widen it if a 404 / 403 is needed); calculateDurationMinutes :1396;
+  appointmentAuditSnapshot :1495 (status, technician, scheduledDate, the cancel and reschedule
+  fields, services[] {id, status, appointmentId, lastAppointmentId, assignedTechnicianId,
+  agreementId, dueDate, window} - NOT notes, scheduledEndDate, serviceTypeId,
+  expectedDurationMinutes, workKind); recordAuditLogTx :1542; getAuditLogsForLocation :1578
+  (already collects service and appointment rows); getLinkedServicesForAppointmentTx(tx,
+  appointmentId, legacyRepresentativeServiceId?) :2258 - every service with appointmentId = id PLUS
+  the row appointments.serviceId names when not already there, whatever its appointmentId or
+  status (callers: sync, disposition, getTechnicianWork, the finalize rollup, ready-for-billing,
+  getAppointmentBillingGroupTx (excludes CANCELLED), recordPayment); syncServicesForAppointmentTx
+  :2277 (no-op for CANCELED / COMPLETED; drops linked services that are COMPLETED / CANCELLED or
+  placed elsewhere; the rest SCHEDULED with the technician and appointmentId - its filter admits
+  an unlinked representative, which is the re-link trap); getPendingServices :3518
+  (PENDING_SCHEDULING; dateTo drops later dueDates); createService :3531 (with appointmentId:
+  status from the appointment, technician copied, becomes representative when none; no audit, no
+  conversion, no end-date change); updateService :3574 (kind / link resolved only when named;
+  NO lock on serviceTypeId; status from the body unchecked - CANCELLED or PENDING_SCHEDULING is
+  written with no reason, audit or opportunity; the link block `if (payload.appointmentId !==
+  undefined && service.appointmentId)` skips a PATCH with appointmentId: null, so a detach today
+  is half-done - status, technician, appointments.serviceId and siblings untouched); deleteService
+  :3649 (refused with service records or linked opportunities; representative reassigned to the
+  first remaining sibling or the appointment HARD-DELETED when none remains - no audit, no reason,
+  no draft check); convertOpportunityToService (grep; expectedDurationMinutes =
+  serviceType.estimatedDuration); cancelAgreement :4712 (writes appointment CANCELED directly,
+  bypassing the disposition - no reason / flag / lastAppointmentId / audit); createAppointment
+  :4947 (sets the named service's appointmentId, syncs, converts the REPRESENTATIVE's open
+  RESCHEDULE / CANCELLATION_REVIEW opportunities only, the AGREEMENT_INITIAL link);
+  updateAppointment :5026 (status CANCELED -> 409; else .set(data) as given, serviceId included;
+  sync; NO audit); dispositionAppointment :5070 (reason validated before the tx; CANCELED /
+  COMPLETED -> 409; the Q3 draft prompt through resolveDraftInvoicesOnCancelTx; the appointment's
+  row; per service: SKIPPED when COMPLETED / CANCELLED / placed elsewhere, disposed = CANCEL &&
+  OFFICE && !agreementId -> CANCELLED + lastAppointmentId KEEPING appointmentId, else REQUEUED with
+  appointmentId null at :5160 - the only service detach in the codebase - technician null,
+  lastAppointmentId, the agreement window reset; the opportunity choice; one audit row; no ticket
+  check); timeOutAppointment :5282; getTechnicianWork :5301 (ne CANCELED in SQL); completeService
+  :5628 (appointment by input.appointmentId || service.appointmentId else appointments.serviceId =
+  service.id; IN_PROGRESS; auto time-out); finalizeServiceRecord :5877 - the rollup's allFinalized
+  :5929 counts CANCELLED linked services; getAppointmentCancelReasons :6176. Nothing today removes
+  one service from a live appointment.
+- Routes (server/routes.ts, 3267 lines; every /api route behind requireAuth; no appointment or
+  service route carries requirePermission): serviceStatusSchema :181, appointmentStatusSchema
+  :184, serviceSchema :211 (status + source required), updateServiceSchema :226 (partial - any
+  client can PATCH status CANCELLED / PENDING_SCHEDULING or appointmentId: null, ungated and
+  unaudited), appointmentSchema :237, updateAppointmentSchema :251, appointmentDispositionSchema
+  :366 strict; GET /api/technicians/:id/work :1361; GET /api/services/pending :1384 (the client
+  sends no window); POST /api/opportunities/:id/convert :1655; POST /api/services :1671 ({
+  actorRole, actor }; ServiceKindError -> { code, message }); PATCH /api/services/:id :1683; DELETE
+  /api/services/:id :1696 (204 or 400); POST /api/services/:id/complete :1706; GET
+  /api/appointments :1948; POST /api/appointments :2004 ({ ...appt, initialChargeDue }); PATCH
+  /api/appointments/:id :2024 (AppointmentDispositionError mapped); POST
+  /api/appointments/:id/disposition :2067 (origin OFFICE; Zod, DraftInvoiceDecisionRequired,
+  AppointmentDispositionError); POST /api/appointments/:id/cancel-reschedule :2097 (the technician
+  alias: FIELD, UPDATE_EXISTING, mode from rescheduleRequested); GET / PATCH
+  /api/settings/appointment-cancel-reasons :2263 / :2268 (the PATCH is ungated; the reopen list's
+  is MANAGE_SETTINGS). No "prefill" route: schedule.tsx's prefillServiceMutation posts to POST
+  /api/services. Gates in use across the file: MANAGE_SETTINGS (now 21 with Pass 26's routes),
+  GENERATE_INVOICE, APPLY_PAYMENT and single uses of the rest; no scheduling permission exists.
+- Permissions / audit: shared/permissions.ts PERMISSIONS :3, ROLE_PERMISSIONS :83 (technician:
+  POST_SERVICE_TICKET, ADJUST_PRICE_NON_AGREEMENT, ADD_FIELD_SURCHARGE, TAKE_PAYMENT_FIELD;
+  support adds FINALIZE / REOPEN / EDIT_TICKET, GENERATE_INVOICE, SEND_INVOICE,
+  ASSIGN_OPPORTUNITY, APPLY_PAYMENT, CONFIRM_PAYMENT; manager everything but MANAGE_SETTINGS;
+  admin all); shared/audit.ts AuditEntityType :24 (service and appointment are members),
+  AuditAction :70 (ends `work_kind_changed`, `opportunity_auto_assigned`), ACTION_LABELS :110.
+- Client, dispatch (client/src/pages/schedule.tsx, 1580 lines, untouched since 27b):
+  getAppointmentDurationMinutes :150 (scheduledEndDate - scheduledDate, else the representative's
+  expectedDurationMinutes); AppointmentSheet :183-570 - props :183-233 (appointment, service = the
+  representative, linkedServices, technicianOptions, serviceTypeNameById, answersLabelFor,
+  cancelReasons, openOpportunityCount, onSave({ assignedTechnicianId, scheduledDate,
+  scheduledEndDate, status, lockTime, lockTechnician, notes }), onDisposition, isSaving,
+  isDispositioning), activeServices excludes COMPLETED / CANCELLED :252, form reset :257-266, the
+  dialog reset keyed on appointment?.id :275-281, the "Work kind per service" block :314-329
+  (READ-ONLY, no per-service actions), VisitBillingRows :331, Technician select :336, Scheduled
+  Start / End :351-370, Status select :372-387, lock switches :389-404, "Scheduling Notes" Textarea
+  :406-409 (ALREADY edits appointments.notes through the PATCH - the row's "instructions editable"
+  is half done), the buttons :411-433, the Cancel dialog :439-543 (reason <select>, notes, the
+  opportunity radios), the Reschedule AlertDialog :545-567; ServiceDetailDialog :572-649
+  (read-only); Schedule() :651 - queries :672-682 (incl. /api/settings/appointment-cancel-reasons
+  :680), servicesByAppointmentId :711 (includes CANCELLED linked services), boardAppointments
+  :740, prefillServiceMutation :778-822, scheduleMutation :855-911 = placement (POST
+  /api/appointments with serviceId, scheduledEndDate = slot + expectedDurationMinutes, notes:
+  service.notes :873 - the service's notes are COPIED into the appointment's notes at placement;
+  ?serviceIds= extras PATCHed :878-886), attachServiceToAppointmentMutation :921-949 = the EXISTING
+  "add from the queue to a visit" (select a queue row, click a card at the same location;
+  handleAppointmentCardClick :1082-1099; PATCH /api/services/:id { appointmentId,
+  assignedTechnicianId, status } - extends no end date, converts no opportunity, writes no audit),
+  updateAppointmentMutation :951, dispositionMutation :976-1020, the board move :1024-1071 with its
+  confirm :1549-1566, editingLinkedServices :1132, the cards :1341-1428 ("+N other services", the
+  revenue sum counts CANCELLED linked services), the pending queue card :1443-1497 (each row a
+  <button> that only selects :1463-1466; NO cancel action, no details link, a plain-text name
+  :1470), sheet wiring :1499-1535, DraftInvoiceVoidPrompt :1539. The Cancel appointment dialog is
+  inline in AppointmentSheet - there is no appointment-disposition-dialog component
+  (client/src/components/opportunity-disposition-dialog.tsx is the unrelated opportunity call).
+- Client, customer screen (client/src/pages/customer-detail.tsx, 4264 lines, untouched by Pass
+  26): ServiceWorkKindFields :2513-2560; ServiceForm :2562-2887 (New and Edit; Edit PATCHes type,
+  dueDate, timeWindow, expectedDurationMinutes, priceCents, status: service.status unchanged,
+  technician, source, notes, workKind, answersServiceId; Edit lets ANYONE change the Service Type,
+  agreement services included :2824-2840 - no lock either side; the "Instructions" Textarea :2868
+  edits services.notes; Delete Service :2871-2875; NO status control, NO cancel action);
+  ServiceDetailModal :2889-3049 (no cancel); ServicesTab :3051-3476 (appointmentByServiceId
+  :3089, siblingServicesByAppointmentId :3173, scheduleByServiceId :3194-3207, scheduleService
+  :3234 -> /schedule?serviceId[&appointmentId], the row :3333-3428 with "Was <date>" :3383 and the
+  cancel reason :3386, row actions only Edit and Schedule / Reschedule :3421-3426). Incidental,
+  out of scope, note only: reopenTicketMutation :3274-3278 posts { reason } from window.prompt
+  but reopenServiceRecordSchema (routes :375) is strict and needs reasonCode - the Services-tab
+  reopen looks broken since Pass 17. Other readers of the cancel-reasons list: settings.tsx (the
+  card and its ungated PATCH), technician-work.tsx :116 / :183 (the alias), :409-412 shows
+  appointment.notes as "Appointment Notes", :432 service.notes; service-completion-dialog.tsx
+  :542-553's Instructions block shows agreement / service / location notes, NOT appointments.notes.
+- Bootstraps: server/service-scheduling-bootstrap.ts - bootstrapOpportunityTaxonomy /
+  bootstrapAppointmentDisposition / bootstrapServiceWorkKind / bootstrapOpportunityAssignment
+  called at :352-355; bootstrapOpportunityAssignment :372 (Pass 26 - tableExists() / columnExists()
+  guards, each step printed once) is the newest model; bootstrapAppointmentDisposition :839
+  (column + index + FK guarded by pg_constraint + a printed one-shot backfill). server/index.ts
+  call order :84-118 (ServiceSchedulingFoundation :99, Tenancy :109).
+- Duration and instructions today: serviceTypes.estimatedDuration is the type default (copied by
+  the customer form and convertOpportunityToService); agreements / templates
+  .defaultDurationMinutes flow to generated services and the prefill; services
+  .expectedDurationMinutes is the per-service plan, edited only on the customer form;
+  appointments.scheduledEndDate is the visit's planned end, written ONLY by the client (placement,
+  the move confirm, the sheet's End input) - the server never derives it and adding a service never
+  extends it; appointments.durationMinutes is actual. Canon §11 lists estimatedDurationMinutes,
+  which does not exist. There is no per-service "remove from appointment" anywhere;
+  appointments.notes is "Scheduling Notes" on the sheet and "Appointment Notes" on the technician
+  day, seeded from service.notes at placement; B13 defines "order instructions" as
+  appointments.notes.
+- DB today (run the SQL, never trust a doc's data claim; the shared dev DB was untouched by Pass
+  26, whose verification ran on a copy): appointments 120 - CANCELED 33 (flag false 27 / true 6),
+  COMPLETED 54, IN_PROGRESS 2, SCHEDULED 31 (one with reschedule_requested true - a legacy
+  anomaly); 8 appointments have more than one linked service (5 COMPLETED with all services
+  COMPLETED; 3 SCHEDULED each with 2 SCHEDULED one-time services - the live fixtures for "remove
+  one of two"; none mixes agreement and one-time work while live); services 103 - CANCELLED 14,
+  COMPLETED 69, SCHEDULED 20, PENDING_SCHEDULING 0 (the queue is EMPTY: create fixtures); by source
+  AGREEMENT_GENERATED 33, AGREEMENT_INITIAL 17, MANUAL 53; last_appointment_id set on 6; 16
+  SCHEDULED appointments have no linked service (11 with a dangling service_id naming a service
+  that no longer exists, 5 null - seed rows of 2026-03/04) and 13 appointments overall carry a
+  dangling service_id; appointments.notes non-empty on 73; scheduled_end_date on 104;
+  services.expected_duration_minutes on 91; service_types.estimated_duration on 6 of 6;
+  audit_logs: appointment_cancelled 12, appointment_rescheduled 2, no service-level cancel rows;
+  app_settings appointment_cancel_reschedule_reasons = ["Weather","Gates locked","Schedule
+  conflict","Customer not home","Canceled by company","Customer requested reschedule","Access
+  issue","Other"]; 46 public tables after Pass 26 (zones and opportunity_assignment_rules empty
+  until the owner adds rows). `\d services`: no index on appointment_id although the resolver
+  queries by it; FKs on answers_service_id, appointment_id, assigned_technician_id, customer_id,
+  last_appointment_id, location_id, service_type_id. `\d appointments`: no updated_at, no FK on
+  service_id or agreement_id, indexes pkey + org_id only.
+- Docs to carry: the C4.3a row (PLAN_ROADMAP_V2.md :383) and C4.3b :384; B13 :263-271; the gap
+  rows :120 (queue - its schedule.tsx citations are stale), :136 (says the sheet edits
+  start/end/status/notes only and Appointment Details is ABSENT - the notes ARE editable there and
+  attach-from-queue ALREADY exists) and :139 (says the service PATCH accepts PENDING_SCHEDULING
+  with no UI - it also accepts CANCELLED and appointmentId: null, ungated); "Shipped in Pass 27"
+  :1413 (its "Not built" line names C4.3a; the posted-ticket requeue note); "Shipped in Pass 27b"
+  :1562 (lists the outright pending cancel as not touched); Part E finding 5 and answer 6; canon
+  §9 :521-546 (:546 names C4.3a; :887 "leaves the board only through the disposition" is too
+  absolute: cancelAgreement still writes CANCELED directly), §10 :685 (its required fields omit
+  appointmentId, lastAppointmentId, expectedDurationMinutes, priceCents, timeWindow, notes), §11
+  :838-900 (lists fields that do not exist on appointments: accountId, serviceAgreementId,
+  scheduledStart/End - they are scheduledDate / scheduledEndDate -, timeWindowStart/End,
+  supportTechId, routeDate, routeSequence, estimatedDurationMinutes, updatedAt, reportedPestType,
+  reportedProblemNotes); CURRENT_FOCUS.md's Pass 27 / 27b entries and the Pass 26 entry's "Next
+  up".
 
-Build per C4.1b: (1) `zones` - the table, org-scoped, with a guarded CREATE in
-service-scheduling-bootstrap (no seed: the office names its own zones; print nothing on a quiet
-boot), zod + routes (GET / POST / PATCH; DELETE or deactivate - decide; a zip list normalized to
-unique 5-digit strings, refused otherwise), a Settings → Zones card (name, the zip list as a
-textarea or chips, active) gated as decided, and `shared/zones.ts` (or a section of
-shared/opportunities.ts) for the normalization and the match predicate the server and the card
-share. (2) `opportunity_assignment_rules` - the table with its FKs and order, routes (GET / POST /
-PATCH / reorder or a sort_order on PATCH; DELETE or deactivate), a Settings → Opportunity
-Assignment card listing rules in order with their matchers ("Any" for null), the user, active,
-and Move up / Move down; the rule evaluation as ONE shared pure function
-(`resolveAssignmentRule(rules, zones, { categoryKey, workType, source, zip })` → the first
-matching active rule or null) read by the server and shown by the card ("this rule would assign
-…" is optional). (3) Auto-assign at creation in the four writers through one storage helper that
-loads the active rules and zones once per transaction, resolves the location's zip, stamps
-assignedUserId / assignedAt on the insert and writes the audit row under the system actor as
-decided - never a person's permission; a rule naming an inactive user is skipped and the skip is
-visible on the card. (4) Reassignment logged - already true through updateOpportunity's `update`
-row; confirm it still names the users before and after, and that a manual reassignment of an
-auto-assigned row reads as a person overriding a rule in the History. (5) The Opportunities
-screen: nothing new to filter on (assignee filters exist), but the chips' assignee should say
-"(auto)" or show the rule when the row was assigned by one - decide and state how the read knows
-(a stored `assignedByRuleId` nullable FK on opportunities is the honest way; recommend it, nulled
-by a manual reassignment). (6) Docs: canon "Opportunities" gains the rule; the roadmap row and a
-"Shipped in Pass 26" record; the two comments promising C4.1b; the stale Pass 25 writer name.
-Not touched: the disposition flow's opportunity choices (C4.2), Smart Schedule (Phase 9), the
-categories' keys (owner: the five only), the technician's view, `createOpportunity` (leave dead
-or delete - decide and state).
+Build per C4.3a: (1) server - one composition path per action, each inside a transaction through
+getLinkedServicesForAppointmentTx, each writing one audit row: add a service to an appointment
+(POST /api/appointments/:id/services { serviceId } for a queued service, or { new service body } to
+create one placed; status SCHEDULED, technician copied, the representative set when none, the end
+date per decision (3), the added service's open RESCHEDULE / CANCELLATION_REVIEW opportunities
+converted per (8)); remove ONE service back to pending (its own route, or a mode on the same one:
+PENDING_SCHEDULING, appointmentId null, lastAppointmentId stamped, technician null, the
+representative reassigned per (1); the LAST service refused with a code that tells the client to
+offer Reschedule instead - the appointment disposition owns that); cancel ONE service outright
+(reason required from the settings list, the opportunity choice with WINBACK for one-time work and
+recycling for agreement work exactly as the disposition does it, the service CANCELLED and detached
+or filtered per (2), the audit row under the new action); change a service's type (locked on
+agreement work per (7)) and expectedDurationMinutes; appointments.notes editable (already through
+the PATCH - keep it, name it in the record). (2) The outright cancel of a PENDING_SCHEDULING service
+- the same route as the placed cancel, refusing a COMPLETED or CANCELLED service and a service with
+a posted ticket (say which), reachable from the pending queue (a Cancel action on the queue row
+with the reason / opportunity dialog) and the location's Services tab (a Cancel action beside Edit
+/ Schedule, disabled with the reason when it cannot apply). (3) The dispatch sheet: the "Work kind
+per service" block becomes the composition block - each service with its type (a Select on
+non-agreement work, locked with the reason on agreement work), duration, kind badge and answers
+line, Remove (return to pending) and Cancel actions, an "Add service" control offering the
+location's pending services and a new-service line; the last service's Remove / Cancel prompts to
+reschedule or cancel the appointment instead; the cards' "+N other services" and revenue sum stop
+counting CANCELLED services. (4) The client's existing attach-from-queue (the queue-then-card
+click) goes through the new add route so the end date, the conversion and the audit row apply
+there too; the two grouped-extras PATCHes at placement (?serviceIds=) may stay as they are or go
+through it - decide. (5) Refuse the ungated status write: updateServiceSchema stops accepting
+status CANCELLED and appointmentId: null from a generic PATCH (the composition routes own both), the
+Pass 27 precedent for CANCELED on the appointment PATCH. (6) Docs: canon §9's "Cancelling ONE
+Service ... is C4.3a" becomes the rule, §11's field list corrected to what exists, the roadmap gap
+rows :120 / :136 / :139 corrected, the row and a "Shipped in Pass 28" record. Not touched: C4.3b's
+technician-side composition (the field's Add service, the review flag), C4.4's crew and preferred
+technician, the board's move and placement UX beyond routing attach through the new path, an
+appointment cancellation policy (Phase 9), cancelAgreement's direct CANCELED write (note it, leave
+it), the Services-tab reopen defect (note it, leave it), C5.6.
 
 Environment: Node 24.21.0, npm run dev:full (restart it before manually testing), DEV_NOTES.md for
-the DB backup / restore and the PowerShell traps, gh logged in so the session can open the PR.
-Verify on PORT=5001 as the previous passes did (an additive migration may run against the shared
-dev DB under the owner's server, or against a copy per DEV_NOTES.md - Pass 24 used the copy so
-the owner's restart prints the migration): npm run check; double boot (boot 1 prints the two
-CREATEs' effect once if anything is printed at all, boot 2 prints only "serving on port 5001" with
-every table count unchanged); the pass's API smoke test as all four roles (zones and rules
-created / refused per the gate decided; a rule with a zone, a rule with a category only, an
-ordering where the first match wins; an opportunity created through a REAL writer - the
-disposition route with CREATE on a fixture appointment, or a ticket posted on a one-time service
-whose type has opportunityLeadDays - lands assigned to the rule's user with the audit row under
-the system actor; one whose zip matches no zone stays unassigned; a manual reassignment logs
-`update` naming both users; a rule naming an inactive user is skipped; every fixture deleted,
-counts back at baseline - remember there is no POST /api/opportunities) and a Vite 200 on every
-touched client module; state plainly what was not rendered - the two cards and the chips cannot be
-judged without a browser.
+the DB backup / restore, the copy-database recipe and the PowerShell traps, gh logged in so the
+session can open the PR. Verify on PORT=5001 as the previous passes did (an additive migration -
+this pass may need none, or an index on services.appointment_id and the new audit action only -
+may run against the shared dev DB under the owner's server, or against a copy per DEV_NOTES.md;
+Passes 23-26 used the copy so the owner's restart prints any migration): npm run check; double boot
+(boot 1 prints any migration once, boot 2 prints only "serving on port 5001" with every table count
+unchanged); the pass's API smoke test as all four roles (a two-service appointment through the real
+routes - POST /api/appointments then the add route; add a queued service and a new one; remove one
+of two, the representative reassigned and the removed service PENDING_SCHEDULING with
+lastAppointmentId; remove the last one refused with the code; cancel one of two with a reason from
+the list and CREATE -> WINBACK / ONE_TIME, the visit still auto-completing when the other ticket is
+finalized; cancel with a reason not on the list refused; an agreement service's type change refused
+without ADJUST_PRICE_AGREEMENT and allowed with it; a duration change moving or not moving the end
+date per the decision; notes edited; the outright cancel of a pending service from the queue with
+the opportunity choice, and of a COMPLETED / CANCELLED one refused; every audit row present with the
+actor; the generic PATCH refusing status CANCELLED and appointmentId: null; every fixture deleted,
+counts back at baseline) and a Vite 200 on every touched client module; state plainly what was not
+rendered - the sheet's block, the queue's Cancel and the Services-tab action cannot be judged
+without a browser.
 
 Working agreement as always: one pass, one branch, update CURRENT_FOCUS and the roadmap's pass
 table at the end, replace the handoff prompt at the end of CURRENT_FOCUS.md with the one for the
-next pass (phase order: Pass 28, appointment composition on the server and the dispatch sheet,
-C4.3a, whose spec is its row in the Phase 4 table, unless I say otherwise), push, open the PR and
-stop. I merge.
+next pass (phase order: Pass 29, appointment composition in the field, C4.3b, whose spec is its row
+in the Phase 4 table, unless I say otherwise), push, open the PR and stop. I merge.
 ```

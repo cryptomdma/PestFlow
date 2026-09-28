@@ -17,6 +17,13 @@ async function columnExists(table: string, column: string): Promise<boolean> {
   return result.rows.length > 0;
 }
 
+async function tableExists(table: string): Promise<boolean> {
+  const result = await db.execute(
+    sql`SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = ${table}`,
+  );
+  return result.rows.length > 0;
+}
+
 export async function bootstrapServiceSchedulingFoundation(): Promise<void> {
   await db.execute(sql`
     CREATE TABLE IF NOT EXISTS technicians (
@@ -345,6 +352,81 @@ export async function bootstrapServiceSchedulingFoundation(): Promise<void> {
   await bootstrapOpportunityTaxonomy();
   await bootstrapAppointmentDisposition();
   await bootstrapServiceWorkKind();
+  await bootstrapOpportunityAssignment();
+}
+
+// Pass 26 (PLAN_ROADMAP_V2.md C4.1b; canon "Opportunities"). Three guarded
+// steps, each printed once when it does something and quiet after, so the
+// second boot prints nothing:
+//   1. zones - named zip-code lists (shared/zones.ts), org-scoped, unique on
+//      (org_id, lower(name)) like target_pests' label index. No seed: the
+//      office names its own zones in Settings -> Zones.
+//   2. opportunity_assignment_rules - category / work type / zone / source
+//      -> user, ordered (shared/opportunity-assignment.ts), zone_id ->
+//      zones(id), assigned_user_id -> users(id) NOT NULL. No seed: with no
+//      rule every new opportunity stays unassigned exactly as before.
+//   3. opportunities.assigned_by_rule_id - the rule that auto-assigned a
+//      row, nullable FK, indexed where set; nulled by a manual
+//      reassignment. No backfill: nothing before this pass was assigned by a
+//      rule (every row's assigned_user_id was null on the dev DB).
+async function bootstrapOpportunityAssignment(): Promise<void> {
+  const hadZones = await tableExists("zones");
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS zones (
+      id varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+      org_id varchar NOT NULL,
+      name text NOT NULL,
+      zip_codes text[] NOT NULL DEFAULT '{}'::text[],
+      is_active boolean NOT NULL DEFAULT true,
+      sort_order integer NOT NULL DEFAULT 0,
+      notes text,
+      created_at timestamp NOT NULL DEFAULT now(),
+      updated_at timestamp NOT NULL DEFAULT now()
+    )
+  `);
+  await db.execute(sql`CREATE UNIQUE INDEX IF NOT EXISTS zones_org_name_uidx ON zones (org_id, lower(name))`);
+  if (!hadZones) {
+    console.log(
+      "[service-scheduling-bootstrap] Pass 26: zones created (org-scoped, unique on org + name) - named ZIP-code lists for the opportunity assignment rules, " +
+        "kept in Settings -> Zones. No seed: the office names its own. Dispatch and Smart Schedule read the same table later.",
+    );
+  }
+
+  const hadRules = await tableExists("opportunity_assignment_rules");
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS opportunity_assignment_rules (
+      id varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+      org_id varchar NOT NULL,
+      sort_order integer NOT NULL DEFAULT 0,
+      category_key text,
+      work_type text,
+      zone_id varchar REFERENCES zones(id),
+      source text,
+      assigned_user_id varchar NOT NULL REFERENCES users(id),
+      is_active boolean NOT NULL DEFAULT true,
+      created_at timestamp NOT NULL DEFAULT now(),
+      updated_at timestamp NOT NULL DEFAULT now()
+    )
+  `);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS opportunity_assignment_rules_org_order_idx ON opportunity_assignment_rules (org_id, sort_order)`);
+  if (!hadRules) {
+    console.log(
+      "[service-scheduling-bootstrap] Pass 26: opportunity_assignment_rules created - category / work type / zone / source -> user, evaluated in order at every " +
+        "opportunity's creation, first match wins (Settings -> Opportunity Assignment). No seed: until a rule exists every new opportunity stays unassigned, as before.",
+    );
+  }
+
+  const hadColumn = await columnExists("opportunities", "assigned_by_rule_id");
+  await db.execute(sql`ALTER TABLE opportunities ADD COLUMN IF NOT EXISTS assigned_by_rule_id varchar REFERENCES opportunity_assignment_rules(id)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS opportunities_assigned_by_rule_id_idx ON opportunities (assigned_by_rule_id) WHERE assigned_by_rule_id IS NOT NULL`);
+  if (!hadColumn) {
+    const counted = await db.execute(sql`SELECT count(*)::int AS total, count(assigned_user_id)::int AS assigned FROM opportunities`);
+    const row = (counted.rows[0] as { total: number; assigned: number } | undefined) ?? { total: 0, assigned: 0 };
+    console.log(
+      `[service-scheduling-bootstrap] Pass 26: opportunities.assigned_by_rule_id added (nullable FK -> opportunity_assignment_rules, indexed where set) - the rule that ` +
+        `auto-assigned a row, nulled by a manual reassignment. No backfill: ${row.total} existing row(s), ${row.assigned} assigned by hand, none by a rule.`,
+    );
+  }
 }
 
 interface ServiceTypeKindRow {

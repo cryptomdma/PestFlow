@@ -377,7 +377,7 @@ so every field action is a route and every screen is data from a read — no pag
 | # | Unit | Notes covered | Depends on | Open decision |
 |---|---|---|---|---|
 | C4.1 (**Pass 25**) — **done** (`feature/phase-4-opportunity-taxonomy`, 2026-09-24; see "Shipped in Pass 25" at the end of Part D) | **Opportunity taxonomy, assignee and search** — `category` (settings-managed, seeded NEW_SALE / SERVICE_DUE / RESCHEDULE / WINBACK / RETENTION) + `workType` (AGREEMENT / ONE_TIME); `assignedToUserId` (a `users` FK, manual assign / reassign, "My opportunities"); migration maps the six hardcoded sources and the free-text types; the Opportunities screen filters on category, work type, status, assignee, source, and location / zip. | Opportunity Type/Category; ASSIGNED_TO; search open opportunities | — | — (owner: the five only) |
-| C4.1b (**Pass 26**) | **Opportunity assignment rules and zones** — Settings: `zones` (named zip-code lists, reusable later by dispatch and Smart Schedule) and `opportunity_assignment_rules` (category / work type / zone / source → user, ordered, first match wins); auto-assign at creation, unassigned when no rule matches; reassignment logged. | ASSIGNED_TO auto-assign by zones / zip / params | C4.1 | — |
+| C4.1b (**Pass 26**) — **done** (`feature/phase-4-opportunity-assignment-rules`, 2026-09-28; see "Shipped in Pass 26" at the end of Part D) | **Opportunity assignment rules and zones** — Settings: `zones` (named zip-code lists, reusable later by dispatch and Smart Schedule) and `opportunity_assignment_rules` (category / work type / zone / source → user, ordered, first match wins); auto-assign at creation, unassigned when no rule matches; reassignment logged. As built: two org-scoped tables (`shared/zones.ts`, `shared/opportunity-assignment.ts`), one insert path (`insertOpportunityTx`) that stamps the assignee and `opportunities.assignedByRuleId` at creation under the system actor with an `opportunity_auto_assigned` audit row; a rule naming an inactive user or zone is skipped and reported on the card; writes are MANAGE_SETTINGS; a manual reassignment nulls the rule and stays the logged `update`; the chips read "(auto)". | ASSIGNED_TO auto-assign by zones / zip / params | C4.1 | — |
 | C4.2 (**Pass 27**) — **done** (`feature/phase-4-cancel-reschedule`, 2026-09-25; see "Shipped in Pass 27" at the end of Part D) | **Cancel and Reschedule, one path** (B2). New `POST /api/appointments/:id/disposition { mode: CANCEL \| RESCHEDULE, reasonCode?, opportunity: UPDATE_EXISTING \| CREATE \| NONE, voidDraftInvoices? }` built on `requestAppointmentCancelOrReschedule` (the technician's cancel-reschedule route becomes a thin alias that always creates the office-handoff opportunity). **RESCHEDULE**: services back to `PENDING_SCHEDULING`, no reason required, no policy, no opportunity when the office does it from the board. **CANCEL**: reason required from the settings list; agreement-generated services return to `PENDING_SCHEDULING` with `serviceWindowStart/End` reset from the cancel date and an opportunity created or assigned as the fallback; non-agreement services are `CANCELLED` with the opportunity prompt (category defaulted by path). Both keep the draft-invoice prompt. `PATCH /api/appointments/:id { status: CANCELED }` is refused with 409 `CANCEL_DISPOSITION_REQUIRED`; the sheet's status Select drops CANCELED and its "Cancel Service" button becomes **Cancel appointment** + **Reschedule**. **Board moves confirm on drop** ("Move to <slot>?"). The location's Services tab shows Scheduled / Pending / Rescheduling / Cancelled distinctly — also Q4's PENDING_SCHEDULING-vs-SCHEDULED gap. | Unschedule → Reschedule; cancel reason required; opportunity prompt; agreement services recycled; accidental moves; Services-tab clarity | C4.1 | — |
 | C4.2b (**Pass 27b**) — **done** (`feature/phase-4-cancel-reschedule-review`, 2026-09-25; see "Shipped in Pass 27b" at the end of Part D) | **Cancel and Reschedule, owner review** (live testing of 2026-09-25, Part E). (1) A CANCELED placement leaves the dispatch board - cancelled and rescheduled alike, so the slot is free for new work; it stays in the location's Services tab ("Was <date>", the reason) and History as the record. One shared predicate for "shows on the board", read by the board's viewport, slot map and analytics (`getTechnicianWork` already excludes CANCELED). (2) The Cancel appointment and Reschedule dialogs close when the disposition completes: the sheet resets on the appointment prop only while one is set, so the dialog stays open after the sheet closes. (3) Re-verify, with a fresh agreement service and a fresh one-time service, that the opportunity a CANCEL creates is OPEN until the recycled service is placed again (placement converts it, the pre-existing rule); the owner saw CONVERTED and attributed it to the agreement path. No new behavior otherwise. | Owner review of Pass 27 | C4.2 | — |
 | C4.3a (**Pass 28**) | **Appointment composition, server + dispatch sheet** (B13) — add a service to an appointment (new or from the pending queue), remove / cancel / return ONE service to pending (the last service prompts to reschedule the appointment), change a service's type (agreement work stays locked) and duration, appointment instructions (`appointments.notes`) editable; all through `getLinkedServicesForAppointmentTx`. UI on the dispatch sheet. **Also (owner review of 2026-09-25): cancelling a `PENDING_SCHEDULING` service outright**, from the pending queue and the location's Services tab, with the disposition's semantics - a reason from the settings list, the opportunity choice (WINBACK for a one-time service; an agreement service is recycled or, if the agreement itself is ending, that is the agreement workflow), an audit row on the service - because today the only way to cancel a pending service is to place it on the board and cancel the placement (the service form has no status control). | Appointment Details build-out; service-level cancel; cancel a pending service | C4.2 | — |
@@ -1327,7 +1327,9 @@ Behavior worth knowing before the next pass touches it:
 - **One mapping.** `taxonomyForSource` is the only place a source turns into a category and a
   work type. The four runtime writers (`ensureOpportunityForServiceRecordTx`,
   `ensureAgreementContactRequiredOpportunityTx`, the retention branch of `cancelAgreement`,
-  `requestAppointmentCancelOrReschedule`) spread `opportunityTaxonomyColumns()` into their
+  `requestAppointmentCancelOrReschedule` - since Pass 27 that fourth writer is
+  `dispositionAppointment`, and since Pass 26 all four insert through `insertOpportunityTx`)
+  spread `opportunityTaxonomyColumns()` into their
   insert, and the backfill iterated the 16 rows through the same function in JS rather than a SQL
   CASE, so the migration and a new row cannot drift. The columns are NOT NULL, so a fifth writer
   fails to compile without them. `hasAgreement` decides the work type only for the two
@@ -1371,7 +1373,7 @@ Behavior worth knowing before the next pass touches it:
   ILIKE over the location's name, address and city and the customer's first + last name and
   company name; both are subqueries so the read still returns the plain `Opportunity` row every
   dialog already takes. The by-location read is untouched.
-- **Not built:** auto-assignment rules and zones (C4.1b, Pass 26), a category on the location
+- **Not built:** auto-assignment rules and zones (C4.1b - built as Pass 26), a category on the location
   tab's cards beyond the chips, editing notes or dates from the screen (the PATCH accepts them; no
   UI sends them), a gate on category edits, bulk assignment, an assignee on the technician's own
   screens (they use the queue), paging the queue.
@@ -2838,6 +2840,181 @@ Behavior worth knowing before the next pass touches it:
   picker (no caller needs one); `GET /api/services` is unfiltered, so the picker's candidates are
   filtered client-side from the location's services; the `Service History` legacy form and the
   seed's services carry the column default.
+
+---
+
+**Shipped in Pass 26** (`feature/phase-4-opportunity-assignment-rules`, 2026-09-28) — the C4.1b
+row as built, plus what it decided.
+
+```ts
+// shared/zones.ts (new) - zones: named ZIP-code lists; the normalization and the match predicate, read by the server and the Settings card
+ZIP_CODE_PATTERN; MAX_ZONE_NAME_LENGTH = 80; interface ZoneLike { id, name, zipCodes, isActive }
+normalizeZipCode(value)                        // "76053-1234" -> "76053"; anything that is not a ZIP or a ZIP+4 -> null
+splitZipCodeText(text)                         // the textarea: newlines, commas, semicolons, spaces
+normalizeZipCodes(values)                      // -> { zipCodes: unique five-digit, sorted; invalid: as typed - reported, never dropped }
+locationZipKey(zip); zoneCoversZip(zone, zip)  // an ACTIVE zone whose list names the location's five-digit ZIP
+describeZipCodes(list, max = 6)                // "76053, 76102 and 4 more" - the card's one line
+
+// shared/opportunity-assignment.ts (new) - the rules' vocabulary and the ONE resolver, read by the server's insert path and by the card
+ANY_MATCHER_LABEL = "Any"; AssignmentRuleLike / AssignmentUserLike / AssignmentCategoryLike; AssignmentSubject { categoryKey, workType, source, zip }
+sortAssignmentRules(rules)                     // sortOrder, then createdAt, then id - the order the resolver tries and the card lists
+describeRuleProblems(rule, zones, users)       // [{ code: ASSIGNEE_UNKNOWN | ASSIGNEE_INACTIVE | ZONE_UNKNOWN | ZONE_INACTIVE, message }] - the resolver skips on any; the card prints them
+assignmentRuleMatches(rule, zones, subject)    // a null matcher matches anything; a zone through zoneCoversZip
+resolveAssignmentRule(rules, zones, users, subject) // -> { rule: the first active, sound match in order | null; skipped: [{ rule, problems }] }
+describeRuleMatchers(rule, names) / describeAssignmentRule(rule, names) // "Service due · Any work type · Zone North · Any source -> Heritage Support"
+
+// shared/schema.ts
+zones                                          // id, orgId, name, zipCodes text[] NOT NULL DEFAULT '{}', isActive, sortOrder, notes, timestamps; unique (org_id, lower(name)) - the bootstrap's index
+opportunityAssignmentRules                     // id, orgId, sortOrder, categoryKey?, workType?, zoneId? -> zones, source?, assignedUserId -> users NOT NULL, isActive, timestamps
+opportunities.assignedByRuleId                 // nullable FK -> opportunity_assignment_rules: the rule that auto-assigned the row; nulled by a manual reassignment
+insertZoneSchema / insertOpportunityAssignmentRuleSchema; Zone / InsertZone / OpportunityAssignmentRule / InsertOpportunityAssignmentRule
+
+// shared/audit.ts                             AuditAction + "opportunity_auto_assigned" ("Auto-assigned by rule"), entity opportunity; snapshots
+                                               //    { assignedUserId, assignedTo, assignedAt, assignedByRuleId, assignedByRule, categoryKey, workType } - the manual `update`'s shape, + the rule
+// shared/permissions.ts, shared/opportunities.ts   the two comments that promised C4.1b now say what was built
+
+// server/storage.ts
+SYSTEM_AUDIT_ACTOR                             // { userId: null, actorLabel: "System" } - canon §17's system-driven write, exported for any later system writer
+class OpportunityAssignmentError(status: 400 | 404 | 409, code, message)   // routes answer { code, message }
+ZoneInput / ZoneUpdateInput; OpportunityAssignmentRuleInput / OpportunityAssignmentRuleUpdateInput
+insertOpportunityTx(tx, values: InsertOpportunity) // private; THE insert path: loads the active rules, every zone, every user and the category labels once per
+                                               //    transaction (a WeakMap keyed on the tx), reads the location's zip, resolves, stamps assignedUserId / assignedAt /
+                                               //    assignedByRuleId on the insert, writes the opportunity_auto_assigned row under SYSTEM_AUDIT_ACTOR; returns the row
+ensureOpportunityForServiceRecordTx / ensureAgreementContactRequiredOpportunityTx / cancelAgreement (retention) / dispositionAppointment (CREATE)
+                                               // the four writers call insertOpportunityTx; createOpportunity (dead - no route, no caller) and its IStorage entry are deleted
+updateOpportunity                              // an assignee change also sets assignedByRuleId = null; opportunityAuditSnapshotTx += assignedByRuleId, assignedByRule
+describeAssignmentRuleTx(reader, ruleId)       // the snapshot's rule text, from the rule, its zone, the category labels and the user
+getZones(includeInactive?) / createZone / updateZone / deleteZone
+                                               // 400 ZIP_CODES_INVALID (names the entries) / ZIP_CODES_REQUIRED / ZONE_NAME_REQUIRED; 409 ZONE_NAME_TAKEN (23505 on the index);
+                                               //    409 ZONE_IN_USE (a rule names it: "<n> assignment rule(s) name zone ...")
+getOpportunityAssignmentRules(includeInactive?) / createOpportunityAssignmentRule / updateOpportunityAssignmentRule / deleteOpportunityAssignmentRule / reorderOpportunityAssignmentRules(ids)
+                                               // 400 RULE_CATEGORY_UNKNOWN (not an org key) / RULE_ZONE_UNKNOWN / RULE_ASSIGNEE_INVALID (assertActiveOrgUserTx, on set or change);
+                                               //    409 RULE_IN_USE (rows carry assigned_by_rule_id); 400 RULE_ORDER_INVALID (every rule of the org exactly once); a new rule
+                                               //    appends at max(sortOrder) + 10; reorder rewrites sort_order 10, 20, 30 ... in one transaction
+
+// server/routes.ts (every write requirePermission(MANAGE_SETTINGS); reads open like every read)
+GET  /api/zones?includeInactive=true | POST /api/zones | PATCH /api/zones/:id | DELETE /api/zones/:id (204)
+GET  /api/opportunity-assignment-rules?includeInactive=true | POST ... | POST .../reorder { ids } | PATCH .../:id | DELETE .../:id (204)
+                                               // zoneSchema { name (<= 80), zipCodes: string[] (>= 1), isActive?, sortOrder?, notes? } strict; opportunityAssignmentRuleSchema
+                                               //    { categoryKey? | null, workType? z.enum | null, zoneId? | null, source? z.enum(OPPORTUNITY_SOURCES) | null, assignedUserId, isActive?, sortOrder? } strict
+
+// server/service-scheduling-bootstrap.ts      bootstrapOpportunityAssignment() - zones + zones_org_name_uidx, opportunity_assignment_rules + (org_id, sort_order) index,
+                                               //    opportunities.assigned_by_rule_id + partial index + FK; each step printed once (tableExists() / columnExists() guards); called last
+// server/tenancy-bootstrap.ts                 TABLES_REQUIRING_ORG_ID + zones, opportunity_assignment_rules
+
+// client
+components/opportunity-taxonomy-chips.tsx      // describeOpportunityAssignee(opportunity, users) appends " (auto)" when assignedByRuleId is set; the assignee chip's title names the origin
+pages/settings.tsx                             // ZoneForm (name, sort, a ZIP textarea whose caption previews what is kept and, in amber, what will be refused - through the shared
+                                               //    normalization; active; notes; Delete in edit mode); OpportunityAssignmentRuleForm (Category / Work Type / Zone / Source Selects with
+                                               //    "Any", inactive entries labeled; Assign to (active users + the current one); Active; Delete); the Zones card (card-zones: name,
+                                               //    Active, "<n> ZIP codes", the list) and the Opportunity Assignment card (card-opportunity-assignment: "#n", describeRuleMatchers,
+                                               //    "-> user", Active, amber describeRuleProblems lines, Move up / Move down through POST reorder, Edit), both after Opportunity
+                                               //    Categories; the header shows Add for canManageSettings and "Admins manage zones." / "Admins manage assignment rules." otherwise
+```
+
+Behavior worth knowing before the next pass touches it:
+- **One insert path.** `insertOpportunityTx` is the only place an opportunity row is written, and
+  the four writers (the finalization follow-up, the agreement contact-required cycle, the
+  cancellation's retention row, the disposition's CREATE) call it. The dead `createOpportunity`
+  (no route, no caller: there is no `POST /api/opportunities`) was deleted rather than left as a
+  way to insert around the rules. A fifth writer that inserts directly would compile - the columns
+  are nullable - so the rule is the helper, not the type system; put any new writer through it.
+- **The match.** A rule's four matchers are ANDed; a null one matches anything. The zone matcher
+  compares the location's zip through `locationZipKey` (its first five characters, only when the
+  stored value is a ZIP or a ZIP+4 - the dev DB's `00000` placeholder is a ZIP that no zone
+  names) against the zone's list, and an inactive zone covers nothing. The source is the row's
+  `source` (a disposition's CREATE picks it through `opportunitySourceForDisposition`, so a rule on
+  `APPOINTMENT_CANCELLATION_WINBACK` catches cancelled one-time work and nothing else); the two
+  axes are what `taxonomyForSource` stamped. First match in `sortAssignmentRules` order wins;
+  nothing after it is consulted. No rule at all (the dev DB today) means every read of the rules
+  finds none and the insert is exactly Pass 25's.
+- **The actor and the audit.** The auto-assignment is `SYSTEM_AUDIT_ACTOR` - user id null, label
+  "System" - written as `opportunity_auto_assigned`, a new action rather than the manual `update`,
+  so the History tab (which already collects the location's opportunities) tells the two apart by
+  the badge alone. Both actions share one snapshot shape, now with `assignedByRuleId` and
+  `assignedByRule` (the rule's description at the time), so a manual reassignment of an
+  auto-assigned row diffs as `assignedTo` Support -> Admin and `assignedByRule` "<rule text>" ->
+  null under the manager's label: a person overriding a rule. Dispositions and Convert still write
+  no audit row (their activity trail is unchanged).
+- **Skips, never re-points.** A rule can only be saved naming an active user of the org
+  (`RULE_ASSIGNEE_INVALID` on create, and on a PATCH that changes the user - an unchanged user is
+  not re-checked, the Pass 12 rule); a rule whose user goes inactive later, or whose zone is
+  deactivated, is skipped at evaluation and the next rule is tried. The same
+  `describeRuleProblems` the resolver reads is what the card prints in amber under the rule, so what
+  the card says is skipped is what the server skips. An inactive rule is not considered at all and
+  reports nothing.
+- **The gate.** Zones and rules are Settings: every write is `MANAGE_SETTINGS` (admin), the header
+  says "Admins manage ..." to everyone else and the Edit / Move buttons are disabled, not hidden;
+  reads are open (the cards, and the chips' "(auto)" needs nothing but the row). The manual assign
+  on the opportunity stays `ASSIGN_OPPORTUNITY` (support+). Decided against `ASSIGN_OPPORTUNITY`
+  for the rules: a rule is the office's standing dispatch instruction, and support should not be
+  able to route every future opportunity to themselves.
+- **`assignedByRuleId` is how the read knows.** A stored nullable FK, not an inference from the
+  audit log: the chips read it, the History snapshots it, `updateOpportunity` nulls it whenever the
+  assignee changes by hand (to a user or to nobody). A row that was auto-assigned and then
+  reassigned by a person reads as a person's from then on. Nothing re-runs the rules on a category
+  or work-type change - "at creation" is the rule.
+- **Delete guards.** A zone named by any rule answers 409 `ZONE_IN_USE` (the count named); a rule
+  that has assigned any row answers 409 `RULE_IN_USE` (the count named) - those rows carry the
+  rule as history and the FK would otherwise dangle. Deactivate instead (the form says so before
+  the confirm). A zone or rule nothing references deletes with 204. Reorder is one request naming
+  every rule of the org exactly once (400 `RULE_ORDER_INVALID` otherwise), so an order is never
+  half-applied; the card's Move up / Move down swap two ids and send the whole list.
+- **Found on the way, docs corrected.** The follow-up opportunity for a one-time service is written
+  at office **finalization** (`finalizeServiceRecord` -> `ensureOpportunityForServiceRecordTx`,
+  canon §12), not at the technician's post - the Pass 26 handoff said "a ticket posted". The Pass 25
+  record named the fourth writer as `requestAppointmentCancelOrReschedule`; it has been
+  `dispositionAppointment` since Pass 27.
+- **Verified 2026-09-28** (PORT=5001 against a copy of the dev DB, `pestflow_verify`, dropped
+  afterwards): `npm run check` clean; boot 1 printed the migration's three lines (zones created,
+  rules created, `assigned_by_rule_id` added with 30 rows / 0 assigned by hand / none by a rule)
+  with every one of the 44 pre-existing table counts unchanged and the two new tables at 0; boot 2
+  printed only the serving line with every count unchanged; 120 API / SQL assertions as the four
+  roles - the two pure modules (ZIP+4 to five digits, four digits and letters refused, unique
+  sorted lists with the invalid entries reported, an inactive zone and a malformed location zip
+  matching nothing; the resolver: sort order first, category fall-through, an inactive user and an
+  inactive zone skipped with their codes while an inactive rule is ignored, no match null; the
+  problem and description texts); zones (reads open to a technician; POST / PATCH / DELETE 403 for
+  tech, support and manager; invalid entries 400 naming them, no valid ZIP 400, an unknown field
+  400, admin 201 with a ZIP+4 and a duplicate collapsed to a sorted unique list, a case-different
+  duplicate name 409, PATCH replacing the list, an unknown id 404, org-scoped); rules (the same
+  gate; unknown category / zone / user each 400 with its code, a bad source and work type 400,
+  no user 400; three rules appended at 10 / 20 / 30 and listed in order); then, through the REAL
+  writers on a fixture customer with a ZIP+4 location in the zone and a second location outside
+  it: a finalized one-time ticket on a type with `opportunityLeadDays` landing SERVICE_DUE /
+  ONE_TIME assigned to support by the zone rule (first) with exactly one
+  `opportunity_auto_assigned` row - user id null, label "System", the rule's id, "Heritage
+  Support" and the rule's text - and found by `?assignee=<support>` and support's `me`; a reorder
+  (support 403; a list missing a rule or naming one twice 400) putting the category rule first
+  and the next finalized ticket landing with the manager; a disposition CANCEL + CREATE at the
+  outside location landing WINBACK / ONE_TIME unassigned with no rule and no auto row; the
+  fixture rep set inactive - a new rule naming them 400, re-pointing a rule at them 400, the card's
+  `describeRuleProblems` reporting ASSIGNEE_INACTIVE by name - and a win-back at the zone location
+  skipping that rule to land with support by the zone rule while the disposition's own
+  `appointment_cancelled` row still names the opportunity; the manager reassigning it to the admin
+  (the technician 403) - the response and the row with `assignedByRuleId` null, one `update` by
+  "Heritage Manager" naming Support -> Admin and the rule -> null, both rows on the location's
+  History read, a re-send writing nothing; the zone deactivated - the card reporting ZONE_INACTIVE,
+  a follow-up skipping the zone rule to the category rule, a win-back landing unassigned, the
+  active-only read omitting the zone - and reactivated; a rule deactivated (omitted from the
+  active-only read, a follow-up outside the zone left unassigned) and reactivated (the next one
+  assigned); DELETE of the zone 409 naming two rules, of the assigning rule 409, of the unused rule
+  204 (support 403) then 404, PATCH of the deleted rule 404, an unknown field 400, the zone rule
+  re-pointed to any zone and then the zone deleted 204 then 404; the 30 pre-existing rows still
+  unassigned with no rule; 8 fixture opportunities, 5 auto-assigned with exactly one auto row each;
+  every fixture (customer, two locations, services, appointments, tickets, opportunities, audit
+  rows, the rules, the zone, the rep user, the service type) deleted and every count back at the
+  run's start (`session` up by the run's four logins); Vite 200 with the new symbols on the two
+  pages, the location page, the chips component and, under `/@fs/`, the two new shared modules,
+  the audit vocabulary and the schema. **Nothing was rendered in a browser** - the repo has no
+  browser automation and the session had no browser - so the Zones card, the Opportunity
+  Assignment card, their two dialogs and the "(auto)" chip reach the owner first.
+- **Known follow-up.** A "this rule would assign ..." preview on the card (the shared resolver is
+  ready for it; the row called it optional); applying the rules to the rows that exist (all 30 stay
+  unassigned - the rules are forward-only, and a bulk assign is a person's act); dispatch and Smart
+  Schedule reading `zones` (Phase 9); a zone filter on the queue (the zip prefix exists); who may
+  edit Settings becomes C5.6's profiles; `GET /api/users` stays open to every role (the rule form
+  and the chips need it).
 
 ---
 

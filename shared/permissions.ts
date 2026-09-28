@@ -50,8 +50,9 @@ export const PERMISSIONS = {
   // A technician is not in B7's list of assignees' managers: they see the
   // queue like everyone (reads are open) and filter to "My opportunities",
   // but do not hand work to themselves or anyone else. Auto-assignment by
-  // rules and zones (C4.1b) will write the same column under the system
-  // actor, not a person's permission.
+  // rules and zones (C4.1b, Pass 26) writes the same column at creation
+  // under the system actor, never a person's permission; the rules and the
+  // zones themselves are Settings, edited under MANAGE_SETTINGS.
   ASSIGN_OPPORTUNITY: "assign_opportunity",
   // PLAN_BILLING_V1_1.md D5, the payments ledger. TAKE_PAYMENT_FIELD records
   // a payment (it posts PENDING); the rest are office actions on the ledger.
