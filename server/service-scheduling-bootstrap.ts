@@ -17,6 +17,11 @@ async function columnExists(table: string, column: string): Promise<boolean> {
   return result.rows.length > 0;
 }
 
+async function indexExists(indexName: string): Promise<boolean> {
+  const result = await db.execute(sql`SELECT 1 FROM pg_indexes WHERE schemaname = 'public' AND indexname = ${indexName} LIMIT 1`);
+  return result.rows.length > 0;
+}
+
 async function tableExists(table: string): Promise<boolean> {
   const result = await db.execute(
     sql`SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = ${table}`,
@@ -353,6 +358,26 @@ export async function bootstrapServiceSchedulingFoundation(): Promise<void> {
   await bootstrapAppointmentDisposition();
   await bootstrapServiceWorkKind();
   await bootstrapOpportunityAssignment();
+  await bootstrapAppointmentComposition();
+}
+
+// Pass 28 (PLAN_ROADMAP_V2.md C4.3a). One guarded step, printed once:
+// services.appointment_id gets the index getLinkedServicesForAppointmentTx
+// has always queried by (every visit read - the board's sheet, the
+// technician's day, the finalize rollup, the billing group - resolves a
+// visit's services through it, and the composition routes now read it on
+// every add / remove / cancel). Partial: a pending service has no
+// appointment. No schema change, no backfill.
+async function bootstrapAppointmentComposition(): Promise<void> {
+  const hadIndex = await indexExists("services_appointment_id_idx");
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS services_appointment_id_idx ON services (appointment_id) WHERE appointment_id IS NOT NULL`);
+  if (!hadIndex) {
+    const counted = await db.execute(sql`SELECT count(*)::int AS placed FROM services WHERE appointment_id IS NOT NULL`);
+    const row = (counted.rows[0] as { placed: number } | undefined) ?? { placed: 0 };
+    console.log(
+      `[service-scheduling-bootstrap] Pass 28: services_appointment_id_idx created (partial, where appointment_id is set) - the visit resolver's lookup; ${row.placed} placed service(s) indexed. No schema change.`,
+    );
+  }
 }
 
 // Pass 26 (PLAN_ROADMAP_V2.md C4.1b; canon "Opportunities"). Three guarded

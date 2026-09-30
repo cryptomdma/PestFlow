@@ -66,7 +66,21 @@ export type AuditEntityType =
  *  manual `update` - the assignee (id and name), when, the rule (id and its
  *  description) and the two axes - so the History tab tells a rule's
  *  assignment from a person's, and a later manual reassignment reads as a
- *  person overriding a rule (assignedByRuleId going to null). */
+ *  person overriding a rule (assignedByRuleId going to null).
+ *  `service_cancelled` (Pass 28, C4.3a): ONE service cancelled outright
+ *  through POST /api/services/:id/cancel - placed or pending - with the
+ *  disposition's semantics: a reason from the settings list, a one-time
+ *  service CANCELLED and taken off its visit, an agreement service recycled
+ *  with its window reset, the opportunity choice. The snapshots are the
+ *  service row before and after, the after carrying `cancel` (reason, notes,
+ *  effect, the visit it came off, the opportunities created or re-dated).
+ *  `appointment_composition_changed` (Pass 28, C4.3a): a service was added
+ *  to a visit, returned to the queue, re-typed or re-timed, or the visit's
+ *  instructions (appointments.notes) changed - one row per request, the
+ *  appointment and its services before and after (appointmentAuditSnapshot,
+ *  which since this pass carries notes, scheduledEndDate and each service's
+ *  type, duration and kind), the after carrying `composition` (the action,
+ *  the service, what moved, how far the planned end grew). */
 export type AuditAction =
   | "update"
   | "invoice_drafted"
@@ -91,7 +105,9 @@ export type AuditAction =
   | "appointment_rescheduled"
   | "surcharge_recorded"
   | "work_kind_changed"
-  | "opportunity_auto_assigned";
+  | "opportunity_auto_assigned"
+  | "service_cancelled"
+  | "appointment_composition_changed";
 
 const ENTITY_TYPE_LABELS: Record<AuditEntityType, string> = {
   customer: "Customer",
@@ -132,6 +148,8 @@ const ACTION_LABELS: Record<AuditAction, string> = {
   surcharge_recorded: "Surcharge recorded",
   work_kind_changed: "Work kind changed",
   opportunity_auto_assigned: "Auto-assigned by rule",
+  service_cancelled: "Service cancelled",
+  appointment_composition_changed: "Visit services changed",
 };
 
 // Both take plain strings, not the unions: they render rows already in the

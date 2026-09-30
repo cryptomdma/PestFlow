@@ -7,6 +7,7 @@ import { Calendar } from "@/components/ui/calendar";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { AlertDialog, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -15,12 +16,15 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
-import { apiRequest, getApiErrorMessage, queryClient } from "@/lib/queryClient";
+import { useAuth } from "@/hooks/use-auth";
+import { apiRequest, getApiErrorCode, getApiErrorMessage, queryClient } from "@/lib/queryClient";
+import { can, PERMISSIONS } from "@shared/permissions";
+import { ServiceCancelDialog } from "@/components/service-cancel-dialog";
 import { DraftInvoiceVoidPrompt, getDraftInvoiceDecisionRequired, type DraftInvoiceRef } from "@/components/draft-invoice-void-prompt";
 import { VisitBillingRows, useVisitBillingSummary } from "@/components/visit-billing-summary";
 import { InitialChargeDuePrompt, type WithInitialChargeDue } from "@/components/initial-charge-due-prompt";
 import type { InitialChargeDue } from "@shared/initial-charge";
-import { formatCents, dollarsToCents } from "@shared/money";
+import { centsToDollarString, formatCents, dollarsToCents } from "@shared/money";
 import { describeAnswersLink } from "@shared/service-kind";
 import { ServiceWorkKindBadge, ServiceWorkKindListBadge } from "@/components/service-work-kind-badge";
 import {
@@ -43,6 +47,13 @@ import {
   type AppointmentDispositionRequest,
   type DispositionOpportunityChoice,
 } from "@shared/appointment-disposition";
+import {
+  PLANNED_END_RULE_TEXT,
+  describeCompositionRefusal,
+  type AppointmentCompositionResult,
+  type AppointmentServiceAddRequest,
+  type AppointmentServiceUpdateRequest,
+} from "@shared/appointment-composition";
 
 const VIEW_OPTIONS = [
   { value: "day", label: "1 Day", step: 1 },
@@ -198,6 +209,15 @@ function AppointmentSheet({
   isDispositioning,
   serviceTypeNameById,
   answersLabelFor,
+  serviceTypes,
+  queueCandidates,
+  ticketedServiceIds,
+  canChangeAgreementType,
+  onAddService,
+  onRemoveService,
+  onUpdateService,
+  onCancelService,
+  isComposing,
 }: {
   appointment: Appointment | null;
   service: Service | null;
@@ -205,6 +225,23 @@ function AppointmentSheet({
   linkedServices: Service[];
   technicianOptions: Technician[];
   serviceTypeName: string;
+  /** Pass 28 (C4.3a): the org's service types - the type select and the new-service line. */
+  serviceTypes: ServiceType[];
+  /** Pass 28: the location's pending services not on this visit - the "add from the queue" choices. */
+  queueCandidates: Service[];
+  /** Pass 28: services with a posted ticket - their type, removal and cancel belong to the ticket flow. */
+  ticketedServiceIds: Set<string>;
+  /** Pass 28: ADJUST_PRICE_AGREEMENT - whether an agreement service's type select is offered. */
+  canChangeAgreementType: boolean;
+  /** Pass 28: POST /api/appointments/:id/services - a queued service, or a new one created placed. */
+  onAddService: (payload: AppointmentServiceAddRequest) => void;
+  /** Pass 28: POST .../services/:serviceId/remove - back to the queue, dates kept. */
+  onRemoveService: (service: Service) => void;
+  /** Pass 28: PATCH .../services/:serviceId - the type or the duration. */
+  onUpdateService: (service: Service, payload: AppointmentServiceUpdateRequest) => void;
+  /** Pass 28: opens the reason / opportunity dialog for POST /api/services/:id/cancel. */
+  onCancelService: (service: Service) => void;
+  isComposing: boolean;
   /** Pass 24 (C3.7): the kind block names each service on the visit. */
   serviceTypeNameById: Map<string, string>;
   /** Pass 24 (C3.7): "Answers <type> on <date>" for a callback, else null. */
@@ -244,6 +281,15 @@ function AppointmentSheet({
   const [reasonCode, setReasonCode] = useState("");
   const [dispositionNotes, setDispositionNotes] = useState("");
   const [opportunityChoice, setOpportunityChoice] = useState<DispositionOpportunityChoice>("CREATE");
+  // Pass 28 (C4.3a): the composition block's own state - the last-service
+  // prompt, the add controls and the per-service duration drafts (committed
+  // on blur, since every change is a request).
+  const [lastServicePrompt, setLastServicePrompt] = useState<{ service: Service; action: "remove" | "cancel" } | null>(null);
+  const [addQueueServiceId, setAddQueueServiceId] = useState("");
+  const [newServiceTypeId, setNewServiceTypeId] = useState("");
+  const [newServiceDuration, setNewServiceDuration] = useState("");
+  const [newServicePrice, setNewServicePrice] = useState("");
+  const [durationDrafts, setDurationDrafts] = useState<Record<string, string>>({});
   // D6: the visit's Price / COA / Due today per service and its due-today
   // sum, server-resolved - in place of the raw stamped service price, which
   // is null for agreement work and says nothing about coverage.
@@ -278,7 +324,41 @@ function AppointmentSheet({
     setReasonCode("");
     setDispositionNotes("");
     setOpportunityChoice("CREATE");
+    setLastServicePrompt(null);
+    setAddQueueServiceId("");
+    setNewServiceTypeId("");
+    setNewServiceDuration("");
+    setNewServicePrice("");
+    setDurationDrafts({});
   }, [appointmentId]);
+  // A committed duration change comes back through the row; drop its draft.
+  useEffect(() => {
+    setDurationDrafts({});
+  }, [linkedServices]);
+
+  const visitServices = linkedServices.length ? linkedServices : service ? [service] : [];
+  const commitDuration = (linked: Service, draft: string) => {
+    const trimmed = draft.trim();
+    const next = trimmed === "" ? null : parseInt(trimmed, 10);
+    if (next !== null && (Number.isNaN(next) || next < 0)) return;
+    if ((next ?? null) !== (linked.expectedDurationMinutes ?? null)) {
+      onUpdateService(linked, { expectedDurationMinutes: next });
+    }
+  };
+  const submitNewService = () => {
+    if (!newServiceTypeId) return;
+    const duration = newServiceDuration.trim();
+    onAddService({
+      service: {
+        serviceTypeId: newServiceTypeId,
+        expectedDurationMinutes: duration === "" ? null : parseInt(duration, 10),
+        priceCents: dollarsToCents(newServicePrice),
+      },
+    });
+    setNewServiceTypeId("");
+    setNewServiceDuration("");
+    setNewServicePrice("");
+  };
 
   const openDisposition = (mode: AppointmentDispositionMode) => {
     setReasonCode("");
@@ -308,23 +388,191 @@ function AppointmentSheet({
                   <Badge variant="outline">{describeAppointmentStatus(appointment)}</Badge>
                 </div>
                 <p className="mt-2 text-xs text-muted-foreground">{locationLabel}</p>
-                {/* Pass 24 (C3.7): what each service on the visit IS (its work kind) and, for a callback, the
-                    service it answers. The Billable / Production badge in the billing rows below is the
-                    invoice LINE, not the kind - the caption says so where both show. */}
-                <div className="mt-3 space-y-1.5" data-testid="sheet-service-kinds">
-                  <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Work kind per service</p>
-                  {(linkedServices.length ? linkedServices : service ? [service] : []).map((linked) => {
+                {/* Pass 28 (C4.3a; B13 "Appointment Details"): the visit's composition - each service with its
+                    type (a select on one-time work; locked on agreement work unless the role holds
+                    ADJUST_PRICE_AGREEMENT, and once a ticket is posted), its expected duration (committed on
+                    blur), its kind (Pass 24 - the Billable / Production badge in the billing rows below is the
+                    invoice LINE, not the kind) and answers line, Remove (back to the queue, dates kept) and Cancel
+                    (the reason / opportunity dialog). The last active service's Remove / Cancel prompts to
+                    reschedule or cancel the appointment instead. Add from the location's queue, or create a
+                    one-time service placed here. Every change is a route (B13: the field is a native app later). */}
+                <div className="mt-3 space-y-2" data-testid="sheet-composition">
+                  <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Services on this visit</p>
+                  {visitServices.length === 0 ? <p className="text-xs text-muted-foreground">No service is linked to this visit.</p> : null}
+                  {visitServices.map((linked) => {
                     const answers = answersLabelFor(linked);
+                    const settled = linked.status === "COMPLETED" || linked.status === "CANCELLED";
+                    const hasTicket = ticketedServiceIds.has(linked.id);
+                    const isAgreement = !!linked.agreementId;
+                    const typeLockReason = settled
+                      ? "Settled - its type is history."
+                      : hasTicket
+                        ? "A ticket is posted - the type is changed on the ticket."
+                        : isAgreement && !canChangeAgreementType
+                          ? "Agreement work - a manager or an admin may change the type."
+                          : null;
+                    const actionLockReason = settled
+                      ? (linked.status === "COMPLETED" ? "Completed - the ticket owns it" : "Cancelled")
+                      : hasTicket
+                        ? "A ticket is posted on this service - reopen or edit the ticket instead"
+                        : null;
+                    const isLastActive = !settled && activeServices.length === 1;
+                    const durationDraft = durationDrafts[linked.id] ?? (linked.expectedDurationMinutes ? String(linked.expectedDurationMinutes) : "");
                     return (
-                      <div key={linked.id} className="text-xs" data-testid={`sheet-service-kind-${linked.id}`}>
+                      <div key={linked.id} className="rounded-md border bg-background p-2 text-xs" data-testid={`sheet-service-${linked.id}`}>
                         <div className="flex flex-wrap items-center gap-2">
                           <span className="font-medium">{serviceTypeNameById.get(linked.serviceTypeId || "") || "Service"}</span>
                           <ServiceWorkKindBadge workKind={linked.workKind} className="text-[10px]" />
+                          {isAgreement ? <Badge variant="secondary" className="text-[10px]">Agreement</Badge> : null}
+                          {settled ? (
+                            <Badge variant="outline" className="text-[10px]">{linked.status === "COMPLETED" ? "Completed" : "Cancelled"}</Badge>
+                          ) : hasTicket ? (
+                            <Badge variant="outline" className="text-[10px]">Ticket posted</Badge>
+                          ) : null}
+                          <span className="ml-auto font-medium">{formatCurrency(linked.priceCents)}</span>
                         </div>
-                        {answers ? <p className="mt-0.5 text-muted-foreground">{answers}</p> : null}
+                        <div className="mt-2 grid gap-2 sm:grid-cols-[1fr_96px]">
+                          <div className="space-y-1">
+                            <label className="text-[11px] text-muted-foreground" htmlFor={`sheet-service-type-${linked.id}`}>Service type</label>
+                            <select
+                              id={`sheet-service-type-${linked.id}`}
+                              value={linked.serviceTypeId || ""}
+                              disabled={!!typeLockReason || isComposing}
+                              title={typeLockReason ?? undefined}
+                              onChange={(event) => {
+                                if (event.target.value && event.target.value !== linked.serviceTypeId) {
+                                  onUpdateService(linked, { serviceTypeId: event.target.value });
+                                }
+                              }}
+                              className="flex h-9 w-full rounded-md border border-input bg-background px-2 text-xs disabled:opacity-60"
+                              data-testid={`select-sheet-service-type-${linked.id}`}
+                            >
+                              {!linked.serviceTypeId ? <option value="">No type</option> : null}
+                              {serviceTypes.map((serviceType) => (
+                                <option key={serviceType.id} value={serviceType.id}>{serviceType.name}</option>
+                              ))}
+                            </select>
+                          </div>
+                          <div className="space-y-1">
+                            <label className="text-[11px] text-muted-foreground" htmlFor={`sheet-service-minutes-${linked.id}`}>Minutes</label>
+                            <Input
+                              id={`sheet-service-minutes-${linked.id}`}
+                              type="number"
+                              min={0}
+                              value={durationDraft}
+                              disabled={settled || isComposing}
+                              onChange={(event) => setDurationDrafts((current) => ({ ...current, [linked.id]: event.target.value }))}
+                              onBlur={() => commitDuration(linked, durationDraft)}
+                              className="h-9 text-xs"
+                              data-testid={`input-sheet-service-minutes-${linked.id}`}
+                            />
+                          </div>
+                        </div>
+                        {typeLockReason ? <p className="mt-1 text-[11px] text-muted-foreground">{typeLockReason}</p> : null}
+                        {answers ? <p className="mt-1 text-muted-foreground">{answers}</p> : null}
+                        {!settled ? (
+                          <div className="mt-2 flex flex-wrap justify-end gap-1">
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="h-7 px-2 text-xs"
+                              disabled={!!actionLockReason || isComposing}
+                              title={actionLockReason ?? "Back to the pending queue, dates kept"}
+                              onClick={() => (isLastActive ? setLastServicePrompt({ service: linked, action: "remove" }) : onRemoveService(linked))}
+                              data-testid={`button-sheet-service-remove-${linked.id}`}
+                            >
+                              Remove
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="destructive"
+                              size="sm"
+                              className="h-7 px-2 text-xs"
+                              disabled={!!actionLockReason || isComposing}
+                              title={actionLockReason ?? "Cancel this service with a reason"}
+                              onClick={() => (isLastActive ? setLastServicePrompt({ service: linked, action: "cancel" }) : onCancelService(linked))}
+                              data-testid={`button-sheet-service-cancel-${linked.id}`}
+                            >
+                              Cancel
+                            </Button>
+                          </div>
+                        ) : null}
                       </div>
                     );
                   })}
+                  <div className="rounded-md border border-dashed p-2" data-testid="sheet-add-service">
+                    <p className="text-[11px] font-medium">Add service</p>
+                    <div className="mt-1 flex flex-wrap items-end gap-2">
+                      <div className="min-w-0 flex-1 space-y-1">
+                        <label className="text-[11px] text-muted-foreground" htmlFor="sheet-add-queue">From the pending queue</label>
+                        <select
+                          id="sheet-add-queue"
+                          value={addQueueServiceId}
+                          onChange={(event) => setAddQueueServiceId(event.target.value)}
+                          disabled={isComposing || queueCandidates.length === 0}
+                          className="flex h-9 w-full rounded-md border border-input bg-background px-2 text-xs disabled:opacity-60"
+                          data-testid="select-sheet-add-queue"
+                        >
+                          <option value="">{queueCandidates.length ? "Select a pending service" : "No pending service at this location"}</option>
+                          {queueCandidates.map((candidate) => (
+                            <option key={candidate.id} value={candidate.id}>
+                              {serviceTypeNameById.get(candidate.serviceTypeId || "") || "Service"}
+                              {candidate.dueDate ? ` - due ${candidate.dueDate}` : ""}
+                              {candidate.agreementId ? " (agreement)" : ""}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <Button
+                        type="button"
+                        size="sm"
+                        className="h-9"
+                        disabled={!addQueueServiceId || isComposing}
+                        onClick={() => { onAddService({ serviceId: addQueueServiceId }); setAddQueueServiceId(""); }}
+                        data-testid="button-sheet-add-queue"
+                      >
+                        Add
+                      </Button>
+                    </div>
+                    <div className="mt-2 grid gap-2 sm:grid-cols-[1fr_80px_88px_auto] sm:items-end">
+                      <div className="space-y-1">
+                        <label className="text-[11px] text-muted-foreground" htmlFor="sheet-add-type">New one-time service</label>
+                        <select
+                          id="sheet-add-type"
+                          value={newServiceTypeId}
+                          onChange={(event) => {
+                            const serviceType = serviceTypes.find((item) => item.id === event.target.value);
+                            setNewServiceTypeId(event.target.value);
+                            setNewServiceDuration(serviceType?.estimatedDuration ? String(serviceType.estimatedDuration) : "");
+                            setNewServicePrice(serviceType?.defaultPriceCents != null ? centsToDollarString(serviceType.defaultPriceCents) : "");
+                          }}
+                          disabled={isComposing}
+                          className="flex h-9 w-full rounded-md border border-input bg-background px-2 text-xs disabled:opacity-60"
+                          data-testid="select-sheet-add-type"
+                        >
+                          <option value="">Select a service type</option>
+                          {serviceTypes.map((serviceType) => (
+                            <option key={serviceType.id} value={serviceType.id}>{serviceType.name}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[11px] text-muted-foreground" htmlFor="sheet-add-minutes">Minutes</label>
+                        <Input id="sheet-add-minutes" type="number" min={0} value={newServiceDuration} onChange={(event) => setNewServiceDuration(event.target.value)} disabled={isComposing} className="h-9 text-xs" />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[11px] text-muted-foreground" htmlFor="sheet-add-price">Price</label>
+                        <Input id="sheet-add-price" type="number" min={0} step="0.01" value={newServicePrice} onChange={(event) => setNewServicePrice(event.target.value)} disabled={isComposing} className="h-9 text-xs" />
+                      </div>
+                      <Button type="button" size="sm" className="h-9" disabled={!newServiceTypeId || isComposing} onClick={submitNewService} data-testid="button-sheet-add-new">
+                        Create
+                      </Button>
+                    </div>
+                    <p className="mt-2 text-[11px] text-muted-foreground">
+                      {PLANNED_END_RULE_TEXT} A callback is created from the location's Services tab, where the service it answers is picked.
+                    </p>
+                  </div>
                   <p className="text-[11px] text-muted-foreground">Billing below shows each service's invoice line (Billable / Production), not its kind.</p>
                 </div>
                 <div className="mt-3">
@@ -565,6 +813,30 @@ function AppointmentSheet({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Pass 28: the last active service cannot leave a visit on its own - an appointment leaves the
+          board only through its disposition (canon §11). Offer the disposition that matches. */}
+      <AlertDialog open={!!lastServicePrompt} onOpenChange={(next) => { if (!next) setLastServicePrompt(null); }}>
+        <AlertDialogContent data-testid="dialog-last-service">
+          <AlertDialogHeader>
+            <AlertDialogTitle>This is the only service on the visit</AlertDialogTitle>
+            <AlertDialogDescription>
+              {lastServicePrompt?.action === "remove"
+                ? "Removing it would leave an empty visit on the board. Reschedule the appointment instead: the service goes back to the queue with its dates kept and the placement stays in history."
+                : "Cancelling it would leave an empty visit on the board. Cancel the appointment instead: the same reason list and opportunity choice apply to the visit."}
+              {" "}An appointment leaves the board only through its disposition.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <Button type="button" variant="outline" onClick={() => setLastServicePrompt(null)}>Back</Button>
+            {lastServicePrompt?.action === "remove" ? (
+              <Button type="button" onClick={() => { setLastServicePrompt(null); openDisposition("RESCHEDULE"); }}>Reschedule appointment</Button>
+            ) : (
+              <Button type="button" variant="destructive" onClick={() => { setLastServicePrompt(null); openDisposition("CANCEL"); }}>Cancel appointment</Button>
+            )}
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </>
   );
 }
@@ -650,6 +922,9 @@ function ServiceDetailDialog({
 
 export default function Schedule() {
   const { toast } = useToast();
+  const { user } = useAuth();
+  // Pass 28 (decision 6): an agreement service's type is the price's rule.
+  const canChangeAgreementType = can(user?.role ?? "", PERMISSIONS.ADJUST_PRICE_AGREEMENT);
   const search = useSearch();
   const [, setLocation] = useLocation();
   const params = useMemo(() => new URLSearchParams(search), [search]);
@@ -708,10 +983,15 @@ export default function Schedule() {
       formatAnswersDate(record?.serviceDate ?? appointment?.scheduledDate ?? answered.dueDate),
     );
   };
+  // Pass 28: a CANCELLED service still linked to a visit (the disposition's
+  // convention for a one-time service on a visit it cancels; a legacy row)
+  // is not on the card - the "+N other services", the revenue sum and the
+  // sheet's list stop counting it. A service this pass cancels off a live
+  // visit is detached anyway.
   const servicesByAppointmentId = useMemo(() => {
     const map = new Map<string, Service[]>();
     for (const service of allServices ?? []) {
-      if (!service.appointmentId) continue;
+      if (!service.appointmentId || service.status === "CANCELLED") continue;
       const existing = map.get(service.appointmentId) ?? [];
       existing.push(service);
       map.set(service.appointmentId, existing);
@@ -876,14 +1156,18 @@ export default function Schedule() {
     },
     onSuccess: async (createdAppointment) => {
       const additionalServiceIds = groupedServiceIds.filter((id) => id !== createdAppointment.serviceId);
-      if (additionalServiceIds.length) {
-        await Promise.all(additionalServiceIds.map(async (serviceId) => {
-          await apiRequest("PATCH", `/api/services/${serviceId}`, {
-            appointmentId: createdAppointment.id,
-            assignedTechnicianId: createdAppointment.assignedTechnicianId || null,
-            status: createdAppointment.status === "COMPLETED" ? "COMPLETED" : createdAppointment.status === "CANCELED" ? "CANCELLED" : "SCHEDULED",
-          });
-        }));
+      // Pass 28 (decided): the grouped extras (?serviceIds=) land through the
+      // add route, one after another, so the visit's end covers every service
+      // and each extra's handoff opportunity converts - the same path as the
+      // sheet's Add. They used to PATCH the service directly, which did
+      // neither and wrote no audit row.
+      let extrasFailed: string | null = null;
+      for (const serviceId of additionalServiceIds) {
+        try {
+          await apiRequest("POST", `/api/appointments/${createdAppointment.id}/services`, { serviceId });
+        } catch (error) {
+          extrasFailed = describeCompositionRefusal(getApiErrorCode(error)) ?? getApiErrorMessage(error);
+        }
       }
 
       queryClient.invalidateQueries({ queryKey: ["/api/appointments"] });
@@ -894,7 +1178,11 @@ export default function Schedule() {
         queryClient.invalidateQueries({ queryKey: getLocationAppointmentsQueryKey(selectedService.locationId) });
       }
       setSelectedServiceId(null);
-      toast({ title: additionalServiceIds.length ? "Grouped services scheduled" : "Service scheduled" });
+      if (extrasFailed) {
+        toast({ title: "Service scheduled, but a grouped service was not added", description: extrasFailed, variant: "destructive" });
+      } else {
+        toast({ title: additionalServiceIds.length ? "Grouped services scheduled" : "Service scheduled" });
+      }
       const returnTo = params.get("returnTo");
       // Pass 11d: the office's prompt at scheduling. The server said whether
       // a down payment is still owed on this visit; ask before leaving the
@@ -918,26 +1206,54 @@ export default function Schedule() {
     }
   };
 
+  // Pass 28 (C4.3a): the composition routes' invalidations - the board, the
+  // queue, the opportunities and the location's tabs - and the refusal text
+  // (a code from shared/appointment-composition.ts, else the message).
+  const invalidateComposition = (locationId: string | null | undefined) => {
+    queryClient.invalidateQueries({ queryKey: ["/api/appointments"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/services"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/services/pending"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/opportunities"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/opportunities/by-location"] });
+    if (locationId) {
+      queryClient.invalidateQueries({ queryKey: getLocationServicesQueryKey(locationId) });
+      queryClient.invalidateQueries({ queryKey: getLocationAppointmentsQueryKey(locationId) });
+    }
+  };
+  const describeCompositionError = (error: unknown) => describeCompositionRefusal(getApiErrorCode(error)) ?? getApiErrorMessage(error);
+  const describeCompositionResult = (result: AppointmentCompositionResult) => [
+    result.scheduledEndDateExtendedMinutes ? `Visit end extended by ${result.scheduledEndDateExtendedMinutes} min` : null,
+    result.opportunitiesConverted ? `${pluralize(result.opportunitiesConverted, "open opportunity", "open opportunities")} converted` : null,
+  ].filter(Boolean).join("; ") || undefined;
+
+  // The queue-then-card attach (select a pending service, click a card at
+  // the same location). Since Pass 28 it goes through the add route - the
+  // end date extends, the added service's handoff opportunities convert and
+  // the audit row is written, exactly as from the sheet - one request per
+  // service in order, so each add sees the previous one's end. It used to
+  // PATCH the service directly, which did none of that.
   const attachServiceToAppointmentMutation = useMutation({
     mutationFn: async ({ service, appointment }: { service: Service; appointment: Appointment }) => {
       const bundleIds = groupedServiceIds.length ? groupedServiceIds : [service.id];
-      await Promise.all(bundleIds.map(async (serviceId) => {
-        await apiRequest("PATCH", `/api/services/${serviceId}`, {
-          appointmentId: appointment.id,
-          assignedTechnicianId: appointment.assignedTechnicianId || null,
-          status: appointment.status === "COMPLETED" ? "COMPLETED" : appointment.status === "CANCELED" ? "CANCELLED" : "SCHEDULED",
-        });
-      }));
-      return service;
+      const results: AppointmentCompositionResult[] = [];
+      for (const serviceId of bundleIds) {
+        const response = await apiRequest("POST", `/api/appointments/${appointment.id}/services`, { serviceId });
+        results.push(await response.json() as AppointmentCompositionResult);
+      }
+      return results;
     },
-    onSuccess: (_service, variables) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/services"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/services/pending"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/appointments"] });
-      queryClient.invalidateQueries({ queryKey: getLocationServicesQueryKey(variables.service.locationId) });
-      queryClient.invalidateQueries({ queryKey: getLocationAppointmentsQueryKey(variables.service.locationId) });
+    onSuccess: (results, variables) => {
+      invalidateComposition(variables.service.locationId);
       setSelectedServiceId(null);
-      toast({ title: groupedServiceIds.length > 1 ? "Services added to shared visit" : "Service added to shared visit" });
+      const extended = results.reduce((sum, result) => sum + result.scheduledEndDateExtendedMinutes, 0);
+      const converted = results.reduce((sum, result) => sum + result.opportunitiesConverted, 0);
+      toast({
+        title: results.length > 1 ? "Services added to shared visit" : "Service added to shared visit",
+        description: [
+          extended ? `Visit end extended by ${extended} min` : null,
+          converted ? `${pluralize(converted, "open opportunity", "open opportunities")} converted` : null,
+        ].filter(Boolean).join("; ") || undefined,
+      });
       const returnTo = params.get("returnTo");
       if (returnTo) {
         setLocation(returnTo);
@@ -945,8 +1261,46 @@ export default function Schedule() {
         setSelectedAppointmentId(variables.appointment.id);
       }
     },
-    onError: (error: Error) => toast({ title: "Unable to add service to visit", description: error.message, variant: "destructive" }),
+    onError: (error: Error) => toast({ title: "Unable to add service to visit", description: describeCompositionError(error), variant: "destructive" }),
   });
+
+  // Pass 28: the sheet's composition block - add, remove, re-type / re-time -
+  // and the target of the per-service cancel dialog (the sheet, the queue).
+  const addServiceMutation = useMutation({
+    mutationFn: async ({ appointmentId, payload }: { appointmentId: string; payload: AppointmentServiceAddRequest }) => {
+      const response = await apiRequest("POST", `/api/appointments/${appointmentId}/services`, payload);
+      return response.json() as Promise<AppointmentCompositionResult>;
+    },
+    onSuccess: (result) => {
+      invalidateComposition(result.appointment.locationId);
+      toast({ title: "Service added to the visit", description: describeCompositionResult(result) });
+    },
+    onError: (error: Error) => toast({ title: "Unable to add service", description: describeCompositionError(error), variant: "destructive" }),
+  });
+  const removeServiceMutation = useMutation({
+    mutationFn: async ({ appointmentId, serviceId }: { appointmentId: string; serviceId: string }) => {
+      const response = await apiRequest("POST", `/api/appointments/${appointmentId}/services/${serviceId}/remove`, {});
+      return response.json() as Promise<AppointmentCompositionResult>;
+    },
+    onSuccess: (result) => {
+      invalidateComposition(result.appointment.locationId);
+      toast({ title: "Service returned to the queue", description: "Its dates are kept; the visit's end is unchanged." });
+    },
+    onError: (error: Error) => toast({ title: "Unable to remove service", description: describeCompositionError(error), variant: "destructive" }),
+  });
+  const updateVisitServiceMutation = useMutation({
+    mutationFn: async ({ appointmentId, serviceId, payload }: { appointmentId: string; serviceId: string; payload: AppointmentServiceUpdateRequest }) => {
+      const response = await apiRequest("PATCH", `/api/appointments/${appointmentId}/services/${serviceId}`, payload);
+      return response.json() as Promise<AppointmentCompositionResult>;
+    },
+    onSuccess: (result) => {
+      invalidateComposition(result.appointment.locationId);
+      toast({ title: "Service updated", description: describeCompositionResult(result) });
+    },
+    onError: (error: Error) => toast({ title: "Unable to update service", description: describeCompositionError(error), variant: "destructive" }),
+  });
+  const isComposing = addServiceMutation.isPending || removeServiceMutation.isPending || updateVisitServiceMutation.isPending;
+  const [cancelServiceTarget, setCancelServiceTarget] = useState<Service | null>(null);
 
   const updateAppointmentMutation = useMutation({
     mutationFn: async ({ id, payload }: { id: string; payload: Record<string, unknown> }) => {
@@ -1104,7 +1458,7 @@ export default function Schedule() {
 
     for (const appointment of viewportAppointments) {
       const linkedServices = servicesByAppointmentId.get(appointment.id)
-        ?? (appointment.serviceId ? [serviceById.get(appointment.serviceId)].filter((service): service is Service => !!service) : []);
+        ?? (appointment.serviceId ? [serviceById.get(appointment.serviceId)].filter((service): service is Service => !!service && service.status !== "CANCELLED") : []);
       const revenueCents = linkedServices.reduce((sum, service) => sum + (service.priceCents ?? 0), 0);
       totals.revenueCents += revenueCents;
 
@@ -1132,10 +1486,17 @@ export default function Schedule() {
   const editingLinkedServices = useMemo(() => {
     if (!editingAppointment) return [];
     const linked = servicesByAppointmentId.get(editingAppointment.id) ?? [];
-    return editingAppointmentService && !linked.some((linkedService) => linkedService.id === editingAppointmentService.id)
+    return editingAppointmentService && editingAppointmentService.status !== "CANCELLED" && !linked.some((linkedService) => linkedService.id === editingAppointmentService.id)
       ? [...linked, editingAppointmentService]
       : linked;
   }, [editingAppointment, editingAppointmentService, servicesByAppointmentId]);
+  // Pass 28: what the sheet's Add offers (the location's queue, minus what is
+  // on the visit) and which services carry a posted ticket (locked rows).
+  const editingQueueCandidates = useMemo(() => {
+    if (!editingAppointment) return [];
+    return (pendingServices ?? []).filter((pending) => pending.locationId === editingAppointment.locationId && pending.status === "PENDING_SCHEDULING" && pending.appointmentId !== editingAppointment.id);
+  }, [editingAppointment, pendingServices]);
+  const ticketedServiceIds = useMemo(() => new Set(Array.from(serviceRecordByServiceId.keys())), [serviceRecordByServiceId]);
   const { data: editingLocationOpportunities } = useQuery<Opportunity[]>({
     queryKey: ["/api/opportunities/by-location", editingAppointment?.locationId ?? ""],
     enabled: !!editingAppointment?.locationId,
@@ -1340,7 +1701,7 @@ export default function Schedule() {
                           <div className="mt-2 space-y-2">
                             {slotAppointments.map((appointment) => {
                               const linkedServices = servicesByAppointmentId.get(appointment.id)
-                                ?? (appointment.serviceId ? [serviceById.get(appointment.serviceId)].filter((service): service is Service => !!service) : []);
+                                ?? (appointment.serviceId ? [serviceById.get(appointment.serviceId)].filter((service): service is Service => !!service && service.status !== "CANCELLED") : []);
                               const linkedService = linkedServices[0] ?? null;
                               const customer = customerById.get(appointment.customerId);
                               const location = appointment.locationId ? locationById.get(appointment.locationId) : undefined;
@@ -1455,15 +1816,27 @@ export default function Schedule() {
                 const location = locationById.get(service.locationId);
                 const customer = customerById.get(service.customerId);
                 const isSelected = service.id === selectedServiceId;
+                const selectForDispatch = () => {
+                  setSelectedServiceId(service.id);
+                  setSelectedAppointmentId(null);
+                };
                 return (
-                  <button
+                  // Pass 28: the row selects for placement as before, and carries a Cancel action
+                  // (the owner's review of 2026-09-25, finding 5) - so it is a div with the button
+                  // role rather than a button, which cannot nest one.
+                  <div
                     key={service.id}
-                    type="button"
-                    className={`flex w-full items-start justify-between gap-3 rounded-md border px-3 py-3 text-left transition-colors ${isSelected ? "border-primary bg-primary/5" : "hover:bg-muted/20"}`}
-                    onClick={() => {
-                      setSelectedServiceId(service.id);
-                      setSelectedAppointmentId(null);
+                    role="button"
+                    tabIndex={0}
+                    className={`flex w-full cursor-pointer items-start justify-between gap-3 rounded-md border px-3 py-3 text-left transition-colors ${isSelected ? "border-primary bg-primary/5" : "hover:bg-muted/20"}`}
+                    onClick={selectForDispatch}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        selectForDispatch();
+                      }
                     }}
+                    data-testid={`queue-row-${service.id}`}
                   >
                     <div className="min-w-0">
                       <div className="flex items-center gap-2 flex-wrap">
@@ -1487,8 +1860,19 @@ export default function Schedule() {
                     <div className="shrink-0 text-right">
                       <p className="text-sm font-medium">{formatCurrency(service.priceCents)}</p>
                       <p className="mt-1 text-xs text-muted-foreground">{isSelected ? "Selected" : "Click to dispatch"}</p>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="mt-1 h-7 px-2 text-xs text-destructive hover:text-destructive"
+                        onClick={(event) => { event.stopPropagation(); setCancelServiceTarget(service); }}
+                        title={service.agreementId ? "Recycle this agreement visit with a reason" : "Cancel this pending service with a reason"}
+                        data-testid={`button-queue-cancel-${service.id}`}
+                      >
+                        Cancel
+                      </Button>
                     </div>
-                  </button>
+                  </div>
                 );
               })}
             </div>
@@ -1532,6 +1916,37 @@ export default function Schedule() {
         isDispositioning={dispositionMutation.isPending}
         serviceTypeNameById={serviceTypeNameById}
         answersLabelFor={answersLabelFor}
+        serviceTypes={serviceTypes ?? []}
+        queueCandidates={editingQueueCandidates}
+        ticketedServiceIds={ticketedServiceIds}
+        canChangeAgreementType={canChangeAgreementType}
+        onAddService={(payload) => {
+          if (!editingAppointment) return;
+          addServiceMutation.mutate({ appointmentId: editingAppointment.id, payload });
+        }}
+        onRemoveService={(service) => {
+          if (!editingAppointment) return;
+          removeServiceMutation.mutate({ appointmentId: editingAppointment.id, serviceId: service.id });
+        }}
+        onUpdateService={(service, payload) => {
+          if (!editingAppointment) return;
+          updateVisitServiceMutation.mutate({ appointmentId: editingAppointment.id, serviceId: service.id, payload });
+        }}
+        onCancelService={(service) => setCancelServiceTarget(service)}
+        isComposing={isComposing}
+      />
+
+      {/* Pass 28: cancel ONE service - from the sheet's row or the queue's row - with the reason and
+          the opportunity choice. The dialog invalidates the board, the queue and the location itself. */}
+      <ServiceCancelDialog
+        service={cancelServiceTarget}
+        serviceTypeName={cancelServiceTarget ? serviceTypeNameById.get(cancelServiceTarget.serviceTypeId || "") || "Service" : "Service"}
+        open={!!cancelServiceTarget}
+        onOpenChange={(open) => { if (!open) setCancelServiceTarget(null); }}
+        onCancelled={() => {
+          setCancelServiceTarget(null);
+          setSelectedServiceId((current) => (current === cancelServiceTarget?.id ? null : current));
+        }}
       />
 
       <InitialChargeDuePrompt due={initialChargePrompt?.due ?? null} onClose={closeInitialChargePrompt} />
