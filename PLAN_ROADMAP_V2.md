@@ -117,7 +117,7 @@ are calibrated to Phase 1's: Pass 6 (four tables, routes, three dialogs) is the 
 | Dispatch "Slot Interval" → rename "View Interval" | PARTIAL | control exists in the Window popover (`schedule.tsx:838-886`), options **1 h / 2 h only** (`:40`); it sets grid *column* width; state is session-only (`:430`, popover says so) |
 | Schedule (snap) interval 15 / 30 / 60 min, configured in Dispatch Board settings | ABSENT | placement snaps to the top of the slot hour (`buildSlotDate`, `:75`, `moveAppointmentToSlot`, `:679-707`); sheet start/end are free `datetime-local`; no dispatch section in `settings.tsx`; the only `app_settings` keys are `service_time_tracking_mode` and `appointment_cancel_reschedule_reasons` (`storage.ts:4324, 4341`) |
 | Moving an appointment on the board asks for confirmation | DONE — Pass 27 (2026-09-25) | click the card, click a slot, and "Move to <technician>, <day time>?" holds the move until confirmed (`pendingMove` / `confirmPendingMove` in `schedule.tsx`). Was: it moved on the click (`moveAppointmentToSlot`) — the accidental-reschedule risk the owner named |
-| Pending queue: name → location link, link to details | ABSENT | queue rows are select-for-placement buttons (`schedule.tsx:1067-1119`), name is plain text (`:1094`). Owner review of 2026-09-25 (Pass 27): the queue needs the appointment / service details so a pending service can be cancelled without placing it first - the details link is C5.4 (Pass 36), the cancel itself is C4.3a (Pass 28) |
+| Pending queue: name → location link, link to details | PARTIAL — the cancel DONE, Pass 28 (2026-09-29) | queue rows select for placement (a `div[role=button]` since Pass 28, `schedule.tsx` `queue-row-*`), name is plain text. Owner review of 2026-09-25 (Pass 27): a pending service can now be cancelled from its row without placing it first - **Cancel** opens the reason / opportunity dialog (`ServiceCancelDialog`, `POST /api/services/:id/cancel`; an agreement service is recycled, not cancelled). The details link stays C5.4 (Pass 36) |
 | Unschedule / reschedule to the queue (return a scheduled stop to pending) | DONE — Pass 27 (2026-09-25) | **Reschedule** on the dispatch sheet → `POST /api/appointments/:id/disposition { mode: RESCHEDULE }` → `dispositionAppointment`: CANCELED + `rescheduleRequested`, no reason, no opportunity, every service back to `PENDING_SCHEDULING` with its dates kept and `lastAppointmentId` set; the technician's route is the same path with origin FIELD. See "Shipped in Pass 27" at the end of Part D. Was: only the technician's `requestAppointmentCancelOrReschedule` |
 | Board cancel: reason required from a settings list; opportunity prompt | DONE — Pass 27 (2026-09-25) | **Cancel appointment** on the dispatch sheet → `{ mode: CANCEL, reasonCode, opportunity: UPDATE_EXISTING \| CREATE \| NONE }`: the reason must be on `appointment_cancel_reschedule_reasons`, agreement services recycle with the window reset from today, one-time services are CANCELLED with a WINBACK opportunity; the status PATCH to CANCELED answers 409 `CANCEL_DISPOSITION_REQUIRED`. One path for the board and the field. Was: `PATCH { status: CANCELED }` → `updateAppointment` cascading every service to CANCELLED with no reason and no opportunity — two divergent cancel paths |
 | Smart Schedule / AUTO_ELIGIBLE pill | ABSENT | badge is the raw `schedulingMode` text (`schedule.tsx:1097`); no auto-schedule; no skills column on technicians/users, no required skills on service types, no lat/long on locations (`schema.ts:51-72, 148-172`) |
@@ -134,9 +134,9 @@ are calibrated to Phase 1's: Pass 6 (four tables, routes, three dialogs) is the 
 | Appointment status "Scheduled → Pending" | **REJECTED (Q4 / D1a)** | no fifth status; the feature is the reschedule-to-queue action (see B2) |
 | Appointment Details (tech): service price = sum of due services | DONE | `VisitDueTodayTotal` (`technician-work.tsx:392`) |
 | Appointment Details (tech): auto refresh after Time In / Out | DONE | `refreshWork()` invalidates on both mutations (`technician-work.tsx:128-190`). The note predates this or reflects a stale dev server (Pass 7.6's finding); re-verify after `npm run dev:full` restart. |
-| Appointment Details: change service type, add service, change duration, order instructions | ABSENT | tech modal is read-only (`:357-389`); service *type* changes only inside the ticket dialog for non-agreement work (`service-completion-dialog.tsx:466-482`); the dispatch sheet edits start/end/status/notes only (`schedule.tsx:220-320`) |
+| Appointment Details: change service type, add service, change duration, order instructions | PARTIAL — the dispatch sheet DONE, Pass 28 (2026-09-29); the tech modal is C4.3b (Pass 29) | the dispatch sheet's block (`schedule.tsx` `sheet-composition`) edits each service's type (agreement work locked to ADJUST_PRICE_AGREEMENT) and duration, adds a service (from the queue or new), removes or cancels one, and its "Scheduling Notes" edit `appointments.notes` (B13's order instructions, audited since Pass 28) - all through `POST/PATCH /api/appointments/:id/services[/:serviceId]` and `POST /api/services/:id/cancel`. The tech modal is still read-only (`technician-work.tsx:345-477`); the ticket dialog's type select (`service-completion-dialog.tsx:806-820`) is the field's only edit until C4.3b. An earlier version of this row said the sheet edited start/end/status/notes only and that attach-from-queue was absent - the notes edit and the queue-then-card attach both predated Pass 28 |
 | Service Time Tracking Mode | DONE | `AUTO_TIMEOUT_ON_TICKET_POST / PROMPT_FOR_TIMEOUT / MANUAL_TIMEOUT` (`storage.ts:272`, `settings.tsx:1860-1883`) |
-| Service-level cancel / return one service to pending | ABSENT | since Pass 27 the sheet's buttons are **Cancel appointment** and **Reschedule** and act on the whole visit, as they say; a disposition skips a COMPLETED or CANCELLED service but has no per-service form. `PATCH /api/services/:id` accepts `PENDING_SCHEDULING` but no UI uses it that way. C4.3a (Pass 28) |
+| Service-level cancel / return one service to pending | DONE — Pass 28 (2026-09-29) | per service on the dispatch sheet: **Remove** (`POST /api/appointments/:id/services/:serviceId/remove` - back to the queue, dates kept, the representative reassigned) and **Cancel** (`POST /api/services/:id/cancel` - a reason from the list, the opportunity choice, a one-time service CANCELLED and detached, an agreement service recycled); the last active service prompts to reschedule or cancel the appointment instead. The generic `PATCH /api/services/:id` now refuses status CANCELLED (409 SERVICE_CANCEL_REQUIRED), appointmentId null (400) and SCHEDULED -> PENDING_SCHEDULING while placed (409 SERVICE_REMOVE_REQUIRED) - before this pass any client could write all three with no reason, audit row or opportunity. See "Shipped in Pass 28" at the end of Part D |
 | Materials modeled as products with allowed methods / equipment / areas | DONE | `materialProducts` (`schema.ts:556-579`) |
 | Role profiles configurable in Settings | ABSENT | four fixed roles, matrix in `shared/permissions.ts:44-86`, one `can()` helper |
 | Technicians and users are one table | PARTIAL — Pass 12 | `technicians.userId` (nullable, one technician per user) bridges a technician profile to its login, set in Settings → Technicians; the merge itself is C5.7. Was: `technicians` (`schema.ts:160-172`) had no `userId`; the two were unlinked |
@@ -380,7 +380,7 @@ so every field action is a route and every screen is data from a read — no pag
 | C4.1b (**Pass 26**) — **done** (`feature/phase-4-opportunity-assignment-rules`, 2026-09-28; see "Shipped in Pass 26" at the end of Part D) | **Opportunity assignment rules and zones** — Settings: `zones` (named zip-code lists, reusable later by dispatch and Smart Schedule) and `opportunity_assignment_rules` (category / work type / zone / source → user, ordered, first match wins); auto-assign at creation, unassigned when no rule matches; reassignment logged. As built: two org-scoped tables (`shared/zones.ts`, `shared/opportunity-assignment.ts`), one insert path (`insertOpportunityTx`) that stamps the assignee and `opportunities.assignedByRuleId` at creation under the system actor with an `opportunity_auto_assigned` audit row; a rule naming an inactive user or zone is skipped and reported on the card; writes are MANAGE_SETTINGS; a manual reassignment nulls the rule and stays the logged `update`; the chips read "(auto)". | ASSIGNED_TO auto-assign by zones / zip / params | C4.1 | — |
 | C4.2 (**Pass 27**) — **done** (`feature/phase-4-cancel-reschedule`, 2026-09-25; see "Shipped in Pass 27" at the end of Part D) | **Cancel and Reschedule, one path** (B2). New `POST /api/appointments/:id/disposition { mode: CANCEL \| RESCHEDULE, reasonCode?, opportunity: UPDATE_EXISTING \| CREATE \| NONE, voidDraftInvoices? }` built on `requestAppointmentCancelOrReschedule` (the technician's cancel-reschedule route becomes a thin alias that always creates the office-handoff opportunity). **RESCHEDULE**: services back to `PENDING_SCHEDULING`, no reason required, no policy, no opportunity when the office does it from the board. **CANCEL**: reason required from the settings list; agreement-generated services return to `PENDING_SCHEDULING` with `serviceWindowStart/End` reset from the cancel date and an opportunity created or assigned as the fallback; non-agreement services are `CANCELLED` with the opportunity prompt (category defaulted by path). Both keep the draft-invoice prompt. `PATCH /api/appointments/:id { status: CANCELED }` is refused with 409 `CANCEL_DISPOSITION_REQUIRED`; the sheet's status Select drops CANCELED and its "Cancel Service" button becomes **Cancel appointment** + **Reschedule**. **Board moves confirm on drop** ("Move to <slot>?"). The location's Services tab shows Scheduled / Pending / Rescheduling / Cancelled distinctly — also Q4's PENDING_SCHEDULING-vs-SCHEDULED gap. | Unschedule → Reschedule; cancel reason required; opportunity prompt; agreement services recycled; accidental moves; Services-tab clarity | C4.1 | — |
 | C4.2b (**Pass 27b**) — **done** (`feature/phase-4-cancel-reschedule-review`, 2026-09-25; see "Shipped in Pass 27b" at the end of Part D) | **Cancel and Reschedule, owner review** (live testing of 2026-09-25, Part E). (1) A CANCELED placement leaves the dispatch board - cancelled and rescheduled alike, so the slot is free for new work; it stays in the location's Services tab ("Was <date>", the reason) and History as the record. One shared predicate for "shows on the board", read by the board's viewport, slot map and analytics (`getTechnicianWork` already excludes CANCELED). (2) The Cancel appointment and Reschedule dialogs close when the disposition completes: the sheet resets on the appointment prop only while one is set, so the dialog stays open after the sheet closes. (3) Re-verify, with a fresh agreement service and a fresh one-time service, that the opportunity a CANCEL creates is OPEN until the recycled service is placed again (placement converts it, the pre-existing rule); the owner saw CONVERTED and attributed it to the agreement path. No new behavior otherwise. | Owner review of Pass 27 | C4.2 | — |
-| C4.3a (**Pass 28**) | **Appointment composition, server + dispatch sheet** (B13) — add a service to an appointment (new or from the pending queue), remove / cancel / return ONE service to pending (the last service prompts to reschedule the appointment), change a service's type (agreement work stays locked) and duration, appointment instructions (`appointments.notes`) editable; all through `getLinkedServicesForAppointmentTx`. UI on the dispatch sheet. **Also (owner review of 2026-09-25): cancelling a `PENDING_SCHEDULING` service outright**, from the pending queue and the location's Services tab, with the disposition's semantics - a reason from the settings list, the opportunity choice (WINBACK for a one-time service; an agreement service is recycled or, if the agreement itself is ending, that is the agreement workflow), an audit row on the service - because today the only way to cancel a pending service is to place it on the board and cancel the placement (the service form has no status control). | Appointment Details build-out; service-level cancel; cancel a pending service | C4.2 | — |
+| C4.3a (**Pass 28**) — **done** (`feature/phase-4-appointment-composition`, 2026-09-29; see "Shipped in Pass 28" at the end of Part D) | **Appointment composition, server + dispatch sheet** (B13) — add a service to an appointment (new or from the pending queue), remove / cancel / return ONE service to pending (the last service prompts to reschedule the appointment), change a service's type (agreement work stays locked) and duration, appointment instructions (`appointments.notes`) editable; all through `getLinkedServicesForAppointmentTx`. UI on the dispatch sheet. **Also (owner review of 2026-09-25): cancelling a `PENDING_SCHEDULING` service outright**, from the pending queue and the location's Services tab, with the disposition's semantics. As built: `shared/appointment-composition.ts`; four routes (`POST /api/appointments/:id/services`, `POST .../services/:serviceId/remove`, `PATCH .../services/:serviceId`, `POST /api/services/:id/cancel`), each one transaction and one audit row (`appointment_composition_changed` / `service_cancelled`); the representative follows the first remaining sibling; the planned end grows on add and never shrinks; a service landing on a visit converts its handoff opportunities like a placement (the board's attach and grouped placement use the same route); an agreement service's type is ADJUST_PRICE_AGREEMENT everywhere; the last active service is refused; a posted ticket, a settled service and an issued invoice refuse; the generic service PATCH refuses the lifecycle moves; the reasons list's write is MANAGE_SETTINGS; one `ServiceCancelDialog` on the sheet, the queue and the Services tab. | Appointment Details build-out; service-level cancel; cancel a pending service | C4.2 | — |
 | C4.3b (**Pass 29**) | **Appointment composition in the field** (B13) — the technician's appointment details: each service displayed, editable on click (type, for non-agreement work); **Add service** as a small button; adding extends the visit's duration and refuses an overlap with the technician's next stop; instructions editable only on services the technician added; an added non-agreement service is **flagged for office review** (owner). Same routes as C4.3a. | Add service in the field (tech-modal item 5) | C4.3a | — |
 | C4.4 (**Pass 30**) | **Technician preferences + crew** (B14). `technician_preferences` (`scopeType account \| location`, `technicianId`, `kind PREFERRED \| EXCLUDED`, note, created-by); editors in edit/add location and on the primary location with an "apply to all locations" checkbox that writes the account-scoped row; chip on the card. Dispatch: EXCLUDED is a **hard block** on placement (manager override with a reason, audit-logged), PREFERRED a "Prefers <tech>" hint on the queue row and the sheet. Crew: `appointment_technicians` (lead + support) — the comp basis D8 collects here; production entries stay single-technician until Phase 7's split allocation. | Preferred technician; EXCLUDE_TECH; apply across locations; crew | — | — |
 | C4.5 (**Pass 31**) | **Dispatch board settings.** Settings → Dispatch Board: **view interval** (the rename; keep 1 h / 2 h, add 30 min), **snap interval** 15 / 30 / 60 (`dispatch_snap_minutes`; drag placement and the sheet's time inputs round to it), default visible hours (the session override stays). | Schedule interval; View Interval | — | — |
@@ -3015,6 +3015,224 @@ Behavior worth knowing before the next pass touches it:
   Schedule reading `zones` (Phase 9); a zone filter on the queue (the zip prefix exists); who may
   edit Settings becomes C5.6's profiles; `GET /api/users` stays open to every role (the rule form
   and the chips need it).
+
+---
+
+**Shipped in Pass 28** (`feature/phase-4-appointment-composition`, 2026-09-29) — the C4.3a row as
+built, plus the nine decisions the handoff asked for.
+
+```ts
+// shared/appointment-composition.ts (new) - the composition's vocabulary and its two pure rules, read by storage, the routes and the client
+AppointmentServiceAddRequest { serviceId? | service?: NewPlacedServiceRequest }   // exactly one; NewPlacedServiceRequest { serviceTypeId, expectedDurationMinutes?, priceCents?, notes?, timeWindow?, workKind?, answersServiceId? }
+AppointmentServiceUpdateRequest { serviceTypeId?, expectedDurationMinutes? }        // at least one
+ServiceCancelRequest { reasonCode, notes?, opportunity: DispositionOpportunityChoice }
+AppointmentCompositionResult { appointment, service, services, scheduledEndDateExtendedMinutes, opportunitiesConverted }
+ServiceCancelResult { service, appointment | null, effect: CANCELLED | REQUEUED, windowReset, detached, opportunities: DispositionOpportunityOutcome[] }
+LAST_SERVICE_ON_APPOINTMENT (409) / SERVICE_NOT_ON_APPOINTMENT (404) / SERVICE_NOT_PENDING / SERVICE_LOCATION_MISMATCH / APPOINTMENT_NOT_COMPOSABLE / VISIT_INVOICED / SERVICE_SETTLED
+  / SERVICE_HAS_TICKET (409) / SERVICE_TYPE_LOCKED (403) / SERVICE_TYPE_UNKNOWN / ADD_SERVICE_TARGET_REQUIRED (400) / SERVICE_CANCEL_REQUIRED / SERVICE_REMOVE_REQUIRED (409, the generic PATCH)
+isActiveOnVisit(service)                       // not COMPLETED / CANCELLED
+pickRepresentative(remaining)                  // the first remaining sibling by createdAt, then id - deleteService's rule (decision 1)
+plannedEndOf(appointment, representativeExpectedMinutes)                    // scheduledEndDate, else start + the representative's expected duration, else null
+extendPlannedEnd(appointment, representativeExpectedMinutes, deltaMinutes)  // -> { scheduledEndDate, extendedMinutes }; a positive delta grows the end from the planned end (or the start); never shrinks (decision 3)
+PLANNED_END_RULE_TEXT; describeServiceCancelEffect(service); describeCompositionRefusal(code)   // the sheet's caption, the cancel dialog's description, the client's text for a refusal code
+
+// shared/audit.ts                             AuditAction += "service_cancelled" ("Service cancelled") | "appointment_composition_changed" ("Visit services changed") (decision 5)
+// server/service-scheduling-bootstrap.ts      bootstrapAppointmentComposition() - services_appointment_id_idx (partial, where appointment_id is set), printed once; indexExists()
+
+// server/storage.ts
+class ServiceCompositionError(status 400 | 403 | 404 | 409, code, message)
+AddServiceToAppointmentInput / RemoveServiceFromAppointmentInput / UpdateAppointmentServiceInput / CancelServiceInput   // each with actorRole / actor
+serviceAuditSnapshot(service)                  // id, status, appointmentId, lastAppointmentId, assignedTechnicianId, agreementId, serviceTypeId, workKind, expectedDurationMinutes, priceCents, the dates, notes
+appointmentAuditSnapshot(appointment, services) // + serviceId, serviceTypeId, scheduledEndDate, notes; services[] through serviceAuditSnapshot (decision 4) - the disposition's rows carry the fuller shape too
+addServiceToAppointment(input)                 // a PENDING_SCHEDULING service at the visit's location, or a new MANUAL one (the type's duration and price as defaults, due the visit's day, Pass 24's kind
+                                               //   and link rules) -> attachServiceToAppointmentTx: SCHEDULED with the visit's technician; the representative and appointments.serviceTypeId when the visit
+                                               //   has none of its own (a dangling serviceId is healed); the planned end + its expected duration; convertPlacementOpportunitiesTx (decision 8); one
+                                               //   appointment_composition_changed row { composition: { action: "ADD", serviceId, from: "QUEUE" | "NEW", scheduledEndDateExtendedMinutes, opportunitiesConverted } }
+removeServiceFromAppointment(input)            // the RESCHEDULE semantics for one service: PENDING_SCHEDULING, appointmentId null, technician null, lastAppointmentId stamped, dates kept; the representative
+                                               //   reassigned (reassignRepresentativeTx); the end untouched; 404 SERVICE_NOT_ON_APPOINTMENT; 409 SERVICE_SETTLED / SERVICE_HAS_TICKET / VISIT_INVOICED /
+                                               //   LAST_SERVICE_ON_APPOINTMENT; { action: "REMOVE", representativeReassigned } with the removed service in the after list
+updateAppointmentService(input)                // the type (an agreement service: ADJUST_PRICE_AGREEMENT else 403 SERVICE_TYPE_LOCKED; a ticket: 409 SERVICE_HAS_TICKET; an issued invoice: 409; the
+                                               //   representative's type follows onto the appointment) and the duration (a longer one extends the end by the difference, a shorter one leaves it); nothing
+                                               //   changed writes nothing; { action: "UPDATE", changes: { serviceTypeId?, expectedDurationMinutes? }, scheduledEndDateExtendedMinutes }
+cancelService(input)                           // the reason checked before the tx (DISPOSITION_REASON_REQUIRED / _NOT_ON_LIST, 400); 404 unknown; 409 SERVICE_SETTLED / SERVICE_HAS_TICKET; on a live visit:
+                                               //   VISIT_INVOICED and the LAST active service 409; a one-time service -> CANCELLED, an agreement service -> PENDING_SCHEDULING with resolveAgreementWindowResetTx
+                                               //   (due date and window from today by serviceWindowDays); both: appointmentId null (a stale link to a settled placement too), technician null,
+                                               //   lastAppointmentId = the placement (decision 2); the representative reassigned; applyServiceOpportunityChoiceTx(mode CANCEL); one service_cancelled row
+                                               //   { before: the service, after: the service + cancel: { reasonCode, notes, opportunity, effect, windowReset, appointmentId, detached, representativeReassigned, opportunities } }
+updateService(id, data, context)               // + 409 SERVICE_CANCEL_REQUIRED (a status move to CANCELLED), 409 SERVICE_REMOVE_REQUIRED (appointmentId null, or SCHEDULED -> PENDING_SCHEDULING while placed),
+                                               //   403 SERVICE_TYPE_LOCKED (assertServiceTypeUnlocked: an agreement service's type without ADJUST_PRICE_AGREEMENT; a server write with no role always may);
+                                               //   an unchanged value echoed by the customer Edit form passes (decision 7)
+updateAppointment(id, data, actor?)            // + one appointment_composition_changed { action: "NOTES" } when notes change - B13's instructions edited from the sheet; the scheduling fields stay unaudited (C5.1a)
+createAppointment                              // its conversion block is now convertPlacementOpportunitiesTx(tx, serviceId, appointmentId), shared with the add - behavior unchanged
+dispositionAppointment                         // its opportunity choice is applyServiceOpportunityChoiceTx and its window reset resolveAgreementWindowResetTx, both shared with cancelService - behavior unchanged
+finalizeServiceRecord                          // the allFinalized rollup skips CANCELLED linked services, as getAppointmentBillingGroupTx does (decision 2)
+
+// server/routes.ts (ungated like every appointment write - C5.6 - except where said)
+POST  /api/appointments/:id/services                     // appointmentServiceAddSchema strict, exactly one of serviceId / service (newPlacedServiceSchema strict) -> 201 AppointmentCompositionResult
+POST  /api/appointments/:id/services/:serviceId/remove   // -> 200 AppointmentCompositionResult
+PATCH /api/appointments/:id/services/:serviceId          // appointmentServiceUpdateSchema strict, at least one field -> 200 AppointmentCompositionResult
+POST  /api/services/:id/cancel                           // serviceCancelSchema strict -> 200 ServiceCancelResult; 404 unknown
+PATCH /api/services/:id                                  // updateServiceSchema: appointmentId must be a string (null -> 400); the storage refusals answered { code, message }
+PATCH /api/appointments/:id                              // passes getAuditActor(req) to updateAppointment
+PATCH /api/settings/appointment-cancel-reasons           // requirePermission(MANAGE_SETTINGS) (decision 9); the GET stays open to every role
+respondServiceCompositionError(res, err)                 // { message, code }
+
+// client
+components/service-cancel-dialog.tsx (new)     // ServiceCancelDialog { service, serviceTypeName, open, onOpenChange, onCancelled } - one dialog for the sheet, the queue and the Services tab: reads the
+                                               //   reasons list and the location's open opportunities itself, the reason select / notes / opportunity radios (Update existing when one is open, else
+                                               //   Create), describeServiceCancelEffect as the description, POST /api/services/:id/cancel, invalidateAfterServiceCancel(locationId),
+                                               //   describeServiceCancelResult as the toast; a refusal code's text shown inline (describeCompositionRefusal)
+pages/schedule.tsx                             // AppointmentSheet + serviceTypes, queueCandidates, ticketedServiceIds, canChangeAgreementType, onAddService / onRemoveService / onUpdateService /
+                                               //   onCancelService, isComposing; the "Work kind per service" block is the composition block (sheet-composition): per service the type select (disabled with
+                                               //   the reason: settled / a ticket / agreement work without the permission), Minutes (committed on blur), the kind badge, the answers line, the price,
+                                               //   Remove / Cancel (disabled with the reason on a settled or ticketed service); "Add service" (a select of the location's pending services + Add; a new
+                                               //   one-time line with the type's duration and price defaults + Create; PLANNED_END_RULE_TEXT as the caption); the last-service prompt
+                                               //   (dialog-last-service -> Reschedule appointment / Cancel appointment / Back); servicesByAppointmentId and the two card fallbacks skip CANCELLED (the
+                                               //   "+N other services" and the revenue sums with them); attachServiceToAppointmentMutation and the placement's ?serviceIds= extras go through the add route,
+                                               //   one request per service in order; the queue row is a div[role=button] with a Cancel action; ServiceCancelDialog; useAuth for the type gate
+pages/customer-detail.tsx                      // ServiceForm: the Edit Service Type select disabled with the reason on an agreement service without ADJUST_PRICE_AGREEMENT (text-service-type-locked);
+                                               //   ServicesTab: Cancel beside Edit / Schedule (button-service-row-cancel-*), disabled with the reason (completed / already cancelled / a posted ticket /
+                                               //   the only service on its live visit), ServiceCancelDialog
+pages/settings.tsx                             // the Appointment Cancel / Reschedule Reasons card: textarea and Save disabled for everyone but an admin, "Only an admin can change this list."
+```
+
+Behavior worth knowing before the next pass touches it - the decisions, numbered as the handoff asked:
+- **(1) The representative follows the first remaining sibling.** `appointments.serviceId` is read
+  by the resolver (it appends the row it names whatever its `appointmentId`), by the generic PATCH's
+  sync (which would re-link an unlinked representative) and by `completeService`'s fallback, so it
+  is never nulled while a service remains: a remove or a cancel of the representative reassigns it
+  to the first remaining active sibling by creation (`pickRepresentative`, deleteService's rule) and
+  moves `appointments.serviceTypeId` with it, since the board's card and the sheet's title read
+  that. A service added to a visit whose `serviceId` names nothing of its own (null, or a dangling
+  id) becomes the representative, which heals the 13 dangling pointers on the dev DB one visit at a
+  time. The disposition still leaves `serviceId` as history on a CANCELED placement.
+- **(2) A cancelled service leaves a live visit.** `finalizeServiceRecord`'s `allFinalized` counted
+  every linked service, CANCELLED included, while the billing group excluded them - a one-time
+  service cancelled off a live visit under the disposition's convention (CANCELLED, still linked)
+  would have held the visit open forever. Both: `cancelService` detaches the service (`appointmentId`
+  null, `lastAppointmentId` the placement, the technician cleared) and the rollup now skips
+  CANCELLED like the billing group, so a legacy linked row cannot block a visit either (verified: a
+  CANCELLED service re-linked by SQL, the visit still COMPLETED on the last finalize). The
+  disposition's own convention is untouched - it cancels the appointment too, so nothing rolls up.
+- **(3) The planned end grows and never shrinks.** `scheduledEndDate` was written only by the client
+  (placement = slot + the representative's expected duration; the move confirm; the sheet's End).
+  Now an add extends it by the added service's `expectedDurationMinutes` (from the planned end, or
+  from the start when no end and no representative duration is known), a longer duration extends it
+  by the difference, and a removal or a shorter duration leaves it - the office shortens it on the
+  sheet, whose Add block says so (`PLANNED_END_RULE_TEXT`). Every result reports
+  `scheduledEndDateExtendedMinutes`; the toasts read it.
+- **(4) The audit snapshot is fuller.** `appointmentAuditSnapshot` carries `serviceId`,
+  `serviceTypeId`, `scheduledEndDate` and `notes`, and each service's `serviceTypeId`, `workKind`,
+  `expectedDurationMinutes`, `priceCents` and `notes` (`serviceAuditSnapshot`, shared with
+  `service_cancelled`), so a composition change diffs on the History tab; Pass 27's disposition rows
+  written from now on carry the same shape (older rows keep theirs). A removed service stays in the
+  after list with `appointmentId` null, so the diff shows it leaving.
+- **(5) Two actions.** `service_cancelled` on the service (one row per cancel, placed or pending)
+  and `appointment_composition_changed` on the appointment for add / remove / type / duration /
+  notes - one row per request, `composition.action` naming which (ADD / REMOVE / UPDATE / NOTES).
+  The location History collects both (services and appointments were already rolled in).
+- **(6) Gates.** Add, remove, duration and notes are ungated like the disposition and every other
+  appointment write (who may is C5.6's profiles); an agreement service's **type** is
+  `ADJUST_PRICE_AGREEMENT` (the price's rule, Pass 24's precedent for the kind), refused 403
+  `SERVICE_TYPE_LOCKED` - 403 rather than the handoff's suggested 409 because it is a role refusal,
+  the codebase's convention (WORK_KIND_FORBIDDEN, SURCHARGE_FORBIDDEN); the outright cancel follows
+  the disposition - ungated, the reason required.
+- **(7) The type lock holds on the generic PATCH too.** Nothing locked `serviceTypeId` on an
+  agreement service before: the customer Edit form offered it to every role and `updateService`
+  wrote it. `assertServiceTypeUnlocked` refuses a *change* without the permission on the PATCH and on
+  the composition route alike (an unchanged value echoed by the form passes; a server-driven write
+  with no role always may), and the Edit form's Select is disabled with the reason. Also refused on
+  the PATCH now: a status move to CANCELLED (409 `SERVICE_CANCEL_REQUIRED`), `appointmentId: null`
+  (400 - the schema takes a string only) and SCHEDULED -> PENDING_SCHEDULING while placed (409
+  `SERVICE_REMOVE_REQUIRED`) - each was an unaudited, reason-less lifecycle write any client could
+  make, and each now has its own route.
+- **(8) Every landing converts.** `createAppointment` converted the representative's open
+  RESCHEDULE / CANCELLATION_REVIEW opportunities only; the attach PATCH converted none, so a requeued
+  service re-placed as an extra kept its OPEN handoff row. The block is one helper,
+  `convertPlacementOpportunitiesTx`, called at creation and by every add (verified: a seeded OPEN
+  handoff opportunity on a re-added service reads CONVERTED with its activity and communication
+  rows, `opportunitiesConverted` 1). **Decided:** the board's queue-then-card attach *and* the
+  grouped placement's `?serviceIds=` extras go through the add route too, one request per service
+  in order - one path for a service landing on a visit, so the end date, the conversion and the
+  audit row apply everywhere; a failed extra is reported on the placement toast.
+- **(9) The reasons list's write is `MANAGE_SETTINGS`**, like the reopen list; the Settings card is
+  disabled for everyone else. Reads stay open - three dialogs fill from it.
+- **An agreement service is recycled, never cancelled outright.** The row's own words: from the
+  queue or a visit, `cancelService` on an agreement service returns it to PENDING_SCHEDULING with
+  its due date and window reset from today (the disposition's B2 refinement) and runs the
+  opportunity choice (RESCHEDULE / AGREEMENT) - a "push this visit out" with a reason. The dialog
+  says so and its button reads "Recycle service". Ending the plan is the agreement cancellation
+  workflow (Phase 9).
+- **What refuses, and why.** A service with a posted ticket cannot be removed, cancelled or re-typed
+  on the sheet (`SERVICE_HAS_TICKET`: the work happened, and the ticket flow - reopen, the office
+  edit - owns it; its duration may still change); a settled service is history
+  (`SERVICE_SETTLED`); a CANCELED or COMPLETED appointment is not composable
+  (`APPOINTMENT_NOT_COMPOSABLE`; its notes still edit through the generic PATCH); an issued invoice
+  on the visit freezes add / remove / cancel / type (`VISIT_INVOICED`; a DRAFT is re-priced at issue
+  and does not); a new service on a visit is one-time MANUAL work at the visit's location (an
+  agreement's visits are generated, never typed onto a card), so the sheet's "New one-time service"
+  line offers no agreement.
+- **Not touched:** C4.3b's technician-side composition (the field's Add service, the review flag -
+  see the Pass 29 handoff for what exists), C4.4's crew and preferred technician, the board's move
+  and placement UX beyond routing attach and the extras through the add route, an appointment
+  cancellation policy (Phase 9), `cancelAgreement`'s direct CANCELED write (noted in canon §11, left
+  as it is), the Services-tab reopen defect (`reopenTicketMutation` posts `{ reason }` from
+  `window.prompt`, but the reopen route's strict schema needs `reasonCode` since Pass 17 - the
+  Services-tab Reopen has been broken since then; noted, left), C5.6. Cancelling a service still
+  linked to a CANCELED placement clears that stale link too. The Services tab's Cancelled row shows
+  the appointment's reason only (a per-service cancel's reason is on the History tab, not on the
+  row - the service has no reason column).
+- **Verified 2026-09-29** (PORT=5001 against a copy of the dev DB, `pestflow_verify`, dropped
+  afterwards; the shared DB untouched - no index, no new audit action): `npm run check` clean; boot
+  1 printed the migration's one line (the partial index, 91 placed services) with every one of the
+  46 table counts unchanged; 128 API / SQL assertions as the four roles - the pure module (the end
+  grows from the planned end or the start, never shrinks, stays null when nothing is known; the
+  representative by creation then id; the refusal texts); a fixture customer with two locations, an
+  agreement (window 7) and services placed through the real routes: a one-time service placed
+  (end = start + 60), a queued one added as support (end + 30, SCHEDULED with the visit's
+  technician, the ADD row by "Heritage Support" with the fuller snapshot), a new one created placed
+  as manager (MANUAL, due the visit's day, end + 15) and another taking the type's duration and
+  price; the add refusals (already on the visit, another location, both / neither / an unknown key
+  400, an unknown appointment 404, an unknown type, a CALLBACK without its answer); the notes PATCH
+  writing one NOTES row by "Heritage Admin" and an identical PATCH none; the type change on a
+  one-time service (the UPDATE row's `changes`), 15 -> 45 minutes extending the end by 30 and
+  45 -> 10 leaving it, an unchanged duration writing nothing, an unknown field / an empty body 400,
+  a service off the visit 404; an agreement service added and its type refused 403 for support and
+  the technician, allowed for the manager, the same on the generic PATCH (an unchanged type passing
+  for the technician, the admin allowed), its duration ungated; the generic PATCH refusing status
+  CANCELLED (409), `appointmentId: null` (400) and PENDING_SCHEDULING while placed (409) and passing
+  an unchanged status; remove of a non-representative (PENDING_SCHEDULING, detached,
+  `lastAppointmentId`, no technician, the end unchanged, the REMOVE row by "Heritage Tech" showing
+  it leave), of the representative (reassigned to the first remaining by creation with its type),
+  again 404, of the agreement service (dates kept), of the LAST one 409 with the code; a seeded OPEN
+  handoff opportunity CONVERTED by a re-add with its activity and communication rows; the cancel
+  refusals (a reason off the list, no reason, an unknown choice, an extra key); the cancel of one of
+  two (the representative, one-time) as support: CANCELLED, detached, `lastAppointmentId`, the
+  representative moved, a WINBACK / ONE_TIME "Win-back" row (`APPOINTMENT_CANCELLATION_WINBACK`) and
+  the `service_cancelled` row with the reason, the effect and the visit; cancelling it again 409, and
+  adding it back 409; a posted ticket refusing cancel / remove / type (409 SERVICE_HAS_TICKET) while
+  the duration still changes; the CANCELLED service re-linked by SQL and the visit still going
+  COMPLETED when the second ticket finalized; a COMPLETED visit refusing an add and a COMPLETED
+  service refusing a cancel; the outright cancel of a pending one-time service with NONE (CANCELLED,
+  not detached, no opportunity, the row by "Heritage Manager") and of a pending agreement service
+  with CREATE (REQUEUED, due today, window today .. today + 7, a RESCHEDULE / AGREEMENT row) then
+  with UPDATE_EXISTING (the open row re-dated, two rows by "Heritage Admin"), an unknown service 404;
+  the reasons PATCH 403 for support and manager, 200 for admin with the same list; the location
+  History read carrying both actions; 18 composition rows (6 ADD, 2 NOTES, 6 UPDATE, 4 REMOVE) and
+  4 `service_cancelled` rows, every one with an actor label; every fixture deleted and every count
+  back at the run's start (`session` up by the run's four logins); boot 2 printed only the serving
+  line with every count unchanged; Vite 200 with the new symbols on the three pages, the new
+  component and, under `/@fs/`, the new shared module and the audit vocabulary. **Nothing was
+  rendered in a browser** - the repo has no browser automation and the session had no browser - so
+  the sheet's composition block, the last-service prompt, the queue's Cancel, the Services tab's
+  Cancel, the Edit form's disabled type and the cancel dialog itself reach the owner first.
+- **Owner's first render, 2026-09-30 (before merge):** the Appointment Details sheet could not be
+  scrolled - the shadcn `SheetContent` is pinned to the viewport's height (`inset-y-0 h-full`) with
+  no overflow rule, and the composition block pushed Save / Cancel appointment / Reschedule below the
+  fold. Second commit on the branch: `overflow-y-auto` on the sheet (`sheet-appointment-details`),
+  the pattern the technician's Appointment Details dialog (`max-h-[92vh] overflow-y-auto`) already
+  used. The note-history sheet on the customer screen (`customer-detail.tsx`, the same
+  `SheetContent` shape) has the same exposure with a long revision list and was left as it is.
 
 ---
 

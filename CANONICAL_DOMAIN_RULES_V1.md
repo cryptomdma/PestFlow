@@ -543,7 +543,32 @@ As built (Pass 27; PLAN_ROADMAP_V2.md C4.2 / B2, owner 2026-09-19; PLAN_BILLING_
   above, never disposal: every Service returns to the queue whatever the mode, and the
   office-handoff Opportunity on each Service is re-dated or created.
 * A status change to `CANCELED` through the generic Appointment update is refused (409). A board
-  move confirms before it writes. Cancelling ONE Service on a multi-service Appointment is C4.3a.
+  move confirms before it writes.
+
+As built (Pass 28; PLAN_ROADMAP_V2.md C4.3a; the owner's review of 2026-09-25, finding 5): **ONE
+Service is cancelled through `POST /api/services/:id/cancel`**, placed or pending - from the dispatch
+sheet, the pending queue or the location's Services tab - with the disposition's CANCEL semantics
+for that Service and nothing else:
+
+* a reason from the same settings list is required and one not on it is refused; a one-time
+  Service is `CANCELLED`; an agreement Service is **never cancelled outright** - it returns to
+  `PENDING_SCHEDULING` with `dueDate` / `serviceWindowStart` / `serviceWindowEnd` reset from today by
+  the Agreement's `serviceWindowDays` (the disposition's recycle; ending the plan is the agreement
+  cancellation workflow); the same opportunity choice runs (`WINBACK` for the cancelled one-time
+  Service, `RESCHEDULE` for the recycled agreement one, re-date the open one, or none).
+* Off a live Appointment the Service is **detached** - `appointmentId` null, `lastAppointmentId`
+  stamped, the technician cleared - and the Appointment stays on the board with the rest; the
+  representative (`appointments.serviceId`) moves to the first remaining sibling. The **last active
+  Service on an Appointment is refused** (`LAST_SERVICE_ON_APPOINTMENT`): the Appointment leaves the
+  board only through its disposition (§11). A Service with a posted ticket is refused
+  (`SERVICE_HAS_TICKET`) - the work happened, and the ticket flow owns it - as is a COMPLETED or
+  CANCELLED one, and any change to a visit whose invoice is issued (`VISIT_INVOICED`).
+* One audit row per cancel (§17, `service_cancelled` on the Service) with the row before and after,
+  the reason, the effect and the opportunities touched. A status change to `CANCELLED` through the
+  generic Service update is refused (409 `SERVICE_CANCEL_REQUIRED`), as is detaching a placed Service
+  (`SERVICE_REMOVE_REQUIRED`) - the Pass 27 precedent for `CANCELED` on the Appointment.
+* Ungated like the disposition (who may cancel is C5.6). The reasons list's write is
+  `MANAGE_SETTINGS` since this pass, now that two flows read it.
 
 Do not flatten all cancellation scenarios into generic Opportunity logic.
 
@@ -709,6 +734,16 @@ A Service may exist before it is scheduled. Services are the queueable work unit
 * answersServiceId nullable — the Service a `CALLBACK` answers; required on a callback, never set
   otherwise (Pass 24)
 * schedulingMode nullable
+* appointmentId nullable — the current placement (see Notes below)
+* lastAppointmentId nullable — the placement the Service was last taken off (Pass 27; also by a
+  per-Service remove or cancel since Pass 28)
+* expectedDurationMinutes nullable — the per-Service plan (the type's `estimatedDuration` by
+  default); the Appointment's planned end is derived from the representative's at placement and
+  grows by a Service's when it is added or lengthened (Pass 28)
+* priceCents nullable — see the pricing rule below
+* timeWindow nullable — the customer's preferred window, free text
+* notes nullable — the Service's own instructions ("Instructions" on the customer screen), copied
+  into the Appointment's notes at placement
 * createdAt
 * updatedAt
 
@@ -841,25 +876,25 @@ Service *answered*.
 
 A scheduled dispatch placement for one or more Services.
 
-### Required fields
+### Fields as built (`appointments` in `shared/schema.ts`; this list was corrected in Pass 28 to what exists)
 
-* id
-* accountId
-* locationId
-* serviceAgreementId nullable
-* serviceTypeId
-* scheduledStart
-* scheduledEnd nullable
-* timeInAt nullable
-* timeOutAt nullable
-* durationMinutes nullable
-* timeWindowStart nullable
-* timeWindowEnd nullable
-* assignedTechId nullable
-* supportTechId nullable
-* routeDate nullable
-* routeSequence nullable
-* estimatedDurationMinutes nullable
+* id, orgId
+* customerId — the customer; there is no `accountId` on the row (the account is reached through the
+  location, canon rule 2)
+* locationId nullable
+* serviceId nullable — the **representative** Service, one of the linked ones (plain varchar, no FK;
+  see "Composition" below)
+* agreementId nullable — plain varchar, no FK
+* serviceTypeId nullable — the representative's type
+* assignedTechnicianId nullable; assignedTo nullable (the technician's display name at placement)
+* source (`MANUAL` | `AGREEMENT_GENERATED` | `AGREEMENT_INITIAL`); generatedForDate nullable
+* scheduledDate — the planned start (NOT NULL)
+* scheduledEndDate nullable — the planned end, the only planned-duration carrier: set by the client
+  at placement (slot + the representative's `expectedDurationMinutes`) and on the sheet, and since
+  Pass 28 **grown by the server** when a Service is added to the visit or lengthened - never shrunk
+  by a removal (the office shortens it on the sheet)
+* timeInAt / timeOutAt nullable; durationMinutes nullable — **actual**, from time in / out, never a plan
+* timeInLat / timeInLng / timeOutLat / timeOutLng nullable
 * status (`SCHEDULED` | `IN_PROGRESS` | `COMPLETED` | `CANCELED`) — hardened to this
   four-value enum in Pass 1 (D1a) and enforced by `appointmentStatusSchema` in `routes.ts`.
   Note the single-L `CANCELED` is deliberately distinct from Service's double-L `CANCELLED`;
@@ -867,14 +902,22 @@ A scheduled dispatch placement for one or more Services.
   `confirmed`, `rescheduled`, and `issue` appeared in the original sketch of this entity but
   were never implemented — a reschedule request is carried by the `rescheduleRequested` /
   `rescheduleRequestedAt` fields on a `CANCELED` appointment, not by a status value.
-* notes nullable
-* createdAt
-* updatedAt
+* cancelReason / cancelNotes / cancelRequestedAt / cancelRequestedByLabel nullable;
+  rescheduleRequested (NOT NULL, default false) / rescheduleRequestedAt nullable (§9, Pass 27)
+* lockTime / lockTechnician (NOT NULL, default false) — the board's move guards
+* notes nullable — the visit's instructions to the technician (B13's "order instructions":
+  "Scheduling Notes" on the dispatch sheet, "Appointment Notes" on the technician's day), seeded
+  from the representative Service's notes at placement and edited on the sheet; a change is
+  recorded in the audit log (§17, `appointment_composition_changed`, Pass 28)
+* createdAt. There is **no** `updatedAt`.
 
-### Customer-reported issue fields
-
-* reportedPestType nullable
-* reportedProblemNotes nullable
+Not on the row, although earlier drafts of this section listed them: `accountId`,
+`serviceAgreementId`, `scheduledStart` / `scheduledEnd` (they are `scheduledDate` /
+`scheduledEndDate`), `timeWindowStart` / `timeWindowEnd` (the window is the Service's free-text
+`timeWindow`), `supportTechId` (crew is C4.4), `routeDate` / `routeSequence` (Smart Schedule, Phase
+9), `estimatedDurationMinutes` (the plan lives on `services.expectedDurationMinutes`), `updatedAt`,
+and `reportedPestType` / `reportedProblemNotes` (a customer's reported problem is recorded as a
+location note or the Service's notes today).
 
 ### Canonical rule
 
@@ -886,6 +929,9 @@ One Appointment may contain multiple Services. Each linked Service remains indep
 
 An Appointment leaves the board only through the cancel / reschedule disposition (§9, Pass 27):
 `CANCELED` is never written by the generic update, and a board move is confirmed before it writes.
+(One exception stands, noted in Pass 28 and left as it is: `cancelAgreement` still writes `CANCELED`
+directly on the agreement's scheduled Appointments, with no reason, flag, `lastAppointmentId` or
+audit row - the agreement cancellation workflow, Phase 9, owns that cascade.)
 A `CANCELED` placement - cancelled or rescheduled - is history, not a board card (owner,
 2026-09-25): it comes off the dispatch board so its slot is free, and it stays visible on the
 location's Services tab and History tab as the record of the visit that did not happen. That rule is
@@ -894,6 +940,31 @@ one shared predicate, `isBoardPlacement()` in `shared/appointment-disposition.ts
 map, analytics and card selection derive from; the technician's day (`getTechnicianWork`) excludes
 `CANCELED` in SQL. The appointments read itself stays unfiltered: the Services tab, the ticket review
 queue and the dashboard still need the row.
+
+**Composition (Pass 28; PLAN_ROADMAP_V2.md C4.3a; B13).** Which Services are on an Appointment is
+edited from the dispatch sheet's Appointment Details through four routes, each one transaction over
+`getLinkedServicesForAppointmentTx` (development rule 10) and one audit row
+(`appointment_composition_changed`, §17): **add** a Service (`POST /api/appointments/:id/services` -
+a `PENDING_SCHEDULING` Service at the same location from the queue, or a new one-time Service created
+placed, with its type's duration and price as defaults), **remove** one back to the queue
+(`POST .../services/:serviceId/remove` - the disposition's RESCHEDULE semantics for one Service:
+`PENDING_SCHEDULING`, dates kept, `lastAppointmentId` stamped), change one's **type or duration**
+(`PATCH .../services/:serviceId`), and the visit's **instructions** (`notes`, through the generic
+update). The rules: a Service landing on a visit is `SCHEDULED` with the visit's technician, becomes
+the representative when the visit has none of its own, **extends the planned end** by its expected
+duration (a longer duration extends it by the difference; nothing shrinks it), and has its open
+reschedule / cancel-review Opportunities converted exactly as a placement converts them - the
+board's attach-from-queue and grouped placement go through the same route. The **representative
+follows the first remaining sibling** when the current one leaves (and `serviceTypeId` with it), so
+it is never null while a Service remains. An **agreement Service's type is locked** to
+`ADJUST_PRICE_AGREEMENT` (the price's rule, §10) - on the sheet, on the customer form and on the
+generic update alike. The **last active Service** cannot be removed or cancelled on its own
+(`LAST_SERVICE_ON_APPOINTMENT`): the sheet offers Reschedule or Cancel appointment instead. A Service
+with a posted ticket, a settled Service and a visit whose invoice is issued are refused. Cancelling
+ONE Service is §9's per-Service cancel (`service_cancelled`). A `CANCELLED` Service still linked to
+a visit (the disposition's convention) counts on no rollup: the finalize rollup and the billing
+group both skip it, so a cancelled sibling never holds a visit open. The technician's side of the
+same routes is C4.3b.
 
 Appointment timing is a scheduling/field-operations layer. Time In / Time Out is tracked on the Appointment because the visit may contain multiple Services. Duration supports future route analytics and billing review, but GPS capture is staged for later.
 

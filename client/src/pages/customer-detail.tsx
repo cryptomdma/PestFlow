@@ -35,6 +35,7 @@ import { OpportunityHistoryDialog } from "@/components/opportunity-history-dialo
 import { OpportunityConvertDialog } from "@/components/opportunity-convert-dialog";
 import { OpportunityTaxonomyChips } from "@/components/opportunity-taxonomy-chips";
 import { ServiceCompletionDialog } from "@/components/service-completion-dialog";
+import { ServiceCancelDialog } from "@/components/service-cancel-dialog";
 import { ServiceReportActions } from "@/components/service-report-actions";
 import { DraftInvoiceVoidPrompt, getDraftInvoiceDecisionRequired, type DraftInvoiceRef } from "@/components/draft-invoice-void-prompt";
 import { resolveServiceScheduleState, SERVICE_SCHEDULE_STATE_LABELS, type ServiceScheduleState } from "@shared/appointment-disposition";
@@ -2608,6 +2609,12 @@ function ServiceForm({
   // an agreement one); a completed service's kind is frozen with its ticket.
   const canChangeKind = can(user?.role ?? "", workKindOverridePermission(!!service?.agreementId));
   const kindFrozen = isEditMode && service?.status === "COMPLETED";
+  // Pass 28 (C4.3a, decision 7): an agreement service's type is the price's
+  // rule - ADJUST_PRICE_AGREEMENT - and the server refuses a change without it
+  // (403 SERVICE_TYPE_LOCKED). Before this pass the Select was offered to
+  // every role and the PATCH wrote it. Disabled with the reason, never hidden.
+  const canChangeType = !isEditMode || !service?.agreementId || can(user?.role ?? "", PERMISSIONS.ADJUST_PRICE_AGREEMENT);
+  const typeLockReason = canChangeType ? null : "An agreement service's type is locked - a manager or an admin may change it.";
   const kindDisabledReason = kindFrozen
     ? "Frozen - this service's ticket is finalized, so its kind is history."
     : !canChangeKind
@@ -2825,14 +2832,15 @@ function ServiceForm({
         <div className="grid gap-3 sm:grid-cols-3">
           <div className="space-y-1.5 sm:col-span-1">
             <Label>Service Type</Label>
-            <Select value={serviceLines[0]?.serviceTypeId || ""} onValueChange={(value) => updateServiceLine(serviceLines[0].key, { serviceTypeId: value })}>
-              <SelectTrigger><SelectValue placeholder="Select service type" /></SelectTrigger>
+            <Select value={serviceLines[0]?.serviceTypeId || ""} onValueChange={(value) => updateServiceLine(serviceLines[0].key, { serviceTypeId: value })} disabled={!canChangeType}>
+              <SelectTrigger data-testid="select-service-type-edit"><SelectValue placeholder="Select service type" /></SelectTrigger>
               <SelectContent>
                 {serviceTypes?.map((serviceType) => (
                   <SelectItem key={serviceType.id} value={serviceType.id}>{serviceType.name}</SelectItem>
                 ))}
               </SelectContent>
             </Select>
+            {typeLockReason ? <p className="text-xs text-muted-foreground" data-testid="text-service-type-locked">{typeLockReason}</p> : null}
           </div>
           <div className="space-y-1.5"><Label>Expected Duration</Label><Input type="number" min="0" value={serviceLines[0]?.expectedDurationMinutes || ""} onChange={(e) => updateServiceLine(serviceLines[0].key, { expectedDurationMinutes: e.target.value })} placeholder="Minutes" /></div>
           <div className="space-y-1.5"><Label>Service Cost</Label><Input type="number" min="0" step="0.01" value={serviceLines[0]?.price || ""} onChange={(e) => updateServiceLine(serviceLines[0].key, { price: e.target.value })} /></div>
@@ -3071,6 +3079,10 @@ function ServicesTab({
   const [editingService, setEditingService] = useState<Service | null>(null);
   const [detailService, setDetailService] = useState<Service | null>(null);
   const [completionService, setCompletionService] = useState<Service | null>(null);
+  // Pass 28 (C4.3a; the owner's review of 2026-09-25, finding 5): cancel ONE
+  // service - pending or placed - from its row, with the reason and the
+  // opportunity choice (POST /api/services/:id/cancel).
+  const [cancelService, setCancelService] = useState<Service | null>(null);
   // D2: Generate / Generate & Send / Later, when finalizing a ticket here
   // completes its visit under the PROMPT setting.
   const [invoicePrompt, setInvoicePrompt] = useState<InvoiceOnFinalizePromptState | null>(null);
@@ -3353,6 +3365,21 @@ function ServicesTab({
                     : SERVICE_SCHEDULE_STATE_LABELS[scheduleState];
             const canDraftForVisit =
               canDraftInvoice && !invoice && !!appointment && appointment.status !== "CANCELED" && appointment.status !== "COMPLETED" && service.status !== "CANCELLED";
+            // Pass 28: why Cancel cannot apply, else null - the same refusals
+            // the route answers, decided here so the button is disabled with
+            // the reason rather than failing (dev behavior rule 6).
+            const activeSiblingCount = appointment
+              ? siblingServices.filter((sibling) => sibling.status !== "COMPLETED" && sibling.status !== "CANCELLED").length
+              : 0;
+            const cancelDisabledReason = service.status === "COMPLETED"
+              ? "Completed - the ticket owns it"
+              : service.status === "CANCELLED"
+                ? "Already cancelled"
+                : serviceRecord
+                  ? "A ticket is posted on this service - reopen or edit the ticket instead"
+                  : appointment && activeSiblingCount <= 1
+                    ? "The only service on its visit - cancel or reschedule the appointment from the dispatch board"
+                    : null;
             return (
               <div
                 key={service.id}
@@ -3423,6 +3450,18 @@ function ServicesTab({
                   <Button type="button" size="sm" className="h-8 px-2" onClick={(event) => { event.stopPropagation(); scheduleService(service); }} disabled={service.status === "COMPLETED" || service.status === "CANCELLED"}>
                     {appointment ? "Reschedule" : "Schedule"}
                   </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-8 px-2 text-destructive hover:text-destructive"
+                    onClick={(event) => { event.stopPropagation(); setCancelService(service); }}
+                    disabled={!!cancelDisabledReason}
+                    title={cancelDisabledReason ?? (service.agreementId ? "Recycle this agreement visit with a reason" : "Cancel this service with a reason")}
+                    data-testid={`button-service-row-cancel-${service.id}`}
+                  >
+                    Cancel
+                  </Button>
                 </span>
               </div>
             );
@@ -3458,6 +3497,16 @@ function ServicesTab({
         </DialogContent>
       </Dialog>
       <InvoiceOnFinalizePrompt prompt={invoicePrompt} onClose={() => setInvoicePrompt(null)} />
+      <ServiceCancelDialog
+        service={cancelService}
+        serviceTypeName={cancelService ? serviceTypeNameById.get(cancelService.serviceTypeId || "") || "Service" : "Service"}
+        open={!!cancelService}
+        onOpenChange={(open) => { if (!open) setCancelService(null); }}
+        onCancelled={() => {
+          setCancelService(null);
+          setDetailService(null);
+        }}
+      />
       <ServiceCompletionDialog
         open={!!completionService}
         onOpenChange={(open) => !open && setCompletionService(null)}

@@ -23,7 +23,7 @@ import { MAX_ZONE_NAME_LENGTH } from "@shared/zones";
 import { ZodError, z } from "zod";
 import type { Request } from "express";
 import { requirePermission } from "./auth";
-import { AppointmentDispositionError, DraftInvoiceDecisionRequiredError, OpportunityAssignmentError, PrefinalizationIssueError, ServiceKindError, StatementRefusedError, TicketEditError, TicketLockedError, TicketReopenError, VisitBillingDraftError } from "./storage";
+import { AppointmentDispositionError, DraftInvoiceDecisionRequiredError, OpportunityAssignmentError, PrefinalizationIssueError, ServiceCompositionError, ServiceKindError, StatementRefusedError, TicketEditError, TicketLockedError, TicketReopenError, VisitBillingDraftError } from "./storage";
 import { SERVICE_WORK_KINDS } from "@shared/service-kind";
 import { isUtcDay, statementFileName } from "@shared/statements";
 import { APPOINTMENT_DISPOSITION_MODES, DISPOSITION_OPPORTUNITY_CHOICES } from "@shared/appointment-disposition";
@@ -223,9 +223,16 @@ export async function registerRoutes(
     if (!value.locationId) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["locationId"], message: "locationId is required" });
     if (!value.serviceTypeId) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["serviceTypeId"], message: "serviceTypeId is required" });
   });
+  // Pass 28 (C4.3a): a generic PATCH cannot detach a service (appointmentId
+  // null is a 400 here; storage refuses a status move to CANCELLED or from
+  // SCHEDULED to PENDING_SCHEDULING with 409 SERVICE_CANCEL_REQUIRED /
+  // SERVICE_REMOVE_REQUIRED) - the composition routes below own both, with
+  // the reason, the representative, the end date and the audit row. An
+  // unchanged status echoed by the customer Edit form still passes.
   const updateServiceSchema = insertServiceSchema.extend({
     status: serviceStatusSchema.optional(),
     source: serviceSourceSchema.optional(),
+    appointmentId: z.string().min(1).optional(),
     dueDate: z.string().nullable().optional(),
     generatedForDate: z.string().nullable().optional(),
     serviceWindowStart: z.string().nullable().optional(),
@@ -234,6 +241,38 @@ export async function registerRoutes(
     workKind: serviceWorkKindSchema.optional(),
     answersServiceId: z.string().min(1).nullable().optional(),
   }).partial();
+  // Pass 28 (C4.3a; shared/appointment-composition.ts): the composition of a
+  // visit. Strict bodies; storage refuses with a code (400 / 403 / 404 / 409).
+  const newPlacedServiceSchema = z.object({
+    serviceTypeId: z.string().min(1),
+    expectedDurationMinutes: z.number().int().min(0).nullable().optional(),
+    priceCents: z.number().int().min(0).nullable().optional(),
+    notes: z.string().nullable().optional(),
+    timeWindow: z.string().nullable().optional(),
+    workKind: serviceWorkKindSchema.optional(),
+    answersServiceId: z.string().min(1).nullable().optional(),
+  }).strict();
+  const appointmentServiceAddSchema = z.object({
+    serviceId: z.string().min(1).optional(),
+    service: newPlacedServiceSchema.optional(),
+  }).strict().superRefine((value, ctx) => {
+    if ((value.serviceId === undefined) === (value.service === undefined)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["serviceId"], message: "Name exactly one of serviceId (a pending service) or service (a new one)" });
+    }
+  });
+  const appointmentServiceUpdateSchema = z.object({
+    serviceTypeId: z.string().min(1).optional(),
+    expectedDurationMinutes: z.number().int().min(0).nullable().optional(),
+  }).strict().superRefine((value, ctx) => {
+    if (value.serviceTypeId === undefined && value.expectedDurationMinutes === undefined) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["serviceTypeId"], message: "Name the type or the duration to change" });
+    }
+  });
+  const serviceCancelSchema = z.object({
+    reasonCode: z.string().trim().min(1, "A cancel reason from the settings list is required"),
+    notes: z.string().nullable().optional(),
+    opportunity: z.enum(DISPOSITION_OPPORTUNITY_CHOICES),
+  }).strict();
   const appointmentSchema = insertAppointmentSchema.extend({
     generatedForDate: nullableDateSchema.optional(),
     scheduledDate: z.coerce.date(),
@@ -520,6 +559,10 @@ export async function registerRoutes(
   // APPOINTMENT_NOT_DISPOSITIONABLE - and the status PATCH's 409
   // CANCEL_DISPOSITION_REQUIRED.
   const respondAppointmentDispositionError = (res: any, err: AppointmentDispositionError) =>
+    res.status(err.status).json({ message: err.message, code: err.code });
+  // Pass 28 (C4.3a): a composition change the visit or the service forbids -
+  // 400 / 403 / 404 / 409 with the code from shared/appointment-composition.ts.
+  const respondServiceCompositionError = (res: any, err: ServiceCompositionError) =>
     res.status(err.status).json({ message: err.message, code: err.code });
   // Pass 17 (C3.2): a reopen the reason forbids - 400
   // REOPEN_REASON_NOT_ON_LIST / REOPEN_REASON_TEXT_REQUIRED, 403
@@ -1689,6 +1732,37 @@ export async function registerRoutes(
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
       if (e instanceof ServiceKindError) return res.status(e.status).json({ code: e.code, message: e.message });
+      // Pass 28: SERVICE_CANCEL_REQUIRED / SERVICE_REMOVE_REQUIRED (409), SERVICE_TYPE_LOCKED (403).
+      if (e instanceof ServiceCompositionError) return respondServiceCompositionError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  // Pass 28 (C4.3a; the owner's review of 2026-09-25, finding 5): cancel ONE
+  // service outright - pending, from the queue or the location's Services
+  // tab, or placed, from the dispatch sheet - with the disposition's CANCEL
+  // semantics for that service: a reason from the settings list, a one-time
+  // service CANCELLED and taken off its visit, an agreement service recycled
+  // with its window reset from today, the opportunity choice, one
+  // service_cancelled audit row. A COMPLETED / CANCELLED service, one with a
+  // posted ticket and the last active service on a live visit are refused
+  // with their codes. Ungated like the disposition (who may cancel is C5.6).
+  app.post("/api/services/:id/cancel", async (req, res) => {
+    try {
+      const validated = serviceCancelSchema.parse(req.body);
+      const data = await req.storage.cancelService({
+        serviceId: req.params.id,
+        reasonCode: validated.reasonCode,
+        notes: validated.notes ?? null,
+        opportunity: validated.opportunity,
+        actorRole: req.user!.role as UserRole,
+        actor: getAuditActor(req),
+      });
+      if (!data) return res.status(404).json({ message: "Service not found" });
+      res.json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      if (e instanceof ServiceCompositionError) return respondServiceCompositionError(res, e);
       res.status(400).json({ message: e.message });
     }
   });
@@ -2024,17 +2098,82 @@ export async function registerRoutes(
   app.patch("/api/appointments/:id", async (req, res) => {
     try {
       const validated = updateAppointmentSchema.parse(req.body);
+      // Pass 28: the actor signs the appointment_composition_changed row a
+      // change of the visit's instructions (notes) writes.
       const data = await req.storage.updateAppointment(req.params.id, {
         ...validated,
         scheduledDate: validated.scheduledDate,
         scheduledEndDate: validated.scheduledEndDate,
         generatedForDate: validated.generatedForDate === undefined ? undefined : toDateOnlyStringOrNull(validated.generatedForDate),
-      });
+      }, getAuditActor(req));
       if (!data) return res.status(404).json({ message: "Appointment not found" });
       res.json(data);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
       if (e instanceof AppointmentDispositionError) return respondAppointmentDispositionError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  // Pass 28 (C4.3a; B13 "Appointment Details"): the composition of a visit,
+  // from the dispatch sheet - and the board's attach-from-queue and grouped
+  // placement, which used to PATCH the service directly. Each is one
+  // transaction through getLinkedServicesForAppointmentTx and one
+  // appointment_composition_changed row. Ungated like every appointment write
+  // (C5.6), except that an agreement service's type is ADJUST_PRICE_AGREEMENT
+  // (403 SERVICE_TYPE_LOCKED) - the price's rule. Refusals carry a code:
+  // LAST_SERVICE_ON_APPOINTMENT (the disposition owns taking a visit off the
+  // board), SERVICE_HAS_TICKET, SERVICE_SETTLED, VISIT_INVOICED,
+  // APPOINTMENT_NOT_COMPOSABLE, SERVICE_NOT_PENDING, SERVICE_LOCATION_MISMATCH.
+  app.post("/api/appointments/:id/services", async (req, res) => {
+    try {
+      const validated = appointmentServiceAddSchema.parse(req.body);
+      const data = await req.storage.addServiceToAppointment({
+        appointmentId: req.params.id,
+        serviceId: validated.serviceId ?? null,
+        service: validated.service ?? null,
+        actorRole: req.user!.role as UserRole,
+        actor: getAuditActor(req),
+      });
+      res.status(201).json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      if (e instanceof ServiceCompositionError) return respondServiceCompositionError(res, e);
+      // A new service's kind or callback link (Pass 24's rules).
+      if (e instanceof ServiceKindError) return res.status(e.status).json({ code: e.code, message: e.message });
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/appointments/:id/services/:serviceId/remove", async (req, res) => {
+    try {
+      const data = await req.storage.removeServiceFromAppointment({
+        appointmentId: req.params.id,
+        serviceId: req.params.serviceId,
+        actor: getAuditActor(req),
+      });
+      res.json(data);
+    } catch (e: any) {
+      if (e instanceof ServiceCompositionError) return respondServiceCompositionError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.patch("/api/appointments/:id/services/:serviceId", async (req, res) => {
+    try {
+      const validated = appointmentServiceUpdateSchema.parse(req.body);
+      const data = await req.storage.updateAppointmentService({
+        appointmentId: req.params.id,
+        serviceId: req.params.serviceId,
+        serviceTypeId: validated.serviceTypeId,
+        expectedDurationMinutes: validated.expectedDurationMinutes,
+        actorRole: req.user!.role as UserRole,
+        actor: getAuditActor(req),
+      });
+      res.json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      if (e instanceof ServiceCompositionError) return respondServiceCompositionError(res, e);
       res.status(400).json({ message: e.message });
     }
   });
@@ -2265,7 +2404,11 @@ export async function registerRoutes(
     res.json({ reasons });
   });
 
-  app.patch("/api/settings/appointment-cancel-reasons", async (req, res) => {
+  // Pass 28 (decision 9): the list is read by two flows now - the appointment
+  // disposition and the per-service cancel - so changing it is
+  // MANAGE_SETTINGS like the reopen reasons below (it was ungated since
+  // before Pass 17). Reads stay open: every dialog fills its dropdown from it.
+  app.patch("/api/settings/appointment-cancel-reasons", requirePermission(PERMISSIONS.MANAGE_SETTINGS), async (req, res) => {
     try {
       const validated = appointmentCancelReasonsSchema.parse(req.body);
       const data = await req.storage.setAppointmentCancelReasons(validated.reasons);
@@ -2279,8 +2422,7 @@ export async function registerRoutes(
   // Pass 17 (C3.2): the ticket reopen reasons list. Readable by anyone (the
   // review modal's pop-up fills its dropdown from it); changing it decides
   // what every reviewer may name, so the PATCH is MANAGE_SETTINGS like
-  // invoice-on-finalize. The appointment cancel list's ungated PATCH above
-  // predates that convention and is left as it is (the disposition owns it).
+  // invoice-on-finalize (and, since Pass 28, like the cancel list above).
   app.get("/api/settings/ticket-reopen-reasons", async (req, res) => {
     const reasons = await req.storage.getTicketReopenReasons();
     res.json({ reasons });

@@ -2695,20 +2695,26 @@ export default function Settings() {
         <CardContent className="space-y-3">
           <div className="max-w-xl space-y-2">
             <Label>Reasons</Label>
+            {/* Pass 28 (decision 9): the list is read by the appointment disposition and by the
+                per-service cancel, so changing it is MANAGE_SETTINGS - disabled, not hidden, for
+                everyone else (dev behavior rule 6). */}
             <Textarea
               value={appointmentCancelReasonsText}
               onChange={(event) => setAppointmentCancelReasonsText(event.target.value)}
               rows={8}
               placeholder={"Weather\nGates locked\nSchedule conflict\nCustomer not home"}
+              disabled={!canManageSettings}
+              data-testid="textarea-appointment-cancel-reasons"
             />
             <p className="text-xs text-muted-foreground">
-              One reason per line. Technicians must select one before canceling or requesting a reschedule from the route view.
+              One reason per line. Required when the office cancels an appointment or a single service, and when a technician cancels or requests a reschedule from the route view.
             </p>
+            {!canManageSettings ? <p className="text-xs text-muted-foreground">Only an admin can change this list.</p> : null}
           </div>
           <Button
             type="button"
             onClick={() => updateAppointmentCancelReasonsMutation.mutate()}
-            disabled={updateAppointmentCancelReasonsMutation.isPending || !appointmentCancelReasonsText.trim()}
+            disabled={!canManageSettings || updateAppointmentCancelReasonsMutation.isPending || !appointmentCancelReasonsText.trim()}
           >
             {updateAppointmentCancelReasonsMutation.isPending ? "Saving..." : "Save Reasons"}
           </Button>
