@@ -370,7 +370,10 @@ function AppointmentSheet({
   return (
     <>
       <Sheet open={open} onOpenChange={onOpenChange}>
-        <SheetContent side="right" className="w-full sm:max-w-lg">
+        {/* The sheet is pinned to the viewport's height (inset-y-0 h-full) and, since Pass 28's
+            composition block, its content runs past the fold - the owner's first render (2026-09-30)
+            could not reach the buttons. It scrolls, as the technician's Appointment Details dialog does. */}
+        <SheetContent side="right" className="w-full overflow-y-auto sm:max-w-lg" data-testid="sheet-appointment-details">
           <SheetHeader className="pr-8">
             <SheetTitle>Appointment Details</SheetTitle>
             <SheetDescription>

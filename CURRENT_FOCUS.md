@@ -1339,8 +1339,11 @@ directly (canon §11 notes it); the Services tab's Reopen posts `{ reason }` to 
 dev:full` before manually testing - this pass adds four routes, gates one, and none of the new UI
 (the composition block, the last-service prompt, the two Cancel actions, the cancel dialog, the
 disabled type select) has been rendered by anyone: the repo has no browser automation and the
-session had no browser.** Signatures and behavior are under "Shipped in Pass 28" at the end of
-`PLAN_ROADMAP_V2.md` Part D.
+session had no browser.** The owner's first render (2026-09-30, before merge) found the sheet
+could not be scrolled - the composition block pushed the buttons below the fold of a sheet pinned
+to the viewport's height; the second commit gives `SheetContent` `overflow-y-auto`, as the
+technician's Appointment Details dialog already had. Signatures and behavior are under "Shipped in
+Pass 28" at the end of `PLAN_ROADMAP_V2.md` Part D.
 
 Next up: **Pass 29** — appointment composition in the field (`PLAN_ROADMAP_V2.md` Phase 4 table,
 C4.3b): the technician's appointment details - each service displayed, editable on click (type, for

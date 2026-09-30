@@ -3226,6 +3226,13 @@ Behavior worth knowing before the next pass touches it - the decisions, numbered
   rendered in a browser** - the repo has no browser automation and the session had no browser - so
   the sheet's composition block, the last-service prompt, the queue's Cancel, the Services tab's
   Cancel, the Edit form's disabled type and the cancel dialog itself reach the owner first.
+- **Owner's first render, 2026-09-30 (before merge):** the Appointment Details sheet could not be
+  scrolled - the shadcn `SheetContent` is pinned to the viewport's height (`inset-y-0 h-full`) with
+  no overflow rule, and the composition block pushed Save / Cancel appointment / Reschedule below the
+  fold. Second commit on the branch: `overflow-y-auto` on the sheet (`sheet-appointment-details`),
+  the pattern the technician's Appointment Details dialog (`max-h-[92vh] overflow-y-auto`) already
+  used. The note-history sheet on the customer screen (`customer-detail.tsx`, the same
+  `SheetContent` shape) has the same exposure with a long revision list and was left as it is.
 
 ---
 
