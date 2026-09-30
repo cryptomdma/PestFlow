@@ -58,7 +58,15 @@ export type AuditEntityType =
  *  link changed after creation (PATCH /api/services/:id) - it decides whether
  *  the visit's line is $0 and what the ledger credits, so it is a money
  *  mutation (D7). The snapshots are { workKind, answersServiceId } before and
- *  after; a creation writes nothing (the row is its own record). */
+ *  after; a creation writes nothing (the row is its own record).
+ *  `opportunity_auto_assigned` (Pass 26, C4.1b): an assignment rule stamped a
+ *  new opportunity's assignee at creation (server/storage.ts
+ *  insertOpportunityTx). Written under the system actor (canon §17: a null
+ *  actor is a system-driven write), with the same snapshot shape as the
+ *  manual `update` - the assignee (id and name), when, the rule (id and its
+ *  description) and the two axes - so the History tab tells a rule's
+ *  assignment from a person's, and a later manual reassignment reads as a
+ *  person overriding a rule (assignedByRuleId going to null). */
 export type AuditAction =
   | "update"
   | "invoice_drafted"
@@ -82,7 +90,8 @@ export type AuditAction =
   | "appointment_cancelled"
   | "appointment_rescheduled"
   | "surcharge_recorded"
-  | "work_kind_changed";
+  | "work_kind_changed"
+  | "opportunity_auto_assigned";
 
 const ENTITY_TYPE_LABELS: Record<AuditEntityType, string> = {
   customer: "Customer",
@@ -122,6 +131,7 @@ const ACTION_LABELS: Record<AuditAction, string> = {
   appointment_rescheduled: "Appointment rescheduled",
   surcharge_recorded: "Surcharge recorded",
   work_kind_changed: "Work kind changed",
+  opportunity_auto_assigned: "Auto-assigned by rule",
 };
 
 // Both take plain strings, not the unions: they render rows already in the

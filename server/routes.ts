@@ -18,11 +18,12 @@ import {
   insertTargetPestSchema,
 } from "@shared/schema";
 import { normalizePhone } from "@shared/phone";
-import { OPPORTUNITY_ASSIGNEE_ME, OPPORTUNITY_ASSIGNEE_UNASSIGNED, OPPORTUNITY_WORK_TYPES } from "@shared/opportunities";
+import { OPPORTUNITY_ASSIGNEE_ME, OPPORTUNITY_ASSIGNEE_UNASSIGNED, OPPORTUNITY_SOURCES, OPPORTUNITY_WORK_TYPES } from "@shared/opportunities";
+import { MAX_ZONE_NAME_LENGTH } from "@shared/zones";
 import { ZodError, z } from "zod";
 import type { Request } from "express";
 import { requirePermission } from "./auth";
-import { AppointmentDispositionError, DraftInvoiceDecisionRequiredError, PrefinalizationIssueError, ServiceKindError, StatementRefusedError, TicketEditError, TicketLockedError, TicketReopenError, VisitBillingDraftError } from "./storage";
+import { AppointmentDispositionError, DraftInvoiceDecisionRequiredError, OpportunityAssignmentError, PrefinalizationIssueError, ServiceKindError, StatementRefusedError, TicketEditError, TicketLockedError, TicketReopenError, VisitBillingDraftError } from "./storage";
 import { SERVICE_WORK_KINDS } from "@shared/service-kind";
 import { isUtcDay, statementFileName } from "@shared/statements";
 import { APPOINTMENT_DISPOSITION_MODES, DISPOSITION_OPPORTUNITY_CHOICES } from "@shared/appointment-disposition";
@@ -412,6 +413,31 @@ export async function registerRoutes(
     label: z.string().trim().min(1).optional(),
     isActive: z.boolean().optional(),
     sortOrder: z.number().int().optional(),
+  }).strict();
+  // Pass 26 (C4.1b): zones and assignment rules - Settings reference data,
+  // strict. A zone's ZIP list is normalized by storage (shared/zones.ts); a
+  // rule's four matchers are nullable (null = any) and its user required;
+  // storage checks the category, the zone and the user against the org.
+  const zoneSchema = z.object({
+    name: z.string().trim().min(1).max(MAX_ZONE_NAME_LENGTH),
+    zipCodes: z.array(z.string().trim()).min(1),
+    isActive: z.boolean().optional(),
+    sortOrder: z.number().int().optional(),
+    notes: z.string().nullable().optional(),
+  }).strict();
+  const zoneUpdateSchema = zoneSchema.partial();
+  const opportunityAssignmentRuleSchema = z.object({
+    categoryKey: z.string().trim().min(1).nullable().optional(),
+    workType: z.enum(OPPORTUNITY_WORK_TYPES).nullable().optional(),
+    zoneId: z.string().trim().min(1).nullable().optional(),
+    source: z.enum(OPPORTUNITY_SOURCES).nullable().optional(),
+    assignedUserId: z.string().trim().min(1),
+    isActive: z.boolean().optional(),
+    sortOrder: z.number().int().optional(),
+  }).strict();
+  const opportunityAssignmentRuleUpdateSchema = opportunityAssignmentRuleSchema.partial();
+  const opportunityAssignmentRuleOrderSchema = z.object({
+    ids: z.array(z.string().trim().min(1)).min(1),
   }).strict();
   const opportunityDispositionSchema = insertOpportunityDispositionSchema.extend({
     resultingStatus: opportunityStatusSchema,
@@ -1466,6 +1492,117 @@ export async function registerRoutes(
 
   app.delete("/api/opportunity-categories/:id", (_req, res) => {
     res.status(405).json({ message: "Opportunity categories cannot be deleted; deactivate the category instead" });
+  });
+
+  // Pass 26 (C4.1b): zones and opportunity assignment rules. Read by
+  // everyone (the Settings cards and the chips need the lists); every write
+  // is MANAGE_SETTINGS (admin) as the other Settings cards are since Pass 24
+  // - a rule is the office's standing dispatch instruction, not a person's
+  // assignment (that stays ASSIGN_OPPORTUNITY on the opportunity PATCH).
+  // Storage's refusals carry a code: ZIP_CODES_INVALID / ZIP_CODES_REQUIRED
+  // / ZONE_NAME_REQUIRED / ZONE_NAME_TAKEN / ZONE_IN_USE on a zone,
+  // RULE_CATEGORY_UNKNOWN / RULE_ZONE_UNKNOWN / RULE_ASSIGNEE_INVALID /
+  // RULE_IN_USE / RULE_ORDER_INVALID on a rule.
+  const respondOpportunityAssignmentError = (res: any, e: unknown): boolean => {
+    if (e instanceof OpportunityAssignmentError) {
+      res.status(e.status).json({ code: e.code, message: e.message });
+      return true;
+    }
+    return false;
+  };
+
+  app.get("/api/zones", async (req, res) => {
+    const includeInactive = req.query.includeInactive === "true";
+    res.json(await req.storage.getZones(includeInactive));
+  });
+
+  app.post("/api/zones", requirePermission(PERMISSIONS.MANAGE_SETTINGS), async (req, res) => {
+    try {
+      const validated = zoneSchema.parse(req.body);
+      res.status(201).json(await req.storage.createZone(validated));
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      if (respondOpportunityAssignmentError(res, e)) return;
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.patch("/api/zones/:id", requirePermission(PERMISSIONS.MANAGE_SETTINGS), async (req, res) => {
+    try {
+      const validated = zoneUpdateSchema.parse(req.body);
+      const data = await req.storage.updateZone(req.params.id, validated);
+      if (!data) return res.status(404).json({ message: "Zone not found" });
+      res.json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      if (respondOpportunityAssignmentError(res, e)) return;
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.delete("/api/zones/:id", requirePermission(PERMISSIONS.MANAGE_SETTINGS), async (req, res) => {
+    try {
+      const deleted = await req.storage.deleteZone(req.params.id);
+      if (!deleted) return res.status(404).json({ message: "Zone not found" });
+      res.status(204).send();
+    } catch (e: any) {
+      if (respondOpportunityAssignmentError(res, e)) return;
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.get("/api/opportunity-assignment-rules", async (req, res) => {
+    const includeInactive = req.query.includeInactive === "true";
+    res.json(await req.storage.getOpportunityAssignmentRules(includeInactive));
+  });
+
+  app.post("/api/opportunity-assignment-rules", requirePermission(PERMISSIONS.MANAGE_SETTINGS), async (req, res) => {
+    try {
+      const validated = opportunityAssignmentRuleSchema.parse(req.body);
+      res.status(201).json(await req.storage.createOpportunityAssignmentRule(validated));
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      if (respondOpportunityAssignmentError(res, e)) return;
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  // The whole order at once - every rule of the org, exactly once - so a
+  // Move up / Move down on the card is one write and the order can never be
+  // half-applied.
+  app.post("/api/opportunity-assignment-rules/reorder", requirePermission(PERMISSIONS.MANAGE_SETTINGS), async (req, res) => {
+    try {
+      const validated = opportunityAssignmentRuleOrderSchema.parse(req.body);
+      res.json(await req.storage.reorderOpportunityAssignmentRules(validated.ids));
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      if (respondOpportunityAssignmentError(res, e)) return;
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.patch("/api/opportunity-assignment-rules/:id", requirePermission(PERMISSIONS.MANAGE_SETTINGS), async (req, res) => {
+    try {
+      const validated = opportunityAssignmentRuleUpdateSchema.parse(req.body);
+      const data = await req.storage.updateOpportunityAssignmentRule(req.params.id, validated);
+      if (!data) return res.status(404).json({ message: "Assignment rule not found" });
+      res.json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      if (respondOpportunityAssignmentError(res, e)) return;
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.delete("/api/opportunity-assignment-rules/:id", requirePermission(PERMISSIONS.MANAGE_SETTINGS), async (req, res) => {
+    try {
+      const deleted = await req.storage.deleteOpportunityAssignmentRule(req.params.id);
+      if (!deleted) return res.status(404).json({ message: "Assignment rule not found" });
+      res.status(204).send();
+    } catch (e: any) {
+      if (respondOpportunityAssignmentError(res, e)) return;
+      res.status(400).json({ message: e.message });
+    }
   });
 
   app.get("/api/opportunities/:id/activities", async (req, res) => {

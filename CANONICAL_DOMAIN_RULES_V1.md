@@ -1126,11 +1126,41 @@ since Pass 27 / C4.2 - the same review source on a field handoff requeues the se
 label only - transitional, not an axis.
 
 An Opportunity may be **assigned** to one user (`assignedUserId`, a `users` FK; `assignedAt`
-stamped on every change, null when unassigned). Assigning, reassigning and unassigning need
+stamped on every change, null when unassigned). Assigning, reassigning and unassigning by hand need
 `ASSIGN_OPPORTUNITY` (support and above); a technician sees the queue and "My opportunities" but
 assigns nothing. Every assignee, category or work-type change is an audit `update` on the
-`opportunity` entity naming the users before and after. New opportunities are unassigned;
-auto-assignment by rules and zones is C4.1b.
+`opportunity` entity naming the users before and after.
+
+### Canonical rule — assignment rules and zones (PLAN_ROADMAP_V2.md C4.1b, B7; Pass 26)
+
+A new Opportunity is **auto-assigned at creation, or left unassigned** - and after that only a
+person reassigns it. The office keeps two Settings lists, each its own org-scoped table (a rule
+needs a stable zone id to reference and an order, which an `app_settings` JSON list cannot give):
+
+* **Zones** (`zones`; `shared/zones.ts`): named lists of unique five-digit ZIP codes, active or
+  not. A ZIP+4 is normalized to its first five digits; an entry that is not a ZIP or a ZIP+4 is
+  refused by name, never dropped. A Location is in a zone when the first five characters of its
+  zip are on the list; an inactive zone covers nothing. Built here for assignment; dispatch and
+  Smart Schedule (Phase 9) read the same table.
+* **Opportunity assignment rules** (`opportunity_assignment_rules`;
+  `shared/opportunity-assignment.ts`): four nullable matchers - category key, work type, zone,
+  source - and one `users` FK, in a sort order. A null matcher matches anything.
+
+At every creation - the four runtime writers insert through one storage path,
+`insertOpportunityTx` - the active rules are tried in order against the row's two axes, its source
+and its Location's zip, and the **first match assigns**: `assignedUserId` / `assignedAt` are
+stamped on the insert itself and `assignedByRuleId` names the rule. No match leaves the row
+unassigned exactly as before. The write is the **system actor's** (§17: a null actor is a
+system-driven write; label "System"), recorded as `opportunity_auto_assigned` on the `opportunity`
+entity with the rule and the user named - never a person's `ASSIGN_OPPORTUNITY`. A rule naming an
+inactive user cannot be saved; a rule whose user or zone later goes inactive is **skipped and
+reported on the Settings card, never silently re-pointed**. A later category or work-type change
+does not re-run the rules: the row says "at creation". A manual reassignment overrides a rule's -
+it nulls `assignedByRuleId` and is logged as the `update` above, so the History reads as a person
+overriding a rule - and the queue's assignee chip says "(auto)" while a rule's assignment stands.
+The lists are Settings: reads are open, every write is `MANAGE_SETTINGS`; a zone named by a rule
+and a rule that has assigned rows are refused deletion (deactivate instead), so history keeps its
+references.
 
 ## 13. Invoice
 

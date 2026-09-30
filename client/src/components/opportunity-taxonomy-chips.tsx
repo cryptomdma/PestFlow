@@ -18,14 +18,18 @@ import { userDisplayName } from "@shared/users";
 import type { Opportunity, OpportunityCategory, UserSummary } from "@shared/schema";
 import { Check, ChevronDown } from "lucide-react";
 
+// Pass 26 (C4.1b): "(auto)" when an assignment rule stamped the assignee
+// (opportunity.assignedByRuleId, nulled by a manual reassignment), so the
+// queue tells a rule's assignment from a person's without a lookup.
 export function describeOpportunityAssignee(
-  opportunity: Pick<Opportunity, "assignedUserId">,
+  opportunity: Pick<Opportunity, "assignedUserId"> & Partial<Pick<Opportunity, "assignedByRuleId">>,
   users: ReadonlyArray<Pick<UserSummary, "id" | "firstName" | "lastName">> | undefined,
 ): string {
   if (!opportunity.assignedUserId) return "Unassigned";
-  if (!users) return "Assigned";
+  const auto = opportunity.assignedByRuleId ? " (auto)" : "";
+  if (!users) return `Assigned${auto}`;
   const user = users.find((candidate) => candidate.id === opportunity.assignedUserId);
-  return user ? `Assigned to ${userDisplayName(user)}` : "Assigned to an unknown user";
+  return user ? `Assigned to ${userDisplayName(user)}${auto}` : `Assigned to an unknown user${auto}`;
 }
 
 export function OpportunityTaxonomyChips({
@@ -37,7 +41,7 @@ export function OpportunityTaxonomyChips({
   onWorkTypeChange,
   changeDisabled,
 }: {
-  opportunity: Pick<Opportunity, "categoryKey" | "workType" | "source" | "assignedUserId">;
+  opportunity: Pick<Opportunity, "categoryKey" | "workType" | "source" | "assignedUserId"> & Partial<Pick<Opportunity, "assignedByRuleId">>;
   /** Every category, inactive ones included: a row may still carry a key the office has since deactivated. */
   categories: ReadonlyArray<OpportunityCategory> | undefined;
   users: ReadonlyArray<Pick<UserSummary, "id" | "firstName" | "lastName">> | undefined;
@@ -93,7 +97,13 @@ export function OpportunityTaxonomyChips({
         <Badge variant="outline" title="Work type" data-testid="chip-opportunity-work-type">{workTypeLabel}</Badge>
       )}
       <Badge variant="outline" title="Source" data-testid="chip-opportunity-source">{describeOpportunitySource(opportunity.source)}</Badge>
-      <Badge variant="outline" title="Assignee" data-testid="chip-opportunity-assignee">{describeOpportunityAssignee(opportunity, users)}</Badge>
+      <Badge
+        variant="outline"
+        title={opportunity.assignedByRuleId ? "Assignee - set by an assignment rule (Settings -> Opportunity Assignment); reassigning by hand overrides it" : "Assignee"}
+        data-testid="chip-opportunity-assignee"
+      >
+        {describeOpportunityAssignee(opportunity, users)}
+      </Badge>
     </div>
   );
 }

@@ -8,6 +8,8 @@ import {
   opportunityActivities,
   opportunityDispositions,
   opportunityCategories,
+  zones,
+  opportunityAssignmentRules,
   agreements,
   agreementTemplates,
   agreementCancellationPolicies,
@@ -41,6 +43,8 @@ import {
   type OpportunityActivity, type InsertOpportunityActivity,
   type OpportunityDisposition, type InsertOpportunityDisposition,
   type OpportunityCategory, type InsertOpportunityCategory,
+  type Zone, type InsertZone,
+  type OpportunityAssignmentRule, type InsertOpportunityAssignmentRule,
   type ProductApplication, type InsertProductApplication,
   type MaterialProduct, type InsertMaterialProduct,
   type TargetPest, type InsertTargetPest,
@@ -127,6 +131,8 @@ import { formatCents } from "@shared/money";
 import { buildBillingPlanSnapshot as buildSharedBillingPlanSnapshot, isScheduleBilledPlan } from "@shared/billing-plan";
 import { sortUsersByName, userDisplayName } from "@shared/users";
 import { taxonomyForSource, type OpportunityWorkType } from "@shared/opportunities";
+import { describeAssignmentRule, resolveAssignmentRule, sortAssignmentRules } from "@shared/opportunity-assignment";
+import { normalizeZipCodes } from "@shared/zones";
 import {
   APPOINTMENT_NOT_DISPOSITIONABLE,
   CANCEL_DISPOSITION_REQUIRED,
@@ -275,6 +281,12 @@ export interface AuditActor {
   userId?: string | null;
   actorLabel?: string | null;
 }
+
+// Canon §17: a null actor is a system-driven write, not an unknown user; the
+// label names the writer on the History tab. Pass 26 (C4.1b): the assignment
+// rules stamp an opportunity's assignee under this actor - a rule is the
+// office's standing instruction, not a person's act or permission.
+export const SYSTEM_AUDIT_ACTOR: AuditActor = { userId: null, actorLabel: "System" };
 
 // One audit row. `before`/`after` are whole-row snapshots (or the relevant
 // subset of one) written straight to jsonb; the client diffs them at read time
@@ -880,6 +892,53 @@ export interface OpportunityCategoryUpdateInput {
   sortOrder?: number;
 }
 
+// Pass 26 (C4.1b): zones and assignment rules - Settings reference data on
+// the target_pests / opportunity_categories pattern, validated here and
+// gated MANAGE_SETTINGS at the route.
+export interface ZoneInput {
+  name: string;
+  /** As typed; normalized to unique five-digit ZIPs (shared/zones.ts), an invalid entry refused by name. */
+  zipCodes: string[];
+  isActive?: boolean;
+  sortOrder?: number;
+  notes?: string | null;
+}
+export type ZoneUpdateInput = Partial<ZoneInput>;
+
+export interface OpportunityAssignmentRuleInput {
+  /** A key of the org's category list, or null for any. */
+  categoryKey?: string | null;
+  workType?: OpportunityWorkType | null;
+  /** One of the org's zones, or null for any. */
+  zoneId?: string | null;
+  /** One of OPPORTUNITY_SOURCES (checked by the route), or null for any. */
+  source?: string | null;
+  /** An active user of the org - required. */
+  assignedUserId: string;
+  isActive?: boolean;
+  /** Appended after the last rule when omitted. */
+  sortOrder?: number;
+}
+export type OpportunityAssignmentRuleUpdateInput = Partial<OpportunityAssignmentRuleInput>;
+
+export class OpportunityAssignmentError extends Error {
+  constructor(readonly status: 400 | 404 | 409, readonly code: string, message: string) {
+    super(message);
+    this.name = "OpportunityAssignmentError";
+  }
+}
+
+// What the assignment rules need at an opportunity's creation, loaded once
+// per transaction (insertOpportunityTx): the active rules in order, every
+// zone (an inactive one makes its rules skip), every user (an inactive one
+// makes its rules skip) and the category labels for the audit row's text.
+interface OpportunityAssignmentContext {
+  rules: OpportunityAssignmentRule[];
+  zones: Zone[];
+  users: Array<{ id: string; firstName: string; lastName: string; status: string }>;
+  categories: Array<{ key: string; label: string }>;
+}
+
 export interface ApplyOpportunityDispositionInput {
   opportunityId: string;
   dispositionId: string;
@@ -1085,7 +1144,7 @@ export interface IStorage {
   getOpportunities(filters?: OpportunityFilters): Promise<Opportunity[]>;
   getOpportunity(id: string): Promise<Opportunity | undefined>;
   getOpportunitiesByLocation(locationId: string): Promise<Opportunity[]>;
-  createOpportunity(data: InsertOpportunity): Promise<Opportunity>;
+
   updateOpportunity(id: string, data: OpportunityUpdateInput, actor?: AuditActor): Promise<Opportunity | undefined>;
   convertOpportunityToService(id: string, actor?: AuditActor): Promise<{ opportunity: Opportunity; service: Service } | undefined>;
   getOpportunityDispositions(includeInactive?: boolean): Promise<OpportunityDisposition[]>;
@@ -1095,6 +1154,15 @@ export interface IStorage {
   applyOpportunityDisposition(input: ApplyOpportunityDispositionInput): Promise<Opportunity | undefined>;
   getOpportunityCategories(includeInactive?: boolean): Promise<OpportunityCategory[]>;
   updateOpportunityCategory(id: string, data: OpportunityCategoryUpdateInput): Promise<OpportunityCategory | undefined>;
+  getZones(includeInactive?: boolean): Promise<Zone[]>;
+  createZone(data: ZoneInput): Promise<Zone>;
+  updateZone(id: string, data: ZoneUpdateInput): Promise<Zone | undefined>;
+  deleteZone(id: string): Promise<boolean>;
+  getOpportunityAssignmentRules(includeInactive?: boolean): Promise<OpportunityAssignmentRule[]>;
+  createOpportunityAssignmentRule(data: OpportunityAssignmentRuleInput): Promise<OpportunityAssignmentRule>;
+  updateOpportunityAssignmentRule(id: string, data: OpportunityAssignmentRuleUpdateInput): Promise<OpportunityAssignmentRule | undefined>;
+  deleteOpportunityAssignmentRule(id: string): Promise<boolean>;
+  reorderOpportunityAssignmentRules(ids: string[]): Promise<OpportunityAssignmentRule[]>;
 
   getAgreementCancellationPolicies(includeInactive?: boolean): Promise<AgreementCancellationPolicy[]>;
   getAgreementCancellationPolicy(id: string): Promise<AgreementCancellationPolicy | undefined>;
@@ -2303,8 +2371,7 @@ export class DatabaseStorage implements IStorage {
       return;
     }
 
-    await tx.insert(opportunities).values({
-      orgId: this.orgId,
+    await this.insertOpportunityTx(tx, {
       locationId: serviceRecord.locationId || linkedService.locationId,
       sourceServiceId: linkedService.id,
       sourceServiceRecordId: serviceRecord.id,
@@ -2488,8 +2555,7 @@ export class DatabaseStorage implements IStorage {
       return;
     }
 
-    await tx.insert(opportunities).values({
-      orgId: this.orgId,
+    await this.insertOpportunityTx(tx, {
       locationId: agreement.locationId,
       agreementId: agreement.id,
       sourceServiceId: service.id,
@@ -3756,13 +3822,95 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(opportunities).where(and(eq(opportunities.orgId, this.orgId), eq(opportunities.locationId, locationId))).orderBy(asc(opportunities.dueDate));
   }
 
-  async createOpportunity(data: InsertOpportunity): Promise<Opportunity> {
-    const [opportunity] = await db.insert(opportunities).values({
-      ...data,
+  // Pass 26 (C4.1b): the ONE insert path for an opportunity, called by the
+  // four runtime writers (the service-record follow-up, the agreement
+  // contact-required cycle, the agreement cancellation's retention row and
+  // the appointment disposition's choice). It resolves the org's assignment
+  // rules against the row's two axes, its source and its location's zip
+  // (shared/opportunity-assignment.ts resolveAssignmentRule: the first
+  // active, sound match in sort order wins; none leaves the row unassigned
+  // exactly as before this pass), stamps assignedUserId / assignedAt /
+  // assignedByRuleId on the insert itself, and writes one
+  // `opportunity_auto_assigned` audit row under the SYSTEM actor naming the
+  // rule and the user - a rule is the office's standing instruction, not a
+  // person's permission (canon §17). The rules, zones, users and categories
+  // are loaded once per transaction, so a disposition inserting one row per
+  // service reads them once. The dead `createOpportunity` (no route, no
+  // caller) was removed in this pass so nothing can insert around the rules.
+  private assignmentContexts = new WeakMap<object, Promise<OpportunityAssignmentContext>>();
+
+  private loadOpportunityAssignmentContextTx(tx: DbTransaction): Promise<OpportunityAssignmentContext> {
+    let pending = this.assignmentContexts.get(tx);
+    if (!pending) {
+      pending = (async () => {
+        const rules = await tx
+          .select()
+          .from(opportunityAssignmentRules)
+          .where(and(eq(opportunityAssignmentRules.orgId, this.orgId), eq(opportunityAssignmentRules.isActive, true)));
+        const zoneRows = await tx.select().from(zones).where(eq(zones.orgId, this.orgId));
+        const userRows = await tx
+          .select({ id: users.id, firstName: users.firstName, lastName: users.lastName, status: users.status })
+          .from(users)
+          .where(eq(users.orgId, this.orgId));
+        const categories = await tx
+          .select({ key: opportunityCategories.key, label: opportunityCategories.label })
+          .from(opportunityCategories)
+          .where(eq(opportunityCategories.orgId, this.orgId));
+        return { rules: sortAssignmentRules(rules), zones: zoneRows, users: userRows, categories };
+      })();
+      this.assignmentContexts.set(tx, pending);
+    }
+    return pending;
+  }
+
+  private async insertOpportunityTx(tx: DbTransaction, values: InsertOpportunity): Promise<Opportunity> {
+    const context = await this.loadOpportunityAssignmentContextTx(tx);
+    let matched: OpportunityAssignmentRule | null = null;
+    if (context.rules.length) {
+      const [location] = await tx.select({ zip: locations.zip }).from(locations).where(and(eq(locations.orgId, this.orgId), eq(locations.id, values.locationId)));
+      matched = resolveAssignmentRule(context.rules, context.zones, context.users, {
+        categoryKey: values.categoryKey,
+        workType: values.workType,
+        source: values.source ?? "NON_CONTRACT_FOLLOW_UP",
+        zip: location?.zip ?? null,
+      }).rule;
+    }
+    const [created] = await tx.insert(opportunities).values({
+      ...values,
       orgId: this.orgId,
-      nextActionDate: normalizeDateOnly(data.nextActionDate) ?? normalizeDateOnly(data.dueDate),
+      assignedUserId: matched?.assignedUserId ?? null,
+      assignedAt: matched ? new Date() : null,
+      assignedByRuleId: matched?.id ?? null,
     }).returning();
-    return opportunity;
+    if (matched) {
+      const rule = matched;
+      const assignedTo = context.users.find((user) => user.id === rule.assignedUserId) ?? null;
+      await this.recordAuditLogTx(tx, {
+        entityType: "opportunity",
+        entityId: created.id,
+        action: "opportunity_auto_assigned",
+        actor: SYSTEM_AUDIT_ACTOR,
+        before: {
+          assignedUserId: null,
+          assignedTo: null,
+          assignedAt: null,
+          assignedByRuleId: null,
+          assignedByRule: null,
+          categoryKey: created.categoryKey,
+          workType: created.workType,
+        },
+        after: {
+          assignedUserId: created.assignedUserId,
+          assignedTo: assignedTo ? userDisplayName(assignedTo) : null,
+          assignedAt: created.assignedAt ? new Date(created.assignedAt).toISOString() : null,
+          assignedByRuleId: rule.id,
+          assignedByRule: describeAssignmentRule(rule, context),
+          categoryKey: created.categoryKey,
+          workType: created.workType,
+        },
+      });
+    }
+    return created;
   }
 
   // Pass 25: the PATCH. Content (notes, the two dates), the taxonomy (a
@@ -3800,6 +3948,10 @@ export class DatabaseStorage implements IStorage {
           await this.assertActiveOrgUserTx(tx, nextAssignee, "Assignee");
           payload.assignedUserId = nextAssignee;
           payload.assignedAt = nextAssignee ? new Date() : null;
+          // Pass 26: a person's reassignment overrides a rule's. The row no
+          // longer reads as auto-assigned, and the audit `update` below shows
+          // the rule going to null beside the users before and after.
+          payload.assignedByRuleId = null;
         }
       }
 
@@ -3829,9 +3981,38 @@ export class DatabaseStorage implements IStorage {
       assignedUserId: row.assignedUserId ?? null,
       assignedTo: await this.describeUserTx(reader, row.assignedUserId),
       assignedAt: row.assignedAt ? new Date(row.assignedAt).toISOString() : null,
+      // Pass 26: the rule that auto-assigned the row, if one did - so a
+      // manual reassignment of an auto-assigned row reads as a person
+      // overriding a rule.
+      assignedByRuleId: row.assignedByRuleId ?? null,
+      assignedByRule: await this.describeAssignmentRuleTx(reader, row.assignedByRuleId),
       categoryKey: row.categoryKey,
       workType: row.workType,
     };
+  }
+
+  // "Service due · Any work type · Zone North · Any source -> Heritage
+  // Support" for an audit snapshot; null when the row was not rule-assigned
+  // or the rule is gone.
+  private async describeAssignmentRuleTx(reader: Pick<typeof db, "select">, ruleId: string | null | undefined): Promise<string | null> {
+    if (!ruleId) return null;
+    const [rule] = await reader
+      .select()
+      .from(opportunityAssignmentRules)
+      .where(and(eq(opportunityAssignmentRules.orgId, this.orgId), eq(opportunityAssignmentRules.id, ruleId)));
+    if (!rule) return null;
+    const zoneRows = rule.zoneId
+      ? await reader.select({ id: zones.id, name: zones.name }).from(zones).where(and(eq(zones.orgId, this.orgId), eq(zones.id, rule.zoneId)))
+      : [];
+    const categories = await reader
+      .select({ key: opportunityCategories.key, label: opportunityCategories.label })
+      .from(opportunityCategories)
+      .where(eq(opportunityCategories.orgId, this.orgId));
+    const userRows = await reader
+      .select({ id: users.id, firstName: users.firstName, lastName: users.lastName })
+      .from(users)
+      .where(and(eq(users.orgId, this.orgId), eq(users.id, rule.assignedUserId)));
+    return describeAssignmentRule(rule, { zones: zoneRows, categories, users: userRows });
   }
 
   // An assignee must be a user of THIS org who can still log in. Null passes:
@@ -3909,6 +4090,238 @@ export class DatabaseStorage implements IStorage {
       .where(and(eq(opportunityCategories.orgId, this.orgId), eq(opportunityCategories.id, id)))
       .returning();
     return item;
+  }
+
+  // Pass 26 (C4.1b): zones - named zip-code lists (shared/zones.ts). The
+  // list is normalized to unique five-digit ZIPs; an entry that is not a ZIP
+  // or a ZIP+4 is refused by name, never dropped. A zone named by a rule
+  // cannot be deleted (409 ZONE_IN_USE): deactivate it, and every rule on it
+  // is skipped and says so on the Settings card.
+  async getZones(includeInactive = false): Promise<Zone[]> {
+    const rows = await db.select().from(zones).where(eq(zones.orgId, this.orgId)).orderBy(asc(zones.sortOrder), asc(zones.name));
+    return includeInactive ? rows : rows.filter((zone) => zone.isActive);
+  }
+
+  private normalizeZoneZipCodes(values: string[]): string[] {
+    const { zipCodes, invalid } = normalizeZipCodes(values);
+    if (invalid.length) {
+      throw new OpportunityAssignmentError(
+        400,
+        "ZIP_CODES_INVALID",
+        `Not a five-digit ZIP code: ${invalid.join(", ")}. Enter five digits per entry (a ZIP+4 is kept as its first five).`,
+      );
+    }
+    if (!zipCodes.length) {
+      throw new OpportunityAssignmentError(400, "ZIP_CODES_REQUIRED", "A zone needs at least one ZIP code");
+    }
+    return zipCodes;
+  }
+
+  async createZone(data: ZoneInput): Promise<Zone> {
+    const name = data.name.trim();
+    if (!name) throw new OpportunityAssignmentError(400, "ZONE_NAME_REQUIRED", "A zone needs a name");
+    const zipCodes = this.normalizeZoneZipCodes(data.zipCodes);
+    try {
+      const [zone] = await db
+        .insert(zones)
+        .values({
+          orgId: this.orgId,
+          name,
+          zipCodes,
+          isActive: data.isActive ?? true,
+          sortOrder: data.sortOrder ?? 0,
+          notes: data.notes?.trim() || null,
+        })
+        .returning();
+      return zone;
+    } catch (err: any) {
+      if (err?.code === "23505") throw new OpportunityAssignmentError(409, "ZONE_NAME_TAKEN", `A zone named "${name}" already exists`);
+      throw err;
+    }
+  }
+
+  async updateZone(id: string, data: ZoneUpdateInput): Promise<Zone | undefined> {
+    const payload: Partial<InsertZone> & { updatedAt: Date } = { updatedAt: new Date() };
+    if (data.name !== undefined) {
+      const name = data.name.trim();
+      if (!name) throw new OpportunityAssignmentError(400, "ZONE_NAME_REQUIRED", "A zone needs a name");
+      payload.name = name;
+    }
+    if (data.zipCodes !== undefined) payload.zipCodes = this.normalizeZoneZipCodes(data.zipCodes);
+    if (data.isActive !== undefined) payload.isActive = data.isActive;
+    if (data.sortOrder !== undefined) payload.sortOrder = data.sortOrder;
+    if (data.notes !== undefined) payload.notes = data.notes?.trim() || null;
+    try {
+      const [zone] = await db.update(zones).set(payload).where(and(eq(zones.orgId, this.orgId), eq(zones.id, id))).returning();
+      return zone;
+    } catch (err: any) {
+      if (err?.code === "23505") throw new OpportunityAssignmentError(409, "ZONE_NAME_TAKEN", `A zone named "${payload.name}" already exists`);
+      throw err;
+    }
+  }
+
+  async deleteZone(id: string): Promise<boolean> {
+    return db.transaction(async (tx) => {
+      const [zone] = await tx.select().from(zones).where(and(eq(zones.orgId, this.orgId), eq(zones.id, id)));
+      if (!zone) return false;
+      const [usage] = await tx
+        .select({ rules: count() })
+        .from(opportunityAssignmentRules)
+        .where(and(eq(opportunityAssignmentRules.orgId, this.orgId), eq(opportunityAssignmentRules.zoneId, id)));
+      const inUse = Number(usage?.rules ?? 0);
+      if (inUse > 0) {
+        throw new OpportunityAssignmentError(
+          409,
+          "ZONE_IN_USE",
+          `${inUse} assignment rule(s) name zone "${zone.name}" - change or delete those rules first, or deactivate the zone instead`,
+        );
+      }
+      await tx.delete(zones).where(and(eq(zones.orgId, this.orgId), eq(zones.id, id)));
+      return true;
+    });
+  }
+
+  // Pass 26 (C4.1b): the assignment rules, evaluated in sort order at every
+  // opportunity's creation (insertOpportunityTx). A rule must name an ACTIVE
+  // user of this org when its user is set or changed (a rule whose user
+  // later goes inactive is skipped by the resolver and reported on the card,
+  // never re-pointed); its category must be one of this org's keys and its
+  // zone one of this org's zones. A rule that has assigned rows cannot be
+  // deleted (409 RULE_IN_USE) - those rows carry assigned_by_rule_id as
+  // their history - deactivate it instead. A reorder names every rule of
+  // the org exactly once.
+  async getOpportunityAssignmentRules(includeInactive = false): Promise<OpportunityAssignmentRule[]> {
+    const rows = await db.select().from(opportunityAssignmentRules).where(eq(opportunityAssignmentRules.orgId, this.orgId));
+    const sorted = sortAssignmentRules(rows);
+    return includeInactive ? sorted : sorted.filter((rule) => rule.isActive);
+  }
+
+  private async assertAssignmentRuleMatchersTx(reader: Pick<typeof db, "select">, data: { categoryKey?: string | null; zoneId?: string | null }): Promise<void> {
+    if (data.categoryKey) {
+      const [category] = await reader
+        .select({ id: opportunityCategories.id })
+        .from(opportunityCategories)
+        .where(and(eq(opportunityCategories.orgId, this.orgId), eq(opportunityCategories.key, data.categoryKey)));
+      if (!category) {
+        throw new OpportunityAssignmentError(400, "RULE_CATEGORY_UNKNOWN", `"${data.categoryKey}" is not one of this organization's opportunity categories`);
+      }
+    }
+    if (data.zoneId) {
+      const [zone] = await reader.select({ id: zones.id }).from(zones).where(and(eq(zones.orgId, this.orgId), eq(zones.id, data.zoneId)));
+      if (!zone) throw new OpportunityAssignmentError(400, "RULE_ZONE_UNKNOWN", "Zone not found");
+    }
+  }
+
+  private async assertAssignmentRuleUserTx(reader: Pick<typeof db, "select">, userId: string): Promise<void> {
+    try {
+      await this.assertActiveOrgUserTx(reader, userId, "Assignee");
+    } catch (err) {
+      throw new OpportunityAssignmentError(400, "RULE_ASSIGNEE_INVALID", err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async createOpportunityAssignmentRule(data: OpportunityAssignmentRuleInput): Promise<OpportunityAssignmentRule> {
+    return db.transaction(async (tx) => {
+      await this.assertAssignmentRuleMatchersTx(tx, data);
+      await this.assertAssignmentRuleUserTx(tx, data.assignedUserId);
+      let sortOrder = data.sortOrder;
+      if (sortOrder === undefined) {
+        const [last] = await tx
+          .select({ last: max(opportunityAssignmentRules.sortOrder) })
+          .from(opportunityAssignmentRules)
+          .where(eq(opportunityAssignmentRules.orgId, this.orgId));
+        sortOrder = Number(last?.last ?? 0) + 10;
+      }
+      const [rule] = await tx
+        .insert(opportunityAssignmentRules)
+        .values({
+          orgId: this.orgId,
+          sortOrder,
+          categoryKey: data.categoryKey || null,
+          workType: data.workType || null,
+          zoneId: data.zoneId || null,
+          source: data.source || null,
+          assignedUserId: data.assignedUserId,
+          isActive: data.isActive ?? true,
+        })
+        .returning();
+      return rule;
+    });
+  }
+
+  async updateOpportunityAssignmentRule(id: string, data: OpportunityAssignmentRuleUpdateInput): Promise<OpportunityAssignmentRule | undefined> {
+    return db.transaction(async (tx) => {
+      const [existing] = await tx
+        .select()
+        .from(opportunityAssignmentRules)
+        .where(and(eq(opportunityAssignmentRules.orgId, this.orgId), eq(opportunityAssignmentRules.id, id)));
+      if (!existing) return undefined;
+      await this.assertAssignmentRuleMatchersTx(tx, data);
+      if (data.assignedUserId !== undefined && data.assignedUserId !== existing.assignedUserId) {
+        await this.assertAssignmentRuleUserTx(tx, data.assignedUserId);
+      }
+      const payload: Partial<InsertOpportunityAssignmentRule> & { updatedAt: Date } = { updatedAt: new Date() };
+      if (data.categoryKey !== undefined) payload.categoryKey = data.categoryKey || null;
+      if (data.workType !== undefined) payload.workType = data.workType || null;
+      if (data.zoneId !== undefined) payload.zoneId = data.zoneId || null;
+      if (data.source !== undefined) payload.source = data.source || null;
+      if (data.assignedUserId !== undefined) payload.assignedUserId = data.assignedUserId;
+      if (data.isActive !== undefined) payload.isActive = data.isActive;
+      if (data.sortOrder !== undefined) payload.sortOrder = data.sortOrder;
+      const [rule] = await tx
+        .update(opportunityAssignmentRules)
+        .set(payload)
+        .where(and(eq(opportunityAssignmentRules.orgId, this.orgId), eq(opportunityAssignmentRules.id, id)))
+        .returning();
+      return rule;
+    });
+  }
+
+  async deleteOpportunityAssignmentRule(id: string): Promise<boolean> {
+    return db.transaction(async (tx) => {
+      const [rule] = await tx
+        .select()
+        .from(opportunityAssignmentRules)
+        .where(and(eq(opportunityAssignmentRules.orgId, this.orgId), eq(opportunityAssignmentRules.id, id)));
+      if (!rule) return false;
+      const [usage] = await tx
+        .select({ assigned: count() })
+        .from(opportunities)
+        .where(and(eq(opportunities.orgId, this.orgId), eq(opportunities.assignedByRuleId, id)));
+      const assigned = Number(usage?.assigned ?? 0);
+      if (assigned > 0) {
+        throw new OpportunityAssignmentError(
+          409,
+          "RULE_IN_USE",
+          `${assigned} opportunit${assigned === 1 ? "y was" : "ies were"} assigned by this rule and carry it as history - deactivate the rule instead of deleting it`,
+        );
+      }
+      await tx.delete(opportunityAssignmentRules).where(and(eq(opportunityAssignmentRules.orgId, this.orgId), eq(opportunityAssignmentRules.id, id)));
+      return true;
+    });
+  }
+
+  async reorderOpportunityAssignmentRules(ids: string[]): Promise<OpportunityAssignmentRule[]> {
+    return db.transaction(async (tx) => {
+      const rows = await tx.select().from(opportunityAssignmentRules).where(eq(opportunityAssignmentRules.orgId, this.orgId));
+      const known = new Set(rows.map((rule) => rule.id));
+      const seen = new Set<string>();
+      const invalid = () => new OpportunityAssignmentError(400, "RULE_ORDER_INVALID", "The order must name every assignment rule of this organization exactly once");
+      for (const id of ids) {
+        if (!known.has(id) || seen.has(id)) throw invalid();
+        seen.add(id);
+      }
+      if (seen.size !== known.size) throw invalid();
+      const now = new Date();
+      for (let index = 0; index < ids.length; index++) {
+        await tx
+          .update(opportunityAssignmentRules)
+          .set({ sortOrder: (index + 1) * 10, updatedAt: now })
+          .where(and(eq(opportunityAssignmentRules.orgId, this.orgId), eq(opportunityAssignmentRules.id, ids[index])));
+      }
+      const updated = await tx.select().from(opportunityAssignmentRules).where(eq(opportunityAssignmentRules.orgId, this.orgId));
+      return sortAssignmentRules(updated);
+    });
   }
 
   async getOpportunityActivitiesByOpportunity(opportunityId: string): Promise<OpportunityActivity[]> {
@@ -4417,8 +4830,7 @@ export class DatabaseStorage implements IStorage {
           ));
 
         if (!existingRetentionOpportunity) {
-          const [retentionOpportunity] = await tx.insert(opportunities).values({
-            orgId: this.orgId,
+          const retentionOpportunity = await this.insertOpportunityTx(tx, {
             locationId: agreement.locationId,
             agreementId: agreement.id,
             serviceTypeId: agreement.serviceTypeId || null,
@@ -4430,7 +4842,7 @@ export class DatabaseStorage implements IStorage {
             nextActionDate: nextActionDate as any,
             status: "OPEN",
             notes: `Retention follow-up for cancelled agreement: ${agreement.agreementName}`,
-          }).returning();
+          });
 
           const activity = await this.createOpportunityActivityTx(tx, {
             opportunityId: retentionOpportunity.id,
@@ -4805,8 +5217,7 @@ export class DatabaseStorage implements IStorage {
         // effect: RESCHEDULE for a requeued service, WINBACK for a cancelled
         // one-time service; the work type from the service's agreement.
         const taxonomy = opportunityTaxonomyColumns(source, !!service.agreementId);
-        const [created] = await tx.insert(opportunities).values({
-          orgId: this.orgId,
+        const created = await this.insertOpportunityTx(tx, {
           locationId: service.locationId,
           agreementId: service.agreementId || null,
           sourceServiceId: service.id,
@@ -4818,7 +5229,7 @@ export class DatabaseStorage implements IStorage {
           nextActionDate: today,
           status: "OPEN",
           notes: noteLine,
-        }).returning();
+        });
         opportunityOutcomes.push({ serviceId: service.id, opportunityId: created.id, action: "CREATED", categoryKey: taxonomy.categoryKey });
       }
 

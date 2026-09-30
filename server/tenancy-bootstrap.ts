@@ -37,6 +37,8 @@ const TABLES_REQUIRING_ORG_ID = [
   "opportunity_dispositions",
   "opportunity_categories",
   "opportunity_activities",
+  "zones",
+  "opportunity_assignment_rules",
   "product_applications",
   "material_products",
   "target_pests",
