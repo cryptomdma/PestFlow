@@ -29,8 +29,9 @@ merged (PR #93); Pass 22 (the service report document, C3.5) is merged (PR #94);
 field surcharge line, C3.6) is merged (PR #95); Pass 24 (service designation and callback
 attribution, C3.7 - the last Phase 3 row) is merged (PR #96); Pass 26 (opportunity assignment
 rules and zones, C4.1b - the first open Phase 4 row in phase order) is merged (PR #97); Pass 28
-(appointment composition on the server and the dispatch sheet, C4.3a) is pushed, awaiting merge;
-**next pass: 29, appointment composition in the field** (C4.3b). The roadmap
+(appointment composition on the server and the dispatch sheet, C4.3a) is merged (PR #98); Pass 29
+(appointment composition in the field, C4.3b) is pushed, awaiting merge; **next pass: 30,
+technician preferences and crew** (C4.4). The roadmap
 sequences every remaining item below; this file keeps the status pointer and, as its last
 section, the handoff prompt that starts the next session.
 
@@ -1294,7 +1295,7 @@ a column; the two cards, their two dialogs and the "(auto)" chip have not been r
 the repo has no browser automation and the session had no browser.** Signatures and behavior are
 under "Shipped in Pass 26" at the end of `PLAN_ROADMAP_V2.md` Part D.
 
-Pass 28 (`feature/phase-4-appointment-composition`, 2026-09-29, C4.3a) pushed, awaiting merge.
+Pass 28 (`feature/phase-4-appointment-composition`, 2026-09-29, C4.3a) merged as PR #98.
 **Appointment composition on the server and the dispatch sheet, and cancelling ONE service.** Four
 routes, each one transaction over `getLinkedServicesForAppointmentTx` and one audit row, with the
 vocabulary in a new `shared/appointment-composition.ts`: **add** a service to a visit (`POST
@@ -1345,13 +1346,60 @@ to the viewport's height; the second commit gives `SheetContent` `overflow-y-aut
 technician's Appointment Details dialog already had. Signatures and behavior are under "Shipped in
 Pass 28" at the end of `PLAN_ROADMAP_V2.md` Part D.
 
-Next up: **Pass 29** — appointment composition in the field (`PLAN_ROADMAP_V2.md` Phase 4 table,
-C4.3b): the technician's appointment details - each service displayed, editable on click (type, for
-non-agreement work); Add service as a small button; adding extends the visit's duration and refuses
-an overlap with the technician's next stop; instructions editable only on services the technician
-added; an added non-agreement service is flagged for office review (owner, Part E answer 7); the
-same routes as C4.3a. Branch from `origin/main` after confirming it contains Pass 28's merge. The
-handoff prompt for Pass 29 is the last section of this file; the Pass 29 session writes the next one.
+Pass 29 (`feature/phase-4-field-composition`, 2026-10-02, C4.3b) pushed, awaiting merge.
+**Appointment composition in the field.** The technician's Appointment Details edits the visit
+through the dispatch sheet's routes (B13; the Phase 3 design rule - every field action is a route).
+Each linked service row opens on click: a **type** select on non-agreement, un-ticketed work (the
+C4.3a PATCH; an agreement service shows the locked label, the lock the server's) and an
+**instructions** editor (`services.notes`) only on a service this user added in the field; every row
+shows the kind badge, an Agreement marker, the field-added flag and the planned duration;
+"Appointment Notes" stays read-only. **Add service** (a small button, then a compact form: type,
+minutes and price defaulting to the type's, instructions) posts the C4.3a add route with
+`origin: "FIELD"`. **Decided (1):** "flagged for office review" is a new nullable
+`services.addedInFieldByUserId` (users FK, stamped by a FIELD add, never cleared) plus the office's
+review stamp `fieldReviewedAt` / `fieldReviewedByUserId` / `fieldReviewedByLabel` - flagged while the
+first is set and the second null; not a boolean (the identity is needed for the instructions rule,
+and who / when would be lost); the ticket's `FLAGGED_FOR_REVIEW` untouched. **Decided (2):** the
+session user attributes the add, never the technician picker (no technician row is linked to a user
+on the dev DB); the work route stays open (C5.7). **Decided (3):** the overlap rule is a server
+check for origin FIELD - the next stop is the next not-CANCELED placement of the same technician on
+the visit's day (as `getTechnicianWork` reads the day), the would-be end is `extendPlannedEnd` (a
+null end falls back to the representative's duration), 409 `NEXT_STOP_OVERLAP` names both times and
+writes nothing; an add that extends nothing cannot overlap; the office's add is never refused but
+every add's result and audit row carry `nextStop`, and the sheet's toast warns when the visit now
+runs past it. **Decided (4):** `origin` on the body of the existing add route (default OFFICE), not
+a separate route; FIELD = one-time work only (400 `FIELD_ADD_NEW_ONLY` on a queued service), the
+stamp and the check; open to every role - the surface decides, the flag is the control.
+**Decided (5):** the type edit posts the C4.3a PATCH; the technician role is enough. **Decided (6):**
+the instructions are `services.notes`; the generic `PATCH /api/services/:id` now refuses a
+technician's notes change unless `addedInFieldByUserId` is theirs (403
+`SERVICE_INSTRUCTIONS_LOCKED`); the office's roles are not held to it. **Decided (7):** the kind
+badge, the agreement marker and the duration show; the price through `ServiceBillingBlock` as
+before; the answers line not (the day's read does not carry the answered service). **Decided (8):**
+no new permission; the review (`POST /api/services/:id/field-review`, one `field_service_reviewed`
+row) is `FINALIZE_TICKET` (support+) so a technician cannot clear their own flag. The "Field-added -
+review" badge and **Mark reviewed** are on the dispatch sheet's composition row, the location's
+Services tab and Service Ticket Review (one `FieldAddedBadge` / `MarkFieldReviewedButton`
+component); the technician's row shows the badge. **Migration**: four nullable columns on
+`services` and one partial index, printed once; **it has NOT run against the shared dev DB** -
+verification ran on a copy (`pestflow_verify`, dropped afterwards); the owner's `npm run dev:full`
+restart adds them and prints one line. Found and left: the Services tab's Reopen still posts
+`{ reason }` (the Pass 17 defect, noted a third time); `cancelAgreement` still writes CANCELED
+directly. **Restart `npm run dev:full` before manually testing - this pass adds four columns, a
+body field, a route and gates it, and none of the new UI (the technician's row editor, the Add
+service form and its inline refusal, the badge on four surfaces, the Mark reviewed button) has been
+rendered by anyone: the repo has no browser automation and the session had no browser.**
+Signatures and behavior are under "Shipped in Pass 29" at the end of `PLAN_ROADMAP_V2.md` Part D.
+
+Next up: **Pass 30** — technician preferences and crew (`PLAN_ROADMAP_V2.md` Phase 4 table, C4.4;
+B14): `technician_preferences` (`scopeType account | location`, `technicianId`, `kind PREFERRED |
+EXCLUDED`, note, created-by); editors in edit / add location and on the primary location with an
+"apply to all locations" checkbox that writes the account-scoped row; a chip on the card; EXCLUDED a
+hard block on placement (manager override with a reason, audit-logged), PREFERRED a "Prefers <tech>"
+hint on the queue row and the sheet; crew as `appointment_technicians` (lead + support), production
+entries staying single-technician until Phase 7. Branch from `origin/main` after confirming it
+contains Pass 29's merge. The handoff prompt for Pass 30 is the last section of this file; the Pass
+30 session writes the next one.
 
 Phase 1's ordered plan, impact analysis, conflict resolutions, and per-pass verification steps live in
 `PLAN_BILLING_V1_1_EXECUTION.md` — read it when a pass builds on a Phase 1 helper (its "Shipped in
@@ -1500,6 +1548,11 @@ pointer and that prompt.
        add-on line, not a service). A real add must go through the appointment↔services rollup
        (`getLinkedServicesForAppointmentTx`, dev behavior rule 10) and the same designation and
        pricing rules office scheduling applies, so the visit invoice sees it as one more line.
+       **Built as Pass 29** (C4.3b, 2026-10-02): "Add service" on the technician's Appointment
+       Details posts the composition add route with origin FIELD - one-time work at the visit's
+       location through `attachServiceToAppointmentTx`, the type's duration and price as defaults,
+       the visit's end extended, the technician's next stop respected, the service stamped
+       `addedInFieldByUserId` and flagged for office review until the office marks it reviewed.
     6. **Create an agreement from the field.** Not built; the technician cannot reach the
        agreement form. D8 names a field proposal generator as future/external, and the
        compensation entry below wants **sale attribution** recorded on the agreement before
@@ -1599,246 +1652,230 @@ pointer and that prompt.
 
 Replaced at the end of every pass (`AGENT_WORKING_AGREEMENT.md`, the end-of-pass step). The owner
 pastes it verbatim to start the next session; it is also the last thing in the finishing session's
-final message. Written 2026-09-29, after Pass 28 was pushed as
-`feature/phase-4-appointment-composition`. Its technician-side ground truth came from a read-only
-Explore subagent's inventory of the working tree during Pass 28, plus the SQL it ran; the storage,
-route and dispatch-page line numbers were re-read after Pass 28's changes landed. They are that
-tree's, so run the SQL and grep the names before trusting any claim.
+final message. Written 2026-10-02, after Pass 29 was pushed as
+`feature/phase-4-field-composition`. Its ground truth came from a read-only Explore subagent's
+inventory of the working tree at the start of Pass 29, plus the SQL it ran, re-checked against the
+tree after Pass 29's edits where those files were touched (schema, storage, routes, the dispatch and
+customer pages). They are that tree's, so run the SQL and grep the names before trusting any claim.
 
 ```text
-Start Pass 29 — Appointment composition in the field
-(PLAN_ROADMAP_V2.md Phase 4 table, row C4.3b; B13 :263-272 "Appointment Details" - "the tech view
-gets the same, tucked behind selectors"; Part E answer 6 (dispatch and tech views both edit
-services, the tech view behind selectors) and answer 7 ("Technician adds a service without
-approval - Yes, flagged for review (C4.3b)"); the Phase 3 design rule at :357-358 (the field is a
-PWA today and a native app later, so every field action is a route and every screen is data from a
-read - no page-only logic); CANONICAL_DOMAIN_RULES_V1.md §11 "Composition (Pass 28)" and §12's
-mobile workflow :1057 ("For non-agreement Services, technicians may adjust service type and price
-as a staged field workflow ... Agreement-generated Services should keep service type and price
-locked in the technician ticket flow"). Phase order: Pass 28 (C4.3a) closed the row before it, so
-this is the next open Phase 4 row.) Read the CLAUDE.md docs in order first; CURRENT_FOCUS.md's last
-two entries (Pass 28 and "Next up") are the ones that matter.
+Start Pass 30 — Technician preferences and crew
+(PLAN_ROADMAP_V2.md Phase 4 table, row C4.4; B14 :274-282 "Preferred technician ... plus EXCLUDE_TECH"
+- preferences per location, an "apply to all locations" checkbox on the primary location writing the
+account-scoped row, exclusion a hard block on placement with a manager override and a reason, logged,
+preference a soft hint; PLAN_BILLING_V1_1.md D8 "Preferred technician" (soft constraint, location
+overrides customer-level, schema may land early) and the "Compensation & attribution" entry in
+CURRENT_FOCUS.md (search "Crew." - gap 1: single technician FKs, no join table; crew is a scheduling
+capability, split allocation follows it, the engine is Phase 7); Part E answer "B14: EXCLUDE_TECH, per
+location with apply-to-all-locations (C4.4)"; CANONICAL_DOMAIN_RULES_V1.md §6 Flag / §7 Hold (the
+scopeType account | location shape B14 cites - prose only, no table exists) and §16 User (the
+technician profile moves onto users in C5.7; technicians.userId is the bridge). Phase order: Pass 29
+(C4.3b) closed the row before it, so this is the next open Phase 4 row.) Read the CLAUDE.md docs in
+order first; CURRENT_FOCUS.md's last two entries (Pass 29 and "Next up") are the ones that matter.
 
-Branch feature/phase-4-field-composition from origin/main. Confirm main contains the Pass 28 merge
-(feature/phase-4-appointment-composition) before branching.
+Branch feature/phase-4-technician-preferences-crew from origin/main. Confirm main contains the Pass 29
+merge (feature/phase-4-field-composition) before branching.
 
-The row: the technician's appointment details show each service, editable on click (type, for
-non-agreement work); Add service as a small button; adding extends the visit's duration and refuses
-an overlap with the technician's next stop; instructions editable only on services the technician
-added; an added non-agreement service is flagged for office review; the same routes as C4.3a. The
-owner's recorded decisions: B13 (duration is not edited from the tech side except that adding a
-service extends the visit and must not overlap the next stop; instructions editable only on
-services the technician added; "order instructions" = appointments.notes); Part E answer 7 (yes,
-without approval, flagged for review); the Phase 3 design rule (every field action is a route);
-canon §12 :1057 (type and price editable in the field on non-agreement work only). Decide and state,
-in the pass: (1) what "flagged for office review" IS - no service-level flag exists (services has no
-review / flag / origin column; service_records.ticketStatus FLAGGED_FOR_REVIEW is invoice-driven and
-canon §12 :949-955 defines it so - reusing it changes its meaning): recommend a new nullable
-services.addedInFieldByUserId (users FK, stamped by the field add, never cleared) plus a
-services.fieldReviewedAt / fieldReviewedByLabel pair the office sets from the review modal or the
-sheet, surfaced as a "Field-added - review" badge on the dispatch sheet's composition block, the
-Services tab and Service Ticket Review; the alternative is an app_settings-free boolean column
-reviewRequired - state which and why; (2) "services the technician added" needs an identity - no
-technician row has user_id set on the dev DB, technician-work.tsx picks its technician from a free
-Select (:268-283) and GET /api/technicians/:id/work checks nothing against the session: recommend
-attributing by the session user (getAuditActor / req.user.id into addedInFieldByUserId) and gating
-"instructions editable" on services.addedInFieldByUserId === req.user.id, never on the technician
-picker; say whether the work route should start refusing a technician whose users row is not linked
-(technicians.userId) or stay open (recommend: stay open, note C5.7); (3) the overlap rule - nothing
-computes a next stop anywhere (client or server; the only "conflict" in the tree is the cancel
-reason "Schedule conflict"): recommend a server check inside the add route when the origin is
-FIELD - the technician's next appointment that day (assigned to the same technician, scheduledDate
-after this visit's, not CANCELED, isBoardPlacement's rule) and 409 NEXT_STOP_OVERLAP when the
-extended planned end (extendPlannedEnd) would pass its scheduledDate; the office's add from the
-sheet stays unchecked (B13 gives the constraint to the field) - state whether the office path gets
-a warning instead; (4) how the field add reaches the route - POST /api/appointments/:id/services
-takes { serviceId } or { service: {...} } with no origin: recommend an `origin: "FIELD"` field on
-the body (default OFFICE) that turns on the overlap check, the flag stamp and the one-time-only rule
-(a technician may add MANUAL work only; the queue's agreement services are the office's), or a
-separate /field route - state which; (5) the type edit on click - the ticket dialog already edits
-the type at post (service-completion-dialog.tsx :806-820, allowServiceOverride =
-!isAgreementGeneratedService || ADJUST_PRICE_AGREEMENT) and PATCH
-/api/appointments/:id/services/:serviceId exists (SERVICE_TYPE_LOCKED on agreement work, 409
-SERVICE_HAS_TICKET once a ticket is posted): recommend the details' per-service type select posts
-that PATCH and the technician role is enough (the route is ungated; the lock does the rest); (6)
-instructions - which notes: B13's "instructions editable only on services the technician added"
-means services.notes (the service's own "Instructions"), not appointments.notes ("Appointment
-Notes", read-only in the field); the generic PATCH /api/services/:id is ungated, so a technician can
-already PATCH any service's notes - recommend a technician's notes PATCH be refused 403 unless
-services.addedInFieldByUserId is theirs (a new check in updateService keyed on actorRole ===
-"technician"), and say so; (7) whether the field's details show the kind badge, the answers line,
-the duration and the price it has (getTechnicianWork returns whole service rows; the page renders
-none of them - technician-work.tsx :425-457): recommend the kind badge and duration yes, the price
-through ServiceBillingBlock as today; (8) a gate - everything here is ungated; recommend no new
-permission (POST_SERVICE_TICKET is held by every role and read by nothing), the field add allowed
-for the technician role with the flag as the control, C5.6 later.
+The row: `technician_preferences` (scopeType account | location, technicianId, kind PREFERRED |
+EXCLUDED, note, created-by); editors in edit / add location and on the primary location with an
+"apply to all locations" checkbox that writes the account-scoped row; a chip on the card. Dispatch:
+EXCLUDED is a hard block on placement (manager override with a reason, audit-logged), PREFERRED a
+"Prefers <tech>" hint on the queue row and the sheet. Crew: `appointment_technicians` (lead +
+support) - the comp basis D8 collects here; production entries stay single-technician until Phase
+7's split allocation. Decide and state, in the pass: (1) the table shape - recommend one org-scoped
+`technician_preferences` table (id, orgId, scopeType ACCOUNT | LOCATION, accountId nullable,
+locationId nullable, technicianId FK technicians, kind PREFERRED | EXCLUDED, note, createdByUserId
+users FK, createdAt), a partial unique index per (scope row, technician) so one technician has one
+kind per scope, `shared/technician-preferences.ts` carrying the vocabulary, the resolve rule (a
+location row overrides an account row for the same technician; an EXCLUDED anywhere in scope
+blocks unless a location row says PREFERRED) and the refusal code; (2) the scope reach - a location
+reaches its account through locations.accountId (nullable, every row set on the dev DB) and
+"customer-level" means account-level (customers has no account column; accounts.legacyCustomerId
+is 1:1), so the "apply to all locations" checkbox writes the ACCOUNT row and the per-location
+editor writes the LOCATION row - state which wins and how the chip reads a location that inherits;
+(3) where the hard block sits - recommend inside createAppointment's transaction (before the insert)
+and inside updateAppointment when assignedTechnicianId changes, as a `PlacementRefusedError`
+modelled on AppointmentDispositionError (409 TECHNICIAN_EXCLUDED naming the technician and the
+scope), plus the composition add (attachServiceToAppointmentTx inherits the visit's technician, so
+no new check there); the override: `{ overrideExclusion: { reason } }` on the body, allowed for
+manager+ (recommend a new permission OVERRIDE_TECHNICIAN_EXCLUSION, manager and admin, the
+ISSUE_INVOICE_PREFINALIZATION precedent - a manager's override that is audited), refused 403
+otherwise, one audit row (`placement_exclusion_overridden` on the appointment, the reason and the
+preference row named); state whether lockTechnician (client-only today) joins the server check or
+stays as it is (recommend: left, noted); (4) the crew table - `appointment_technicians`
+(appointmentId FK, technicianId FK, role LEAD | SUPPORT, unique per appointment + technician, at
+most one LEAD) with appointments.assignedTechnicianId staying the LEAD (every reader - the board,
+the technician's day, the ticket's technician snapshot, production - keeps reading it); recommend a
+guarded backfill writing one LEAD row per assigned appointment (112 on the dev DB) printed once,
+and the sheet's crew editor (add / remove a SUPPORT technician) through a small route pair; say
+whether the support technician's day (getTechnicianWork) should list the visit (recommend: yes,
+read-only, badge "Support" - a crew member must see the stop; the ticket stays the lead's) or wait;
+(5) the audit vocabulary - `technician_preference` entity with `update` rows, or dedicated actions
+(`technician_preference_set` / `_cleared`); and the placement override action; (6) the chips - on
+the customer header card (account scope) and the location profile card (location scope), "Prefers
+<name>" / "Never <name>" with the note as the title; the queue row's "Prefers <tech>" hint and the
+sheet's technician select marking excluded technicians (disabled with the reason, or allowed with
+the override prompt - recommend allowed, the 409 prompting the reason, the dispositionDraftPrompt
+resend pattern); (7) gates - the preference editors open to every role like the location profile
+(or MANAGE_SETTINGS? recommend open: it is customer data, not settings), the override manager+;
+(8) what Smart Schedule (Phase 9) will read: the same table, PREFERRED as a weight, EXCLUDED as a
+constraint - state it, build nothing for it.
 
-Ground truth today (line numbers from the working tree at the end of Pass 28; they drift, the names
-do not; the Pass 28 lines are fresh, the technician-side ones were inventoried by a read-only
-Explore subagent during Pass 28 and re-checked):
-- Routes added by Pass 28 (server/routes.ts, 3400 lines): updateServiceSchema :232 (appointmentId
-  string only); newPlacedServiceSchema :246, appointmentServiceAddSchema :255 (strict, exactly one
-  of serviceId / service), appointmentServiceUpdateSchema :263, serviceCancelSchema :271;
-  respondServiceCompositionError :565; PATCH /api/services/:id :1726 (ServiceCompositionError
-  mapped); POST /api/services/:id/cancel :1750; POST /api/services/:id/complete :1780; POST
-  /api/appointments :2078; PATCH /api/appointments/:id :2098 (passes the actor); POST
-  /api/appointments/:id/services :2128; POST .../services/:serviceId/remove :2148; PATCH
-  .../services/:serviceId :2162; POST /api/appointments/:id/disposition :2206; the technician alias
-  :2236; GET /api/technicians/:id/work :1404 (no gate, no session check); GET /api/services/pending
-  :1427; PATCH /api/settings/appointment-cancel-reasons :2411 (MANAGE_SETTINGS since Pass 28). No
-  route carries an origin for the add; no route computes a next stop.
-- Storage (server/storage.ts, ~11960 lines): ServiceCompositionError :771; the four input
-  interfaces :778-810; TechnicianWorkVisit :921 ({ appointment, customer, location, services:
-  [{ service, serviceRecord }] } - whole rows, so expectedDurationMinutes, workKind,
-  answersServiceId, notes, agreementId, source, priceCents and the appointment's scheduledEndDate /
-  notes travel; the client keeps its own copy of the type at technician-work.tsx :25-35);
-  serviceAuditSnapshot :1575; appointmentAuditSnapshot :1601; getLinkedServicesForAppointmentTx
-  :2358; syncServicesForAppointmentTx :2377; createService :3631; updateService :3674 (the Pass 28
-  refusals at its top: SERVICE_CANCEL_REQUIRED, SERVICE_REMOVE_REQUIRED, assertServiceTypeUnlocked;
-  notes is NOT gated by role); deleteService :3767; cancelAgreement :4830 (still writes CANCELED
-  directly); createAppointment :5065; convertPlacementOpportunitiesTx :5111; updateAppointment
-  :5155 (the NOTES audit row); dispositionAppointment :5221; resolveAgreementWindowResetTx :5364;
-  applyServiceOpportunityChoiceTx :5382; the composition block :5493-5983 -
-  loadComposableAppointmentTx :5493, activeVisitServices :5509, assertVisitNotInvoicedTx :5513,
-  assertServiceUnsettled :5524, assertNoTicketTx :5530, assertServiceTypeUnlocked :5543,
-  reassignRepresentativeTx :5557, attachServiceToAppointmentTx :5576 (SCHEDULED + technician, the
-  representative, extendPlannedEnd, the conversion - the place a FIELD origin would stamp the flag
-  and check the next stop), recordCompositionChangeTx :5620, addServiceToAppointment :5641 (a new
-  service is MANUAL at the visit's location with the type's defaults), removeServiceFromAppointment
-  :5743, updateAppointmentService :5786, cancelService :5870; timeInAppointment :5984;
-  getTechnicianWork :6020 (assigned technician + the day, ne CANCELED, ordered by scheduledDate -
-  the day's list IS the next-stop source, but it stops at midnight and is N+1); completeService
-  :6347 (allowFieldServiceOverride at its type / price write); finalizeServiceRecord :6596
-  (allFinalized :6654 now skips CANCELLED); getAppointmentCancelReasons :6901.
-- Shared: shared/appointment-composition.ts (199 lines, new): the request / result shapes :21-82,
-  the codes :84-108, isActiveOnVisit :111, pickRepresentative :122, plannedEndOf :136,
-  extendPlannedEnd :154 (the pure end rule a next-stop check would reuse), PLANNED_END_RULE_TEXT
-  :169, describeServiceCancelEffect :173, describeCompositionRefusal :182 (add NEXT_STOP_OVERLAP's
-  text here). shared/appointment-disposition.ts: isBoardPlacement :125 (the "counts as a stop"
-  predicate). shared/schema.ts: services :196-247 (no flag / origin / review column; source is
-  MANUAL | AGREEMENT_GENERATED | AGREEMENT_INITIAL - there is no FIELD source; workKind :238,
-  answersServiceId :244), appointments :249-285 (scheduledEndDate :261 is the planned end),
-  serviceRecords ticketStatus :556 and the flag columns :557-560 (flaggedAt / flaggedByUserId /
-  flaggedByLabel / flagReason - invoice-driven, canon §12 :949-955), technicians.userId :191 (the
-  users bridge, nullable, unique where set). shared/ticket-status.ts: isTicketFinalized :35,
-  isTicketInOfficeReview :40, technicianMayPostTicket :55. shared/permissions.ts: the technician
-  holds POST_SERVICE_TICKET (read by nothing), ADJUST_PRICE_NON_AGREEMENT, ADD_FIELD_SURCHARGE,
-  TAKE_PAYMENT_FIELD :84-89; no permission resembles "add a service in the field".
-- Client, technician day (client/src/pages/technician-work.tsx, 579 lines, untouched by Pass 28):
-  local TechnicianWorkService / TechnicianWorkVisit :25-35; queries :114-120 (technicians, service
-  types, the cancel reasons, `/api/technicians/${id}/work?date=`), useVisitBillingSummary :131,
-  location notes :137-143; refreshWork :163-169 (invalidates the work key, appointments,
-  service-records, services/pending, opportunities - add services and the location keys for the
-  composition); timeIn :170-176, cancelReschedule :177-212, timeOut :219-225; the technician picker
-  :268-283 (a free Select over ACTIVE technicians, default "" - nothing shows until one is chosen;
-  the session user is used only for TAKE_PAYMENT_FIELD :111-112); the visit cards :318-341; the
-  Appointment Details dialog :345-477 - header / time grid :350-367, Time In / Out / Request
-  Reschedule / Cancel Appointment :368-389, "Appointment Notes" (appointments.notes, read-only, only
-  when non-empty) :409-414, "Location Notes" :415-422, "Linked Services" :423-470 (heading :424; each
-  row an inline div :428-435: the type name :431, service.notes || "No service instructions." :432,
-  a "Ticket Posted" / status badge :434, the posted-record box :436-442, ServiceBillingBlock :444,
-  the ticket button :446-454 via getTicketActionLabel :84-89 / canOpenTicketEditor :91-93); the
-  visit totals and Collect Payment :458-469; the ServiceCompletionDialog wiring :561-576. No kind
-  badge, no answers line, no duration, no agreement / source marker on a service row; no edit
-  affordance anywhere. The Add service button sits naturally after the map at :457 or beside the
-  heading at :424; the per-service edit-on-click inside :428-435.
-- Client, the ticket (client/src/components/service-completion-dialog.tsx, 1129 lines): props
-  :53-73 (mode "post" | "office-edit"); the Instructions block :536-553 / :754-766 shows agreement
-  serviceInstructions, service.notes and location notes - NOT appointments.notes ("never typed
-  here (instructions are edited where they live)" :540-541); allowServiceOverride :304 and the type
-  Select :806-820 (locked label + agreementLockNote :306 otherwise); the post body :569-601
-  (serviceOverridePayload :498-505 sends serviceTypeId / priceCents only when allowed).
-- Client, dispatch (client/src/pages/schedule.tsx, 1963 lines after Pass 28): AppointmentSheet
-  :194 with the composition block :399 (sheet-composition - the office's version of what the field
-  gets: per-service type select / Minutes / kind / answers / Remove / Cancel, "Add service" from the
-  queue or new), the last-service prompt :820, servicesByAppointmentId :991 (skips CANCELLED),
-  scheduleMutation :1135 (the extras through the add route), attachServiceToAppointmentMutation
-  :1235, addServiceMutation :1269, removeServiceMutation :1280, updateVisitServiceMutation :1291,
-  cancelServiceTarget :1303, editingQueueCandidates :1495, ticketedServiceIds :1499, the queue row
-  :1839 (div[role=button] + Cancel), ServiceCancelDialog :1941. The sheet has no "field-added"
-  badge and no review action - decision (1) adds one. client/src/components/service-cancel-dialog.tsx
-  (232 lines, new): ServiceCancelDialog { service, serviceTypeName, open, onOpenChange, onCancelled }
-  - reusable from the technician page if the field gets a cancel (B13 does not ask for one; the
-  alias route is the field's cancel).
-- Client, customer screen (client/src/pages/customer-detail.tsx, 4302 lines): ServiceForm :2563
-  (canChangeType :2616 - the Edit type Select disabled on agreement work without
-  ADJUST_PRICE_AGREEMENT), ServicesTab :3059 (cancelService :3085, cancelDisabledReason :3374, the
-  row's Cancel :3461, ServiceCancelDialog :3500; reopenTicketMutation :3286 still posts { reason } -
-  the Pass 17 defect, noted and left twice).
-- Bootstraps: server/service-scheduling-bootstrap.ts - bootstrapAppointmentComposition (Pass 28,
-  the partial index, printed once; indexExists() :13-18 beside columnExists / tableExists) is the
-  newest model for a one-step guarded migration; bootstrapOpportunityAssignment (Pass 26) for a
-  column + FK + backfill count. A new services column (decision 1) is an additive migration: run the
-  verification on a copy (DEV_NOTES.md) so the owner's restart prints it.
+Ground truth today (line numbers from the working tree at the end of Pass 29; they drift, the names
+do not; the Pass 30 inventory came from a read-only Explore subagent during Pass 29, re-checked
+against the tree after Pass 29's edits where those files were touched):
+- Schema (shared/schema.ts): technicians :172-194 (id, orgId, displayName, licenseId, status
+  default ACTIVE, email, phone, color, notes, userId nullable FK users :191 with the partial unique
+  index technicians_user_id_uidx in service-scheduling-bootstrap.ts:57); users :1216-1227; customers
+  :7-22 (no accountId, no locationId); accounts :26-35 (id, orgId, primaryLocationId, status,
+  legacyCustomerId unique - NO isPrimary); locations :51-72 (customerId NOT NULL, accountId nullable
+  FK :56 "TODO(Phase2) make non-null", isPrimary :62); appointments.assignedTechnicianId :256+ (FK),
+  assignedTo free text, lockTechnician; services.assignedTechnicianId; serviceRecords technicianId /
+  technicianName / technicianLicenseNumber; productionValueEntries technicianId (plain varchar, no
+  FK) + technicianName - one technician per entry; services now also carries addedInFieldByUserId /
+  fieldReviewedAt / fieldReviewedByUserId / fieldReviewedByLabel (Pass 29, :255-258 - the four
+  columns shift everything below them by ~14 lines against the subagent's numbers). Insert schemas:
+  insertLocationSchema (omits orgId and id only), insertTechnicianSchema, insertServiceSchema (now
+  omitting the four field columns too), insertAppointmentSchema, insertZoneSchema,
+  insertOpportunityAssignmentRuleSchema, insertUserSchema. NO flags or holds table exists in the
+  schema or the DB - canon §6 / §7 are prose; the nearest built scope precedent is customer_notes
+  (scope text default ACCOUNT, accountId, locationId, createdByUserId).
+- Server writers of a placement's technician (server/storage.ts, 12147 lines): appointments'
+  assigned_technician_id is written in exactly two places - createAppointment (:5065 region; the only
+  insert(appointments)) and updateAppointment (via .set(data); comment: technician / time / lock
+  changes are UNAUDITED until C5.1a, only notes is); every other update(appointments) leaves it alone.
+  Services inherit it through syncServicesForAppointmentTx (:2377 region, called from create and
+  update) and attachServiceToAppointmentTx :5624 (the add route and the grouped extras); the ticket
+  overwrites a service's technician at post / finalize. getTechnicianWork :6207 filters
+  eq(appointments.assignedTechnicianId). The hard block sits in createAppointment before its insert
+  and in updateAppointment when the technician changes; the shared refusal modelled on
+  AppointmentDispositionError / respondAppointmentDispositionError (routes.ts). lockTechnician is
+  enforced only on the client (schedule.tsx moveAppointmentToSlot); the server never reads it.
+  Routes: POST /api/appointments :2105 region (appointmentSchema), PATCH /api/appointments/:id
+  (updateAppointmentSchema = appointmentSchema.partial()), the composition routes :2155-2200, POST
+  /api/appointments/:id/disposition, the technician alias; POST /api/services and PATCH
+  /api/services/:id :1731 can carry assignedTechnicianId. No appointment write is permission-gated.
+- Settings -> Technicians: client/src/pages/settings.tsx TechnicianForm :919-1011 (the users query
+  :924, the userId Select :988, POST / PATCH :950-951), the list query :1672, the Technicians card
+  :2517-2560 ("Linked to ..." :2549). Routes GET /api/users :1370 region, GET /api/technicians,
+  POST /api/technicians (technicianSchema), PATCH /api/technicians/:id (updateTechnicianSchema) -
+  the technician POST and PATCH are NOT gated by MANAGE_SETTINGS although they are a Settings
+  surface; storage getTechnicians (ACTIVE unless includeInactive), createTechnician, updateTechnician,
+  assertTechnicianUserLink, getUsers (:3531-3573 region before Pass 29's +~35 lines in storage).
+- Customer screen (client/src/pages/customer-detail.tsx, 4318 lines): AddLocationDialog :643-824
+  (local useState form, no zod; POSTs /api/locations { location, initialContact }; isPrimary
+  checkbox :813; mounted :4020 region); EditLocationDialog :826-1085 (isPrimaryLocation :838 - on
+  the primary location it also edits the customer identity, so it IS the "customer edit modal" D8
+  names; PATCHes /api/customers/:id/locations/:locId/profile (routes.ts updateLocationProfileSchema,
+  storage updateLocationProfile), then optionally set-primary; the "Set as Primary Location" block
+  ~:1055-1075 (checkbox-edit-location-primary) is the natural neighbour for "apply to all
+  locations"; footer :1076-1081; mounted in the profile card's Dialog ~:4051). Customer header card
+  ~:3912-3965 with the chip row chip-primary-location / chip-billing (~:3950) + CustomerAgingChips -
+  the account-scoped chip sits here; the location selector DropdownMenu ~:3968-4020; the location
+  profile card card-location-profile ~:4045 with its badge row (Primary, Billing Override) ~:4048 -
+  the location chip sits here; LocationNotesPanel :1444-1474. No "apply to all locations" pattern
+  exists anywhere (the only hits are display text). ServicesTab :3060 gained the field-added badge
+  and Mark reviewed (:3418, :3452) in Pass 29.
+- Dispatch (client/src/pages/schedule.tsx, 2008 lines after Pass 29): the pending queue card
+  ("Pending Dispatch Queue"), the row div queue-row-${service.id} ~:1850 with its badge row and
+  answers line - the "Prefers <tech>" hint goes there; AppointmentSheet :196 (sheet-appointment-
+  details) with the technician picker a NATIVE <select> (not a shadcn Select) ~:590, onSave ~:675;
+  the parent's onSave -> updateAppointmentMutation (PATCH); scheduleMutation ~:1145 (POSTs
+  /api/appointments with assignedTechnicianId, then the grouped extras through the add route);
+  buildSlotDate :108; moveAppointmentToSlot ~:1395 (client-side lock checks); pendingMove /
+  confirmPendingMove ~:1417 (PATCH with assignedTechnicianId); handleSlotClick ~:1436 (the branch
+  point: queue placement vs move); the move-confirm AlertDialog ~:1975; the board card ~:1713-1768.
+  An EXCLUDED refusal comes back as a 409 from scheduleMutation and updateAppointmentMutation,
+  followed by a reason prompt and a resend - the dispositionDraftPrompt resend pattern (~:1340) is
+  the precedent. The composition row now carries FieldAddedBadge / MarkFieldReviewedButton
+  (:438-441) and describeCompositionResult reads nextStop (:1234).
+- Audit vocabulary (shared/audit.ts): AuditEntityType :24-35 (customer, location, invoice,
+  invoice_line_item, service, service_record, payment, credit_memo, agreement, opportunity,
+  appointment); AuditAction (27 members, field_service_reviewed last at :120); ENTITY_TYPE_LABELS /
+  ACTION_LABELS exhaustive Records (the compiler forces additions); the doc comments above the
+  unions. The override-plus-audit precedent is prefinalization_issue_override (storage.ts, the
+  invoice issue path). The writer is recordAuditLogTx.
+- Bootstraps (server/service-scheduling-bootstrap.ts): columnExists :13, indexExists :20,
+  tableExists :25; bootstrapOpportunityAssignment :397+ (Pass 26) is the newest NEW-TABLE model
+  (hadZones = tableExists -> CREATE TABLE IF NOT EXISTS -> index -> one-time log; FKs to zones(id)
+  and users(id)); bootstrapFieldComposition :374 (Pass 29) the newest column model; the chain ends
+  bootstrapServiceSchedulingFoundation (:357-362). The foundation runs from server/index.ts:99,
+  BEFORE tenancy (:109) and before bootstrapCanonicalAccounts (:114): a new table with an FK to
+  accounts is a boot-order trap on a fresh DB (accounts comes from drizzle push; customer_notes'
+  account_id was added without an FK in note-bootstrap.ts:29 for this reason) - decide FK or not and
+  say so. A new org-scoped table must be added to TABLES_REQUIRING_ORG_ID in
+  server/tenancy-bootstrap.ts:18-49 (zones :40, rules :41).
+- Permissions (shared/permissions.ts): the four roles :1; PERMISSIONS :3-74; ROLE_PERMISSIONS
+  :83-132 (technician :84: POST_SERVICE_TICKET, ADJUST_PRICE_NON_AGREEMENT, ADD_FIELD_SURCHARGE,
+  TAKE_PAYMENT_FIELD; support :90 adds FINALIZE_TICKET, REOPEN_TICKET, EDIT_TICKET, GENERATE_INVOICE,
+  SEND_INVOICE, ASSIGN_OPPORTUNITY, APPLY_PAYMENT, CONFIRM_PAYMENT; manager :104 everything but
+  MANAGE_SETTINGS; admin all); can :134; rolesWithPermission :139. Nothing resembles "override an
+  exclusion"; the analogs are ISSUE_INVOICE_PREFINALIZATION (manager+ override, audited) and
+  REOPEN_TICKET_OTHER (manager+ with a typed reason).
+- Production entries: createProductionValueEntriesForFinalizedRecord (storage.ts ~:2880 region):
+  the main entry and the SURCHARGE entry both take technicianId / technicianName from the TICKET's
+  snapshot (resolveServiceRecordTechnicianSnapshot: explicit technicianId, else
+  services.assignedTechnicianId, else appointments.assignedTechnicianId); the unique index
+  production_value_entries_record_uidx allows one main entry per ticket. "Stays single-technician"
+  means: the crew table adds lead and support rows, this method keeps crediting record.technicianId
+  (the lead stays appointments.assignedTechnicianId), nothing reads the crew until Phase 7.
 - DB today (run the SQL, never trust a doc's data claim; the shared dev DB was untouched by Pass
-  28, whose verification ran on a copy - so its index does not exist there until the owner's
-  restart): technicians 2 (both ACTIVE, both user_id NULL); users technician 1 / support 1 /
-  manager 1 / admin 1; service_records 75 - FINALIZED 65, OFFICE_REVIEW_PENDING 10 (all 10 with
-  confirmed = true, so they read finalized - there is NO genuinely pending ticket: a smoke test
-  posts one); no FLAGGED_FOR_REVIEW, no REOPENED; appointments 120 - CANCELED 34, COMPLETED 54,
-  IN_PROGRESS 2, SCHEDULED 30; 74 appointments with 1 service, 7 with 2, 1 with 3; assigned
-  appointments with NULL scheduled_end_date: CANCELED 3, COMPLETED 4, SCHEDULED 4 (a next-stop rule
-  must handle a null end - plannedEndOf falls back to the representative's duration, else null);
-  services 103 - PENDING_SCHEDULING 0 (the queue is EMPTY: create fixtures), by work_kind / source
-  CALLBACK/MANUAL 1, SERVICE/AGREEMENT_GENERATED 33, SERVICE/AGREEMENT_INITIAL 17, SERVICE/MANUAL 52;
-  audit_logs: no service_cancelled or appointment_composition_changed rows yet (Pass 28's fixtures
-  were deleted); app_settings appointment_cancel_reschedule_reasons unchanged (8 entries); 46
-  public tables.
-- Docs to carry: the C4.3b row (PLAN_ROADMAP_V2.md :384) and C4.4 :385; B13 :263-272; the gap rows
-  :109 (a second service from the field is C4.3b), :137 (PARTIAL - the tech modal is C4.3b) and
-  :131 / :135 / :136 whose technician-work.tsx line citations are stale (ServiceBillingBlock is :444,
-  VisitDueTodayTotal :461, refreshWork :163-169, the dialog :345-477); Part E answers 6 and 7;
-  "Shipped in Pass 28" (its "Not touched" names C4.3b); canon §11 "Composition (Pass 28)" (ends "The
-  technician's side of the same routes is C4.3b"), §12 :949-955 (FLAGGED_FOR_REVIEW's definition -
-  extend it or leave it, per decision 1) and :1040-1060 (the mobile workflow); CURRENT_FOCUS.md's
-  Pass 28 entry and its "Next up".
+  29, whose verification ran on a copy - so the four services columns do not exist there until the
+  owner's restart): technicians 2 (Austin Lowe, John Doe, both ACTIVE, 0 linked to a user);
+  locations 14 (14 with account_id, 10 is_primary); accounts 10 (every one with legacy_customer_id
+  and primary_location_id); customers 10 (4 with two locations); users 4 (one per role);
+  appointments 120 (112 with assigned_technician_id; the other 8 carry assigned_to text only);
+  services 103 (98 with a technician); production_value_entries 59 (57 with technician_id);
+  audit_logs 204; 46 public tables; no table name contains preference, crew, flag or hold.
+  locations columns: id, customer_id, name, address, city, state, zip, is_primary, property_type,
+  square_footage, lot_size, gate_code, notes, billing_profile_id, account_id, source, org_id;
+  accounts columns: id, primary_location_id, status, legacy_customer_id, created_at, updated_at,
+  org_id.
+- Docs versus code, found by the inventory: B14 (:280) calls scopeType "the flags/holds shape" - no
+  such tables exist; D8 says "customer edit modal" and "soft constraint" - no separate customer edit
+  modal exists (the primary location's EditLocationDialog is it) and B14 makes EXCLUDED a hard block;
+  "customer-level" means account-level (customers has no account column); the sheet's technician
+  picker is a native <select>; CURRENT_FOCUS's "Crew." gap entry is still accurate (no join table);
+  "manager override, audit-logged" has no basis today (technician changes on the PATCH are unaudited,
+  lockTechnician is client-only); the technician CRUD routes are ungated; no technician has a user_id.
+- Docs to carry: the C4.4 row (PLAN_ROADMAP_V2.md Phase 4 table) and C4.5; B14 :274-282; D8
+  "Preferred technician" in PLAN_BILLING_V1_1.md; the "Compensation & attribution" entry in
+  CURRENT_FOCUS.md (gap 1 Crew, the sequencing "Crew assignment -> the deferred scheduling pass");
+  canon §6 / §7 (if the preferences table takes their shape, say so there or add a "Technician
+  preferences" rule under Scheduling Rules), §11 (crew on the appointment: fields as built), §16;
+  "Shipped in Pass 29" ("Not touched" names C4.4); CURRENT_FOCUS.md's Pass 29 entry and its "Next up".
 
-Build per C4.3b: (1) server - the field's add through the C4.3a add route with the decisions above:
-an origin (or a field route), the one-time-only rule for a technician's add, the flag stamp
-(decision 1's column, a guarded additive migration on the Pass 26 / Pass 28 model), the next-stop
-overlap check (409 NEXT_STOP_OVERLAP naming the next stop's time, shared/appointment-composition.ts
-carrying the code and its text; the check reads the technician's day the way getTechnicianWork
-does and uses extendPlannedEnd for the would-be end), all inside the existing transaction and
-recorded in the same appointment_composition_changed row (composition.origin, composition.flagged);
-a technician's notes PATCH on a service refused unless they added it (decision 6); the office's
-review of a field-added service (a small route or a mode on the composition PATCH that clears the
-flag, audited) - reachable from the dispatch sheet's composition block (a "Field-added" badge with
-"Mark reviewed") and, if cheap, Service Ticket Review. (2) The technician's appointment details:
-each linked service row becomes clickable - the type select on non-agreement work (PATCH
-.../services/:serviceId; an agreement service shows the locked label as the ticket dialog does),
-the kind badge and duration shown; "Add service" as a small button after the list opening a
-compact form (service type, minutes defaulting to the type's, price defaulting to the type's,
-instructions) that posts the add with the field origin and shows the NEXT_STOP_OVERLAP refusal as a
-message naming the next stop; instructions (services.notes) editable inline only on services the
-technician added; the "Appointment Notes" block stays read-only; refreshWork invalidates what the
-composition changes. (3) The dispatch sheet: the "Field-added - review" badge on the row and the
-review action. (4) Docs: canon §11 / §12, the roadmap rows, the row and a "Shipped in Pass 29"
-record, CURRENT_FOCUS. Not touched: the technician picker (C5.7 merges identities), a gate on GET
-/api/technicians/:id/work, crew (C4.4), the office's overlap warning unless decided otherwise, the
-ticket dialog's own type / price edit at post, cancelAgreement's direct CANCELED write, the
-Services-tab reopen defect, C5.6.
+Build per C4.4: (1) server - the preferences table and its routes (list per account / location,
+set, clear; the "apply to all locations" write as the account-scoped row), the shared module, the
+hard block in createAppointment / updateAppointment with the manager override and its audit row,
+the crew table with the guarded LEAD backfill and its add / remove routes (one audit row each on the
+appointment), the technician's day listing support stops if decided; (2) client - the preference
+editors in AddLocationDialog / EditLocationDialog (with the checkbox on the primary location), the
+chips on the header card and the location card, the queue row's "Prefers <tech>" hint, the sheet's
+technician select marking exclusions and the override prompt on the 409, the sheet's crew block;
+(3) docs: canon, the roadmap rows, a "Shipped in Pass 30" record, CURRENT_FOCUS. Not touched: the
+technicians / users merge (C5.7), split allocation and the comp engine (Phase 7), Smart Schedule
+(Phase 9), the technician CRUD gates (note them), lockTechnician's server enforcement unless decided,
+the Services-tab reopen defect, cancelAgreement's direct CANCELED write, C5.6.
 
 Environment: Node 24.21.0, npm run dev:full (restart it before manually testing), DEV_NOTES.md for
 the DB backup / restore, the copy-database recipe and the PowerShell traps, gh logged in so the
 session can open the PR. Verify on PORT=5001 as the previous passes did, against a copy per
-DEV_NOTES.md since this pass adds a column (Passes 23-28 used the copy so the owner's restart prints
-any migration): npm run check; double boot (boot 1 prints the migration once - and, because the
-shared DB never ran Pass 28's, the copy taken from it prints Pass 28's index line too, which is
-expected; boot 2 prints only "serving on port 5001" with every table count unchanged); the pass's
-API smoke test as all four roles (a technician's day with two visits an hour apart through the real
-routes; a field add of a one-time service that fits (SCHEDULED, flagged, the end extended, the audit
-row with the origin) and one that would overlap the next stop refused 409 NEXT_STOP_OVERLAP with
-nothing written; the office's add of the same not refused (or warned, per the decision); a
-technician adding an agreement service or a service at another location refused; the type change
-on a non-agreement service by the technician 200 and on an agreement one 403; a technician's notes
-PATCH on their own added service 200 and on another service 403; the office marking the flag
-reviewed with its audit row; the technician's day read carrying the new fields; the generic PATCH
-still refusing the lifecycle writes; every fixture deleted, counts back at baseline) and a Vite 200
-on every touched client module; state plainly what was not rendered - the technician's details, the
-add form and the badge cannot be judged without a browser.
+DEV_NOTES.md since this pass adds tables and a backfill (Passes 23-29 used the copy so the owner's
+restart prints any migration): npm run check; double boot (boot 1 prints the migration once - the
+copy taken from the shared DB prints Pass 29's four-column line too unless the owner restarted after
+PR #99, which is expected either way; boot 2 prints only "serving on port 5001" with every table
+count unchanged); the pass's API smoke test as all four roles (a preference set at a location and at
+the account through the checkbox, the resolve rule, a placement of an EXCLUDED technician refused
+409 with nothing written, the same with the manager's override and its audit row, support's override
+403, a PREFERRED hint in the reads, a crew SUPPORT added and removed with its audit rows, the LEAD
+backfill count, the technician's day for a support technician per the decision, every fixture
+deleted, counts back at baseline) and a Vite 200 on every touched client module; state plainly what
+was not rendered - the editors, the chips, the override prompt and the crew block cannot be judged
+without a browser.
 
 Working agreement as always: one pass, one branch, update CURRENT_FOCUS and the roadmap's pass
 table at the end, replace the handoff prompt at the end of CURRENT_FOCUS.md with the one for the
-next pass (phase order: Pass 30, technician preferences and crew, C4.4, whose spec is its row in the
-Phase 4 table, unless I say otherwise), push, open the PR and stop. I merge.
+next pass (phase order: Pass 31, dispatch board settings, C4.5, whose spec is its row in the Phase 4
+table, unless I say otherwise), push, open the PR and stop. I merge.
 ```

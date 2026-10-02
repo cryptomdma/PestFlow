@@ -60,6 +60,7 @@ import { dollarsToCents, centsToDollars, centsToDollarString, formatCents } from
 import { describeSurcharge } from "@shared/field-surcharge";
 import { SERVICE_WORK_KINDS, canAnswerService, defaultWorkKindForService, describeAnswersLink, describeServiceWorkKind, formatServiceWorkKind, normalizeServiceWorkKind, workKindOverridePermission } from "@shared/service-kind";
 import { ServiceWorkKindBadge, ServiceWorkKindListBadge } from "@/components/service-work-kind-badge";
+import { FieldAddedBadge, MarkFieldReviewedButton } from "@/components/field-added-badge";
 import { describeBillingPlanBehavior } from "@shared/billing-plan";
 import { describeInitialCharge, formatInitialChargeType, initialChargeFromTemplate, type AgreementInitialChargeStatus, type InitialChargeDue } from "@shared/initial-charge";
 import { InitialChargeFormFields, initialChargeFieldsFrom, initialChargeFormStateFrom, validateInitialChargeFormState } from "@/components/initial-charge-fields";
@@ -3413,6 +3414,8 @@ function ServicesTab({
                   {!serviceRecord && scheduleState === "CANCELLED" && lastAppointment?.cancelReason ? (
                     <span className="mt-1 block text-xs text-muted-foreground">{lastAppointment.cancelReason}</span>
                   ) : null}
+                  {/* Pass 29 (C4.3b): added from the field - the office's review flag. */}
+                  <FieldAddedBadge service={service} className="mt-1 h-5 px-1.5 text-[10px]" />
                 </span>
                 <span>{service.priceCents != null ? formatCurrency(centsToDollars(service.priceCents)) : "Not set"}</span>
                 <span className="truncate">{technicianName}</span>
@@ -3446,6 +3449,7 @@ function ServicesTab({
                   ) : "—"}
                 </span>
                 <span className="flex justify-end gap-1">
+                  <MarkFieldReviewedButton service={service} className="h-8 px-2" />
                   <Button type="button" variant="outline" size="sm" className="h-8 px-2" onClick={(event) => { event.stopPropagation(); setEditingService(service); setDialogOpen(true); }}>Edit</Button>
                   <Button type="button" size="sm" className="h-8 px-2" onClick={(event) => { event.stopPropagation(); scheduleService(service); }} disabled={service.status === "COMPLETED" || service.status === "CANCELLED"}>
                     {appointment ? "Reschedule" : "Schedule"}

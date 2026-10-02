@@ -242,6 +242,20 @@ export const services = pgTable("services", {
   // Chosen where the callback is created; the queue, the dispatch sheet and
   // the Service Details show it as "Answers <type> on <date>".
   answersServiceId: varchar("answers_service_id").references((): AnyPgColumn => services.id),
+  // Pass 29 (PLAN_ROADMAP_V2.md C4.3b; B13; Part E answer 7): a service a
+  // technician adds to a visit from the field (POST /api/appointments/:id/
+  // services with origin FIELD) is stamped with the SESSION USER who added it
+  // - a users FK, never the technician picker - and stays "flagged for office
+  // review" until the office marks it reviewed (POST /api/services/:id/
+  // field-review, FINALIZE_TICKET). One column carries two facts: who may
+  // edit its instructions in the field (that user, and nobody else with the
+  // technician role) and that the office owes it a look. Never cleared. The
+  // review stamp is the ticket's flaggedAt / flaggedByUserId / flaggedByLabel
+  // shape. Server-written only - insertServiceSchema omits all four.
+  addedInFieldByUserId: varchar("added_in_field_by_user_id").references(() => users.id),
+  fieldReviewedAt: timestamp("field_reviewed_at"),
+  fieldReviewedByUserId: varchar("field_reviewed_by_user_id").references(() => users.id),
+  fieldReviewedByLabel: text("field_reviewed_by_label"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
@@ -1268,7 +1282,19 @@ export const insertNoteRevisionSchema = createInsertSchema(noteRevisions).omit({
 export const insertServiceTypeSchema = createInsertSchema(serviceTypes).omit({ orgId: true, id: true });
 export const insertTechnicianSchema = createInsertSchema(technicians).omit({ orgId: true, id: true, createdAt: true, updatedAt: true });
 // lastAppointmentId is the disposition's to write (Pass 27), never a client's.
-export const insertServiceSchema = createInsertSchema(services).omit({ orgId: true, id: true, createdAt: true, updatedAt: true, lastAppointmentId: true });
+export const insertServiceSchema = createInsertSchema(services).omit({
+  orgId: true,
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+  lastAppointmentId: true,
+  // Pass 29: the field-add stamp and the office's review stamp are the
+  // server's to write (the add route with origin FIELD, the review route).
+  addedInFieldByUserId: true,
+  fieldReviewedAt: true,
+  fieldReviewedByUserId: true,
+  fieldReviewedByLabel: true,
+});
 export const insertAppointmentSchema = createInsertSchema(appointments).omit({ orgId: true, id: true, createdAt: true });
 export const insertBillingPlanSchema = createInsertSchema(billingPlans).omit({ orgId: true, id: true, createdAt: true, updatedAt: true });
 export const insertAgreementCancellationPolicySchema = createInsertSchema(agreementCancellationPolicies).omit({ orgId: true, id: true, createdAt: true, updatedAt: true });

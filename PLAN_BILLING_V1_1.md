@@ -334,8 +334,10 @@ Decided now, built later, so they stop resurfacing as ambiguity:
   still changes only at Post; an agreement price without `ADJUST_PRICE_AGREEMENT` is ignored and
   echoed, never refused (the read previews what Post does); dollars.cents on blur; the
   instructions block (agreement, service, location); the billing-plan pill on the ticket header
-  and the time-in prompt rode along from the C3.3 row. Adding a service from the field is C4.3b
-  (Pass 29); creating an agreement from the field stays Phase 9.
+  and the time-in prompt rode along from the C3.3 row. Adding a service from the field was **built
+  as Pass 29** (`feature/phase-4-field-composition`, 2026-10-02, C4.3b: one-time work through the
+  composition add route with origin FIELD, flagged for office review, the next stop respected);
+  creating an agreement from the field stays Phase 9.
 - **Proposal generator** from the field: future/external, API-linked. Framework note only.
 
 ## D9. Schema cleanups riding along in Phase 1

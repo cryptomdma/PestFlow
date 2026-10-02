@@ -80,7 +80,16 @@ export type AuditEntityType =
  *  appointment and its services before and after (appointmentAuditSnapshot,
  *  which since this pass carries notes, scheduledEndDate and each service's
  *  type, duration and kind), the after carrying `composition` (the action,
- *  the service, what moved, how far the planned end grew). */
+ *  the service, what moved, how far the planned end grew). Since Pass 29
+ *  (C4.3b) an ADD's `composition` also carries `origin` (OFFICE | FIELD),
+ *  `flagged` (a FIELD add is flagged for office review) and `nextStop` (the
+ *  technician's next stop the add was measured against, when there was one).
+ *  `field_service_reviewed` (Pass 29, C4.3b): the office marked a service a
+ *  technician added from the field as reviewed (POST /api/services/:id/
+ *  field-review, FINALIZE_TICKET). The snapshots are the four field columns
+ *  ({ addedInFieldByUserId, fieldReviewedAt, fieldReviewedByUserId,
+ *  fieldReviewedByLabel }) before and after; the add itself is recorded by
+ *  the visit's appointment_composition_changed row. */
 export type AuditAction =
   | "update"
   | "invoice_drafted"
@@ -107,7 +116,8 @@ export type AuditAction =
   | "work_kind_changed"
   | "opportunity_auto_assigned"
   | "service_cancelled"
-  | "appointment_composition_changed";
+  | "appointment_composition_changed"
+  | "field_service_reviewed";
 
 const ENTITY_TYPE_LABELS: Record<AuditEntityType, string> = {
   customer: "Customer",
@@ -150,6 +160,7 @@ const ACTION_LABELS: Record<AuditAction, string> = {
   opportunity_auto_assigned: "Auto-assigned by rule",
   service_cancelled: "Service cancelled",
   appointment_composition_changed: "Visit services changed",
+  field_service_reviewed: "Field-added service reviewed",
 };
 
 // Both take plain strings, not the unions: they render rows already in the

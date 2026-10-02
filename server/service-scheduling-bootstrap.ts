@@ -359,6 +359,32 @@ export async function bootstrapServiceSchedulingFoundation(): Promise<void> {
   await bootstrapServiceWorkKind();
   await bootstrapOpportunityAssignment();
   await bootstrapAppointmentComposition();
+  await bootstrapFieldComposition();
+}
+
+// Pass 29 (PLAN_ROADMAP_V2.md C4.3b; B13; Part E answer 7). One guarded step,
+// printed once: four nullable columns on services - added_in_field_by_user_id
+// (users FK: the session user who added the service to a visit from the
+// technician's Appointment Details; never cleared; indexed where set, the
+// review queue's lookup), and the office's review stamp field_reviewed_at /
+// field_reviewed_by_user_id (users FK) / field_reviewed_by_label (the
+// ticket's flaggedAt / flaggedByUserId / flaggedByLabel shape). A service
+// with the first set and the second null is "flagged for office review". No
+// backfill: nothing was added from the field before this pass.
+async function bootstrapFieldComposition(): Promise<void> {
+  const hadColumn = await columnExists("services", "added_in_field_by_user_id");
+  await db.execute(sql`ALTER TABLE services ADD COLUMN IF NOT EXISTS added_in_field_by_user_id varchar REFERENCES users(id)`);
+  await db.execute(sql`ALTER TABLE services ADD COLUMN IF NOT EXISTS field_reviewed_at timestamp`);
+  await db.execute(sql`ALTER TABLE services ADD COLUMN IF NOT EXISTS field_reviewed_by_user_id varchar REFERENCES users(id)`);
+  await db.execute(sql`ALTER TABLE services ADD COLUMN IF NOT EXISTS field_reviewed_by_label text`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS services_added_in_field_idx ON services (added_in_field_by_user_id) WHERE added_in_field_by_user_id IS NOT NULL`);
+  if (!hadColumn) {
+    console.log(
+      "[service-scheduling-bootstrap] Pass 29: services.added_in_field_by_user_id (users FK, indexed where set), field_reviewed_at, field_reviewed_by_user_id (users FK) and " +
+        "field_reviewed_by_label added (all nullable) - a service a technician adds to a visit from the field is stamped with who added it and stays flagged for office " +
+        "review until the office marks it reviewed. No backfill: nothing was added from the field before this pass.",
+    );
+  }
 }
 
 // Pass 28 (PLAN_ROADMAP_V2.md C4.3a). One guarded step, printed once:

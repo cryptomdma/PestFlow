@@ -161,11 +161,21 @@ import {
   SERVICE_TYPE_LOCKED,
   SERVICE_TYPE_UNKNOWN,
   VISIT_INVOICED,
+  FIELD_ACTOR_REQUIRED,
+  FIELD_ADD_NEW_ONLY,
+  NEXT_STOP_OVERLAP,
+  SERVICE_FIELD_REVIEWED,
+  SERVICE_INSTRUCTIONS_LOCKED,
+  SERVICE_NOT_FIELD_ADDED,
+  describeNextStopOverlap,
   extendPlannedEnd,
   isActiveOnVisit,
+  overlapsNextStop,
   pickRepresentative,
   type AppointmentCompositionResult,
+  type CompositionOrigin,
   type NewPlacedServiceRequest,
+  type NextStopRef,
   type ServiceCancelEffect,
   type ServiceCancelResult,
 } from "@shared/appointment-composition";
@@ -777,10 +787,12 @@ export class ServiceCompositionError extends Error {
 
 export interface AddServiceToAppointmentInput {
   appointmentId: string;
-  /** A PENDING_SCHEDULING service at the visit's location. */
+  /** A PENDING_SCHEDULING service at the visit's location. Refused with origin FIELD. */
   serviceId?: string | null;
   /** Or a new one-time service, created placed. */
   service?: NewPlacedServiceRequest | null;
+  /** Pass 29 (C4.3b): OFFICE (default) or FIELD - the technician's Appointment Details. */
+  origin?: CompositionOrigin | null;
   actorRole?: UserRole | null;
   actor?: AuditActor | null;
 }
@@ -807,6 +819,12 @@ export interface CancelServiceInput {
   notes?: string | null;
   opportunity: DispositionOpportunityChoice;
   actorRole?: UserRole | null;
+  actor?: AuditActor | null;
+}
+
+/** Pass 29 (C4.3b): the office marks a field-added service reviewed. */
+export interface FieldReviewServiceInput {
+  serviceId: string;
   actor?: AuditActor | null;
 }
 
@@ -1278,6 +1296,9 @@ export interface IStorage {
   // Pass 28: ONE service cancelled outright, placed or pending, with the
   // disposition's CANCEL semantics for that service.
   cancelService(input: CancelServiceInput): Promise<ServiceCancelResult | undefined>;
+  // Pass 29 (C4.3b): the office's review of a service a technician added
+  // from the field - the review stamp, one field_service_reviewed row.
+  markServiceFieldReviewed(input: FieldReviewServiceInput): Promise<Service | undefined>;
   timeInAppointment(id: string): Promise<Appointment | undefined>;
   timeOutAppointment(id: string): Promise<Appointment | undefined>;
   getTechnicianWork(technicianId: string, date: string): Promise<TechnicianWorkVisit[]>;
@@ -1588,6 +1609,20 @@ function serviceAuditSnapshot(service: Service) {
     serviceWindowStart: service.serviceWindowStart,
     serviceWindowEnd: service.serviceWindowEnd,
     notes: service.notes,
+    // Pass 29: the field-add stamp and the office's review, so an ADD from
+    // the field and a later review both diff.
+    addedInFieldByUserId: service.addedInFieldByUserId,
+    fieldReviewedAt: service.fieldReviewedAt,
+  };
+}
+
+// Pass 29: what field_service_reviewed records - the four field columns.
+function fieldReviewSnapshot(service: Service) {
+  return {
+    addedInFieldByUserId: service.addedInFieldByUserId,
+    fieldReviewedAt: service.fieldReviewedAt,
+    fieldReviewedByUserId: service.fieldReviewedByUserId,
+    fieldReviewedByLabel: service.fieldReviewedByLabel,
   };
 }
 
@@ -3696,6 +3731,19 @@ export class DatabaseStorage implements IStorage {
       if (payload.serviceTypeId !== undefined && (payload.serviceTypeId ?? null) !== (existing.serviceTypeId ?? null)) {
         this.assertServiceTypeUnlocked(existing, context?.actorRole);
       }
+      // Pass 29 (C4.3b; B13 "instructions are editable only on services the
+      // technician added"): a technician changes a service's instructions
+      // (notes) only when the SESSION USER is the one stamped by the field
+      // add (addedInFieldByUserId) - never the technician picker. The
+      // office's roles are not held to it; a server write with no role may.
+      if (
+        context?.actorRole === "technician" &&
+        payload.notes !== undefined &&
+        (payload.notes ?? null) !== (existing.notes ?? null) &&
+        (!existing.addedInFieldByUserId || existing.addedInFieldByUserId !== (context.actor?.userId ?? null))
+      ) {
+        throw new ServiceCompositionError(403, SERVICE_INSTRUCTIONS_LOCKED, "A technician changes the instructions only on a service they added in the field; ask the office to change these");
+      }
       // Pass 24: the kind and the link are resolved only when the body names
       // one of them. A type change alone leaves the kind as it is (an
       // instance's kind is its own once set), and the board's placement
@@ -5638,15 +5686,82 @@ export class DatabaseStorage implements IStorage {
     });
   }
 
+  // Pass 29 (C4.3b; B13 "adding a service ... must not overlap the next
+  // stop"): the technician's next stop after this visit - the next board
+  // placement (isBoardPlacement's rule: not CANCELED) assigned to the same
+  // technician on the visit's day, the day read as getTechnicianWork reads
+  // it (local midnight to midnight; the day's list IS the next-stop source).
+  // Null without a technician or when the visit is the day's last; a stop
+  // on another day is never consulted.
+  private async nextStopTx(tx: DbTransaction, appointment: Appointment): Promise<Appointment | null> {
+    if (!appointment.assignedTechnicianId) {
+      return null;
+    }
+    const start = new Date(appointment.scheduledDate);
+    const dayEnd = new Date(start);
+    dayEnd.setHours(23, 59, 59, 999);
+    const [next] = await tx
+      .select()
+      .from(appointments)
+      .where(and(
+        eq(appointments.orgId, this.orgId),
+        eq(appointments.assignedTechnicianId, appointment.assignedTechnicianId),
+        ne(appointments.id, appointment.id),
+        ne(appointments.status, "CANCELED"),
+        gt(appointments.scheduledDate, start),
+        lte(appointments.scheduledDate, dayEnd),
+      ))
+      .orderBy(asc(appointments.scheduledDate))
+      .limit(1);
+    return next ?? null;
+  }
+
+  // The next stop measured against the end an add of `deltaMinutes` would
+  // give the visit (the shared extendPlannedEnd - the same arithmetic
+  // attachServiceToAppointmentTx then writes). Null when there is no next
+  // stop to measure against.
+  private async resolveNextStopTx(
+    tx: DbTransaction,
+    appointment: Appointment,
+    representative: Service | null,
+    deltaMinutes: number,
+  ): Promise<NextStopRef | null> {
+    const next = await this.nextStopTx(tx, appointment);
+    if (!next) {
+      return null;
+    }
+    const end = extendPlannedEnd(appointment, representative?.expectedDurationMinutes ?? null, deltaMinutes);
+    return {
+      appointmentId: next.id,
+      scheduledDate: next.scheduledDate,
+      plannedEnd: end.scheduledEndDate,
+      overlapped: overlapsNextStop(end.scheduledEndDate, next.scheduledDate, end.extendedMinutes),
+    };
+  }
+
   async addServiceToAppointment(input: AddServiceToAppointmentInput): Promise<AppointmentCompositionResult> {
+    // Pass 29 (C4.3b): the add's origin decides three things - the field
+    // adds one-time work only, is attributed to the session user and flagged
+    // for office review, and is refused when the visit would run into the
+    // technician's next stop. The office's add (the default) keeps Pass 28's
+    // behavior and is told about the next stop, never refused for it.
+    const origin: CompositionOrigin = input.origin === "FIELD" ? "FIELD" : "OFFICE";
     return db.transaction(async (tx) => {
       const { appointment, linked } = await this.loadComposableAppointmentTx(tx, input.appointmentId);
       await this.assertVisitNotInvoicedTx(tx, appointment, linked);
       if (!appointment.locationId) {
         throw new ServiceCompositionError(409, SERVICE_LOCATION_MISMATCH, "This visit has no location, so no service can be added to it");
       }
+      if (origin === "FIELD" && input.serviceId) {
+        throw new ServiceCompositionError(400, FIELD_ADD_NEW_ONLY, "From the field a new one-time service is added to the visit; a queued service is placed by the office");
+      }
+      if (origin === "FIELD" && !input.actor?.userId) {
+        throw new ServiceCompositionError(400, FIELD_ACTOR_REQUIRED, "A service added from the field is attributed to the signed-in user, and this request has none");
+      }
+      const representative = linked.find((linkedService) => linkedService.id === appointment.serviceId && linkedService.appointmentId === appointment.id) ?? null;
 
       let service: Service;
+      let nextStop: NextStopRef | null = null;
       if (input.serviceId) {
         const [queued] = await tx.select().from(services).where(and(eq(services.orgId, this.orgId), eq(services.id, input.serviceId)));
         if (!queued) {
@@ -5678,6 +5793,14 @@ export class DatabaseStorage implements IStorage {
         // visits are generated by the agreement, never typed onto a card);
         // the type's duration and price are its defaults, as on the
         // customer form; it is due the day of the visit.
+        const expectedDurationMinutes = input.service.expectedDurationMinutes !== undefined ? input.service.expectedDurationMinutes : serviceType.estimatedDuration ?? null;
+        // Pass 29: B13's constraint, checked before the insert so a refusal
+        // writes nothing - the would-be end (the shared rule) against the
+        // technician's next stop. The office is told, never refused.
+        nextStop = await this.resolveNextStopTx(tx, appointment, representative, expectedDurationMinutes ?? 0);
+        if (origin === "FIELD" && nextStop?.overlapped && nextStop.plannedEnd) {
+          throw new ServiceCompositionError(409, NEXT_STOP_OVERLAP, describeNextStopOverlap(nextStop.scheduledDate, nextStop.plannedEnd));
+        }
         const payload = this.normalizeServiceInsert({
           customerId: appointment.customerId,
           locationId: appointment.locationId,
@@ -5685,7 +5808,7 @@ export class DatabaseStorage implements IStorage {
           agreementId: null,
           serviceTypeId: serviceType.id,
           dueDate: normalizeDateOnly(appointment.scheduledDate),
-          expectedDurationMinutes: input.service.expectedDurationMinutes !== undefined ? input.service.expectedDurationMinutes : serviceType.estimatedDuration ?? null,
+          expectedDurationMinutes,
           priceCents: input.service.priceCents !== undefined ? input.service.priceCents : serviceType.defaultPriceCents ?? null,
           timeWindow: input.service.timeWindow ?? null,
           status: "PENDING_SCHEDULING",
@@ -5704,14 +5827,30 @@ export class DatabaseStorage implements IStorage {
           current: null,
           actorRole: input.actorRole ?? null,
         });
-        const [created] = await tx.insert(services).values({ ...payload, workKind: kind.workKind, answersServiceId: kind.answersServiceId, orgId: this.orgId }).returning();
+        // Pass 29: a FIELD add is stamped with the session user - the flag
+        // for office review, and who may edit its instructions in the field.
+        const [created] = await tx
+          .insert(services)
+          .values({
+            ...payload,
+            workKind: kind.workKind,
+            answersServiceId: kind.answersServiceId,
+            orgId: this.orgId,
+            addedInFieldByUserId: origin === "FIELD" ? input.actor?.userId ?? null : null,
+          })
+          .returning();
         service = created;
       } else {
         throw new ServiceCompositionError(400, ADD_SERVICE_TARGET_REQUIRED, "Name a pending service to add, or a new service to create on the visit");
       }
+      if (input.serviceId) {
+        // The office's add from the queue: measured and reported, never refused.
+        nextStop = await this.resolveNextStopTx(tx, appointment, representative, service.expectedDurationMinutes ?? 0);
+      }
 
       const attached = await this.attachServiceToAppointmentTx(tx, appointment, service, linked);
       const servicesAfter = await this.getLinkedServicesForAppointmentTx(tx, appointment.id, attached.appointment.serviceId);
+      const flagged = origin === "FIELD";
       await this.recordCompositionChangeTx(tx, {
         actor: input.actor,
         appointmentBefore: appointment,
@@ -5722,8 +5861,11 @@ export class DatabaseStorage implements IStorage {
           action: "ADD",
           serviceId: service.id,
           from: input.serviceId ? "QUEUE" : "NEW",
+          origin,
+          flagged,
           scheduledEndDateExtendedMinutes: attached.extendedMinutes,
           opportunitiesConverted: attached.opportunitiesConverted,
+          nextStop,
         },
       });
       return {
@@ -5732,6 +5874,8 @@ export class DatabaseStorage implements IStorage {
         services: servicesAfter,
         scheduledEndDateExtendedMinutes: attached.extendedMinutes,
         opportunitiesConverted: attached.opportunitiesConverted,
+        flagged,
+        nextStop,
       };
     });
   }
@@ -5776,7 +5920,7 @@ export class DatabaseStorage implements IStorage {
         servicesAfter: touched,
         composition: { action: "REMOVE", serviceId: service.id, representativeReassigned, scheduledEndDateExtendedMinutes: 0 },
       });
-      return { appointment: updatedAppointment, service: requeued, services: servicesAfter, scheduledEndDateExtendedMinutes: 0, opportunitiesConverted: 0 };
+      return { appointment: updatedAppointment, service: requeued, services: servicesAfter, scheduledEndDateExtendedMinutes: 0, opportunitiesConverted: 0, flagged: false, nextStop: null };
     });
   }
 
@@ -5826,7 +5970,7 @@ export class DatabaseStorage implements IStorage {
       }
 
       if (!Object.keys(changes).length) {
-        return { appointment, service, services: linked, scheduledEndDateExtendedMinutes: 0, opportunitiesConverted: 0 };
+        return { appointment, service, services: linked, scheduledEndDateExtendedMinutes: 0, opportunitiesConverted: 0, flagged: false, nextStop: null };
       }
 
       const [updatedService] = await tx
@@ -5851,7 +5995,7 @@ export class DatabaseStorage implements IStorage {
         servicesAfter,
         composition: { action: "UPDATE", serviceId: service.id, changes, scheduledEndDateExtendedMinutes: extendedMinutes },
       });
-      return { appointment: updatedAppointment, service: updatedService, services: servicesAfter, scheduledEndDateExtendedMinutes: extendedMinutes, opportunitiesConverted: 0 };
+      return { appointment: updatedAppointment, service: updatedService, services: servicesAfter, scheduledEndDateExtendedMinutes: extendedMinutes, opportunitiesConverted: 0, flagged: false, nextStop: null };
     });
   }
 
@@ -5978,6 +6122,49 @@ export class DatabaseStorage implements IStorage {
       });
 
       return { service: updated, appointment: updatedAppointment, effect, windowReset, detached: !!appointment, opportunities };
+    });
+  }
+
+  // Pass 29 (C4.3b; Part E answer 7 "flagged for review"): the office's
+  // review of a service a technician added from the field. The stamp
+  // (fieldReviewedAt / fieldReviewedByUserId / fieldReviewedByLabel) is set
+  // once from the session actor; a service not added in the field, or one
+  // already reviewed, is refused with its code. The add itself stays on the
+  // visit's appointment_composition_changed row; this writes one
+  // field_service_reviewed row on the service. Gated FINALIZE_TICKET at the
+  // route - the office's review permission - so a technician cannot clear
+  // their own flag.
+  async markServiceFieldReviewed(input: FieldReviewServiceInput): Promise<Service | undefined> {
+    return db.transaction(async (tx) => {
+      const [existing] = await tx.select().from(services).where(and(eq(services.orgId, this.orgId), eq(services.id, input.serviceId)));
+      if (!existing) {
+        return undefined;
+      }
+      if (!existing.addedInFieldByUserId) {
+        throw new ServiceCompositionError(409, SERVICE_NOT_FIELD_ADDED, "This service was not added in the field - there is nothing to review");
+      }
+      if (existing.fieldReviewedAt) {
+        throw new ServiceCompositionError(409, SERVICE_FIELD_REVIEWED, `This field-added service was already reviewed${existing.fieldReviewedByLabel ? ` by ${existing.fieldReviewedByLabel}` : ""}`);
+      }
+      const [updated] = await tx
+        .update(services)
+        .set({
+          fieldReviewedAt: new Date(),
+          fieldReviewedByUserId: input.actor?.userId ?? null,
+          fieldReviewedByLabel: input.actor?.actorLabel ?? null,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(services.orgId, this.orgId), eq(services.id, existing.id)))
+        .returning();
+      await this.recordAuditLogTx(tx, {
+        entityType: "service",
+        entityId: existing.id,
+        action: "field_service_reviewed",
+        actor: input.actor ?? null,
+        before: fieldReviewSnapshot(existing),
+        after: fieldReviewSnapshot(updated),
+      });
+      return updated;
     });
   }
 

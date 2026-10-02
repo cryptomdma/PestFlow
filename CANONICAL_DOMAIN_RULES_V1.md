@@ -737,6 +737,13 @@ A Service may exist before it is scheduled. Services are the queueable work unit
 * appointmentId nullable — the current placement (see Notes below)
 * lastAppointmentId nullable — the placement the Service was last taken off (Pass 27; also by a
   per-Service remove or cancel since Pass 28)
+* addedInFieldByUserId nullable — a **users** FK: the session user who added the Service to a visit
+  from the technician's Appointment Details (Pass 29; §11 "Composition in the field"); never cleared.
+  Set means "added in the field": who may edit its instructions there, and that the office owes it a
+  review
+* fieldReviewedAt / fieldReviewedByUserId / fieldReviewedByLabel nullable — the office's review stamp on
+  a field-added Service (Pass 29; the ticket's flaggedAt / flaggedByUserId / flaggedByLabel shape),
+  set once; set with the stamp above null is "flagged for office review"
 * expectedDurationMinutes nullable — the per-Service plan (the type's `estimatedDuration` by
   default); the Appointment's planned end is derived from the representative's at placement and
   grows by a Service's when it is added or lengthened (Pass 28)
@@ -963,8 +970,43 @@ generic update alike. The **last active Service** cannot be removed or cancelled
 with a posted ticket, a settled Service and a visit whose invoice is issued are refused. Cancelling
 ONE Service is §9's per-Service cancel (`service_cancelled`). A `CANCELLED` Service still linked to
 a visit (the disposition's convention) counts on no rollup: the finalize rollup and the billing
-group both skip it, so a cancelled sibling never holds a visit open. The technician's side of the
-same routes is C4.3b.
+group both skip it, so a cancelled sibling never holds a visit open.
+
+**Composition in the field (Pass 29; PLAN_ROADMAP_V2.md C4.3b; B13 "the tech view gets the same, tucked
+behind selectors"; Part E answers 6 and 7).** The technician's Appointment Details edits the same
+visit through the same routes - every field action is a route, since the field is a native app later
+(the Phase 3 design rule). Each linked Service is displayed and becomes editable on click: its
+**type** through the composition PATCH (non-agreement work with no ticket yet; an agreement Service
+shows the locked label as the ticket dialog does, the lock being the server's `SERVICE_TYPE_LOCKED`),
+and its **instructions** (`services.notes`, the Service's own - never the visit's `appointments.notes`,
+which stays "Appointment Notes", read-only in the field) through the generic Service update, which
+refuses a technician's change on any Service they did not add (403 `SERVICE_INSTRUCTIONS_LOCKED`; the
+office's roles are not held to it). Duration is not edited from the field. **Add service** posts the
+add route with `origin: "FIELD"` (the default is `OFFICE`), which turns on three rules the office's
+add does not carry: (1) **one-time work only** - a new MANUAL Service at the visit's location with the
+type's duration and price as defaults; a queued Service, agreement or not, is the office's to place
+(400 `FIELD_ADD_NEW_ONLY`); (2) the Service is **attributed to the session user**
+(`addedInFieldByUserId` - never the technician picker, whose row is unlinked to a login until C5.7)
+and so **flagged for office review** (Part E answer 7: yes, without approval, flagged) until the office
+marks it reviewed through `POST /api/services/:id/field-review` (`FINALIZE_TICKET`, support and above
+- the office's review permission, so a technician cannot clear their own flag; one
+`field_service_reviewed` audit row, §17; refused on a Service not added in the field or already
+reviewed); (3) the add **must not run into the technician's next stop** (B13): the next stop is the
+next board placement (not CANCELED) assigned to the same technician on the visit's day as the
+technician's day read lists it (local midnight to midnight; a stop on another day is never
+consulted), the would-be end is the shared `extendPlannedEnd` rule (a visit with no planned end falls
+back to the representative's duration), and an add whose extension would run that end past the next
+stop's start is refused 409 `NEXT_STOP_OVERLAP` with both times in the message, before anything is
+written; an add that extends nothing cannot overlap. The **office's add is never refused** for the
+next stop - it sees the board - but every add's result and audit row carry `nextStop` (the stop, the
+would-be end, whether it was passed) so the sheet's toast can say the visit now runs past it. The
+visit's `appointment_composition_changed` row records the add's `origin` and `flagged`. The flag shows
+as a "Field-added - review" badge (quiet "Field-added" once reviewed) on the dispatch sheet's
+composition block, the location's Services tab, Service Ticket Review and the technician's own row,
+with **Mark reviewed** beside it for the office. No new permission: the origin is open to every role
+(the surface decides, the flag is the control; who may is C5.6). The ticket's `FLAGGED_FOR_REVIEW`
+(§12) is untouched - it stays the invoice-driven flag on the ticket, and this one lives on the
+Service.
 
 Appointment timing is a scheduling/field-operations layer. Time In / Time Out is tracked on the Appointment because the visit may contain multiple Services. Duration supports future route analytics and billing review, but GPS capture is staged for later.
 
@@ -1126,6 +1168,8 @@ Target pests are Settings-managed reference data for internal treatment context 
 Since Pass 21 (PLAN_ROADMAP_V2.md C3.4b; B12, owner 2026-09-19) target pests live at **two levels**. Each Product Application row carries its own target pests (`targetPests[]`) - the compliance record of what that product was applied for - picked from the org's target-pest list (`target_pests`, its active rows) and written in the list's spelling where the match is case-insensitive, kept as sent otherwise (the Pass 20 rule: kept, never refused, shown marked). The Service Record's target pests are the **ticket-level set, derived by the server** on every post and every office edit: the ticket's own picks (the body's, or the stored set when the body omits them) followed by every row's pests in row order, deduped case-insensitively, each in the list's spelling - so the set never names fewer pests than the rows do, and it is what the ticket's summary line, the review modal and the service report show. Only the union is stored; an office edit seeds its picks from the stored set whole, so a pest that arrived through a material stays until someone removes it - a pick is never dropped silently. The ticket-level control is a searchable multi-select over the list, placed in the Materials section beside the rows, each of which has the same control for its own pests.
 
 For non-agreement Services, technicians may adjust service type and price as a staged field workflow for evaluations, upgrades, or one-time scope changes. Agreement-generated Services should keep service type and price locked in the technician ticket flow.
+
+As built (Pass 29; PLAN_ROADMAP_V2.md C4.3b): besides the ticket's own type and price at post, the technician's Appointment Details change a non-agreement Service's **type** on click (the composition PATCH, locked on agreement work and once a ticket is posted), edit the **instructions** of a Service the technician added, and **add a one-time Service** to the visit - its type, minutes, price and instructions typed there, the visit's end extended, the technician's next stop respected, the office asked to review it (§11 "Composition in the field"). The kind badge, the agreement marker, the field-added flag and the planned duration show on every row; the price stays the visit's billing read (Price / COA / Due today, D6).
 
 Material entry should remain mobile-manageable: new materials add at the top, empty material use is allowed, cards can be removed, and saved material rows collapse into summaries that can be expanded for review/edit.
 
