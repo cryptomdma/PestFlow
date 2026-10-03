@@ -17,7 +17,7 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth";
-import { apiRequest, getApiErrorCode, getApiErrorMessage, queryClient } from "@/lib/queryClient";
+import { ApiError, apiRequest, getApiErrorCode, getApiErrorMessage, queryClient } from "@/lib/queryClient";
 import { can, PERMISSIONS } from "@shared/permissions";
 import { ServiceCancelDialog } from "@/components/service-cancel-dialog";
 import { DraftInvoiceVoidPrompt, getDraftInvoiceDecisionRequired, type DraftInvoiceRef } from "@/components/draft-invoice-void-prompt";
@@ -28,16 +28,30 @@ import { centsToDollarString, formatCents, dollarsToCents } from "@shared/money"
 import { describeAnswersLink } from "@shared/service-kind";
 import { ServiceWorkKindBadge, ServiceWorkKindListBadge } from "@/components/service-work-kind-badge";
 import { FieldAddedBadge, MarkFieldReviewedButton } from "@/components/field-added-badge";
-import { ExclusionOverridePrompt, getTechnicianExcludedRefusal, useCanOverrideExclusion } from "@/components/technician-preferences";
+import {
+  ExclusionOverridePrompt,
+  PreferenceBypassPrompt,
+  getPreferenceNotHonoredRefusal,
+  getTechnicianExcludedRefusal,
+  useCanOverrideExclusion,
+} from "@/components/technician-preferences";
 import {
   describePreferenceScope,
   describePreferredHint,
   findExclusion,
   type EffectiveTechnicianPreference,
   type ExclusionOverrideRequest,
+  type PreferenceNotHonoredRefusal,
   type TechnicianExcludedRefusal,
 } from "@shared/technician-preferences";
-import { describeCrewRefusal, type AppointmentCrew } from "@shared/appointment-crew";
+import {
+  CREW_SCHEDULE_CONFLICT,
+  describeCrewConflict,
+  describeCrewRefusal,
+  type AppointmentCrew,
+  type CrewScheduleConflict,
+  type SupportAssignment,
+} from "@shared/appointment-crew";
 import {
   CalendarDays,
   ChevronLeft,
@@ -203,12 +217,28 @@ function pluralize(count: number, noun: string, plural?: string) {
   return `${count} ${count === 1 ? noun : plural ?? `${noun}s`}`;
 }
 
-// Pass 30 (C4.4): what a placement resends after a manager's override.
-type SchedulePlacementVariables = { service: Service; technician: Technician; slotDate: Date; overrideExclusion?: ExclusionOverrideRequest };
+// Pass 30 (C4.4): what a placement resends after a manager's override;
+// Pass 30b: or after the user confirmed passing over the preferred technician.
+type PlacementConfirmations = { overrideExclusion?: ExclusionOverrideRequest; acknowledgePreference?: boolean };
+type SchedulePlacementVariables = { service: Service; technician: Technician; slotDate: Date } & PlacementConfirmations;
 type AppointmentUpdateVariables = { id: string; payload: Record<string, unknown> };
 type ExclusionRetry =
   | { kind: "schedule"; variables: SchedulePlacementVariables }
   | { kind: "update"; variables: AppointmentUpdateVariables };
+
+// Pass 30b (owner, 2026-10-03): every query a crew change or a moved visit can make stale - the support cards on the board.
+function invalidateSupportAssignments() {
+  queryClient.invalidateQueries({
+    predicate: (query) => typeof query.queryKey[0] === "string" && query.queryKey[0].startsWith("/api/appointment-crews"),
+  });
+}
+
+/** Pass 30b: the 409 body of a support technician who is already booked, or null. */
+function getCrewConflicts(error: unknown): { message: string; conflicts: CrewScheduleConflict[] } | null {
+  if (!(error instanceof ApiError) || getApiErrorCode(error) !== CREW_SCHEDULE_CONFLICT) return null;
+  const body = error.body as { message?: string; conflicts?: CrewScheduleConflict[] };
+  return { message: body.message ?? "", conflicts: body.conflicts ?? [] };
+}
 
 /**
  * Pass 30 (PLAN_ROADMAP_V2.md C4.4; CURRENT_FOCUS "Crew."): the visit's crew
@@ -234,18 +264,23 @@ function AppointmentCrewBlock({
   const crewQueryKey = ["/api/appointments", appointment.id, "crew"];
   const { data: crew, isLoading } = useQuery<AppointmentCrew>({ queryKey: crewQueryKey });
   const [supportTechnicianId, setSupportTechnicianId] = useState("");
-  const [overridePrompt, setOverridePrompt] = useState<{ refusal: TechnicianExcludedRefusal; technicianId: string } | null>(null);
+  type CrewAddVariables = { technicianId: string; overrideExclusion?: ExclusionOverrideRequest; confirmConflicts?: boolean };
+  const [overridePrompt, setOverridePrompt] = useState<{ refusal: TechnicianExcludedRefusal; variables: CrewAddVariables } | null>(null);
+  // Pass 30b (owner, 2026-10-03): the support technician is already booked - confirm to add them anyway.
+  const [conflictPrompt, setConflictPrompt] = useState<{ message: string; conflicts: CrewScheduleConflict[]; variables: CrewAddVariables } | null>(null);
   useEffect(() => {
     setSupportTechnicianId("");
     setOverridePrompt(null);
+    setConflictPrompt(null);
   }, [appointment.id]);
   const invalidateCrew = () => {
     queryClient.invalidateQueries({ queryKey: crewQueryKey });
     queryClient.invalidateQueries({ queryKey: ["/api/audit-logs"] });
+    invalidateSupportAssignments();
   };
   const describeCrewError = (error: unknown) => describeCrewRefusal(getApiErrorCode(error)) ?? getApiErrorMessage(error);
   const addMutation = useMutation({
-    mutationFn: async (variables: { technicianId: string; overrideExclusion?: ExclusionOverrideRequest }) => {
+    mutationFn: async (variables: CrewAddVariables) => {
       const response = await apiRequest("POST", `/api/appointments/${appointment.id}/crew`, variables);
       return response.json() as Promise<AppointmentCrew>;
     },
@@ -253,12 +288,21 @@ function AppointmentCrewBlock({
       invalidateCrew();
       setSupportTechnicianId("");
       setOverridePrompt(null);
-      toast({ title: variables.overrideExclusion ? "Support technician added - exclusion overridden" : "Support technician added" });
+      setConflictPrompt(null);
+      toast({
+        title: variables.overrideExclusion ? "Support technician added - exclusion overridden" : "Support technician added",
+        description: variables.confirmConflicts ? "Added over a schedule conflict - the visit now shows on their row too." : "The visit now shows on their row of the board too.",
+      });
     },
     onError: (error, variables) => {
       const refusal = getTechnicianExcludedRefusal(error);
       if (refusal && canOverride && !variables.overrideExclusion) {
-        setOverridePrompt({ refusal, technicianId: variables.technicianId });
+        setOverridePrompt({ refusal, variables });
+        return;
+      }
+      const conflicts = getCrewConflicts(error);
+      if (conflicts && !variables.confirmConflicts) {
+        setConflictPrompt({ ...conflicts, variables });
         return;
       }
       toast({ title: "Support technician not added", description: describeCrewError(error), variant: "destructive" });
@@ -336,9 +380,34 @@ function AppointmentCrewBlock({
         onCancel={() => setOverridePrompt(null)}
         onConfirm={(reason) => {
           if (!overridePrompt) return;
-          addMutation.mutate({ technicianId: overridePrompt.technicianId, overrideExclusion: { reason } });
+          addMutation.mutate({ ...overridePrompt.variables, overrideExclusion: { reason } });
         }}
       />
+      <Dialog open={!!conflictPrompt} onOpenChange={(next) => { if (!next) setConflictPrompt(null); }}>
+        <DialogContent className="sm:max-w-md" data-testid="dialog-crew-conflict">
+          <DialogHeader>
+            <DialogTitle>Schedule conflict</DialogTitle>
+            <DialogDescription>{conflictPrompt?.message}</DialogDescription>
+          </DialogHeader>
+          <ul className="space-y-1 rounded-md border bg-muted/30 px-3 py-2 text-sm">
+            {conflictPrompt?.conflicts.map((conflict) => (
+              <li key={conflict.appointmentId} data-testid={`text-crew-conflict-${conflict.appointmentId}`}>{describeCrewConflict(conflict)}</li>
+            ))}
+          </ul>
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="outline" onClick={() => setConflictPrompt(null)}>Cancel</Button>
+            <Button
+              type="button"
+              variant="destructive"
+              disabled={addMutation.isPending}
+              onClick={() => conflictPrompt && addMutation.mutate({ ...conflictPrompt.variables, confirmConflicts: true })}
+              data-testid="button-crew-conflict-confirm"
+            >
+              Add anyway
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -765,6 +834,11 @@ function AppointmentSheet({
                   })}
                 </select>
                 {preferredHint ? <p className="text-xs text-emerald-700" data-testid="text-sheet-preferred-hint">{preferredHint}</p> : null}
+                {/* Pass 30b: a change to someone other than the preferred technician asks for confirmation on save. */}
+                {preferredHint && !selectedExclusion && assignedTechnicianId && assignedTechnicianId !== (appointment.assignedTechnicianId || "")
+                  && !preferences.some((entry) => entry.kind === "PREFERRED" && entry.technicianId === assignedTechnicianId) ? (
+                  <p className="text-xs text-amber-700" data-testid="text-sheet-preference-warning">Not the customer's preferred technician - saving asks you to confirm.</p>
+                ) : null}
                 {selectedExclusion ? (
                   <p className="text-xs text-destructive" data-testid="text-sheet-exclusion-warning">
                     The customer asked that {selectedExclusion.technicianName} never be sent ({describePreferenceScope(selectedExclusion.scopeType)}){selectedExclusion.note ? `: ${selectedExclusion.note}` : ""}.
@@ -1231,6 +1305,28 @@ export default function Schedule() {
     return map;
   }, [slotHours, viewportAppointments]);
 
+  // Pass 30b (owner, 2026-10-03): a support technician's copy of each visit
+  // they are crewed on - a second card on their row, so their time reads as
+  // booked. It is the same visit (one appointment, one invoice): the card
+  // opens its sheet and is never selected for a move.
+  const { data: supportAssignments } = useQuery<SupportAssignment[]>({
+    queryKey: [`/api/appointment-crews/support?from=${viewportBounds.start.toISOString()}&to=${viewportBounds.end.toISOString()}`],
+  });
+  const supportAppointmentsBySlot = useMemo(() => {
+    const byId = new Map(viewportAppointments.map((appointment) => [appointment.id, appointment]));
+    const map = new Map<string, Appointment[]>();
+    for (const assignment of supportAssignments ?? []) {
+      const appointment = byId.get(assignment.appointmentId);
+      if (!appointment) continue;
+      const slotHour = getSlotHourForDate(appointment.scheduledDate, slotHours);
+      const key = `${assignment.technicianId}:${formatDateInputValue(new Date(appointment.scheduledDate))}:${slotHour}`;
+      const items = map.get(key) ?? [];
+      items.push(appointment);
+      map.set(key, items);
+    }
+    return map;
+  }, [slotHours, supportAssignments, viewportAppointments]);
+
   const selectedService = useMemo(() => (pendingServices ?? []).find((service) => service.id === selectedServiceId) ?? null, [pendingServices, selectedServiceId]);
   const selectedAppointment = useMemo(() => boardAppointments.find((appointment) => appointment.id === selectedAppointmentId) ?? null, [boardAppointments, selectedAppointmentId]);
   const editingAppointment = useMemo(() => boardAppointments.find((appointment) => appointment.id === editingAppointmentId) ?? null, [boardAppointments, editingAppointmentId]);
@@ -1320,11 +1416,24 @@ export default function Schedule() {
   // anyone else gets the refusal as a toast.
   const canOverrideExclusion = useCanOverrideExclusion();
   const [exclusionPrompt, setExclusionPrompt] = useState<{ refusal: TechnicianExcludedRefusal; retry: ExclusionRetry } | null>(null);
-  const promptExclusionOverride = (error: unknown, retry: ExclusionRetry, alreadyOverridden: boolean) => {
-    const refusal = getTechnicianExcludedRefusal(error);
-    if (!refusal || !canOverrideExclusion || alreadyOverridden) return false;
-    setExclusionPrompt({ refusal, retry });
-    return true;
+  // Pass 30b (owner, 2026-10-03): a placement that passes over the customer's
+  // preferred technician comes back 409 PREFERENCE_NOT_HONORED; any role
+  // confirms and the request is resent with acknowledgePreference. Both
+  // prompts resend the same request with what was confirmed so far.
+  const [preferencePrompt, setPreferencePrompt] = useState<{ refusal: PreferenceNotHonoredRefusal; retry: ExclusionRetry } | null>(null);
+  const promptPlacementCheck = (error: unknown, retry: ExclusionRetry, sent: PlacementConfirmations) => {
+    const exclusion = getTechnicianExcludedRefusal(error);
+    if (exclusion) {
+      if (!canOverrideExclusion || sent.overrideExclusion) return false;
+      setExclusionPrompt({ refusal: exclusion, retry });
+      return true;
+    }
+    const preference = getPreferenceNotHonoredRefusal(error);
+    if (preference && !sent.acknowledgePreference) {
+      setPreferencePrompt({ refusal: preference, retry });
+      return true;
+    }
+    return false;
   };
   // The customers' technician preferences at the queue's locations and the
   // open sheet's: the queue row's "Prefers" hint, the sheet's select.
@@ -1343,7 +1452,7 @@ export default function Schedule() {
   const preferencesFor = (locationId: string | null | undefined): EffectiveTechnicianPreference[] => (locationId && effectivePreferences?.[locationId]) || [];
 
   const scheduleMutation = useMutation({
-    mutationFn: async ({ service, technician, slotDate, overrideExclusion }: SchedulePlacementVariables) => {
+    mutationFn: async ({ service, technician, slotDate, overrideExclusion, acknowledgePreference }: SchedulePlacementVariables) => {
       const endDate = service.expectedDurationMinutes ? new Date(slotDate.getTime() + service.expectedDurationMinutes * 60 * 1000) : null;
       const response = await apiRequest("POST", "/api/appointments", {
         customerId: service.customerId,
@@ -1362,6 +1471,7 @@ export default function Schedule() {
         lockTechnician: false,
         notes: service.notes || null,
         overrideExclusion,
+        acknowledgePreference,
       });
       return response.json() as Promise<WithInitialChargeDue<Appointment>>;
     },
@@ -1407,7 +1517,7 @@ export default function Schedule() {
       }
     },
     onError: (error: Error, variables) => {
-      if (promptExclusionOverride(error, { kind: "schedule", variables }, !!variables.overrideExclusion)) return;
+      if (promptPlacementCheck(error, { kind: "schedule", variables }, variables)) return;
       toast({ title: "Unable to schedule service", description: getApiErrorMessage(error), variant: "destructive" });
     },
   });
@@ -1531,6 +1641,8 @@ export default function Schedule() {
       queryClient.invalidateQueries({ queryKey: ["/api/services"] });
       queryClient.invalidateQueries({ queryKey: ["/api/services/pending"] });
       queryClient.invalidateQueries({ queryKey: ["/api/invoices"] });
+      // Pass 30b: a new lead who was a support technician leaves the support cards.
+      invalidateSupportAssignments();
       queryClient.invalidateQueries({ queryKey: getLocationAppointmentsQueryKey(appointment.locationId) });
       queryClient.invalidateQueries({ queryKey: getLocationServicesQueryKey(appointment.locationId) });
       setSelectedAppointmentId(null);
@@ -1538,7 +1650,7 @@ export default function Schedule() {
       toast({ title: "Appointment updated" });
     },
     onError: (error: Error, variables) => {
-      if (promptExclusionOverride(error, { kind: "update", variables }, !!variables.payload.overrideExclusion)) return;
+      if (promptPlacementCheck(error, { kind: "update", variables }, variables.payload as PlacementConfirmations)) return;
       toast({ title: "Unable to update appointment", description: getApiErrorMessage(error), variant: "destructive" });
     },
   });
@@ -1650,6 +1762,15 @@ export default function Schedule() {
 
     if (selectedAppointment) {
       moveAppointmentToSlot(selectedAppointment, technician, slotDate);
+    }
+  };
+
+  // Pass 30b: resend a placement or a re-assignment with what the user confirmed.
+  const resendPlacement = (retry: ExclusionRetry, confirmed: PlacementConfirmations) => {
+    if (retry.kind === "schedule") {
+      scheduleMutation.mutate({ ...retry.variables, ...confirmed });
+    } else {
+      updateAppointmentMutation.mutate({ id: retry.variables.id, payload: { ...retry.variables.payload, ...confirmed } });
     }
   };
 
@@ -1910,6 +2031,7 @@ export default function Schedule() {
                       const slotDate = buildSlotDate(date, hour);
                       const slotKey = `${technician.id}:${formatDateInputValue(slotDate)}:${hour}`;
                       const slotAppointments = appointmentsByTechnicianAndSlot.get(slotKey) ?? [];
+                      const slotSupportAppointments = supportAppointmentsBySlot.get(slotKey) ?? [];
                       const slotActionable = !!selectedService || !!selectedAppointment;
                       return (
                         <div
@@ -2006,6 +2128,37 @@ export default function Schedule() {
                                     </div>
                                   </HoverCardContent>
                                 </HoverCard>
+                              );
+                            })}
+                            {/* Pass 30b (owner, 2026-10-03): the support technician's copy of a visit - dashed,
+                                not selectable for a move (the lead's card moves the visit); a click opens its sheet. */}
+                            {slotSupportAppointments.map((appointment) => {
+                              const customer = customerById.get(appointment.customerId);
+                              const location = appointment.locationId ? locationById.get(appointment.locationId) : undefined;
+                              const leadName = appointment.assignedTechnicianId ? technicianById.get(appointment.assignedTechnicianId)?.displayName || appointment.assignedTo || "the lead" : "no lead";
+                              const supportService = servicesByAppointmentId.get(appointment.id)?.[0] ?? (appointment.serviceId ? serviceById.get(appointment.serviceId) : undefined);
+                              const supportMinutes = getAppointmentDurationMinutes(appointment, supportService || undefined);
+                              return (
+                                <div
+                                  key={`support-${appointment.id}`}
+                                  className="cursor-pointer rounded-md border border-dashed border-slate-400 bg-slate-50 px-2 py-2 text-xs text-slate-800"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    setEditingAppointmentId(appointment.id);
+                                  }}
+                                  title="Support on this visit - the lead's card moves it"
+                                  data-testid={`card-support-${appointment.id}-${technician.id}`}
+                                >
+                                  <div className="flex items-center justify-between gap-2">
+                                    <p className="truncate font-medium">{getCustomerLabel(customer, location)}</p>
+                                    <Badge variant="outline" className="text-[10px]">Support</Badge>
+                                  </div>
+                                  <p className="mt-0.5 truncate text-[11px] text-slate-600">With {leadName}</p>
+                                  <div className="mt-1 flex items-center justify-between gap-2 text-[11px] text-slate-600">
+                                    <span>{new Date(appointment.scheduledDate).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}</span>
+                                    {supportMinutes ? <span>{supportMinutes} min</span> : null}
+                                  </div>
+                                </div>
                               );
                             })}
                             {!slotAppointments.length && slotActionable ? <div className="rounded-md border border-dashed px-2 py-3 text-center text-[11px] text-primary">{selectedService ? "Place service here" : "Move here"}</div> : null}
@@ -2177,11 +2330,18 @@ export default function Schedule() {
           const pending = exclusionPrompt;
           setExclusionPrompt(null);
           if (!pending) return;
-          if (pending.retry.kind === "schedule") {
-            scheduleMutation.mutate({ ...pending.retry.variables, overrideExclusion: { reason } });
-          } else {
-            updateAppointmentMutation.mutate({ id: pending.retry.variables.id, payload: { ...pending.retry.variables.payload, overrideExclusion: { reason } } });
-          }
+          resendPlacement(pending.retry, { overrideExclusion: { reason } });
+        }}
+      />
+      {/* Pass 30b (owner, 2026-10-03): the reminder of the customer's preferred technician. */}
+      <PreferenceBypassPrompt
+        refusal={preferencePrompt?.refusal ?? null}
+        onCancel={() => setPreferencePrompt(null)}
+        onConfirm={() => {
+          const pending = preferencePrompt;
+          setPreferencePrompt(null);
+          if (!pending) return;
+          resendPlacement(pending.retry, { acknowledgePreference: true });
         }}
       />
 

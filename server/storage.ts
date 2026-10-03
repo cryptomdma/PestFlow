@@ -100,10 +100,13 @@ import {
   EXCLUSION_OVERRIDE_REASON_REQUIRED,
   LOCATION_HAS_NO_ACCOUNT,
   PREFERENCE_NOT_FOUND,
+  PREFERENCE_NOT_HONORED,
   TECHNICIAN_EXCLUDED,
   TECHNICIAN_NOT_FOUND,
   describeExclusionRefusal,
+  describePreferenceBypass,
   findExclusion,
+  preferredTechnicians,
   resolveEffectivePreferences,
   type EffectiveTechnicianPreference,
   type ExclusionOverrideRequest,
@@ -118,9 +121,15 @@ import {
   CREW_MEMBER_EXISTS,
   CREW_MEMBER_NOT_FOUND,
   CREW_NOT_EDITABLE,
+  CREW_SCHEDULE_CONFLICT,
+  describeCrewConflicts,
+  plannedWindow,
+  windowsOverlap,
   type AppointmentCrew,
   type AppointmentCrewMember,
   type AppointmentCrewRole,
+  type CrewScheduleConflict,
+  type SupportAssignment,
 } from "@shared/appointment-crew";
 import { isTicketFinalized, isTicketInOfficeReview } from "@shared/ticket-status";
 import {
@@ -870,6 +879,9 @@ export class PlacementRefusedError extends Error {
     readonly code: string,
     message: string,
     readonly exclusion: EffectiveTechnicianPreference | null = null,
+    // Pass 30b: the PREFERRED technicians the placement passes over (PREFERENCE_NOT_HONORED, and named on TECHNICIAN_EXCLUDED).
+    readonly preferred: EffectiveTechnicianPreference[] = [],
+    readonly technician: { id: string; name: string } | null = null,
   ) {
     super(message);
     this.name = "PlacementRefusedError";
@@ -887,7 +899,7 @@ export class TechnicianPreferenceError extends Error {
 
 // Pass 30: a crew change the visit forbids (shared/appointment-crew.ts codes).
 export class AppointmentCrewError extends Error {
-  constructor(readonly status: 404 | 409, readonly code: string, message: string) {
+  constructor(readonly status: 404 | 409, readonly code: string, message: string, readonly conflicts: CrewScheduleConflict[] = []) {
     super(message);
     this.name = "AppointmentCrewError";
   }
@@ -896,6 +908,8 @@ export class AppointmentCrewError extends Error {
 /** Pass 30: what a placement carries for the exclusion check - the manager's override and who asks. */
 export interface PlacementOptions {
   overrideExclusion?: ExclusionOverrideRequest | null;
+  /** Pass 30b: the user confirmed placing someone other than the customer's preferred technician. */
+  acknowledgePreference?: boolean;
   actorRole?: UserRole | null;
   actor?: AuditActor | null;
 }
@@ -919,6 +933,8 @@ export interface TechnicianPreferenceClearInput {
 export interface AppointmentCrewAddInput extends PlacementOptions {
   appointmentId: string;
   technicianId: string;
+  /** Pass 30b: the user confirmed adding a technician who is already booked during the visit. */
+  confirmConflicts?: boolean;
 }
 
 export interface AppointmentCrewRemoveInput {
@@ -930,6 +946,18 @@ export interface AppointmentCrewRemoveInput {
 interface ExclusionOverrideApplied {
   exclusion: EffectiveTechnicianPreference;
   reason: string;
+  /** Pass 30b: the preferred technicians the override also passed over. */
+  preferredBypassed: EffectiveTechnicianPreference[];
+}
+
+/** Pass 30b: what the placement checks let through, to be recorded once the write is done. */
+interface PlacementChecksApplied {
+  override: ExclusionOverrideApplied | null;
+  preferenceBypassed: EffectiveTechnicianPreference[] | null;
+}
+
+function preferenceAuditList(entries: EffectiveTechnicianPreference[]) {
+  return entries.map((entry) => ({ technicianId: entry.technicianId, technicianName: entry.technicianName, scopeType: entry.scopeType, note: entry.note }));
 }
 
 
@@ -1440,6 +1468,8 @@ export interface IStorage {
   clearTechnicianPreference(input: TechnicianPreferenceClearInput): Promise<LocationTechnicianPreferences | undefined>;
   // Pass 30: the visit's crew (appointment_technicians) - read, add / remove a SUPPORT technician.
   getAppointmentCrew(appointmentId: string): Promise<AppointmentCrew | undefined>;
+  // Pass 30b: the board's support cards for a time range.
+  getSupportAssignments(from: Date, to: Date): Promise<SupportAssignment[]>;
   addAppointmentCrewMember(input: AppointmentCrewAddInput): Promise<AppointmentCrew | undefined>;
   removeAppointmentCrewMember(input: AppointmentCrewRemoveInput): Promise<AppointmentCrew | undefined>;
   // D6: Price / COA applied / Due today for one visit, per service and summed.
@@ -5255,10 +5285,13 @@ export class DatabaseStorage implements IStorage {
       // Pass 30 (C4.4; B14): a technician the customer EXCLUDED at this
       // location is refused before anything is written, unless a manager
       // overrides with a reason.
-      const override = await this.assertPlacementAllowedTx(tx, {
+      // Pass 30b: and anyone but the customer's preferred technician needs the
+      // user's confirmation (acknowledgePreference).
+      const checks = await this.assertPlacementAllowedTx(tx, {
         locationId: data.locationId ?? null,
         technicianId: data.assignedTechnicianId || null,
         options,
+        checkPreference: true,
       });
       const [appt] = await tx.insert(appointments).values({
         ...data,
@@ -5295,9 +5328,7 @@ export class DatabaseStorage implements IStorage {
         await this.syncAgreementInitialAppointmentDates(tx, appt.agreementId);
       }
 
-      if (override) {
-        await this.recordExclusionOverrideTx(tx, { appointment: appt, override, via: "CREATE", previousTechnicianId: null, actor: options.actor });
-      }
+      await this.recordPlacementChecksTx(tx, { appointment: appt, checks, via: "CREATE", previousTechnicianId: null, actor: options.actor });
 
       return appt;
     });
@@ -5387,11 +5418,12 @@ export class DatabaseStorage implements IStorage {
       // follows the new technician.
       const nextTechnicianId = data.assignedTechnicianId === undefined ? undefined : (data.assignedTechnicianId || null);
       const technicianChanged = nextTechnicianId !== undefined && nextTechnicianId !== (existingAppointment.assignedTechnicianId ?? null);
-      const override = technicianChanged
+      const checks = technicianChanged
         ? await this.assertPlacementAllowedTx(tx, {
             locationId: data.locationId ?? existingAppointment.locationId ?? null,
             technicianId: nextTechnicianId ?? null,
             options: { ...options, actor: options.actor ?? actor },
+            checkPreference: true,
           })
         : null;
 
@@ -5423,10 +5455,10 @@ export class DatabaseStorage implements IStorage {
         });
       }
 
-      if (override) {
-        await this.recordExclusionOverrideTx(tx, {
+      if (checks) {
+        await this.recordPlacementChecksTx(tx, {
           appointment: updatedAppointment,
-          override,
+          checks,
           via: "UPDATE",
           previousTechnicianId: existingAppointment.assignedTechnicianId,
           actor: options.actor ?? actor,
@@ -5493,31 +5525,95 @@ export class DatabaseStorage implements IStorage {
   // be typed (400). Returns the override to record once the write is done, or
   // null when nothing was excluded (an override sent for a technician who is
   // not excluded is ignored - nothing to record).
+  //
+  // Pass 30b (owner, 2026-10-03): with `checkPreference` (a placement or a
+  // re-assignment of the lead - not a crew SUPPORT add), a technician who is
+  // not among the customer's PREFERRED ones is refused 409
+  // PREFERENCE_NOT_HONORED until the user confirms (acknowledgePreference, any
+  // role). An exclusion override covers the preference too - one prompt, and
+  // the override row names the preference passed over.
   private async assertPlacementAllowedTx(
     tx: DbTransaction,
-    input: { locationId: string | null; technicianId: string | null; options: PlacementOptions },
-  ): Promise<ExclusionOverrideApplied | null> {
+    input: { locationId: string | null; technicianId: string | null; options: PlacementOptions; checkPreference?: boolean },
+  ): Promise<PlacementChecksApplied> {
+    const none: PlacementChecksApplied = { override: null, preferenceBypassed: null };
     if (!input.locationId || !input.technicianId) {
-      return null;
+      return none;
     }
-    const effective = await this.resolveEffectivePreferencesTx(tx, input.locationId);
-    const exclusion = findExclusion(effective ?? [], input.technicianId);
-    if (!exclusion) {
-      return null;
+    const effective = (await this.resolveEffectivePreferencesTx(tx, input.locationId)) ?? [];
+    const preferred = input.checkPreference ? preferredTechnicians(effective) : [];
+    const passedOver = preferred.length > 0 && !preferred.some((entry) => entry.technicianId === input.technicianId) ? preferred : [];
+    const exclusion = findExclusion(effective, input.technicianId);
+    if (exclusion) {
+      const override = input.options.overrideExclusion;
+      if (!override) {
+        throw new PlacementRefusedError(409, TECHNICIAN_EXCLUDED, describeExclusionRefusal(exclusion.technicianName, exclusion.scopeType), exclusion, passedOver);
+      }
+      if (!can(input.options.actorRole ?? "", PERMISSIONS.OVERRIDE_TECHNICIAN_EXCLUSION)) {
+        const who = rolesWithPermission(PERMISSIONS.OVERRIDE_TECHNICIAN_EXCLUSION).join(" or ");
+        throw new PlacementRefusedError(403, EXCLUSION_OVERRIDE_FORBIDDEN, `Only a ${who} may schedule ${exclusion.technicianName}, whom the customer excluded`, exclusion, passedOver);
+      }
+      const reason = override.reason?.trim() ?? "";
+      if (!reason) {
+        throw new PlacementRefusedError(400, EXCLUSION_OVERRIDE_REASON_REQUIRED, `Say why ${exclusion.technicianName} is being scheduled despite the customer's exclusion`, exclusion, passedOver);
+      }
+      return { override: { exclusion, reason, preferredBypassed: passedOver }, preferenceBypassed: null };
     }
-    const override = input.options.overrideExclusion;
-    if (!override) {
-      throw new PlacementRefusedError(409, TECHNICIAN_EXCLUDED, describeExclusionRefusal(exclusion.technicianName, exclusion.scopeType), exclusion);
+    if (!passedOver.length) {
+      return none;
     }
-    if (!can(input.options.actorRole ?? "", PERMISSIONS.OVERRIDE_TECHNICIAN_EXCLUSION)) {
-      const who = rolesWithPermission(PERMISSIONS.OVERRIDE_TECHNICIAN_EXCLUSION).join(" or ");
-      throw new PlacementRefusedError(403, EXCLUSION_OVERRIDE_FORBIDDEN, `Only a ${who} may schedule ${exclusion.technicianName}, whom the customer excluded`, exclusion);
+    if (!input.options.acknowledgePreference) {
+      const chosenName = (await this.technicianNameMapTx(tx)).get(input.technicianId) ?? "this technician";
+      throw new PlacementRefusedError(
+        409,
+        PREFERENCE_NOT_HONORED,
+        describePreferenceBypass(passedOver.map((entry) => entry.technicianName), chosenName),
+        null,
+        passedOver,
+        { id: input.technicianId, name: chosenName },
+      );
     }
-    const reason = override.reason?.trim() ?? "";
-    if (!reason) {
-      throw new PlacementRefusedError(400, EXCLUSION_OVERRIDE_REASON_REQUIRED, `Say why ${exclusion.technicianName} is being scheduled despite the customer's exclusion`, exclusion);
+    return { override: null, preferenceBypassed: passedOver };
+  }
+
+  // Pass 30b: one row per check the placement passed with a confirmation -
+  // the exclusion override, or the preference passed over.
+  private async recordPlacementChecksTx(
+    tx: DbTransaction,
+    input: {
+      appointment: Appointment;
+      checks: PlacementChecksApplied;
+      via: "CREATE" | "UPDATE";
+      previousTechnicianId: string | null;
+      actor?: AuditActor | null;
+    },
+  ): Promise<void> {
+    if (input.checks.override) {
+      await this.recordExclusionOverrideTx(tx, {
+        appointment: input.appointment,
+        override: input.checks.override,
+        via: input.via,
+        previousTechnicianId: input.previousTechnicianId,
+        actor: input.actor,
+      });
     }
-    return { exclusion, reason };
+    const passedOver = input.checks.preferenceBypassed;
+    if (passedOver && passedOver.length && input.appointment.assignedTechnicianId) {
+      const names = await this.technicianNameMapTx(tx);
+      await this.recordAuditLogTx(tx, {
+        entityType: "appointment",
+        entityId: input.appointment.id,
+        action: "placement_preference_bypassed",
+        actor: input.actor,
+        before: input.via === "UPDATE" ? { assignedTechnicianId: input.previousTechnicianId ?? null } : undefined,
+        after: {
+          via: input.via,
+          technicianId: input.appointment.assignedTechnicianId,
+          technicianName: names.get(input.appointment.assignedTechnicianId) ?? "Unknown technician",
+          preferred: preferenceAuditList(passedOver),
+        },
+      });
+    }
   }
 
   private async recordExclusionOverrideTx(
@@ -5548,8 +5644,81 @@ export class DatabaseStorage implements IStorage {
           kind: exclusion.kind,
           note: exclusion.note,
         },
+        // Pass 30b: the customer's preferred technicians this placement also passed over.
+        preferredBypassed: preferenceAuditList(input.override.preferredBypassed),
       },
     });
+  }
+
+  // Pass 30b: each visit's planned window - the stored end, else the
+  // representative's expected duration, else DEFAULT_VISIT_MINUTES.
+  private async plannedWindowsTx(tx: DbReader, list: Appointment[]): Promise<Map<string, { start: Date; end: Date }>> {
+    const serviceIds = Array.from(new Set(list.filter((appointment) => !appointment.scheduledEndDate && appointment.serviceId).map((appointment) => appointment.serviceId!)));
+    const durations = new Map<string, number | null>();
+    if (serviceIds.length) {
+      const rows = await tx
+        .select({ id: services.id, minutes: services.expectedDurationMinutes })
+        .from(services)
+        .where(and(eq(services.orgId, this.orgId), inArray(services.id, serviceIds)));
+      for (const row of rows) durations.set(row.id, row.minutes);
+    }
+    return new Map(list.map((appointment) => [
+      appointment.id,
+      plannedWindow(appointment.scheduledDate, appointment.scheduledEndDate, durations.get(appointment.serviceId ?? "") ?? null),
+    ]));
+  }
+
+  // Pass 30b (owner, 2026-10-03): the technician's other visits - as lead or
+  // as support, not CANCELED - whose planned windows overlap this visit's.
+  private async findTechnicianConflictsTx(tx: DbTransaction, appointment: Appointment, technicianId: string): Promise<CrewScheduleConflict[]> {
+    const own = (await this.plannedWindowsTx(tx, [appointment])).get(appointment.id)!;
+    const supported = tx
+      .select({ appointmentId: appointmentTechnicians.appointmentId })
+      .from(appointmentTechnicians)
+      .where(and(
+        eq(appointmentTechnicians.orgId, this.orgId),
+        eq(appointmentTechnicians.technicianId, technicianId),
+        eq(appointmentTechnicians.role, "SUPPORT"),
+      ));
+    const candidates = await tx
+      .select({ appointment: appointments, firstName: customers.firstName, lastName: customers.lastName, companyName: customers.companyName })
+      .from(appointments)
+      .leftJoin(customers, eq(customers.id, appointments.customerId))
+      .where(and(
+        eq(appointments.orgId, this.orgId),
+        ne(appointments.id, appointment.id),
+        ne(appointments.status, "CANCELED"),
+        or(eq(appointments.assignedTechnicianId, technicianId), inArray(appointments.id, supported)),
+        lt(appointments.scheduledDate, own.end),
+        gt(appointments.scheduledDate, new Date(own.start.getTime() - 24 * 60 * 60 * 1000)),
+      ));
+    const windows = await this.plannedWindowsTx(tx, candidates.map((candidate) => candidate.appointment));
+    return candidates
+      .filter((candidate) => windowsOverlap(own, windows.get(candidate.appointment.id)!))
+      .map((candidate) => ({
+        appointmentId: candidate.appointment.id,
+        role: (candidate.appointment.assignedTechnicianId === technicianId ? "LEAD" : "SUPPORT") as AppointmentCrewRole,
+        scheduledDate: candidate.appointment.scheduledDate,
+        plannedEnd: windows.get(candidate.appointment.id)!.end,
+        customerName: candidate.companyName?.trim() || `${candidate.firstName ?? ""} ${candidate.lastName ?? ""}`.trim(),
+      }))
+      .sort((a, b) => new Date(a.scheduledDate).getTime() - new Date(b.scheduledDate).getTime());
+  }
+
+  // Pass 30b: the board's support cards - every SUPPORT row on a live visit
+  // that starts inside [from, to).
+  async getSupportAssignments(from: Date, to: Date): Promise<SupportAssignment[]> {
+    return db
+      .select({ appointmentId: appointmentTechnicians.appointmentId, technicianId: appointmentTechnicians.technicianId })
+      .from(appointmentTechnicians)
+      .innerJoin(appointments, eq(appointments.id, appointmentTechnicians.appointmentId))
+      .where(and(
+        eq(appointmentTechnicians.orgId, this.orgId),
+        eq(appointmentTechnicians.role, "SUPPORT"),
+        ne(appointments.status, "CANCELED"),
+        gte(appointments.scheduledDate, from),
+        lt(appointments.scheduledDate, to),
+      ));
   }
 
   private async locationTechnicianPreferencesTx(tx: DbReader, locationId: string): Promise<LocationTechnicianPreferences | undefined> {
@@ -5833,11 +6002,18 @@ export class DatabaseStorage implements IStorage {
       if (before.some((member) => member.technicianId === technician.id)) {
         throw new AppointmentCrewError(409, CREW_MEMBER_EXISTS, `${technician.displayName} is already on this visit's crew`);
       }
-      const override = await this.assertPlacementAllowedTx(tx, {
+      const { override } = await this.assertPlacementAllowedTx(tx, {
         locationId: appointment.locationId,
         technicianId: technician.id,
         options: input,
       });
+      // Pass 30b (owner, 2026-10-03): the support technician's copy of the
+      // visit must not double-book them - a clash with another of their
+      // visits is refused until the user confirms.
+      const conflicts = await this.findTechnicianConflictsTx(tx, appointment, technician.id);
+      if (conflicts.length && !input.confirmConflicts) {
+        throw new AppointmentCrewError(409, CREW_SCHEDULE_CONFLICT, describeCrewConflicts(technician.displayName, conflicts), conflicts);
+      }
       await tx.insert(appointmentTechnicians).values({
         orgId: this.orgId,
         appointmentId: appointment.id,
@@ -5854,7 +6030,13 @@ export class DatabaseStorage implements IStorage {
         before: { crew: crewAuditSnapshot(before) },
         after: {
           crew: crewAuditSnapshot(after),
-          change: { action: "ADD", technicianId: technician.id, technicianName: technician.displayName, role: "SUPPORT" },
+          change: {
+            action: "ADD",
+            technicianId: technician.id,
+            technicianName: technician.displayName,
+            role: "SUPPORT",
+            ...(conflicts.length ? { conflictsAcknowledged: conflicts } : {}),
+          },
         },
       });
       if (override) {

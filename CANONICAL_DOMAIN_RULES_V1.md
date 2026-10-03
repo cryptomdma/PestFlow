@@ -1889,6 +1889,10 @@ A customer's standing word about who services them, in `technician_preferences`
   them to its crew is refused (409 `TECHNICIAN_EXCLUDED`) unless a manager overrides with a reason
   (`OVERRIDE_TECHNICIAN_EXCLUSION`, manager and admin), recorded as `placement_exclusion_overridden`
   (§17). An unchanged technician is never re-checked.
+* **Passing over a PREFERRED technician** (owner, Pass 30b) - placing or re-assigning a visit to anyone
+  but the customer's preferred technician asks for the user's confirmation (409
+  `PREFERENCE_NOT_HONORED`, any role), recorded as `placement_preference_bypassed`. A manager's exclusion
+  override covers it. Support technicians are not asked: a preference names who services the visit.
 * **Scope.** A row is LOCATION-scoped (that location) or ACCOUNT-scoped (every location of the account -
   D8's "customer level"), the Flag / Hold shape (§6, §7). The ACCOUNT row is written from the primary
   location's editor ("Apply to all locations") and nowhere else. For one technician the **location's
@@ -1906,6 +1910,12 @@ exactly one **LEAD** - always the visit's `assignedTechnicianId`, moved with it 
 support technician sees the stop on their own day, read-only; the ticket, its technician snapshot and
 therefore the production ledger stay the lead's - one entry, one technician - until Phase 7's split
 allocation reads the crew.
+
+Since Pass 30b (owner) the support technician's time is **booked on the dispatch board**: the visit
+shows on their row too, as a second card on the same visit (never a second appointment - one visit, one
+invoice). Adding a support technician who already has an overlapping visit, as lead or support, asks for
+confirmation (409 `CREW_SCHEDULE_CONFLICT`, listing the visits); a visit's planned window is its stored
+end, else its representative service's duration, else 60 minutes, and back-to-back visits do not clash.
 
 ---
 

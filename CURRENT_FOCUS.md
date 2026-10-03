@@ -31,7 +31,8 @@ attribution, C3.7 - the last Phase 3 row) is merged (PR #96); Pass 26 (opportuni
 rules and zones, C4.1b - the first open Phase 4 row in phase order) is merged (PR #97); Pass 28
 (appointment composition on the server and the dispatch sheet, C4.3a) is merged (PR #98); Pass 29
 (appointment composition in the field, C4.3b) is merged (PR #99); Pass 30 (technician preferences and
-crew, C4.4) is pushed, awaiting merge; **next pass: 31, dispatch board settings** (C4.5). The roadmap
+crew, C4.4) is merged (PR #100); Pass 30b (the owner's two additions to it, C4.4b) is pushed, awaiting
+merge; **next pass: 31, dispatch board settings** (C4.5). The roadmap
 sequences every remaining item below; this file keeps the status pointer and, as its last
 section, the handoff prompt that starts the next session.
 
@@ -1391,7 +1392,7 @@ service form and its inline refusal, the badge on four surfaces, the Mark review
 rendered by anyone: the repo has no browser automation and the session had no browser.**
 Signatures and behavior are under "Shipped in Pass 29" at the end of `PLAN_ROADMAP_V2.md` Part D.
 
-Pass 30 (`feature/phase-4-technician-preferences-crew`, 2026-10-03, C4.4) pushed, awaiting merge.
+Pass 30 (`feature/phase-4-technician-preferences-crew`, 2026-10-03, C4.4) merged as PR #100.
 **Technician preferences and crew** (B14; D8 "Preferred technician"; the "Crew." gap below).
 **Decided (1):** one org-scoped `technician_preferences` table (scope ACCOUNT | LOCATION, accountId /
 locationId, technicianId, kind PREFERRED | EXCLUDED, note, createdByUserId, createdAt, updatedAt), one
@@ -1431,6 +1432,33 @@ cards, the queue hint, the sheet's marked select and warning, the override promp
 support card on the technician's day) has been rendered by anyone: the repo has no browser automation
 and the session had no browser.** Signatures and behavior are under "Shipped in Pass 30" at the end of
 `PLAN_ROADMAP_V2.md` Part D.
+
+Pass 30b (`feature/phase-4-crew-schedule-review`, 2026-10-03, C4.4b) pushed, awaiting merge. **The
+owner's two additions after Pass 30 merged** (`OWNER_FEEDBACK.md` FB-018, FB-019). **(1) The support
+technician's copy of the visit.** A SUPPORT technician now shows the visit on their own row of the
+dispatch board - a dashed "Support" card, "With <lead>", that opens the visit's sheet and is never
+selected for a move (the lead's card moves the visit). **Decided:** a second card, not a second
+appointment - one visit, one set of services, one invoice; the copy reads the crew
+(`GET /api/appointment-crews/support?from=&to=`). Adding a support technician who is already booked -
+as lead or support on any live visit whose planned window overlaps this one (the stored end, else the
+representative's duration, else 60 minutes; back-to-back is not a clash) - is refused 409
+`CREW_SCHEDULE_CONFLICT` listing the visits; the sheet's crew block shows them and **Add anyway**
+resends with `confirmConflicts: true`, the ADD audit row recording `conflictsAcknowledged`. An excluded
+technician is refused first (the override), then the conflict. **(2) The preferred technician's
+reminder.** Placing a visit - a slot click, a confirmed move or the sheet's Save - on anyone but the
+customer's PREFERRED technician (when the location has one in effect) is refused 409
+`PREFERENCE_NOT_HONORED` naming the preferred ones and their notes; the board asks "The customer prefers
+X" and **Schedule Y** resends with `acknowledgePreference: true` - any role, recorded as
+`placement_preference_bypassed` on the visit. **Decided:** a manager's exclusion override covers it (one
+prompt; the override row lists the preference passed over); an unchanged technician, an unassigned
+visit and a SUPPORT add are not asked (a preference names the lead). The sheet warns before saving. No
+migration; verified on a copy of the dev DB (54 new smoke assertions and the Pass 30 suite's 108 again,
+first run; double boot clean). **Not done, noted:** a visit MOVED later in time is not re-checked against
+its support technicians' other visits, and the lead's own placement is still not checked for a clash
+(neither was asked; the support cards now make a clash visible on the board); Pass 29's field-add
+next-stop check still reads the lead's day only. **Nothing new was rendered in a browser** - the support
+card, the conflict dialog, the preference dialog and the sheet's warning reach the owner first. Signatures
+under "Shipped in Pass 30b" at the end of `PLAN_ROADMAP_V2.md` Part D.
 
 Next up: **Pass 31** — dispatch board settings (`PLAN_ROADMAP_V2.md` Phase 4 table, C4.5): Settings ->
 Dispatch Board with the view interval (the board's "Slot Interval" today; keep 1 h / 2 h, add 30 min),
@@ -1693,7 +1721,8 @@ pointer and that prompt.
 Replaced at the end of every pass (`AGENT_WORKING_AGREEMENT.md`, the end-of-pass step). The owner
 pastes it verbatim to start the next session; it is also the last thing in the finishing session's
 final message. Written 2026-10-03, after Pass 30 was pushed as
-`feature/phase-4-technician-preferences-crew`. Its ground truth came from a read-only Explore subagent's
+`feature/phase-4-technician-preferences-crew` (line numbers re-grepped after Pass 30b,
+`feature/phase-4-crew-schedule-review`). Its ground truth came from a read-only Explore subagent's
 inventory of the working tree during Pass 30, plus the SQL it ran, re-grepped against the tree after
 Pass 30's edits (the dispatch page, storage and routes moved; settings.tsx did not). They are that
 tree's, so run the SQL and grep the names before trusting any claim.
@@ -1704,12 +1733,13 @@ Start Pass 31 — Dispatch board settings
 rename "View Interval"" (PARTIAL) and "Schedule (snap) interval 15 / 30 / 60 min, configured in Dispatch
 Board settings" (ABSENT) - their file:line citations are stale, see below; canon Scheduling Rules §2
 "Schedule views". No Part B / Part E owner note covers interval, snap or visible hours: the row and the
-two Part A rows are the whole spec. Phase order: Pass 30 (C4.4) closed the row before it, so this is the
-last open Phase 4 row.) Read the CLAUDE.md docs in order first; CURRENT_FOCUS.md's last two entries
-(Pass 30 and "Next up") are the ones that matter.
+two Part A rows are the whole spec. Phase order: Pass 30 (C4.4) and the owner's Pass 30b (C4.4b) closed
+the rows before it, so this is the last open Phase 4 row.) Read the CLAUDE.md docs in order first, and
+OWNER_FEEDBACK.md (its review process applies at the start and end of the session); CURRENT_FOCUS.md's
+last entries (Pass 30, Pass 30b and "Next up") are the ones that matter.
 
-Branch feature/phase-4-dispatch-board-settings from origin/main. Confirm main contains the Pass 30
-merge (feature/phase-4-technician-preferences-crew) before branching.
+Branch feature/phase-4-dispatch-board-settings from origin/main. Confirm main contains the Pass 30b
+merge (feature/phase-4-crew-schedule-review) before branching.
 
 The row: Settings -> Dispatch Board: **view interval** (the rename; keep 1 h / 2 h, add 30 min), **snap
 interval** 15 / 30 / 60 (`dispatch_snap_minutes`; drag placement and the sheet's time inputs round to
@@ -1749,51 +1779,52 @@ non-admin, dev behavior rule 6);
 an off-window appointment on a middle day lands in the first or last slot via getSlotHourForDate's
 fallback) - recommend: noted, not fixed, unless the minute-slot rewrite makes it free - say which.
 
-Ground truth today (line numbers from the working tree at the end of Pass 30; they drift, the names do
+Ground truth today (line numbers from the working tree at the end of Pass 30b; they drift, the names do
 not; the Pass 31 inventory came from a read-only Explore subagent during Pass 30, re-grepped after Pass
-30's edits to schedule.tsx, which added ~236 lines above the board):
-- client/src/pages/schedule.tsx (2244 lines): VIEW_OPTIONS :70 (the day span: "1 Day" / "3 Day" /
-  "1 Week"), HOUR_OPTIONS :76 (6..20), SLOT_INTERVAL_OPTIONS = [1, 2] :77 (hours);
-  formatDateTimeLocalValue :86; buildSlotDate :120; getHourLabel :124; getFullHourRange :128;
-  getSlotHourForDate :137; isSameSlot :150; getAppointmentDurationMinutes :173; getViewportLabel :182;
-  formatSlotLabel :198 (already prints minutes); AppointmentCrewBlock :223 (Pass 30); AppointmentSheet
-  :346 with "Scheduled Start" :782 / "Scheduled End" :791 (datetime-local, no step, no rounding, Save
-  sends toISOString); Schedule() :1104; state boardStartHour 8 / boardEndHour 18 / slotIntervalHours 2
-  :1123-1125 (useState only); slotHours :1185; viewportBounds :1187; appointmentsByTechnicianAndSlot
-  :1221; scheduleMutation :1345 (start = the slot, end = slot + expectedDurationMinutes);
-  moveAppointmentToSlot :1604 (lock checks via isSameSlot); confirmPendingMove :1626 (end = slot +
-  getAppointmentDurationMinutes); handleSlotClick :1645; configSummary :1729; the "Board Window" card
-  :1751; the "Window" popover (Settings2 trigger) :1799-1804, "Visible Start Hour" :1807 (the 21 clamp
-  :1814), "Visible End Hour" :1823, "Slot Interval" :1833 (options "1 hour" / "2 hour"), footer :1843.
-  Pass 30 added the exclusion prompt and the effective-preferences query around scheduleMutation and
-  updateAppointmentMutation - leave them alone.
+30b's edits to schedule.tsx, storage.ts and routes.ts):
+- client/src/pages/schedule.tsx (2404 lines): VIEW_OPTIONS :84 (the day span: "1 Day" / "3 Day" /
+  "1 Week"), HOUR_OPTIONS :90 (6..20), SLOT_INTERVAL_OPTIONS = [1, 2] :91 (hours);
+  formatDateTimeLocalValue :100; buildSlotDate :134; getHourLabel :138; getFullHourRange :142;
+  getSlotHourForDate :151; isSameSlot :164; getAppointmentDurationMinutes :187; getViewportLabel :196;
+  formatSlotLabel :212 (already prints minutes); AppointmentCrewBlock :253 (Pass 30 / 30b);
+  AppointmentSheet :415 with "Scheduled Start" :856 / "Scheduled End" :865 (datetime-local, no step, no
+  rounding, Save sends toISOString); Schedule() :1178; state boardStartHour 8 / boardEndHour 18 /
+  slotIntervalHours 2 :1197-1199 (useState only); slotHours :1259; viewportBounds :1261;
+  appointmentsByTechnicianAndSlot :1295; supportAppointmentsBySlot :1315 (Pass 30b - the support cards,
+  keyed exactly like the lead's map, so the minute-slot rewrite must change both); scheduleMutation :1454
+  (start = the slot, end = slot + expectedDurationMinutes); moveAppointmentToSlot :1716 (lock checks via
+  isSameSlot); confirmPendingMove :1738 (end = slot + getAppointmentDurationMinutes); handleSlotClick
+  :1757; configSummary :1850; the "Board Window" card :1872; the "Window" popover (Settings2 trigger)
+  :1922, "Visible Start Hour" :1928 (the 21 clamp :1935), "Visible End Hour" :1944, "Slot Interval" :1954
+  (options "1 hour" / "2 hour"), footer :1964. Pass 30 / 30b added the exclusion and preference prompts,
+  promptPlacementCheck / resendPlacement and the effective-preferences query around scheduleMutation and
+  updateAppointmentMutation, and the dashed support cards in the grid - leave their behavior alone.
 - Settings (client/src/pages/settings.tsx, untouched by Pass 30): canManageSettings :1717 (MANAGE_SETTINGS
   is admin only); Invoicing on Finalization: query ["/api/settings/invoice-on-finalize"] :1718, PATCH
   mutation :1756-1766, card :2137-2163; Service Report (Switch) :1770-1785, card-service-report :2170;
   Appointment Cancel / Reschedule Reasons :1666 / :1713 / :1720-1724 / :1786-1800, card :2691-2722; Service
   Time Tracking :1712 / :1745-1755, card :2666-2689 (its PATCH is ungated - note, do not fix); Zones
   :2350-2396 (copy: "dispatch and Smart Schedule will read the same zones later").
-- Server: the settings routes are PATCH, GETs open - service-time-tracking :2572 / :2577 (ungated),
-  appointment-cancel-reasons :2588 / :2597, invoice-on-finalize :2668 / :2673, attach-service-report
-  :2689 / :2694 (MANAGE_SETTINGS via requirePermission); inline zod schemas :395 (attachServiceReport),
-  :410 (serviceTimeTrackingMode), :416 (invoiceOnFinalizeMode). Storage has no generic app-settings
-  helper - one reader / writer pair per setting: getServiceTimeTrackingMode :7733,
-  getInvoiceOnFinalizeMode :7856 / setInvoiceOnFinalizeMode :7865 (insert ... onConflictDoUpdate on
-  [orgId, key]), getAttachServiceReportToInvoices :7880 (a Tx reader on DbReader). app_settings
+- Server: the settings routes are PATCH, GETs open - service-time-tracking :2602 / :2607 (ungated),
+  appointment-cancel-reasons :2618 / :2627, invoice-on-finalize :2698 / :2703, attach-service-report
+  :2719 / :2724 (MANAGE_SETTINGS via requirePermission); inline zod schemas :399 (attachServiceReport),
+  :414 (serviceTimeTrackingMode), :420 (invoiceOnFinalizeMode). Storage has no generic app-settings
+  helper - one reader / writer pair per setting: getServiceTimeTrackingMode :7915,
+  getInvoiceOnFinalizeMode :8038 / setInvoiceOnFinalizeMode :8047 (insert ... onConflictDoUpdate on
+  [orgId, key]), getAttachServiceReportToInvoices :8062 (a Tx reader on DbReader). app_settings
   (shared/schema.ts :593-600): org_id, key, value text, updated_at, PK (org_id, key).
 - No server code rounds a time anywhere; the technician's day (technician-work.tsx) reads no interval or
   hours; no other page reads the board window (pages link to /schedule with date / appointmentId /
   prefill params only).
-- DB today (run the SQL, never trust a doc's data claim; the shared dev DB was untouched by Pass 30,
-  whose verification ran on a copy - its two tables do not exist there until the owner's restart):
-  app_settings rows appointment_cancel_reschedule_reasons, attach_service_report_to_invoices (true),
-  invoice_on_finalize (PROMPT), service_time_tracking_mode (PROMPT_FOR_TIMEOUT), ticket_reopen_reasons -
-  no dispatch_ key anywhere in the code or the DB; 46 public tables (48 after the restart, with
-  technician_preferences and appointment_technicians); appointments 123.
+- DB today (run the SQL, never trust a doc's data claim): app_settings rows
+  appointment_cancel_reschedule_reasons, attach_service_report_to_invoices (true), invoice_on_finalize
+  (PROMPT), service_time_tracking_mode (PROMPT_FOR_TIMEOUT), ticket_reopen_reasons - no dispatch_ key
+  anywhere in the code or the DB; 48 public tables (Pass 30's two included); appointments 126,
+  appointment_technicians 119, technician_preferences 2. Pass 30b added no table or column.
 - Docs versus code, found by the inventory: the row says "drag placement" - there is no drag; the labels
   are "Slot Interval" / "Window" / "Board Window", not "Schedule interval" / "View Interval"; Part A3
   :117-118 cite schedule.tsx :838-886 / :40 / :430 / :75 / :679-707 and storage.ts :4324 / :4341 (now
-  :1799-1843 / :77 / :1125 / :120 / :1604-1660 and :7733 / :7750) and claim only two app_settings keys
+  :1920-1964 / :91 / :1199 / :134 / :1716-1772 and :7915 / :7932) and claim only two app_settings keys
   (seven in the code, five rows); "the session override stays" names something that is plain React state.
 - Docs to carry: the C4.5 row; Part A3 rows :117-118 (mark DONE with the real citations); canon
   Scheduling Rules §2 (state the view and snap intervals as settings - §3 / §4 are Pass 30's technician
@@ -1815,8 +1846,8 @@ DB backup / restore, the copy-database recipe and the PowerShell traps, gh logge
 open the PR. Verify on PORT=5001 as the previous passes did. This pass should add no table or column (a
 settings pass needs no seed row: the reader returns the defaults), so the shared DB is safe to verify
 against - but use the copy if anything structural lands, and note that a copy taken before the owner's
-restart after PR (Pass 30) prints Pass 30's two lines (the crew backfill count included), which is
-expected. npm run check; double boot (boot 2 prints only "serving on port 5001" with every table count
+restart has already run Pass 30's migration (it had by Pass 30b), so a copy prints nothing new. npm run
+check; double boot (boot 2 prints only "serving on port 5001" with every table count
 unchanged); the pass's API smoke test as all four roles (the defaults with no row; admin's PATCH of each
 value and the read back; manager's / support's / the technician's PATCH 403; an unknown interval, a snap
 outside 15 / 30 / 60, start >= end and an hour off the board 400; the shared module's normalize and the
