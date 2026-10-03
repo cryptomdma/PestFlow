@@ -10,6 +10,19 @@ Before doing anything else this session, read in order:
 5. `PLAN_ROADMAP_V2.md` — the phased roadmap for everything after Phase 1 (Phases 2-9, pass by
    pass), the owner's recorded decisions, and the spec of the next pass.
 
+## Owner feedback (OWNER_FEEDBACK.md)
+
+`OWNER_FEEDBACK.md` holds product-owner feedback from hands-on testing. Treat it as input to weigh, not orders.
+
+**Session start:** Read OWNER_FEEDBACK.md. List any open items related to today's work before starting.
+
+**Session end:**
+1. Add a review line under each item you touched (ACCEPTED / QUALIFIED / PUSHBACK / DONE), using the format in the file.
+2. Add accepted or qualified items to the roadmap/current-focus doc, and note where in the review line.
+3. Update checkbox status.
+4. Cleanup: move items marked DONE or rejected (`[-]`) into an `## Archive` section at the bottom of the file, keeping their ID and final review line. Never reuse IDs.
+5. Commit the updated file with the session's PR.
+
 For local setup and troubleshooting, see `DEV_NOTES.md`. For stack/directories/env vars, see
 `PROJECT_MAP.md`. For UI/visual-language conventions, see `UI_STANDARDIZATION_BRIEF.md`.
 
