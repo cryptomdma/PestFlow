@@ -1845,9 +1845,8 @@ Environment: Node 24.21.0, npm run dev:full (restart it before manually testing)
 DB backup / restore, the copy-database recipe and the PowerShell traps, gh logged in so the session can
 open the PR. Verify on PORT=5001 as the previous passes did. This pass should add no table or column (a
 settings pass needs no seed row: the reader returns the defaults), so the shared DB is safe to verify
-against - but use the copy if anything structural lands, and note that a copy taken before the owner's
-restart has already run Pass 30's migration (it had by Pass 30b), so a copy prints nothing new. npm run
-check; double boot (boot 2 prints only "serving on port 5001" with every table count
+against - but use the copy if anything structural lands; the owner's restart has already run Pass
+30's migration, so a copy prints nothing new. npm run check; double boot (boot 2 prints only "serving on port 5001" with every table count
 unchanged); the pass's API smoke test as all four roles (the defaults with no row; admin's PATCH of each
 value and the read back; manager's / support's / the technician's PATCH 403; an unknown interval, a snap
 outside 15 / 30 / 60, start >= end and an hour off the board 400; the shared module's normalize and the
