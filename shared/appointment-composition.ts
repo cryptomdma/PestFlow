@@ -13,16 +13,36 @@
 // The disposition (shared/appointment-disposition.ts) stays the only way an
 // Appointment leaves the board; the LAST service on a visit is refused here
 // so the office reschedules or cancels the appointment instead.
+//
+// Pass 29 (PLAN_ROADMAP_V2.md C4.3b; B13; Part E answer 7): the technician's
+// side of the same routes. The add carries an ORIGIN - OFFICE (the default,
+// the dispatch sheet and the board) or FIELD (the technician's Appointment
+// Details). A FIELD add is one-time work only (a new MANUAL service at the
+// visit's location; the queue's pending services are the office's to place),
+// is attributed to the session user (services.addedInFieldByUserId) and so
+// FLAGGED FOR OFFICE REVIEW until the office marks it reviewed (POST
+// /api/services/:id/field-review), and is REFUSED when the visit's extended
+// end would run into the technician's NEXT STOP (NEXT_STOP_OVERLAP) - the
+// office's add is never refused for that, only told. A technician edits the
+// instructions (services.notes) only on a service they added
+// (SERVICE_INSTRUCTIONS_LOCKED on the generic PATCH); the type is the same
+// PATCH as the sheet's, locked on agreement work as everywhere.
 
 import type { Appointment, Service } from "./schema";
 import type { DispositionOpportunityChoice, DispositionOpportunityOutcome } from "./appointment-disposition";
 
-/** The body of POST /api/appointments/:id/services - exactly one of the two. */
+/** Where an add comes from (Pass 29). OFFICE is the default; FIELD turns on the one-time-only rule, the flag stamp and the next-stop check. */
+export const COMPOSITION_ORIGINS = ["OFFICE", "FIELD"] as const;
+export type CompositionOrigin = (typeof COMPOSITION_ORIGINS)[number];
+
+/** The body of POST /api/appointments/:id/services - exactly one of serviceId / service. */
 export interface AppointmentServiceAddRequest {
-  /** A PENDING_SCHEDULING service at the visit's location, from the queue. */
+  /** A PENDING_SCHEDULING service at the visit's location, from the queue. Refused with origin FIELD. */
   serviceId?: string;
   /** A new one-time (MANUAL) service, created already placed on the visit. */
   service?: NewPlacedServiceRequest;
+  /** Pass 29: OFFICE (default) or FIELD - the technician's Appointment Details. */
+  origin?: CompositionOrigin;
 }
 
 export interface NewPlacedServiceRequest {
@@ -52,6 +72,21 @@ export interface ServiceCancelRequest {
   opportunity: DispositionOpportunityChoice;
 }
 
+/**
+ * Pass 29: the technician's next stop after a visit, as an add computed it -
+ * the next board placement (not CANCELED) assigned to the same technician on
+ * the visit's day. `overlapped` is true when the add extended the planned
+ * end past the next stop's start; a FIELD add is refused on it
+ * (NEXT_STOP_OVERLAP), an OFFICE add is told.
+ */
+export interface NextStopRef {
+  appointmentId: string;
+  scheduledDate: Date;
+  /** The visit's planned end after the add (null when nothing is known). */
+  plannedEnd: Date | null;
+  overlapped: boolean;
+}
+
 /** What an add / remove / update did to the visit. */
 export interface AppointmentCompositionResult {
   appointment: Appointment;
@@ -63,6 +98,10 @@ export interface AppointmentCompositionResult {
   scheduledEndDateExtendedMinutes: number;
   /** Open reschedule / cancel-review opportunities on the added service that the placement converted. */
   opportunitiesConverted: number;
+  /** Pass 29: true when the add stamped the service as added in the field (origin FIELD) - flagged for office review. */
+  flagged: boolean;
+  /** Pass 29: the technician's next stop, when an add had one to measure against; null otherwise (a remove / update, no technician, the day's last visit). */
+  nextStop: NextStopRef | null;
 }
 
 /** CANCELLED: a one-time service is done. REQUEUED: an agreement service is recycled (window reset from today), never cancelled - ending the plan is the agreement workflow. */
@@ -106,6 +145,19 @@ export const ADD_SERVICE_TARGET_REQUIRED = "ADD_SERVICE_TARGET_REQUIRED";
 export const SERVICE_CANCEL_REQUIRED = "SERVICE_CANCEL_REQUIRED";
 /** 409: PATCH /api/services/:id detaching a placed service - removing is the composition route's. */
 export const SERVICE_REMOVE_REQUIRED = "SERVICE_REMOVE_REQUIRED";
+// Pass 29 (C4.3b) - the field's codes.
+/** 409: a FIELD add would run the visit's planned end past the technician's next stop (B13). The message names both times. */
+export const NEXT_STOP_OVERLAP = "NEXT_STOP_OVERLAP";
+/** 400: a FIELD add named a queued service - the field adds a new one-time service only; the queue is the office's. */
+export const FIELD_ADD_NEW_ONLY = "FIELD_ADD_NEW_ONLY";
+/** 400: a FIELD add with no session user to attribute it to. */
+export const FIELD_ACTOR_REQUIRED = "FIELD_ACTOR_REQUIRED";
+/** 403: a technician changing the instructions (notes) of a service they did not add in the field. */
+export const SERVICE_INSTRUCTIONS_LOCKED = "SERVICE_INSTRUCTIONS_LOCKED";
+/** 409: POST /api/services/:id/field-review on a service that was not added in the field. */
+export const SERVICE_NOT_FIELD_ADDED = "SERVICE_NOT_FIELD_ADDED";
+/** 409: POST /api/services/:id/field-review on a service the office already reviewed. */
+export const SERVICE_FIELD_REVIEWED = "SERVICE_FIELD_REVIEWED";
 
 /** A service that still counts on a visit: not settled. */
 export function isActiveOnVisit(service: Pick<Service, "status">): boolean {
@@ -169,6 +221,56 @@ export function extendPlannedEnd(
 export const PLANNED_END_RULE_TEXT =
   "Adding a service, or lengthening one, extends the visit's end by that duration. Removing or shortening one never shrinks it - adjust Scheduled End above.";
 
+/** Pass 29: the technician's Add service form's caption - B13's rule and Part E answer 7 in one line. */
+export const FIELD_ADD_RULE_TEXT =
+  "Adding a service extends this visit's end by its minutes and is refused if that would run into your next stop. The office is asked to review every service added from the field.";
+
+/** Pass 29: true when the add's extension ran the planned end past the next stop's start. An add that extends nothing cannot overlap. */
+export function overlapsNextStop(plannedEnd: Date | null | undefined, nextStart: Date | string | null | undefined, extendedMinutes: number): boolean {
+  if (!plannedEnd || !nextStart || extendedMinutes <= 0) return false;
+  return plannedEnd.getTime() > new Date(nextStart).getTime();
+}
+
+function formatStopTime(value: Date | string): string {
+  return new Date(value).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+}
+
+/** Pass 29: the NEXT_STOP_OVERLAP refusal's text, naming the would-be end and the next stop's start - built on the server, shown by the field as it is. */
+export function describeNextStopOverlap(nextStart: Date | string, plannedEnd: Date | string): string {
+  return `Adding this service would run the visit to ${formatStopTime(plannedEnd)}, past your next stop at ${formatStopTime(nextStart)}. Finish this visit first, or ask the office to move the next stop.`;
+}
+
+/** Pass 29: the office's warning when its own add ran past the technician's next stop (never refused). */
+export function describeNextStopWarning(nextStop: Pick<NextStopRef, "scheduledDate" | "plannedEnd" | "overlapped"> | null | undefined): string | null {
+  if (!nextStop?.overlapped || !nextStop.plannedEnd) return null;
+  return `The visit now runs to ${formatStopTime(nextStop.plannedEnd)}, past the technician's next stop at ${formatStopTime(nextStop.scheduledDate)}`;
+}
+
+/** The columns the field-review rules read. Satisfied by a Service row. */
+export interface FieldReviewFields {
+  addedInFieldByUserId: string | null;
+  fieldReviewedAt: Date | string | null;
+  fieldReviewedByLabel: string | null;
+}
+
+/** Pass 29: added to a visit from the field (the stamp is never cleared). */
+export function isFieldAdded(service: FieldReviewFields): boolean {
+  return !!service.addedInFieldByUserId;
+}
+
+/** Pass 29: added from the field and not yet marked reviewed by the office - the "Field-added - review" badge. */
+export function needsFieldReview(service: FieldReviewFields): boolean {
+  return isFieldAdded(service) && !service.fieldReviewedAt;
+}
+
+/** Pass 29: the badge's title. */
+export function describeFieldAddedService(service: FieldReviewFields): string {
+  if (!isFieldAdded(service)) return "";
+  if (!service.fieldReviewedAt) return "Added to the visit by the technician in the field - awaiting office review.";
+  const when = new Date(service.fieldReviewedAt).toLocaleString();
+  return `Added to the visit by the technician in the field; reviewed${service.fieldReviewedByLabel ? ` by ${service.fieldReviewedByLabel}` : ""} on ${when}.`;
+}
+
 /** What the cancel dialog says will happen to this service. */
 export function describeServiceCancelEffect(service: Pick<Service, "agreementId" | "appointmentId" | "status">): string {
   const onVisit = !!service.appointmentId && service.status === "SCHEDULED";
@@ -193,6 +295,16 @@ export function describeCompositionRefusal(code: string | null | undefined): str
       return "This appointment is cancelled or completed - its services are history.";
     case SERVICE_TYPE_LOCKED:
       return "An agreement service's type is locked. A manager or an admin may change it.";
+    // Pass 29. NEXT_STOP_OVERLAP has no fixed text: the server's message
+    // names the two times (describeNextStopOverlap), so it is shown as sent.
+    case FIELD_ADD_NEW_ONLY:
+      return "From the field a new one-time service is added to the visit. A queued service is placed by the office.";
+    case SERVICE_INSTRUCTIONS_LOCKED:
+      return "Instructions can be edited in the field only on a service you added. Ask the office to change these.";
+    case SERVICE_NOT_FIELD_ADDED:
+      return "This service was not added in the field - there is nothing to review.";
+    case SERVICE_FIELD_REVIEWED:
+      return "This field-added service was already reviewed.";
     default:
       return null;
   }

@@ -106,7 +106,7 @@ are calibrated to Phase 1's: Pass 6 (four tables, routes, three dialogs) is the 
 | Review modal: reopen reason as a pop-up with a settings list, "Other" requires text | DONE — Pass 17 (2026-09-25) | was: inline free-text `Textarea` (`:643-646`), `reopenReason` text only, no code column, no settings key. Now `ReopenTicketDialog` over `ticket_reopen_reasons`, `reopenReasonCode` + text, Other gated by `REOPEN_TICKET_OTHER` (see "Shipped in Pass 17" at the end of Part D) |
 | Reopen must be role-authorized | DONE | `REOPEN_TICKET` support+ (`routes.ts:1669`), reason required, audit-logged (Pass 8) |
 | Fields immutable once posted / finalized (price, service date, collection data) | DONE — Pass 16 (2026-09-23) | was **NOT ENFORCED**: `PATCH /api/service-records/:id` had no permission gate and no status guard, `updateServiceRecord` blind-wrote (and completed the Service on `confirmed`), and `completeService` re-posted over a FINALIZED record and reset its stamps. Now the PATCH is `EDIT_TICKET` (support+), content-only and strict, 409 on FINALIZED; a re-post is refused on FINALIZED (anyone) and on a ticket in review without `EDIT_TICKET`; every accepted edit or re-post writes `ticket_edited`; the rules are `shared/ticket-status.ts`, read by the technician view too. See "Shipped in Pass 16" at the end of Part D. Payment records were already immutable (Pass 6). |
-| Technician ticket: add a second service / surcharge line / Generate Proposal | PARTIAL — the surcharge line DONE, Pass 23 (2026-09-27) | was: none in `service-completion-dialog.tsx`, `ADD_FIELD_SURCHARGE` (`permissions.ts:22`) read by nothing. Now the Surcharge ($) / Surcharge Label inputs on the ticket (post and office edit), gated by `ADD_FIELD_SURCHARGE` and the agreement template's toggle, a `SURCHARGE` invoice line per ticket and a transitional SURCHARGE production credit (C3.6). A second service from the field is C4.3b (Pass 29); Generate Proposal is Phase 9 |
+| Technician ticket: add a second service / surcharge line / Generate Proposal | DONE but Generate Proposal — the surcharge line Pass 23 (2026-09-27), a second service from the field Pass 29 (2026-10-02) | was: none in `service-completion-dialog.tsx`, `ADD_FIELD_SURCHARGE` (`permissions.ts:22`) read by nothing. Now the Surcharge ($) / Surcharge Label inputs on the ticket (post and office edit), gated by `ADD_FIELD_SURCHARGE` and the agreement template's toggle, a `SURCHARGE` invoice line per ticket and a transitional SURCHARGE production credit (C3.6). A second service from the field: **Add service** on the technician's Appointment Details (`technician-work.tsx` `block-tech-add-service`) posts `POST /api/appointments/:id/services { origin: "FIELD", service }` - one-time work at the visit's location, stamped `addedInFieldByUserId` and flagged for office review, the visit's end extended, refused 409 `NEXT_STOP_OVERLAP` past the technician's next stop (C4.3b; see "Shipped in Pass 29" at the end of Part D). Generate Proposal is Phase 9 |
 | Invoice document: Bill To from the primary location / billing profile; a Service Location block (owner, 2026-09-21) | DONE — Pass 11c (2026-09-21) | was a defect: `getInvoiceDocumentContext` fell back to the **service** location's live address when no profile address was snapshotted, which was every invoice on the dev DB. Now the parties are frozen at issue in `billingProfileSnapshot.billTo` / `.serviceLocation` by `resolveInvoicePartiesTx` on every issuing path, the renderer prints Remit To / Bill To / Service Location, and the 64 pre-11c rows (45 with no snapshot, 19 profile-only) resolve at render by the same rule, marked transitional. Documents already stored keep their bytes (§1.7). See "Shipped in Pass 11c" at the end of Part D. C2.1c |
 | Down payment collected in the field rides the first visit's invoice; the technician sees it as due today (owner, 2026-09-21) | DONE — Pass 11d (2026-09-22) | now: `createAgreement` issues nothing; the down payment rides the first visit's invoice as an `INITIAL_CHARGE` line (`buildVisitInvoiceLinesTx`), `getVisitBillingSummary` prices it into the visit's figures as `charges`, the collector field has its readers (the office prompt at signing and scheduling, the technician's callout), the explicit up-front button stays, and the three unissued `Daily Rodent Trapping` deposits are settled outside the ledger. See "Shipped in Pass 11d" at the end of Part D. Was: `createAgreement` issues a standalone `INITIAL_CHARGE` invoice (`storage.ts:3252`, `7625-7714`); `getVisitBillingSummary` (`:4724`) never finds it, so the ticket says $0 due; `initialChargeCollectedBy` has no reader in the field. Owner correction recorded under D4 in `PLAN_BILLING_V1_1.md`. C2.1d |
 
@@ -128,13 +128,13 @@ are calibrated to Phase 1's: Pass 6 (four tables, routes, three dialogs) is the 
 | Material Unit as a settings-managed dropdown | ABSENT | free-text input (`:636-637`); products carry one free-text `defaultUnit` (`schema.ts:572`), no unit list |
 | Application area as multi-select | PARTIAL | single-select from the product's `allowedApplicationAreas[]` else free text (`:663-674`); areas serviced derived across lines (`:308`); no org-level area list (per-product comma text, `settings.tsx:296`) |
 | Generate Proposal | ABSENT | no `proposal` anywhere |
-| Ticket / appointment details: due vs prepaid, Price / COA / Due today, designation | DONE | Pass 7 (`ServiceBillingBlock` at `:446`; `technician-work.tsx:376, 392`) |
+| Ticket / appointment details: due vs prepaid, Price / COA / Due today, designation | DONE | Pass 7 (`ServiceBillingBlock` at `technician-work.tsx:686`, `VisitDueTodayTotal` at `:754`, since Pass 29's edits) |
 | … billing plan/profile display, card-on-file icon | PARTIAL / ABSENT | plan pill on agreement card + location profile (Pass 7); nothing on the ticket; no card icon (no `payment_methods`) |
 | Post-ticket sequence: finish → collect → post | DONE, with D8's labels not the notes' | Pass 7.5 (see B1); the collect step's "preview / print / send service summary" is the service report document — built as Pass 22 (C3.5): Preview in the collect step, Open / Download on the review modal and the Services tab; "send" waits for C6.3 |
 | Appointment status "Scheduled → Pending" | **REJECTED (Q4 / D1a)** | no fifth status; the feature is the reschedule-to-queue action (see B2) |
-| Appointment Details (tech): service price = sum of due services | DONE | `VisitDueTodayTotal` (`technician-work.tsx:392`) |
-| Appointment Details (tech): auto refresh after Time In / Out | DONE | `refreshWork()` invalidates on both mutations (`technician-work.tsx:128-190`). The note predates this or reflects a stale dev server (Pass 7.6's finding); re-verify after `npm run dev:full` restart. |
-| Appointment Details: change service type, add service, change duration, order instructions | PARTIAL — the dispatch sheet DONE, Pass 28 (2026-09-29); the tech modal is C4.3b (Pass 29) | the dispatch sheet's block (`schedule.tsx` `sheet-composition`) edits each service's type (agreement work locked to ADJUST_PRICE_AGREEMENT) and duration, adds a service (from the queue or new), removes or cancels one, and its "Scheduling Notes" edit `appointments.notes` (B13's order instructions, audited since Pass 28) - all through `POST/PATCH /api/appointments/:id/services[/:serviceId]` and `POST /api/services/:id/cancel`. The tech modal is still read-only (`technician-work.tsx:345-477`); the ticket dialog's type select (`service-completion-dialog.tsx:806-820`) is the field's only edit until C4.3b. An earlier version of this row said the sheet edited start/end/status/notes only and that attach-from-queue was absent - the notes edit and the queue-then-card attach both predated Pass 28 |
+| Appointment Details (tech): service price = sum of due services | DONE | `VisitDueTodayTotal` (`technician-work.tsx:754`) |
+| Appointment Details (tech): auto refresh after Time In / Out | DONE | `refreshWork()` invalidates on both mutations (`technician-work.tsx:201-212`; since Pass 29 it also invalidates the services, the location rows and the History read, which the field's composition changes). The note predates this or reflects a stale dev server (Pass 7.6's finding); re-verify after `npm run dev:full` restart. |
+| Appointment Details: change service type, add service, change duration, order instructions | DONE — the dispatch sheet Pass 28 (2026-09-29), the tech modal Pass 29 (2026-10-02) | the dispatch sheet's block (`schedule.tsx` `sheet-composition`) edits each service's type (agreement work locked to ADJUST_PRICE_AGREEMENT) and duration, adds a service (from the queue or new), removes or cancels one, and its "Scheduling Notes" edit `appointments.notes` (B13's order instructions, audited since Pass 28) - all through `POST/PATCH /api/appointments/:id/services[/:serviceId]` and `POST /api/services/:id/cancel`. The tech modal (`technician-work.tsx` Appointment Details, `:483-800`): each service row opens on click (`button-tech-service-edit-*`) to a type select on non-agreement, un-ticketed work (the same PATCH; the locked label otherwise) and an instructions editor on a service this user added in the field (the generic service PATCH, 403 `SERVICE_INSTRUCTIONS_LOCKED` otherwise); **Add service** (`block-tech-add-service`) posts the add with origin FIELD; duration is not edited from the field (B13); "Appointment Notes" stays read-only; the sheet, the Services tab and Service Ticket Review show the "Field-added - review" badge with **Mark reviewed** (`POST /api/services/:id/field-review`, FINALIZE_TICKET). See "Shipped in Pass 29" at the end of Part D. An earlier version of this row said the sheet edited start/end/status/notes only and that attach-from-queue was absent - the notes edit and the queue-then-card attach both predated Pass 28 |
 | Service Time Tracking Mode | DONE | `AUTO_TIMEOUT_ON_TICKET_POST / PROMPT_FOR_TIMEOUT / MANUAL_TIMEOUT` (`storage.ts:272`, `settings.tsx:1860-1883`) |
 | Service-level cancel / return one service to pending | DONE — Pass 28 (2026-09-29) | per service on the dispatch sheet: **Remove** (`POST /api/appointments/:id/services/:serviceId/remove` - back to the queue, dates kept, the representative reassigned) and **Cancel** (`POST /api/services/:id/cancel` - a reason from the list, the opportunity choice, a one-time service CANCELLED and detached, an agreement service recycled); the last active service prompts to reschedule or cancel the appointment instead. The generic `PATCH /api/services/:id` now refuses status CANCELLED (409 SERVICE_CANCEL_REQUIRED), appointmentId null (400) and SCHEDULED -> PENDING_SCHEDULING while placed (409 SERVICE_REMOVE_REQUIRED) - before this pass any client could write all three with no reason, audit row or opportunity. See "Shipped in Pass 28" at the end of Part D |
 | Materials modeled as products with allowed methods / equipment / areas | DONE | `materialProducts` (`schema.ts:556-579`) |
@@ -381,7 +381,7 @@ so every field action is a route and every screen is data from a read — no pag
 | C4.2 (**Pass 27**) — **done** (`feature/phase-4-cancel-reschedule`, 2026-09-25; see "Shipped in Pass 27" at the end of Part D) | **Cancel and Reschedule, one path** (B2). New `POST /api/appointments/:id/disposition { mode: CANCEL \| RESCHEDULE, reasonCode?, opportunity: UPDATE_EXISTING \| CREATE \| NONE, voidDraftInvoices? }` built on `requestAppointmentCancelOrReschedule` (the technician's cancel-reschedule route becomes a thin alias that always creates the office-handoff opportunity). **RESCHEDULE**: services back to `PENDING_SCHEDULING`, no reason required, no policy, no opportunity when the office does it from the board. **CANCEL**: reason required from the settings list; agreement-generated services return to `PENDING_SCHEDULING` with `serviceWindowStart/End` reset from the cancel date and an opportunity created or assigned as the fallback; non-agreement services are `CANCELLED` with the opportunity prompt (category defaulted by path). Both keep the draft-invoice prompt. `PATCH /api/appointments/:id { status: CANCELED }` is refused with 409 `CANCEL_DISPOSITION_REQUIRED`; the sheet's status Select drops CANCELED and its "Cancel Service" button becomes **Cancel appointment** + **Reschedule**. **Board moves confirm on drop** ("Move to <slot>?"). The location's Services tab shows Scheduled / Pending / Rescheduling / Cancelled distinctly — also Q4's PENDING_SCHEDULING-vs-SCHEDULED gap. | Unschedule → Reschedule; cancel reason required; opportunity prompt; agreement services recycled; accidental moves; Services-tab clarity | C4.1 | — |
 | C4.2b (**Pass 27b**) — **done** (`feature/phase-4-cancel-reschedule-review`, 2026-09-25; see "Shipped in Pass 27b" at the end of Part D) | **Cancel and Reschedule, owner review** (live testing of 2026-09-25, Part E). (1) A CANCELED placement leaves the dispatch board - cancelled and rescheduled alike, so the slot is free for new work; it stays in the location's Services tab ("Was <date>", the reason) and History as the record. One shared predicate for "shows on the board", read by the board's viewport, slot map and analytics (`getTechnicianWork` already excludes CANCELED). (2) The Cancel appointment and Reschedule dialogs close when the disposition completes: the sheet resets on the appointment prop only while one is set, so the dialog stays open after the sheet closes. (3) Re-verify, with a fresh agreement service and a fresh one-time service, that the opportunity a CANCEL creates is OPEN until the recycled service is placed again (placement converts it, the pre-existing rule); the owner saw CONVERTED and attributed it to the agreement path. No new behavior otherwise. | Owner review of Pass 27 | C4.2 | — |
 | C4.3a (**Pass 28**) — **done** (`feature/phase-4-appointment-composition`, 2026-09-29; see "Shipped in Pass 28" at the end of Part D) | **Appointment composition, server + dispatch sheet** (B13) — add a service to an appointment (new or from the pending queue), remove / cancel / return ONE service to pending (the last service prompts to reschedule the appointment), change a service's type (agreement work stays locked) and duration, appointment instructions (`appointments.notes`) editable; all through `getLinkedServicesForAppointmentTx`. UI on the dispatch sheet. **Also (owner review of 2026-09-25): cancelling a `PENDING_SCHEDULING` service outright**, from the pending queue and the location's Services tab, with the disposition's semantics. As built: `shared/appointment-composition.ts`; four routes (`POST /api/appointments/:id/services`, `POST .../services/:serviceId/remove`, `PATCH .../services/:serviceId`, `POST /api/services/:id/cancel`), each one transaction and one audit row (`appointment_composition_changed` / `service_cancelled`); the representative follows the first remaining sibling; the planned end grows on add and never shrinks; a service landing on a visit converts its handoff opportunities like a placement (the board's attach and grouped placement use the same route); an agreement service's type is ADJUST_PRICE_AGREEMENT everywhere; the last active service is refused; a posted ticket, a settled service and an issued invoice refuse; the generic service PATCH refuses the lifecycle moves; the reasons list's write is MANAGE_SETTINGS; one `ServiceCancelDialog` on the sheet, the queue and the Services tab. | Appointment Details build-out; service-level cancel; cancel a pending service | C4.2 | — |
-| C4.3b (**Pass 29**) | **Appointment composition in the field** (B13) — the technician's appointment details: each service displayed, editable on click (type, for non-agreement work); **Add service** as a small button; adding extends the visit's duration and refuses an overlap with the technician's next stop; instructions editable only on services the technician added; an added non-agreement service is **flagged for office review** (owner). Same routes as C4.3a. | Add service in the field (tech-modal item 5) | C4.3a | — |
+| C4.3b (**Pass 29**) — **done** (`feature/phase-4-field-composition`, 2026-10-02; see "Shipped in Pass 29" at the end of Part D) | **Appointment composition in the field** (B13) — the technician's appointment details: each service displayed, editable on click (type, for non-agreement work); **Add service** as a small button; adding extends the visit's duration and refuses an overlap with the technician's next stop; instructions editable only on services the technician added; an added non-agreement service is **flagged for office review** (owner). Same routes as C4.3a. As built: `origin: "FIELD"` on the add route's body (one-time work only, 400 `FIELD_ADD_NEW_ONLY` on a queued service; the session user stamped on `services.addedInFieldByUserId`; 409 `NEXT_STOP_OVERLAP` when the extended end would pass the technician's next placement that day - the office's add is told, never refused); the flag is the stamp with `fieldReviewedAt` null, cleared by `POST /api/services/:id/field-review` (FINALIZE_TICKET, one `field_service_reviewed` row); the type through the C4.3a PATCH; the instructions through the generic PATCH, refused 403 `SERVICE_INSTRUCTIONS_LOCKED` to a technician on a service they did not add; the "Field-added - review" badge and **Mark reviewed** on the sheet, the Services tab and Service Ticket Review; the row's kind badge, agreement marker and planned duration; no new permission. | Add service in the field (tech-modal item 5) | C4.3a | — |
 | C4.4 (**Pass 30**) | **Technician preferences + crew** (B14). `technician_preferences` (`scopeType account \| location`, `technicianId`, `kind PREFERRED \| EXCLUDED`, note, created-by); editors in edit/add location and on the primary location with an "apply to all locations" checkbox that writes the account-scoped row; chip on the card. Dispatch: EXCLUDED is a **hard block** on placement (manager override with a reason, audit-logged), PREFERRED a "Prefers <tech>" hint on the queue row and the sheet. Crew: `appointment_technicians` (lead + support) — the comp basis D8 collects here; production entries stay single-technician until Phase 7's split allocation. | Preferred technician; EXCLUDE_TECH; apply across locations; crew | — | — |
 | C4.5 (**Pass 31**) | **Dispatch board settings.** Settings → Dispatch Board: **view interval** (the rename; keep 1 h / 2 h, add 30 min), **snap interval** 15 / 30 / 60 (`dispatch_snap_minutes`; drag placement and the sheet's time inputs round to it), default visible hours (the session override stays). | Schedule interval; View Interval | — | — |
 
@@ -3233,6 +3233,167 @@ Behavior worth knowing before the next pass touches it - the decisions, numbered
   the pattern the technician's Appointment Details dialog (`max-h-[92vh] overflow-y-auto`) already
   used. The note-history sheet on the customer screen (`customer-detail.tsx`, the same
   `SheetContent` shape) has the same exposure with a long revision list and was left as it is.
+
+**Shipped in Pass 29** (`feature/phase-4-field-composition`, 2026-10-02) — the C4.3b row as built,
+plus the eight decisions the handoff asked for.
+
+```ts
+// shared/schema.ts                            services += addedInFieldByUserId (users FK, nullable, never cleared), fieldReviewedAt, fieldReviewedByUserId (users FK), fieldReviewedByLabel - all
+//                                             server-written (insertServiceSchema omits the four); the generic PATCH cannot set them
+// server/service-scheduling-bootstrap.ts      bootstrapFieldComposition() - the four columns + services_added_in_field_idx (partial, where set), printed once; no backfill
+// shared/audit.ts                             AuditAction += "field_service_reviewed" ("Field-added service reviewed"); an ADD's composition carries origin / flagged / nextStop
+
+// shared/appointment-composition.ts
+COMPOSITION_ORIGINS = ["OFFICE", "FIELD"]; CompositionOrigin           // AppointmentServiceAddRequest.origin? (default OFFICE)
+NextStopRef { appointmentId, scheduledDate, plannedEnd, overlapped }     // AppointmentCompositionResult += flagged: boolean, nextStop: NextStopRef | null (null on remove / update, no technician, the day's last visit)
+NEXT_STOP_OVERLAP (409) / FIELD_ADD_NEW_ONLY (400) / FIELD_ACTOR_REQUIRED (400) / SERVICE_INSTRUCTIONS_LOCKED (403) / SERVICE_NOT_FIELD_ADDED (409) / SERVICE_FIELD_REVIEWED (409)
+overlapsNextStop(plannedEnd, nextStart, extendedMinutes)                // true only when an extension ran the end past the next stop's start (an add that extends nothing cannot overlap)
+describeNextStopOverlap(nextStart, plannedEnd)                          // the 409's message, both times named - built on the server, shown by the field as sent (describeCompositionRefusal returns null for the code)
+describeNextStopWarning(nextStop)                                       // the office's toast when its own add ran past the next stop
+FieldReviewFields; isFieldAdded(service); needsFieldReview(service); describeFieldAddedService(service)   // the badge's rules and title
+FIELD_ADD_RULE_TEXT                                                     // the technician's Add service caption
+describeCompositionRefusal(code)                                        // + FIELD_ADD_NEW_ONLY, SERVICE_INSTRUCTIONS_LOCKED, SERVICE_NOT_FIELD_ADDED, SERVICE_FIELD_REVIEWED
+
+// server/storage.ts
+AddServiceToAppointmentInput.origin?; FieldReviewServiceInput { serviceId, actor }
+serviceAuditSnapshot(service)                  // + addedInFieldByUserId, fieldReviewedAt; fieldReviewSnapshot(service) - the four columns, field_service_reviewed's shape
+nextStopTx(tx, appointment)                    // the next not-CANCELED placement of the same technician after this visit on its day (local midnight to midnight, getTechnicianWork's day); null without a technician
+resolveNextStopTx(tx, appointment, representative, deltaMinutes)   // -> NextStopRef | null: the shared extendPlannedEnd against the next stop
+addServiceToAppointment(input)                 // origin FIELD: serviceId -> 400 FIELD_ADD_NEW_ONLY; no actor userId -> 400 FIELD_ACTOR_REQUIRED; a new service's would-be end checked BEFORE the insert and
+                                               //   refused 409 NEXT_STOP_OVERLAP (nothing written); addedInFieldByUserId stamped from the actor; origin OFFICE (default) unchanged except nextStop reported;
+                                               //   composition += { origin, flagged, nextStop }; result += { flagged, nextStop }
+updateService(id, data, context)               // + 403 SERVICE_INSTRUCTIONS_LOCKED: actorRole technician, notes changed, addedInFieldByUserId not the actor's userId (the office's roles are not held to it)
+markServiceFieldReviewed(input)                // 409 SERVICE_NOT_FIELD_ADDED / SERVICE_FIELD_REVIEWED; stamps fieldReviewedAt / ByUserId / ByLabel from the actor; one field_service_reviewed row on the service
+
+// server/routes.ts
+POST /api/appointments/:id/services            // body += origin: "OFFICE" | "FIELD" (optional); open to every role
+POST /api/services/:id/field-review            // requirePermission(FINALIZE_TICKET) -> 200 Service; 404 unknown; the composition refusals mapped
+
+// client
+components/field-added-badge.tsx (new)         // FieldAddedBadge { service } ("Field-added - review" amber while needsFieldReview, "Field-added" once reviewed, the title names who / when; nothing for an
+                                               //   office service); MarkFieldReviewedButton { service, onReviewed? } (renders only when the review is needed AND the user holds FINALIZE_TICKET; POST
+                                               //   .../field-review; invalidateAfterFieldReview: services, by-location, appointments, service-records, audit-logs)
+pages/technician-work.tsx                      // the Appointment Details' Linked Services: each row's type name is a button (button-tech-service-edit-*) opening the row's editor (tech-service-editor-*): a
+                                               //   type Select on non-agreement, un-ticketed, active work (PATCH /api/appointments/:id/services/:serviceId) else the locked label "(agreement locked)" with
+                                               //   the reason; an Instructions textarea + Save (PATCH /api/services/:id { notes }) only when service.addedInFieldByUserId === user.id, else read-only with the
+                                               //   reason; every row shows ServiceWorkKindBadge, an Agreement badge, FieldAddedBadge and "<n> min planned"; "Add service" (button-tech-add-service) opens a
+                                               //   compact form (type -> the type's minutes and price as defaults, instructions; FIELD_ADD_RULE_TEXT) posting { origin: "FIELD", service }; a refusal shows
+                                               //   inline (text-tech-add-error - NEXT_STOP_OVERLAP's message names the times); the editor and the form reset when the visit changes or closes; refreshWork
+                                               //   also invalidates /api/services, /api/services/by-location and /api/audit-logs; "Appointment Notes" unchanged (read-only)
+pages/schedule.tsx                             // the composition row: FieldAddedBadge + MarkFieldReviewedButton; the add toasts append describeNextStopWarning (the queue-then-card attach reads the last result's)
+pages/customer-detail.tsx                      // ServicesTab row: FieldAddedBadge under the status, MarkFieldReviewedButton first in the actions
+pages/service-ticket-review.tsx                // the queue row and the modal header: FieldAddedBadge; the modal: MarkFieldReviewedButton beside the status badge
+```
+
+Behavior worth knowing before the next pass touches it - the decisions, numbered as the handoff asked:
+- **(1) What "flagged for office review" is.** A nullable `services.addedInFieldByUserId` (users FK,
+  stamped by a FIELD add, never cleared) plus the office's review stamp `fieldReviewedAt` /
+  `fieldReviewedByUserId` / `fieldReviewedByLabel` (the ticket's flagged* shape). "Flagged" is the
+  first set with the second null - a derived state, no boolean. Not a `reviewRequired` boolean: the
+  identity is needed anyway for decision (6) (who may edit the instructions), a boolean loses who added
+  it and who reviewed it and when, and one column carrying two facts cannot disagree with itself. The
+  ticket's `FLAGGED_FOR_REVIEW` is untouched - it stays the invoice-driven flag canon §12 defines.
+- **(2) Identity.** The session user (`getAuditActor(req).userId`), never the technician picker: no
+  technician row is linked to a user on the dev DB (0 of 2) and the work route checks nothing against
+  the session, so the picker cannot carry identity. The instructions gate compares
+  `addedInFieldByUserId` to the actor's user id. `GET /api/technicians/:id/work` stays open (C5.7
+  merges the identities; refusing an unlinked technician would empty the field view today). A FIELD
+  add with no session user is refused (400 `FIELD_ACTOR_REQUIRED`) rather than flagged anonymously.
+- **(3) The overlap rule.** A server check inside the add, for origin FIELD: the technician's next
+  stop is the next placement (isBoardPlacement's rule, not CANCELED) assigned to the same technician
+  after this visit on the visit's day, read as `getTechnicianWork` reads the day (local midnight to
+  midnight - the day's list IS the next-stop source, and a stop on another day is never consulted);
+  the would-be end is `extendPlannedEnd` (a visit with no `scheduledEndDate` falls back to the
+  representative's duration, as the board reads it); 409 `NEXT_STOP_OVERLAP` when the extension would
+  run that end past the next stop's start, checked before the insert so nothing is written. An add
+  that extends nothing (0 minutes) cannot overlap. An end that already runs past the next stop refuses
+  any further extension - the office shortens or moves from the sheet. **The office's add is never
+  refused** (B13 gives the constraint to the field) **but it is told**: every add's result and audit
+  row carry `nextStop` and the sheet's toast says "The visit now runs to X, past the technician's next
+  stop at Y" - the warning the handoff asked about, cheap because the server computes the next stop
+  for both origins anyway.
+- **(4) How the field reaches the route.** `origin: "FIELD"` on the body of the existing add route,
+  default OFFICE - not a separate route: the same transaction, the same refusals, the same
+  `appointment_composition_changed` row (now carrying `origin` and `flagged`), the disposition's
+  precedent for an origin. FIELD turns on the one-time-only rule (a new MANUAL service at the visit's
+  location; a `serviceId` - the queue's, agreement or not - is 400 `FIELD_ADD_NEW_ONLY` before anything
+  is read), the stamp and the next-stop check. The origin is open to every role: it describes the
+  surface, and an office user on the technician page is flagged like a technician (verified) - the
+  flag is the control, not the role.
+- **(5) The type edit on click.** The row's type name opens an editor; a Select on non-agreement,
+  un-ticketed, active work posts the C4.3a PATCH (`PATCH /api/appointments/:id/services/:serviceId`);
+  the technician role is enough (the route is ungated; `SERVICE_TYPE_LOCKED` and `SERVICE_HAS_TICKET`
+  are the server's). An agreement service shows the locked label "(agreement locked)" with the reason,
+  as the ticket dialog does. The field's generic-PATCH type lock from Pass 28 still holds.
+- **(6) Instructions.** `services.notes` - the Service's own "Instructions", never `appointments.notes`
+  ("Appointment Notes", read-only in the field, edited on the sheet as B13's order instructions). The
+  generic `PATCH /api/services/:id` now refuses a technician's notes change unless
+  `addedInFieldByUserId` is theirs (403 `SERVICE_INSTRUCTIONS_LOCKED`; an unchanged value passes; the
+  office's roles are not held to it; a server write with no role may). Before this pass a technician
+  could PATCH any service's notes. The stamp is never cleared, so the technician keeps editing their
+  own service's instructions after the office's review.
+- **(7) What the row shows.** The kind badge (`ServiceWorkKindBadge`, the sheet's), an Agreement
+  marker (so the locked type reads as a rule, not a defect), the field-added badge, and the planned
+  duration ("45 min planned"); the price stays `ServiceBillingBlock` (Price / COA / Due today, D6).
+  The answers line is NOT shown: the day's read carries the service rows but not the service a
+  callback answers, and resolving it is the sheet's location-wide map - a CALLBACK reads its kind badge.
+- **(8) Gates.** No new permission (`POST_SERVICE_TICKET` is held by every role and read by nothing;
+  "add a service in the field" would be a fifth technician permission nothing else reads). The add is
+  open with the flag as the control (C5.6's profiles decide who may). The one gate added is on the
+  **review**: `POST /api/services/:id/field-review` is `FINALIZE_TICKET` (support and above - the
+  office's review permission), so a technician cannot clear their own flag; the button renders only
+  for a holder and only while the review is owed (dev behavior rule 6).
+- **Where the review is reachable.** The dispatch sheet's composition row, the location's Services tab
+  row and the Service Ticket Review modal (the ticket of a field-added service is the office's natural
+  review moment) - one `FieldAddedBadge` and one `MarkFieldReviewedButton` component for all three and
+  the technician's own row (badge only). The badge reads "Field-added - review" (amber) while owed and
+  "Field-added" (quiet) once reviewed, the title naming who and when.
+- **Not touched:** the technician picker and a session check on the work route (C5.7), a gate on the
+  add (C5.6), crew (C4.4), the ticket dialog's own type / price edit at post, `cancelAgreement`'s
+  direct CANCELED write (canon §11 still notes it), the Services-tab reopen defect (`reopenTicketMutation`
+  still posts `{ reason }`, broken since Pass 17 - noted a third time, left), the office's add
+  (unchanged except the nextStop report), duration from the field (B13: not edited there), a field
+  cancel of one service (the alias route is the field's cancel; `ServiceCancelDialog` stays reusable).
+- **Verified 2026-10-02** (PORT=5001 against a copy of the dev DB, `pestflow_verify`, dropped
+  afterwards; the shared DB untouched): `npm run check` clean; boot 1 printed Pass 29's one migration
+  line (the four columns and the partial index) - and NOT Pass 28's index line, because the owner's
+  restart after PR #98 had already created it on the shared DB (the handoff expected both) - with every
+  one of the 46 table counts unchanged; 103 API / SQL assertions as the four roles, first run: the pure
+  module (overlap only with an extension and past the start, equal does not overlap, the texts, the
+  badge rules, the audit label); a fixture customer with two locations, an agreement and six services
+  placed through the real routes on a day in 2027 the technician had nothing on - A1 10:00-11:00, A2
+  11:30-12:00, A4 15:00 with no planned end, A5 16:15-16:45, A6 17:00 with no technician; the FIELD
+  add of 20 min on A1 as the technician: 201, flagged, end extended to 11:20, `nextStop` A2 not
+  overlapped, the service MANUAL at 7500 with its instructions, `addedInFieldByUserId` the technician
+  user's, the ADD row by "Heritage Tech" with origin FIELD / flagged / nextStop and the stamp in its
+  snapshot; the FIELD add of 30 min: 409 `NEXT_STOP_OVERLAP` naming 11:30 and 11:50, with the services,
+  the end and the audit log unchanged; the office's add of the same 30 min as support: 201, not flagged,
+  the end 11:50 and `nextStop.overlapped` true (the warning), the row origin OFFICE; the office's
+  queue add of the agreement service reported the next stop too; an explicit origin OFFICE behaving as
+  the default; a FIELD add naming a queued service (one-time or at another location) 400
+  `FIELD_ADD_NEW_ONLY` while the office's cross-location add stays 409 `SERVICE_LOCATION_MISMATCH`; an
+  unknown origin 400; a FIELD add by support flagged with support's id; the type change on the field
+  service as the technician 200, on the agreement service 403 `SERVICE_TYPE_LOCKED` then 200 as manager,
+  on the office's one-time service 200; the technician's notes PATCH on their own field service 200, on
+  the office's services 403 `SERVICE_INSTRUCTIONS_LOCKED` (unchanged notes passing, a duration PATCH
+  passing), support's notes PATCH on both 200; the review as the technician 403, on an office service
+  409 `SERVICE_NOT_FIELD_ADDED`, unknown 404, as support 200 with the stamp and label "Heritage
+  Support" and its `field_service_reviewed` row (before null, after stamped), again 409
+  `SERVICE_FIELD_REVIEWED`, the technician still editing the reviewed service's instructions; the
+  technician's day read listing the four assigned visits in order with the new fields on every row;
+  the no-end visit: +20 refused (16:20 past 16:15, the end still null), +10 accepted with the end now
+  stored at 16:10, +0 accepted with nothing extended; the day's last visit and the technician-less
+  visit: `nextStop` null, the type's duration and price as defaults; the generic PATCH still refusing
+  CANCELLED / `appointmentId` null / PENDING_SCHEDULING while placed and ignoring the stamp columns; a
+  field-added service removable to the queue with its stamp kept; the location History carrying
+  `field_service_reviewed`; audit totals A1 = 9 (4 ADD, 3 UPDATE, 2 REMOVE), the other visits 4 ADD,
+  1 review, every row with an actor label; five stamped services, four still owed a review; the
+  partial index present; every fixture deleted and every count back at the run's start (`session` up
+  by the run's four logins); boot 2 printed only the serving line with every count unchanged; Vite 200
+  with the new symbols on the four pages, the new component and, under `/@fs/`, the shared module and
+  the audit vocabulary. **Nothing was rendered in a browser** - the repo has no browser automation and
+  the session had no browser - so the technician's row editor, the Add service form and its inline
+  refusal, the badge on four surfaces and the Mark reviewed button reach the owner first.
 
 ---
 

@@ -27,6 +27,7 @@ import type { InitialChargeDue } from "@shared/initial-charge";
 import { centsToDollarString, formatCents, dollarsToCents } from "@shared/money";
 import { describeAnswersLink } from "@shared/service-kind";
 import { ServiceWorkKindBadge, ServiceWorkKindListBadge } from "@/components/service-work-kind-badge";
+import { FieldAddedBadge, MarkFieldReviewedButton } from "@/components/field-added-badge";
 import {
   CalendarDays,
   ChevronLeft,
@@ -50,6 +51,7 @@ import {
 import {
   PLANNED_END_RULE_TEXT,
   describeCompositionRefusal,
+  describeNextStopWarning,
   type AppointmentCompositionResult,
   type AppointmentServiceAddRequest,
   type AppointmentServiceUpdateRequest,
@@ -432,8 +434,11 @@ function AppointmentSheet({
                           ) : hasTicket ? (
                             <Badge variant="outline" className="text-[10px]">Ticket posted</Badge>
                           ) : null}
+                          {/* Pass 29 (C4.3b): added from the field - the office's review flag and its action. */}
+                          <FieldAddedBadge service={linked} className="text-[10px]" />
                           <span className="ml-auto font-medium">{formatCurrency(linked.priceCents)}</span>
                         </div>
+                        <MarkFieldReviewedButton service={linked} className="mt-2 h-7 px-2 text-xs" />
                         <div className="mt-2 grid gap-2 sm:grid-cols-[1fr_96px]">
                           <div className="space-y-1">
                             <label className="text-[11px] text-muted-foreground" htmlFor={`sheet-service-type-${linked.id}`}>Service type</label>
@@ -1224,9 +1229,12 @@ export default function Schedule() {
     }
   };
   const describeCompositionError = (error: unknown) => describeCompositionRefusal(getApiErrorCode(error)) ?? getApiErrorMessage(error);
+  // Pass 29: the office's add is never refused for the technician's next
+  // stop, but the toast says when the visit now runs past it.
   const describeCompositionResult = (result: AppointmentCompositionResult) => [
     result.scheduledEndDateExtendedMinutes ? `Visit end extended by ${result.scheduledEndDateExtendedMinutes} min` : null,
     result.opportunitiesConverted ? `${pluralize(result.opportunitiesConverted, "open opportunity", "open opportunities")} converted` : null,
+    describeNextStopWarning(result.nextStop),
   ].filter(Boolean).join("; ") || undefined;
 
   // The queue-then-card attach (select a pending service, click a card at
@@ -1250,11 +1258,13 @@ export default function Schedule() {
       setSelectedServiceId(null);
       const extended = results.reduce((sum, result) => sum + result.scheduledEndDateExtendedMinutes, 0);
       const converted = results.reduce((sum, result) => sum + result.opportunitiesConverted, 0);
+      const lastResult = results[results.length - 1];
       toast({
         title: results.length > 1 ? "Services added to shared visit" : "Service added to shared visit",
         description: [
           extended ? `Visit end extended by ${extended} min` : null,
           converted ? `${pluralize(converted, "open opportunity", "open opportunities")} converted` : null,
+          lastResult ? describeNextStopWarning(lastResult.nextStop) : null,
         ].filter(Boolean).join("; ") || undefined,
       });
       const returnTo = params.get("returnTo");

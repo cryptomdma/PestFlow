@@ -26,6 +26,7 @@ import { InvoiceStatusBadge } from "@/components/invoice-status-badge";
 import { ApplyLocationBalancePrompt } from "@/components/apply-location-balance-prompt";
 import { ServiceCompletionDialog } from "@/components/service-completion-dialog";
 import { ServiceReportActions } from "@/components/service-report-actions";
+import { FieldAddedBadge, MarkFieldReviewedButton } from "@/components/field-added-badge";
 import { resolveReviewNav, type ReviewNavStep } from "@/lib/review-queue-nav";
 import { formatCents } from "@shared/money";
 import { describeSurcharge } from "@shared/field-surcharge";
@@ -636,6 +637,7 @@ export default function ServiceTicketReview() {
                 <div>
                   <p className="text-sm">{serviceType?.name || "Service"}</p>
                   <p className="text-xs text-muted-foreground">{service?.agreementId ? "Agreement" : "Non-agreement"}</p>
+                  {service ? <FieldAddedBadge service={service} className="mt-1 text-[10px]" /> : null}
                 </div>
                 <div>
                   <p className="text-sm">{record.technicianName || technician?.displayName || "Technician unavailable"}</p>
@@ -702,6 +704,9 @@ export default function ServiceTicketReview() {
                   </div>
                   <div className="order-first flex flex-col items-start gap-1.5 sm:order-none sm:items-end sm:justify-self-end">
                     <Badge variant={statusBadgeVariant(selectedRecord)} className="w-fit">{statusLabel(selectedRecord)}</Badge>
+                    {/* Pass 29 (C4.3b): the ticket of a service added from the field is the office's review moment. */}
+                    {selectedService ? <FieldAddedBadge service={selectedService} className="w-fit text-[10px]" /> : null}
+                    {selectedService ? <MarkFieldReviewedButton service={selectedService} className="h-7 px-2 text-xs" /> : null}
                     <VisitInvoiceBlock appointmentId={selectedAppointment?.id ?? null} serviceRecordId={selectedRecord.id} onOpenInvoice={setOpenInvoiceId} />
                   </div>
                 </div>

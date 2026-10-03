@@ -27,6 +27,7 @@ import { AppointmentDispositionError, DraftInvoiceDecisionRequiredError, Opportu
 import { SERVICE_WORK_KINDS } from "@shared/service-kind";
 import { isUtcDay, statementFileName } from "@shared/statements";
 import { APPOINTMENT_DISPOSITION_MODES, DISPOSITION_OPPORTUNITY_CHOICES } from "@shared/appointment-disposition";
+import { COMPOSITION_ORIGINS } from "@shared/appointment-composition";
 import { can, PERMISSIONS, type UserRole } from "@shared/permissions";
 import { INVOICE_ON_FINALIZE_MODES, normalizeInvoiceOnFinalizeMode } from "@shared/invoice-on-finalize";
 import { normalizeAttachServiceReport } from "@shared/service-report";
@@ -255,6 +256,10 @@ export async function registerRoutes(
   const appointmentServiceAddSchema = z.object({
     serviceId: z.string().min(1).optional(),
     service: newPlacedServiceSchema.optional(),
+    // Pass 29 (C4.3b): OFFICE (default) or FIELD - the technician's
+    // Appointment Details. FIELD turns on the one-time-only rule, the
+    // flag stamp and the next-stop check in storage.
+    origin: z.enum(COMPOSITION_ORIGINS).optional(),
   }).strict().superRefine((value, ctx) => {
     if ((value.serviceId === undefined) === (value.service === undefined)) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["serviceId"], message: "Name exactly one of serviceId (a pending service) or service (a new one)" });
@@ -1767,6 +1772,22 @@ export async function registerRoutes(
     }
   });
 
+  // Pass 29 (C4.3b; Part E answer 7): the office marks a service a
+  // technician added from the field as reviewed - the review stamp and one
+  // field_service_reviewed row. FINALIZE_TICKET (support+), the office's
+  // review permission, so a technician cannot clear their own flag. 409
+  // SERVICE_NOT_FIELD_ADDED / SERVICE_FIELD_REVIEWED.
+  app.post("/api/services/:id/field-review", requirePermission(PERMISSIONS.FINALIZE_TICKET), async (req, res) => {
+    try {
+      const data = await req.storage.markServiceFieldReviewed({ serviceId: req.params.id, actor: getAuditActor(req) });
+      if (!data) return res.status(404).json({ message: "Service not found" });
+      res.json(data);
+    } catch (e: any) {
+      if (e instanceof ServiceCompositionError) return respondServiceCompositionError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
   app.delete("/api/services/:id", async (req, res) => {
     try {
       const deleted = await req.storage.deleteService(req.params.id);
@@ -2125,6 +2146,12 @@ export async function registerRoutes(
   // LAST_SERVICE_ON_APPOINTMENT (the disposition owns taking a visit off the
   // board), SERVICE_HAS_TICKET, SERVICE_SETTLED, VISIT_INVOICED,
   // APPOINTMENT_NOT_COMPOSABLE, SERVICE_NOT_PENDING, SERVICE_LOCATION_MISMATCH.
+  // Pass 29 (C4.3b): with `origin: "FIELD"` (the technician's Appointment
+  // Details) the add is one-time work only (400 FIELD_ADD_NEW_ONLY on a
+  // queued service), stamped with the session user and flagged for office
+  // review, and refused when the visit would run into the technician's next
+  // stop (409 NEXT_STOP_OVERLAP, the message naming both times). Open to
+  // every role like the rest; the flag is the control (C5.6 later).
   app.post("/api/appointments/:id/services", async (req, res) => {
     try {
       const validated = appointmentServiceAddSchema.parse(req.body);
@@ -2132,6 +2159,7 @@ export async function registerRoutes(
         appointmentId: req.params.id,
         serviceId: validated.serviceId ?? null,
         service: validated.service ?? null,
+        origin: validated.origin ?? "OFFICE",
         actorRole: req.user!.role as UserRole,
         actor: getAuditActor(req),
       });

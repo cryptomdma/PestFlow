@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -14,12 +14,22 @@ import { ServiceCompletionDialog } from "@/components/service-completion-dialog"
 import { CollectPaymentDialog, resolveVisitDesignation } from "@/components/collect-payment-dialog";
 import { DraftInvoiceVoidPrompt, getDraftInvoiceDecisionRequired, type DraftInvoiceRef } from "@/components/draft-invoice-void-prompt";
 import { ServiceBillingBlock, VisitDueTodayTotal, VisitInitialChargeCallout, describeBillingSource, useVisitBillingSummary } from "@/components/visit-billing-summary";
+import { ServiceWorkKindBadge } from "@/components/service-work-kind-badge";
+import { FieldAddedBadge } from "@/components/field-added-badge";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth";
-import { apiRequest, getApiErrorMessage, queryClient } from "@/lib/queryClient";
+import { apiRequest, getApiErrorCode, getApiErrorMessage, queryClient } from "@/lib/queryClient";
 import { can, PERMISSIONS } from "@shared/permissions";
 import { isTicketFinalized, isTicketReopened, technicianMayPostTicket } from "@shared/ticket-status";
-import { AlertTriangle, Banknote, CalendarDays, CheckCircle2, ClipboardList, Clock3, MapPin, Navigation } from "lucide-react";
+import { centsToDollarString, dollarsToCents } from "@shared/money";
+import {
+  FIELD_ADD_RULE_TEXT,
+  describeCompositionRefusal,
+  type AppointmentCompositionResult,
+  type AppointmentServiceAddRequest,
+  type AppointmentServiceUpdateRequest,
+} from "@shared/appointment-composition";
+import { AlertTriangle, Banknote, CalendarDays, CheckCircle2, ClipboardList, Clock3, MapPin, Navigation, Plus } from "lucide-react";
 import type { Appointment, Customer, CustomerNote, Location, Service, ServiceRecord, ServiceType, Technician } from "@shared/schema";
 
 interface TechnicianWorkService {
@@ -107,6 +117,17 @@ export default function TechnicianWork() {
   // D8: collect on the visit outside the ticket flow (the customer pays
   // after the ticket is posted, or before it is started).
   const [collectOpen, setCollectOpen] = useState(false);
+  // Pass 29 (C4.3b; B13 "tucked behind selectors"): the service row open for
+  // editing (its type / instructions), the Add service form, and the add's
+  // refusal shown inline (a NEXT_STOP_OVERLAP names the times).
+  const [editingServiceId, setEditingServiceId] = useState<string | null>(null);
+  const [instructionsDraft, setInstructionsDraft] = useState("");
+  const [addOpen, setAddOpen] = useState(false);
+  const [addTypeId, setAddTypeId] = useState("");
+  const [addMinutes, setAddMinutes] = useState("");
+  const [addPrice, setAddPrice] = useState("");
+  const [addInstructions, setAddInstructions] = useState("");
+  const [addError, setAddError] = useState<string | null>(null);
   const { toast } = useToast();
   const { user } = useAuth();
   const canCollect = can(user?.role ?? "", PERMISSIONS.TAKE_PAYMENT_FIELD);
@@ -153,7 +174,24 @@ export default function TechnicianWork() {
   const closeDetail = () => {
     setCollectOpen(false);
     setSelectedVisit(null);
+    setEditingServiceId(null);
+    setAddOpen(false);
   };
+  // A different visit opens with nothing in edit and the Add form closed.
+  const detailAppointmentId = detailVisit?.appointment.id ?? null;
+  useEffect(() => {
+    setEditingServiceId(null);
+    setInstructionsDraft("");
+    setAddOpen(false);
+    setAddTypeId("");
+    setAddMinutes("");
+    setAddPrice("");
+    setAddInstructions("");
+    setAddError(null);
+  }, [detailAppointmentId]);
+  // The composition is open on a visit still on the board (the server's
+  // APPOINTMENT_NOT_COMPOSABLE rule, read here so nothing dead is offered).
+  const detailComposable = !!detailVisit && detailVisit.appointment.status !== "CANCELED" && detailVisit.appointment.status !== "COMPLETED";
 
   const activeTechnicians = useMemo(() => (technicians ?? []).filter((technician) => technician.status === "ACTIVE"), [technicians]);
   const serviceTypeNameById = useMemo(() => new Map((serviceTypes ?? []).map((serviceType) => [serviceType.id, serviceType.name])), [serviceTypes]);
@@ -166,6 +204,11 @@ export default function TechnicianWork() {
     queryClient.invalidateQueries({ queryKey: ["/api/service-records"] });
     queryClient.invalidateQueries({ queryKey: ["/api/services/pending"] });
     queryClient.invalidateQueries({ queryKey: ["/api/opportunities"] });
+    // Pass 29: the composition changes the services, the location's rows
+    // and the History tab too.
+    queryClient.invalidateQueries({ queryKey: ["/api/services"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/services/by-location"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/audit-logs"] });
   };
   const timeInMutation = useMutation({
     mutationFn: async (appointmentId: string) => {
@@ -223,6 +266,101 @@ export default function TechnicianWork() {
     },
     onSuccess: refreshWork,
   });
+
+  // Pass 29 (C4.3b; B13): the field's composition, through the dispatch
+  // sheet's routes - every field action is a route (the field is a native
+  // app later). The type goes through PATCH .../services/:serviceId, where
+  // the server locks agreement work (SERVICE_TYPE_LOCKED) and a ticketed
+  // service (SERVICE_HAS_TICKET); the instructions through the generic
+  // service PATCH, where a technician is refused on a service they did not
+  // add (SERVICE_INSTRUCTIONS_LOCKED); the add posts origin FIELD - one-time
+  // work only, stamped with this user and flagged for office review, refused
+  // when the visit would run into the next stop (NEXT_STOP_OVERLAP) - and
+  // that refusal is shown inline on the form, naming the times.
+  const describeCompositionError = (error: unknown) => describeCompositionRefusal(getApiErrorCode(error)) ?? getApiErrorMessage(error);
+  const updateVisitServiceMutation = useMutation({
+    mutationFn: async ({ appointmentId, serviceId, payload }: { appointmentId: string; serviceId: string; payload: AppointmentServiceUpdateRequest }) => {
+      const response = await apiRequest("PATCH", `/api/appointments/${appointmentId}/services/${serviceId}`, payload);
+      return response.json() as Promise<AppointmentCompositionResult>;
+    },
+    onSuccess: () => {
+      refreshWork();
+      toast({ title: "Service type changed" });
+    },
+    onError: (error: Error) => toast({ title: "Unable to change the service type", description: describeCompositionError(error), variant: "destructive" }),
+  });
+  const updateInstructionsMutation = useMutation({
+    mutationFn: async ({ serviceId, notes }: { serviceId: string; notes: string | null }) => {
+      const response = await apiRequest("PATCH", `/api/services/${serviceId}`, { notes });
+      return response.json() as Promise<Service>;
+    },
+    onSuccess: () => {
+      refreshWork();
+      setEditingServiceId(null);
+      toast({ title: "Instructions saved" });
+    },
+    onError: (error: Error) => toast({ title: "Unable to save instructions", description: describeCompositionError(error), variant: "destructive" }),
+  });
+  const addFieldServiceMutation = useMutation({
+    mutationFn: async ({ appointmentId, payload }: { appointmentId: string; payload: AppointmentServiceAddRequest }) => {
+      const response = await apiRequest("POST", `/api/appointments/${appointmentId}/services`, payload);
+      return response.json() as Promise<AppointmentCompositionResult>;
+    },
+    onSuccess: (result) => {
+      refreshWork();
+      setAddOpen(false);
+      resetAddForm();
+      toast({
+        title: "Service added to this visit",
+        description: [
+          result.scheduledEndDateExtendedMinutes ? `Visit end extended by ${result.scheduledEndDateExtendedMinutes} min` : null,
+          result.flagged ? "The office will review it" : null,
+        ].filter(Boolean).join("; ") || undefined,
+      });
+    },
+    onError: (error: Error) => setAddError(describeCompositionError(error)),
+  });
+  const toggleServiceEditor = (service: Service) => {
+    if (editingServiceId === service.id) {
+      setEditingServiceId(null);
+      return;
+    }
+    setInstructionsDraft(service.notes ?? "");
+    setEditingServiceId(service.id);
+  };
+  const resetAddForm = () => {
+    setAddTypeId("");
+    setAddMinutes("");
+    setAddPrice("");
+    setAddInstructions("");
+    setAddError(null);
+  };
+  // The type's duration and price are the defaults, as on the sheet and the customer form.
+  const selectAddType = (value: string) => {
+    const id = value === "NONE" ? "" : value;
+    const serviceType = serviceTypes?.find((item) => item.id === id);
+    setAddTypeId(id);
+    setAddMinutes(serviceType?.estimatedDuration ? String(serviceType.estimatedDuration) : "");
+    setAddPrice(serviceType?.defaultPriceCents != null ? centsToDollarString(serviceType.defaultPriceCents) : "");
+    setAddError(null);
+  };
+  const submitFieldAdd = () => {
+    if (!detailVisit || !addTypeId) return;
+    const minutes = addMinutes.trim();
+    setAddError(null);
+    addFieldServiceMutation.mutate({
+      appointmentId: detailVisit.appointment.id,
+      payload: {
+        origin: "FIELD",
+        service: {
+          serviceTypeId: addTypeId,
+          expectedDurationMinutes: minutes === "" ? null : parseInt(minutes, 10),
+          priceCents: dollarsToCents(addPrice),
+          notes: addInstructions.trim() || null,
+        },
+      },
+    });
+  };
 
   // Pass 19 (C3.3): opening a ticket on a visit with no Time In asks first.
   // Yes posts the existing time-in route (the day's read refreshes, and the
@@ -424,15 +562,119 @@ export default function TechnicianWork() {
                 <p className="text-sm font-medium">Linked Services</p>
                 {detailVisit.services.map(({ service, serviceRecord }) => {
                   const posted = service.status === "COMPLETED" || !!serviceRecord;
+                  // Pass 29 (C4.3b; B13): the row is displayed and becomes
+                  // editable on click - the type on non-agreement work with no
+                  // ticket yet (the same PATCH as the dispatch sheet; the lock
+                  // is the server's, the caption the ticket dialog's), and the
+                  // instructions (services.notes) only on a service THIS USER
+                  // added in the field. "Appointment Notes" above stays the
+                  // office's. The kind badge, the agreement marker, the
+                  // field-added flag and the planned duration show on every row.
+                  const settled = service.status === "COMPLETED" || service.status === "CANCELLED";
+                  const isAgreement = !!service.agreementId || service.source === "AGREEMENT_GENERATED";
+                  const mine = !!user && service.addedInFieldByUserId === user.id;
+                  const typeName = serviceTypeNameById.get(service.serviceTypeId || "") || "Service";
+                  const canEditType = detailComposable && !settled && !serviceRecord && !isAgreement;
+                  const typeLockReason = settled
+                    ? "Settled - its type is history."
+                    : serviceRecord
+                      ? "A ticket is posted - the type is changed on the ticket."
+                      : isAgreement
+                        ? "Agreement work - the type is locked in the field; the office changes it."
+                        : null;
+                  const canEditInstructions = detailComposable && !settled && mine;
+                  const editing = editingServiceId === service.id;
                   return (
-                    <div key={service.id} className="rounded-lg border p-3">
+                    <div key={service.id} className="rounded-lg border p-3" data-testid={`tech-service-${service.id}`}>
                       <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <p className="font-medium">{serviceTypeNameById.get(service.serviceTypeId || "") || "Service"}</p>
-                          <p className="mt-1 text-sm text-muted-foreground">{service.notes || "No service instructions."}</p>
+                        <div className="min-w-0">
+                          <button
+                            type="button"
+                            className="text-left font-medium underline-offset-2 hover:underline disabled:no-underline"
+                            onClick={() => toggleServiceEditor(service)}
+                            disabled={!detailComposable || settled}
+                            title={detailComposable && !settled ? (editing ? "Close" : "Tap to change the type or instructions") : undefined}
+                            data-testid={`button-tech-service-edit-${service.id}`}
+                          >
+                            {typeName}
+                          </button>
+                          <div className="mt-1 flex flex-wrap items-center gap-1">
+                            <ServiceWorkKindBadge workKind={service.workKind} className="text-[10px]" />
+                            {isAgreement ? <Badge variant="secondary" className="text-[10px]">Agreement</Badge> : null}
+                            <FieldAddedBadge service={service} className="text-[10px]" />
+                            <span className="text-xs text-muted-foreground" data-testid={`text-tech-service-duration-${service.id}`}>
+                              {service.expectedDurationMinutes ? `${formatDuration(service.expectedDurationMinutes)} planned` : "No planned duration"}
+                            </span>
+                          </div>
+                          {!editing ? <p className="mt-1 whitespace-pre-wrap text-sm text-muted-foreground">{service.notes || "No service instructions."}</p> : null}
                         </div>
                         <Badge variant={posted ? "default" : "outline"}>{posted ? "Ticket Posted" : service.status}</Badge>
                       </div>
+                      {editing ? (
+                        <div className="mt-3 space-y-3 rounded-md border bg-muted/20 p-2" data-testid={`tech-service-editor-${service.id}`}>
+                          <div className="space-y-1">
+                            <Label className="text-xs">Service type</Label>
+                            {canEditType ? (
+                              <Select
+                                value={service.serviceTypeId || "NONE"}
+                                onValueChange={(value) => {
+                                  if (value !== "NONE" && value !== service.serviceTypeId) {
+                                    updateVisitServiceMutation.mutate({ appointmentId: detailVisit.appointment.id, serviceId: service.id, payload: { serviceTypeId: value } });
+                                  }
+                                }}
+                                disabled={updateVisitServiceMutation.isPending}
+                              >
+                                <SelectTrigger data-testid={`select-tech-service-type-${service.id}`}><SelectValue /></SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="NONE">Select service type</SelectItem>
+                                  {(serviceTypes ?? []).map((serviceType) => <SelectItem key={serviceType.id} value={serviceType.id}>{serviceType.name}</SelectItem>)}
+                                </SelectContent>
+                              </Select>
+                            ) : (
+                              <div className="rounded-md border bg-background px-3 py-2 text-sm">
+                                {typeName} {isAgreement ? <span className="text-xs text-muted-foreground">(agreement locked)</span> : null}
+                              </div>
+                            )}
+                            {typeLockReason ? <p className="text-xs text-muted-foreground" data-testid={`text-tech-service-type-locked-${service.id}`}>{typeLockReason}</p> : null}
+                          </div>
+                          <div className="space-y-1">
+                            <Label className="text-xs">Instructions</Label>
+                            {canEditInstructions ? (
+                              <>
+                                <Textarea
+                                  value={instructionsDraft}
+                                  onChange={(event) => setInstructionsDraft(event.target.value)}
+                                  rows={3}
+                                  placeholder="What the office and the ticket should know about this service."
+                                  data-testid={`textarea-tech-service-notes-${service.id}`}
+                                />
+                                <div className="flex justify-end gap-2">
+                                  <Button type="button" variant="outline" size="sm" onClick={() => setEditingServiceId(null)}>Done</Button>
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    disabled={updateInstructionsMutation.isPending || instructionsDraft.trim() === (service.notes ?? "")}
+                                    onClick={() => updateInstructionsMutation.mutate({ serviceId: service.id, notes: instructionsDraft.trim() || null })}
+                                    data-testid={`button-tech-service-notes-save-${service.id}`}
+                                  >
+                                    {updateInstructionsMutation.isPending ? "Saving..." : "Save instructions"}
+                                  </Button>
+                                </div>
+                              </>
+                            ) : (
+                              <>
+                                <p className="whitespace-pre-wrap text-sm text-muted-foreground">{service.notes || "No service instructions."}</p>
+                                <p className="text-xs text-muted-foreground">
+                                  {settled ? "Settled - its instructions are history." : "Instructions are edited in the field only on a service you added; the office edits the rest."}
+                                </p>
+                                <div className="flex justify-end">
+                                  <Button type="button" variant="outline" size="sm" onClick={() => setEditingServiceId(null)}>Done</Button>
+                                </div>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                      ) : null}
                       {serviceRecord && (
                         <div className="mt-3 rounded-md bg-muted/30 p-2 text-xs text-muted-foreground">
                           <div className="flex items-center gap-1 font-medium text-foreground"><CheckCircle2 className="h-3.5 w-3.5" /> Posted {new Date(serviceRecord.serviceDate).toLocaleString()}</div>
@@ -455,6 +697,57 @@ export default function TechnicianWork() {
                     </div>
                   );
                 })}
+                {/* Pass 29 (C4.3b; B13 "Add service is a small button"): a one-time service added to
+                    this visit from the field - the type's minutes and price as defaults, the
+                    instructions typed here are the service's own. The server extends the visit's end
+                    and refuses an add that would run into the next stop; that refusal shows here. */}
+                {detailComposable ? (
+                  <div className="rounded-lg border border-dashed p-3" data-testid="block-tech-add-service">
+                    {!addOpen ? (
+                      <Button type="button" variant="outline" size="sm" onClick={() => { resetAddForm(); setAddOpen(true); }} data-testid="button-tech-add-service">
+                        <Plus className="mr-1 h-3.5 w-3.5" /> Add service
+                      </Button>
+                    ) : (
+                      <div className="space-y-3">
+                        <p className="text-sm font-medium">Add a one-time service to this visit</p>
+                        <div className="space-y-1">
+                          <Label className="text-xs">Service type</Label>
+                          <Select value={addTypeId || "NONE"} onValueChange={selectAddType} disabled={addFieldServiceMutation.isPending}>
+                            <SelectTrigger data-testid="select-tech-add-type"><SelectValue placeholder="Select service type" /></SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="NONE">Select service type</SelectItem>
+                              {(serviceTypes ?? []).map((serviceType) => <SelectItem key={serviceType.id} value={serviceType.id}>{serviceType.name}</SelectItem>)}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div className="space-y-1">
+                            <Label className="text-xs">Minutes</Label>
+                            <Input type="number" inputMode="numeric" min={0} value={addMinutes} onChange={(event) => setAddMinutes(event.target.value)} data-testid="input-tech-add-minutes" />
+                          </div>
+                          <div className="space-y-1">
+                            <Label className="text-xs">Price ($)</Label>
+                            <Input type="number" inputMode="decimal" min="0" step="0.01" value={addPrice} onChange={(event) => setAddPrice(event.target.value)} data-testid="input-tech-add-price" />
+                          </div>
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-xs">Instructions</Label>
+                          <Textarea rows={2} value={addInstructions} onChange={(event) => setAddInstructions(event.target.value)} placeholder="Optional - what this service is for." data-testid="textarea-tech-add-notes" />
+                        </div>
+                        <p className="text-xs text-muted-foreground">{FIELD_ADD_RULE_TEXT}</p>
+                        {addError ? (
+                          <p className="rounded-md border border-destructive/30 bg-destructive/10 p-2 text-sm text-destructive" data-testid="text-tech-add-error">{addError}</p>
+                        ) : null}
+                        <div className="flex justify-end gap-2">
+                          <Button type="button" variant="outline" size="sm" onClick={() => { setAddOpen(false); resetAddForm(); }}>Cancel</Button>
+                          <Button type="button" size="sm" disabled={!addTypeId || addFieldServiceMutation.isPending} onClick={submitFieldAdd} data-testid="button-tech-add-service-submit">
+                            {addFieldServiceMutation.isPending ? "Adding..." : "Add to visit"}
+                          </Button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ) : null}
                 {detailBilling && (
                   <>
                     <VisitInitialChargeCallout summary={detailBilling} />
