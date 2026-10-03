@@ -43,7 +43,7 @@ are calibrated to Phase 1's: Pass 6 (four tables, routes, three dialogs) is the 
 | Aging report (current/30/60/90/90+) | DONE — Pass 14 (2026-09-24) | `GET /api/reports/aging` behind the Reports page's Aging section, and `GET /api/customers/:id/aging` on the customer screen; buckets Current (0-30) / 31-60 / 61-90 / Over 90 **days since invoiced** (B20), derived in `shared/aging.ts` at read time, nothing stored. See "Shipped in Pass 14" at the end of Part D. Was: only `isOverdue()` in `invoices.tsx:56` (still the Overdue tile's due-date test, deliberately distinct) and an Overdue count in `reports.tsx:207` |
 | Customer-wide (all locations) balance in the header | DONE — Pass 14 (2026-09-24) | `CustomerAgingChips` beside the primary-location chip (`customer-detail.tsx:3661`): Open $X across all locations, the oldest bucket, on account, pending confirmation - a rollup of the locations; the balance still lives at each location. Was: the header card showed no money |
 | Location balance below location notes | DONE — Pass 14 (2026-09-24); placement revised in Pass 15b (2026-09-25, owner's note) | `LocationAgingSummaryRow` inside `LocationNotesPanel`, one row directly below the notes (Current always, other buckets only when owed, on account / pending, no invoice links); the full `LocationAgingStrip` with the invoices behind each bucket moved to the Invoices tab under the ledger panel. Was: the strip as a second card under the notes panel in the profile grid's right column. The Ledger panel's Balance card and the switcher's Open / on-account line (`getLocationBalancesByCustomer`) are unchanged and agree with it (verified) |
-| Preferred technician (location + customer level) | ABSENT | no column, no UI anywhere |
+| Preferred technician (location + customer level) | DONE — Pass 30 (2026-10-03) | `technician_preferences` (`shared/technician-preferences.ts`): PREFERRED (a hint) or EXCLUDED (B14's EXCLUDE_TECH - a hard block on placement with a manager's override), per location or for all of the account's locations ("Apply to all locations" on the primary location's Edit Location); chips on the customer header card (all locations) and the location profile card (what applies here); the dispatch queue row's "Prefers <tech>" / "Never <tech>" and the sheet's select. See "Shipped in Pass 30" at the end of Part D. Was: no column, no UI anywhere |
 | "Make Primary" inside the contact modal | PARTIAL | inline button on the contact card (`customer-detail.tsx:3824-3835`); the add/edit dialog already has an `isPrimary` checkbox (`ContactForm`, `:340-360`) |
 | Customer/account history log for all changes | PARTIAL | `audit_logs` + History tab exist (Pass 2). Only `updateLocationProfile()` writes `customer` / `location` `update` rows (`storage.ts:2186-2222`). No `contact` / `account` / `agreement` / `appointment` entity in `shared/audit.ts`. No revert. |
 | Payment without an invoice (cash/check) | DONE | `record-payment-dialog.tsx:96` sends `applyToInvoiceId: null` when no invoice; opens from the ledger panel (location-level and per-invoice) and the Invoices screen |
@@ -382,7 +382,7 @@ so every field action is a route and every screen is data from a read — no pag
 | C4.2b (**Pass 27b**) — **done** (`feature/phase-4-cancel-reschedule-review`, 2026-09-25; see "Shipped in Pass 27b" at the end of Part D) | **Cancel and Reschedule, owner review** (live testing of 2026-09-25, Part E). (1) A CANCELED placement leaves the dispatch board - cancelled and rescheduled alike, so the slot is free for new work; it stays in the location's Services tab ("Was <date>", the reason) and History as the record. One shared predicate for "shows on the board", read by the board's viewport, slot map and analytics (`getTechnicianWork` already excludes CANCELED). (2) The Cancel appointment and Reschedule dialogs close when the disposition completes: the sheet resets on the appointment prop only while one is set, so the dialog stays open after the sheet closes. (3) Re-verify, with a fresh agreement service and a fresh one-time service, that the opportunity a CANCEL creates is OPEN until the recycled service is placed again (placement converts it, the pre-existing rule); the owner saw CONVERTED and attributed it to the agreement path. No new behavior otherwise. | Owner review of Pass 27 | C4.2 | — |
 | C4.3a (**Pass 28**) — **done** (`feature/phase-4-appointment-composition`, 2026-09-29; see "Shipped in Pass 28" at the end of Part D) | **Appointment composition, server + dispatch sheet** (B13) — add a service to an appointment (new or from the pending queue), remove / cancel / return ONE service to pending (the last service prompts to reschedule the appointment), change a service's type (agreement work stays locked) and duration, appointment instructions (`appointments.notes`) editable; all through `getLinkedServicesForAppointmentTx`. UI on the dispatch sheet. **Also (owner review of 2026-09-25): cancelling a `PENDING_SCHEDULING` service outright**, from the pending queue and the location's Services tab, with the disposition's semantics. As built: `shared/appointment-composition.ts`; four routes (`POST /api/appointments/:id/services`, `POST .../services/:serviceId/remove`, `PATCH .../services/:serviceId`, `POST /api/services/:id/cancel`), each one transaction and one audit row (`appointment_composition_changed` / `service_cancelled`); the representative follows the first remaining sibling; the planned end grows on add and never shrinks; a service landing on a visit converts its handoff opportunities like a placement (the board's attach and grouped placement use the same route); an agreement service's type is ADJUST_PRICE_AGREEMENT everywhere; the last active service is refused; a posted ticket, a settled service and an issued invoice refuse; the generic service PATCH refuses the lifecycle moves; the reasons list's write is MANAGE_SETTINGS; one `ServiceCancelDialog` on the sheet, the queue and the Services tab. | Appointment Details build-out; service-level cancel; cancel a pending service | C4.2 | — |
 | C4.3b (**Pass 29**) — **done** (`feature/phase-4-field-composition`, 2026-10-02; see "Shipped in Pass 29" at the end of Part D) | **Appointment composition in the field** (B13) — the technician's appointment details: each service displayed, editable on click (type, for non-agreement work); **Add service** as a small button; adding extends the visit's duration and refuses an overlap with the technician's next stop; instructions editable only on services the technician added; an added non-agreement service is **flagged for office review** (owner). Same routes as C4.3a. As built: `origin: "FIELD"` on the add route's body (one-time work only, 400 `FIELD_ADD_NEW_ONLY` on a queued service; the session user stamped on `services.addedInFieldByUserId`; 409 `NEXT_STOP_OVERLAP` when the extended end would pass the technician's next placement that day - the office's add is told, never refused); the flag is the stamp with `fieldReviewedAt` null, cleared by `POST /api/services/:id/field-review` (FINALIZE_TICKET, one `field_service_reviewed` row); the type through the C4.3a PATCH; the instructions through the generic PATCH, refused 403 `SERVICE_INSTRUCTIONS_LOCKED` to a technician on a service they did not add; the "Field-added - review" badge and **Mark reviewed** on the sheet, the Services tab and Service Ticket Review; the row's kind badge, agreement marker and planned duration; no new permission. | Add service in the field (tech-modal item 5) | C4.3a | — |
-| C4.4 (**Pass 30**) | **Technician preferences + crew** (B14). `technician_preferences` (`scopeType account \| location`, `technicianId`, `kind PREFERRED \| EXCLUDED`, note, created-by); editors in edit/add location and on the primary location with an "apply to all locations" checkbox that writes the account-scoped row; chip on the card. Dispatch: EXCLUDED is a **hard block** on placement (manager override with a reason, audit-logged), PREFERRED a "Prefers <tech>" hint on the queue row and the sheet. Crew: `appointment_technicians` (lead + support) — the comp basis D8 collects here; production entries stay single-technician until Phase 7's split allocation. | Preferred technician; EXCLUDE_TECH; apply across locations; crew | — | — |
+| C4.4 (**Pass 30**) — **done** (`feature/phase-4-technician-preferences-crew`, 2026-10-03; see "Shipped in Pass 30" at the end of Part D) | **Technician preferences + crew** (B14). `technician_preferences` (`scopeType account \| location`, `technicianId`, `kind PREFERRED \| EXCLUDED`, note, created-by); editors in edit/add location and on the primary location with an "apply to all locations" checkbox that writes the account-scoped row; chip on the card. Dispatch: EXCLUDED is a **hard block** on placement (manager override with a reason, audit-logged), PREFERRED a "Prefers <tech>" hint on the queue row and the sheet. Crew: `appointment_technicians` (lead + support) — the comp basis D8 collects here; production entries stay single-technician until Phase 7's split allocation. As built: one org-scoped table in canon §6 / §7's account \| location shape (`shared/technician-preferences.ts`: the location's row wins over the account's for the same technician; ACCOUNT rows written and cleared from the primary location only); the block in `createAppointment` and in `updateAppointment` when the technician changes - 409 `TECHNICIAN_EXCLUDED` naming the technician and the scope, `{ overrideExclusion: { reason } }` under the new `OVERRIDE_TECHNICIAN_EXCLUSION` (manager+; 403 / 400 otherwise), one `placement_exclusion_overridden` row; the board prompts a manager for the reason and resends; `appointment_technicians` with one LEAD mirroring `assignedTechnicianId` (115 rows backfilled on the dev DB) and SUPPORT rows from the sheet's crew block (`POST` / `DELETE /api/appointments/:id/crew`, `appointment_crew_changed`; an excluded support technician is refused the same way); the support technician's day lists the stop read-only; preference editors in Edit / Add Location, open to every role; set / clear audited on the location or the account's customer. | Preferred technician; EXCLUDE_TECH; apply across locations; crew | — | — |
 | C4.5 (**Pass 31**) | **Dispatch board settings.** Settings → Dispatch Board: **view interval** (the rename; keep 1 h / 2 h, add 30 min), **snap interval** 15 / 30 / 60 (`dispatch_snap_minutes`; drag placement and the sheet's time inputs round to it), default visible hours (the session override stays). | Schedule interval; View Interval | — | — |
 
 Smart Schedule is Phase 9: it needs geocoded locations, technician skills, service windows and the
@@ -413,7 +413,8 @@ zones from C4.1b, and only the last exists by then.
 
 Per V1 §1.6.2 and the `CURRENT_FOCUS.md` compensation entry: `comp_plans` / `comp_components` /
 `comp_earnings` with plan and rate snapshotted per earning; split allocation rows beneath production
-entries (needs C4.4's crews); components that pay a non-technician (needs C2.2's sold-by); the
+entries (needs C4.4's crews - `appointment_technicians`, built in Pass 30: one LEAD, SUPPORT rows
+beside it, read by nothing until this phase); components that pay a non-technician (needs C2.2's sold-by); the
 per-plan surcharge selector (C3.6 / Pass 23 keys the credit off the recorded line under the
 transitional always-credit rule, `SURCHARGE_CREDIT_RULE`; the selector replaces that rule, and an
 adjustment entry for a surcharge changed after its credit belongs here too); per-period statements
@@ -3394,6 +3395,190 @@ Behavior worth knowing before the next pass touches it - the decisions, numbered
   the audit vocabulary. **Nothing was rendered in a browser** - the repo has no browser automation and
   the session had no browser - so the technician's row editor, the Add service form and its inline
   refusal, the badge on four surfaces and the Mark reviewed button reach the owner first.
+
+**Shipped in Pass 30** (`feature/phase-4-technician-preferences-crew`, 2026-10-03) — the C4.4 row as
+built, plus the eight decisions the handoff asked for.
+
+```ts
+// shared/schema.ts                            technicianPreferences (technician_preferences: id, orgId, scopeType, accountId -> accounts, locationId -> locations, technicianId -> technicians,
+//                                             kind, note, createdByUserId -> users, createdAt, updatedAt); appointmentTechnicians (appointment_technicians: id, orgId, appointmentId -> appointments,
+//                                             technicianId -> technicians, role, createdByUserId -> users, createdAt); types TechnicianPreference, AppointmentTechnician
+// server/service-scheduling-bootstrap.ts      bootstrapTechnicianPreferencesAndCrew() - both tables, technician_preferences_account_uidx (account_id, technician_id) WHERE scope ACCOUNT,
+//                                             technician_preferences_location_uidx (location_id, technician_id) WHERE scope LOCATION, appointment_technicians_member_uidx (appointment_id,
+//                                             technician_id), appointment_technicians_lead_uidx (appointment_id) WHERE role LEAD, appointment_technicians_technician_idx; the LEAD backfill
+//                                             (one row per appointment with a technician) only when the table is created; each printed once
+// server/tenancy-bootstrap.ts                 TABLES_REQUIRING_ORG_ID += technician_preferences, appointment_technicians
+// shared/permissions.ts                       OVERRIDE_TECHNICIAN_EXCLUSION (manager, admin)
+// shared/audit.ts                             AuditAction += technician_preference_set, technician_preference_cleared, placement_exclusion_overridden, appointment_crew_changed (no new entity type)
+
+// shared/technician-preferences.ts (new)
+TECHNICIAN_PREFERENCE_KINDS = ["PREFERRED", "EXCLUDED"]; TECHNICIAN_PREFERENCE_SCOPES = ["ACCOUNT", "LOCATION"]; MAX_..._NOTE_LENGTH / MAX_EXCLUSION_OVERRIDE_REASON_LENGTH = 500
+TechnicianPreferenceFields / TechnicianPreferenceView (+ technicianName, createdByUserId, createdAt) / EffectiveTechnicianPreference { technicianId, technicianName, kind, note, preferenceId, scopeType, inherited }
+LocationTechnicianPreferences { locationId, accountId, isPrimaryLocation, locationRows, accountRows, effective }; TechnicianPreferenceSetRequest { technicianId, kind, note?, scope? }; ExclusionOverrideRequest { reason }
+resolveEffectivePreferences(rows, { locationId, accountId }, names)   // per technician: the LOCATION row, else the ACCOUNT row (inherited); other scopes ignored; EXCLUDED first, then by name
+findExclusion(effective, technicianId); preferredTechnicians(effective); describePreferredHint(effective) ("Prefers A, B" | null)
+describePreferenceChip(kind, name) ("Prefers X" / "Never X"); describePreferenceScope(scopeType); describePreferenceTitle(entry); describeExclusionRefusal(name, scopeType)
+TECHNICIAN_EXCLUDED (409) / EXCLUSION_OVERRIDE_FORBIDDEN (403) / EXCLUSION_OVERRIDE_REASON_REQUIRED (400) / ACCOUNT_SCOPE_PRIMARY_ONLY (409) / LOCATION_HAS_NO_ACCOUNT (409) /
+  TECHNICIAN_NOT_FOUND (404) / PREFERENCE_NOT_FOUND (404); describeTechnicianPreferenceRefusal(code); TechnicianExcludedRefusal (the 409 body)
+
+// shared/appointment-crew.ts (new)
+APPOINTMENT_CREW_ROLES = ["LEAD", "SUPPORT"]; AppointmentCrewMember { technicianId, technicianName, role, createdAt }; AppointmentCrew { appointmentId, members (lead first) }
+CREW_LEAD_REQUIRED (409) / CREW_MEMBER_EXISTS (409) / CREW_LEAD_NOT_REMOVABLE (409) / CREW_MEMBER_NOT_FOUND (404) / CREW_NOT_EDITABLE (409); describeCrewRefusal(code); describeCrew(members)
+
+// server/storage.ts
+PlacementRefusedError(status, code, message, exclusion); TechnicianPreferenceError; AppointmentCrewError; PlacementOptions { overrideExclusion?, actorRole?, actor? }
+createAppointment(data, options?)              // assertPlacementAllowedTx BEFORE the insert; syncCrewLeadTx after it; the override row after the write
+updateAppointment(id, data, actor?, options?)  // the check only when assignedTechnicianId changes (an unchanged technician is never re-checked); syncCrewLeadTx when it changed
+assertPlacementAllowedTx(tx, { locationId, technicianId, options })   // -> { exclusion, reason } | null; 409 / 403 / 400 thrown before any write; an override with nothing excluded is ignored
+recordExclusionOverrideTx(tx, { appointment, override, via: CREATE | UPDATE | CREW_ADD, previousTechnicianId?, actor })   // placement_exclusion_overridden on the appointment
+getLocationTechnicianPreferences(locationId); getEffectiveTechnicianPreferences(locationIds)   // the location read; the board's { [locationId]: effective } (empty locations omitted)
+setTechnicianPreference({ locationId, technicianId, kind, note, scope, actor })   // ACCOUNT: 409 LOCATION_HAS_NO_ACCOUNT / ACCOUNT_SCOPE_PRIMARY_ONLY; upsert by (scope row, technician);
+                                               //   an unchanged set writes nothing; technician_preference_set on the location (LOCATION) or the location's customer (ACCOUNT)
+clearTechnicianPreference({ locationId, preferenceId, actor })   // the row must apply to the location (404 otherwise); an ACCOUNT row from the primary only; technician_preference_cleared
+syncCrewLeadTx(tx, appointmentId, leadTechnicianId)   // LEAD mirrors assignedTechnicianId; a promoted support loses its SUPPORT row; null -> no LEAD
+getAppointmentCrew(id); addAppointmentCrewMember({ appointmentId, technicianId, overrideExclusion?, actorRole?, actor? }); removeAppointmentCrewMember({ appointmentId, technicianId, actor })
+                                               //   CANCELED / COMPLETED -> CREW_NOT_EDITABLE; add: no lead -> CREW_LEAD_REQUIRED, member -> CREW_MEMBER_EXISTS, then the exclusion check;
+                                               //   remove: the lead -> CREW_LEAD_NOT_REMOVABLE; one appointment_crew_changed row each ({ crew } before / after + change { action, technician, role })
+getTechnicianWork(technicianId, date)          // + the visits the technician supports (a SUPPORT row); TechnicianWorkVisit += crewRole (LEAD | SUPPORT), crew
+
+// server/routes.ts
+POST /api/appointments, PATCH /api/appointments/:id   // body += overrideExclusion?: { reason } (strict, taken off before the write); respondPlacementRefused (code + technicianId,
+                                               //   technicianName, preferenceId, scopeType, note)
+GET / POST /api/appointments/:id/crew; DELETE /api/appointments/:id/crew/:technicianId   // ungated like every appointment write
+GET / PUT /api/locations/:id/technician-preferences; DELETE /api/locations/:id/technician-preferences/:preferenceId   // open to every role
+GET /api/technician-preferences/effective?locationIds=a,b   // the board's map (at most 500 ids)
+
+// client
+components/technician-preferences.tsx (new)   // useLocationTechnicianPreferences, invalidateTechnicianPreferences, TechnicianPreferenceChips, TechnicianPreferencesEditor (live; the primary's
+                                               //   "Apply to all locations" checkbox), TechnicianPreferenceDraftEditor (Add Location), getTechnicianExcludedRefusal, useCanOverrideExclusion,
+                                               //   ExclusionOverridePrompt (the reason dialog)
+pages/customer-detail.tsx                      // AddLocationDialog: the draft list, written (PUT, LOCATION) after the location is created; EditLocationDialog: the live editor above "Set as Primary
+                                               //   Location" (the form now scrolls, max-h 75vh); the header card's chip row: the account's rows; the location profile card: the effective chips
+                                               //   (row-location-technician-preferences), inherited marked "(all locations)"
+pages/schedule.tsx                             // the effective map for the queue's and the sheet's locations; the queue row's text-queue-preferences-*; the sheet's select marks "excluded by the
+                                               //   customer" / "preferred", the hint and the exclusion warning; AppointmentCrewBlock (sheet-crew); scheduleMutation and updateAppointmentMutation
+                                               //   open ExclusionOverridePrompt on a 409 for a manager and resend with the reason (anyone else: the toast)
+pages/technician-work.tsx                      // a SUPPORT visit's card: dashed, not clickable, "Support" badge, "Supporting <lead> - the lead posts the ticket"; a lead's card names its support crew
+```
+
+Behavior worth knowing before the next pass touches it - the decisions, numbered as the handoff asked:
+- **(1) The table shape.** As recommended: one org-scoped `technician_preferences` with an
+  `updatedAt` beside `createdAt` (a set over an existing row changes its kind and note in place - one
+  technician has one row per scope, the partial unique indexes, so a row's kind IS the answer for
+  that scope). FKs to `accounts`, `locations`, `technicians` and `users`: the boot-order worry
+  (`customer_notes.account_id` went without one) does not bite, because `accounts` and `locations` are
+  never created by a bootstrap - they come from `db:push`, which creates this table too - so on any
+  database this code boots against both exist when the scheduling bootstrap runs. The vocabulary and
+  the resolve rule are `shared/technician-preferences.ts`. No seed.
+- **(2) The scope reach.** A location reaches its account through `locations.accountId` (all 14 set on
+  the dev DB); "customer-level" (D8) is the ACCOUNT row (`customers` has no account column;
+  `accounts.legacyCustomerId` is 1:1). The primary location's Edit Location carries "Apply to all
+  locations", which writes the ACCOUNT row; every other editor writes the LOCATION row. The server
+  holds the rule too: an ACCOUNT row is written and cleared from the primary location only (409
+  `ACCOUNT_SCOPE_PRIMARY_ONLY`), and a location without an account cannot have one (409
+  `LOCATION_HAS_NO_ACCOUNT`). **The location's row wins** for the same technician, either way: a
+  location PREFERRED lifts an account-wide exclusion there (verified), a location EXCLUDED blocks a
+  technician the account prefers. The chips: the header card shows the account's rows ("Never John
+  Doe"); the location card shows what applies at that location, an inherited row marked "(all
+  locations)"; the editor labels each row "This location", "This location - overrides all locations",
+  "All locations" or "All locations - overridden here". The title of every chip is the origin and the
+  note.
+- **(3) Where the hard block sits.** In `createAppointment`'s transaction before the insert, and in
+  `updateAppointment` only when `assignedTechnicianId` changes - an unchanged technician is never
+  re-checked, so the sheet's Save on a visit placed before the exclusion was recorded still saves (the
+  sheet says "placed before the exclusion was recorded"). `PlacementRefusedError` -> 409
+  `TECHNICIAN_EXCLUDED` with the technician, the preference row, its scope and note; nothing is written.
+  The override is `{ overrideExclusion: { reason } }` on the body (strict), checked in storage with the
+  exclusion: the new `OVERRIDE_TECHNICIAN_EXCLUSION` (manager and admin, the
+  ISSUE_INVOICE_PREFINALIZATION precedent) or 403 `EXCLUSION_OVERRIDE_FORBIDDEN`, a typed reason or 400
+  `EXCLUSION_OVERRIDE_REASON_REQUIRED`, then one `placement_exclusion_overridden` row on the appointment
+  (`via` CREATE / UPDATE / CREW_ADD, the reason, the preference row; UPDATE's before names the previous
+  technician). An override sent when nothing is excluded is ignored and records nothing. The composition
+  add (`attachServiceToAppointmentTx`) inherits the visit's technician and has no check of its own.
+  **`lockTechnician` stays client-only** (decided: left, noted - the board refuses the move, the server
+  never reads it). Not checked: a PATCH that moves a visit to another location while keeping its
+  technician (nothing writes that today).
+- **(4) The crew.** `appointment_technicians` as recommended: exactly one LEAD per appointment, always
+  `appointments.assignedTechnicianId` - `syncCrewLeadTx` runs in the column's two writers, a support
+  technician who becomes the lead loses the support row, a visit with no technician has no lead - and
+  SUPPORT rows edited from the sheet's crew block (`POST /api/appointments/:id/crew`, `DELETE
+  .../crew/:technicianId`, one `appointment_crew_changed` row each). The backfill wrote one LEAD per
+  appointment with a technician when the table was created: **115** on the copy of the dev DB (the
+  handoff said 112 - the DB had grown to 123 appointments, 115 assigned). A SUPPORT technician the
+  customer excluded is refused like a placement (decided: B14's "never be scheduled" covers a crew
+  member), with the same override. A support technician needs a lead (409 `CREW_LEAD_REQUIRED`); the
+  lead leaves only by changing the visit's technician (409 `CREW_LEAD_NOT_REMOVABLE`); a cancelled or
+  completed visit's crew is history (409 `CREW_NOT_EDITABLE`). **The support technician's day lists the
+  visit** (decided: yes) - `getTechnicianWork` adds the visits with a SUPPORT row, `crewRole` tells them
+  apart, and the card is read-only (dashed, not clickable, "Support", "Supporting <lead> - the lead
+  posts the ticket"); the lead's card names the support crew. Every older reader keeps reading
+  `assignedTechnicianId`: the board, the ticket's technician snapshot and so production (one entry, one
+  technician, until Phase 7), and Pass 29's next-stop check (`nextStopTx`), which measures the lead's
+  day only.
+- **(5) The audit vocabulary.** Dedicated actions, no new entity type: `technician_preference_set` /
+  `technician_preference_cleared` with the preference row (and the technician's name) as the snapshot,
+  recorded on the `location` for a LOCATION row and on the account's `customer` for an ACCOUNT row -
+  every location's History tab already collects its customer, so the account-wide change shows on each
+  of them with no change to the collector; `placement_exclusion_overridden` and
+  `appointment_crew_changed` on the `appointment`. The LEAD's sync is unaudited, as the technician
+  change itself is until C5.1a.
+- **(6) The chips and the board.** As (2); on the dispatch queue each row reads "Prefers <tech>"
+  (green) and "Never <tech>" (red) for its location; the sheet's native select marks "- excluded by
+  the customer" / "- preferred" on each option, shows the hint, and warns when the chosen technician is
+  excluded. An excluded technician stays choosable (decided: allowed, not disabled) - the 409 opens the
+  reason prompt for a manager and the same request is resent (the dispositionDraftPrompt pattern),
+  everyone else gets the refusal as a toast. The board's own placement (a slot click) and a confirmed
+  move go through the same two mutations, so all three paths prompt.
+- **(7) Gates.** The preference editors and their routes are open to every role, like the location
+  profile - it is the customer's word, not a setting; the override is manager+; the crew routes are
+  ungated like every appointment write (C5.6's role profiles decide later).
+- **(8) Smart Schedule (Phase 9)** reads the same table through the same resolve rule: PREFERRED as a
+  weight, EXCLUDED as a constraint. Nothing is built for it.
+- **Found while building:** the handoff's DB figures had moved (123 appointments, 115 assigned; Pass
+  29's four `services` columns already on the shared DB - the owner restarted after PR #99, so the
+  copy printed only Pass 30's two lines); the scratchpad's `counts.sql` was a fixed list of the 46
+  tables and was rebuilt from `pg_tables`.
+- **Not touched:** the technicians / users merge (C5.7 - both new tables key on `technicians.id` and
+  are in its rewire list), split allocation and the comp engine (Phase 7), Smart Schedule (Phase 9),
+  the technician CRUD gates (`POST` / `PATCH /api/technicians` are still not MANAGE_SETTINGS-gated -
+  noted again), `lockTechnician`'s server enforcement, the Services-tab reopen defect
+  (`reopenTicketMutation` still posts `{ reason }` - noted a fourth time), `cancelAgreement`'s direct
+  CANCELED write, C5.6.
+- **Verified 2026-10-03** (PORT=5001 against a copy of the dev DB, `pestflow_verify`, dropped
+  afterwards; the shared DB untouched): `npm run check` clean; boot 1 printed Pass 30's two lines (the
+  preferences table; the crew table with **115** LEAD rows backfilled) and nothing else, every other
+  table count unchanged, every assigned appointment with its LEAD row; 108 API / SQL assertions as the
+  four roles, first run: the pure modules (the resolve rule both ways, inheritance, foreign scopes
+  ignored, a location without an account, the sort, the hint, the refusal texts, the crew vocabulary,
+  the four audit labels, the permission on manager and admin only); a fixture customer with two
+  locations on one account and two active technicians; the read as the technician; an ACCOUNT row from
+  the non-primary location 409 with nothing written; "Apply to all locations" from the primary as
+  support (the row, its customer-entity audit row, L2 inheriting it); a LOCATION row as the technician;
+  an unchanged set writing nothing; a changed note updating the one row with before / after; unknown
+  technician 404, bad kind 400, extra key 400; the effective map (excluded first, an empty location
+  omitted, no ids -> {}); placing the excluded technician 409 naming the technician, the row, the
+  scope and the note, with nothing written; support's and the technician's override 403, a blank
+  reason 400, an extra override key 400; the manager's override 201 with the LEAD row and one override
+  row (via CREATE); a technician not excluded placing with no row; an override for a non-excluded
+  technician ignored; a location PREFERRED lifting the account exclusion at L2 only and clearing it
+  restoring the block; the PATCH refusing a re-assignment (nothing changed), the manager's override
+  moving the LEAD (via UPDATE, before naming the old technician), a notes-only PATCH on the overridden
+  visit passing, a re-assignment back passing; the crew read; an excluded SUPPORT refused 409 / 403
+  then added by the manager's override (ADD row + CREW_ADD override row); duplicates 409, unknown
+  technician 404, extra key 400, unknown appointment 404; the support technician's day listing the
+  visit as SUPPORT with the lead in its crew and the lead's day naming the support; removing the lead
+  409, a non-member 404, the support 200 (REMOVE row) and the day no longer listing it; a support
+  promoted to lead leaving one LEAD row; unassigning removing the LEAD; no lead 409; a completed visit
+  409 for add and remove; clearing the ACCOUNT row from L2 409, a foreign row 404, from the primary as
+  the technician 200 (the cleared row on the customer) and the technician placing at L1 afterwards;
+  both locations' History tabs carrying the new actions; totals (5 override rows, 3 crew rows, every
+  row with an actor label); the LEAD invariant over the whole copy and the four indexes; every fixture
+  deleted and every count back at the run's start (`session` up by the run's four logins); boot 2
+  printed only the serving line with all 48 counts unchanged; Vite 200 with the new symbols on the three
+  pages, the new component and, under `/@fs/`, the two new shared modules, the audit vocabulary and the
+  permissions. **Nothing was rendered in a browser** - the repo has no browser automation and the
+  session had no browser - so the editors, the chips, the queue hint, the sheet's marked select and
+  warning, the override prompt, the crew block and the support card reach the owner first.
 
 ---
 

@@ -61,6 +61,14 @@ import { describeSurcharge } from "@shared/field-surcharge";
 import { SERVICE_WORK_KINDS, canAnswerService, defaultWorkKindForService, describeAnswersLink, describeServiceWorkKind, formatServiceWorkKind, normalizeServiceWorkKind, workKindOverridePermission } from "@shared/service-kind";
 import { ServiceWorkKindBadge, ServiceWorkKindListBadge } from "@/components/service-work-kind-badge";
 import { FieldAddedBadge, MarkFieldReviewedButton } from "@/components/field-added-badge";
+import {
+  TechnicianPreferenceChips,
+  TechnicianPreferenceDraftEditor,
+  TechnicianPreferencesEditor,
+  invalidateTechnicianPreferences,
+  useLocationTechnicianPreferences,
+  type TechnicianPreferenceDraft,
+} from "@/components/technician-preferences";
 import { describeBillingPlanBehavior } from "@shared/billing-plan";
 import { describeInitialCharge, formatInitialChargeType, initialChargeFromTemplate, type AgreementInitialChargeStatus, type InitialChargeDue } from "@shared/initial-charge";
 import { InitialChargeFormFields, initialChargeFieldsFrom, initialChargeFormStateFrom, validateInitialChargeFormState } from "@/components/initial-charge-fields";
@@ -668,12 +676,15 @@ function AddLocationDialog({
     gateCode: "",
     squareFootage: "",
   });
+  // Pass 30 (C4.4; B14): technician preferences for the new location - drafts
+  // until it exists, then one PUT each (scope LOCATION).
+  const [preferenceDrafts, setPreferenceDrafts] = useState<TechnicianPreferenceDraft[]>([]);
   const mutation = useMutation({
     mutationFn: async (data: typeof form) => {
       const trimmedAddress = data.address.trim();
       const trimmedNickname = data.nickname.trim();
 
-      return apiRequest("POST", "/api/locations", {
+      const response = await apiRequest("POST", "/api/locations", {
         location: {
           customerId,
           name: trimmedNickname || trimmedAddress,
@@ -697,13 +708,35 @@ function AddLocationDialog({
           isPrimary: true,
         },
       });
+      const created = (await response.json()) as Location;
+      let preferencesFailed = 0;
+      for (const draft of preferenceDrafts) {
+        try {
+          await apiRequest("PUT", `/api/locations/${created.id}/technician-preferences`, {
+            technicianId: draft.technicianId,
+            kind: draft.kind,
+            note: draft.note || null,
+            scope: "LOCATION",
+          });
+        } catch {
+          preferencesFailed += 1;
+        }
+      }
+      return { created, preferencesFailed };
     },
-    onSuccess: () => {
+    onSuccess: ({ preferencesFailed }) => {
       queryClient.invalidateQueries({
         predicate: (query) => typeof query.queryKey[0] === "string" && query.queryKey[0].startsWith(`/api/customer-detail-compat/${customerId}`),
       });
       queryClient.invalidateQueries({ queryKey: ["/api/contacts/by-location"] });
-      toast({ title: "Location added" });
+      if (preferenceDrafts.length) {
+        invalidateTechnicianPreferences();
+      }
+      if (preferencesFailed) {
+        toast({ title: "Location added, but a technician preference was not saved", description: "Open Edit Location to add it again.", variant: "destructive" });
+      } else {
+        toast({ title: "Location added" });
+      }
       onClose();
     },
     onError: (err: Error) => {
@@ -810,6 +843,7 @@ function AddLocationDialog({
           onChange={(e) => setForm((p) => ({ ...p, nickname: e.target.value }))}
         />
       </div>
+      <TechnicianPreferenceDraftEditor drafts={preferenceDrafts} onChange={setPreferenceDrafts} />
       <label className="flex items-center gap-2 text-sm">
         <input type="checkbox" checked={form.isPrimary} onChange={(e) => setForm((p) => ({ ...p, isPrimary: e.target.checked }))} />
         Set as primary location
@@ -954,7 +988,7 @@ function EditLocationDialog({
   };
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-4">
+    <form onSubmit={handleSubmit} className="space-y-4 max-h-[75vh] overflow-y-auto pr-1">
       {isPrimaryLocation ? (
         <>
           <div className="space-y-1">
@@ -1054,6 +1088,10 @@ function EditLocationDialog({
         <div className="space-y-1.5"><Label>Sq Ft</Label><Input type="number" data-testid="input-edit-square-footage" value={form.squareFootage} onChange={(e) => setForm((prev) => ({ ...prev, squareFootage: e.target.value }))} /></div>
         <div className="space-y-1.5"><Label>Gate Code</Label><Input data-testid="input-edit-gate-code" value={form.gateCode} onChange={(e) => setForm((prev) => ({ ...prev, gateCode: e.target.value }))} /></div>
       </div>
+      {/* Pass 30 (C4.4; B14; D8): the location's technician preferences - a live editor, each add and
+          remove its own request. On the primary location (the customer identity) "Apply to all
+          locations" writes the account-scoped row; a location's own row wins over it. */}
+      <TechnicianPreferencesEditor locationId={location.id} />
       <div className="rounded-md border bg-muted/20 px-3 py-2">
         <label className="flex items-start gap-2 text-sm">
           <input
@@ -3704,6 +3742,9 @@ export default function CustomerDetail() {
   const { data: contacts } = useQuery<Contact[]>({ queryKey: ["/api/contacts/by-location", activeLocationId], enabled: !!activeLocationId });
   const { data: accountContacts } = useQuery<Contact[]>({ queryKey: ["/api/contacts", customerId], enabled: !!customerId });
   const { data: locationBalances } = useQuery<LocationBalanceSummary[]>({ queryKey: ["/api/location-balances", customerId], enabled: !!customerId });
+  // Pass 30 (C4.4): the account's "all locations" preferences (header chips)
+  // and what applies at the selected location (profile card chips).
+  const { data: activeLocationPreferences } = useLocationTechnicianPreferences(activeLocationId || null);
   // Pass 14 (C2.4): the customer's aging, derived - the header card's chips
   // read the rollup, the location profile's strip reads the selected
   // location's entry. Refreshed by invalidateInvoiceViews with the ledger.
@@ -3959,6 +4000,7 @@ export default function CustomerDetail() {
                       <CreditCard className="h-3 w-3 mr-1" /> Billing: {hasBillingOverride ? "Per-location" : "Default"}
                     </Badge>
                     <CustomerAgingChips aging={customerAging} locationCount={allLocations?.length ?? 0} />
+                    <TechnicianPreferenceChips entries={activeLocationPreferences?.accountRows ?? []} testIdPrefix="chip-account-technician-preference" />
                   </div>
                 </div>
 
@@ -4121,6 +4163,11 @@ export default function CustomerDetail() {
                   {activeLocation.squareFootage && <span className="flex items-center gap-1"><Ruler className="h-3 w-3" /> {activeLocation.squareFootage.toLocaleString()} sq ft</span>}
                   {activeLocation.gateCode && <span className="flex items-center gap-1"><KeyRound className="h-3 w-3" /> Gate: {activeLocation.gateCode}</span>}
                 </div>
+                {activeLocationPreferences?.effective.length ? (
+                  <div className="flex flex-wrap items-center gap-1.5" data-testid="row-location-technician-preferences">
+                    <TechnicianPreferenceChips entries={activeLocationPreferences.effective} testIdPrefix="chip-location-technician-preference" />
+                  </div>
+                ) : null}
                 {activeLocationAgreements.length > 0 && !locationBillingPlansLoading && (
                   <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs" data-testid="row-location-agreement-plans">
                     <span className="text-muted-foreground">Agreements:</span>

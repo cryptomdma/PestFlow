@@ -30,8 +30,8 @@ field surcharge line, C3.6) is merged (PR #95); Pass 24 (service designation and
 attribution, C3.7 - the last Phase 3 row) is merged (PR #96); Pass 26 (opportunity assignment
 rules and zones, C4.1b - the first open Phase 4 row in phase order) is merged (PR #97); Pass 28
 (appointment composition on the server and the dispatch sheet, C4.3a) is merged (PR #98); Pass 29
-(appointment composition in the field, C4.3b) is pushed, awaiting merge; **next pass: 30,
-technician preferences and crew** (C4.4). The roadmap
+(appointment composition in the field, C4.3b) is merged (PR #99); Pass 30 (technician preferences and
+crew, C4.4) is pushed, awaiting merge; **next pass: 31, dispatch board settings** (C4.5). The roadmap
 sequences every remaining item below; this file keeps the status pointer and, as its last
 section, the handoff prompt that starts the next session.
 
@@ -1346,7 +1346,7 @@ to the viewport's height; the second commit gives `SheetContent` `overflow-y-aut
 technician's Appointment Details dialog already had. Signatures and behavior are under "Shipped in
 Pass 28" at the end of `PLAN_ROADMAP_V2.md` Part D.
 
-Pass 29 (`feature/phase-4-field-composition`, 2026-10-02, C4.3b) pushed, awaiting merge.
+Pass 29 (`feature/phase-4-field-composition`, 2026-10-02, C4.3b) merged as PR #99.
 **Appointment composition in the field.** The technician's Appointment Details edits the visit
 through the dispatch sheet's routes (B13; the Phase 3 design rule - every field action is a route).
 Each linked service row opens on click: a **type** select on non-agreement, un-ticketed work (the
@@ -1391,15 +1391,53 @@ service form and its inline refusal, the badge on four surfaces, the Mark review
 rendered by anyone: the repo has no browser automation and the session had no browser.**
 Signatures and behavior are under "Shipped in Pass 29" at the end of `PLAN_ROADMAP_V2.md` Part D.
 
-Next up: **Pass 30** — technician preferences and crew (`PLAN_ROADMAP_V2.md` Phase 4 table, C4.4;
-B14): `technician_preferences` (`scopeType account | location`, `technicianId`, `kind PREFERRED |
-EXCLUDED`, note, created-by); editors in edit / add location and on the primary location with an
-"apply to all locations" checkbox that writes the account-scoped row; a chip on the card; EXCLUDED a
-hard block on placement (manager override with a reason, audit-logged), PREFERRED a "Prefers <tech>"
-hint on the queue row and the sheet; crew as `appointment_technicians` (lead + support), production
-entries staying single-technician until Phase 7. Branch from `origin/main` after confirming it
-contains Pass 29's merge. The handoff prompt for Pass 30 is the last section of this file; the Pass
-30 session writes the next one.
+Pass 30 (`feature/phase-4-technician-preferences-crew`, 2026-10-03, C4.4) pushed, awaiting merge.
+**Technician preferences and crew** (B14; D8 "Preferred technician"; the "Crew." gap below).
+**Decided (1):** one org-scoped `technician_preferences` table (scope ACCOUNT | LOCATION, accountId /
+locationId, technicianId, kind PREFERRED | EXCLUDED, note, createdByUserId, createdAt, updatedAt), one
+row per technician per scope (partial unique indexes), FKs to accounts / locations / technicians /
+users (accounts and locations come from `db:push`, never a bootstrap, so the boot order cannot bite);
+`shared/technician-preferences.ts` carries the vocabulary and the resolve rule. **Decided (2):** a
+location reaches its account through `locations.accountId`; "customer-level" is the ACCOUNT row,
+written by "Apply to all locations" on the primary location's Edit Location (the server refuses it
+elsewhere, 409 `ACCOUNT_SCOPE_PRIMARY_ONLY`); **the location's row wins** for the same technician (a
+location PREFERRED lifts an account-wide exclusion there); the header card shows the account's chips,
+the location card what applies there with inherited rows marked "(all locations)". **Decided (3):** the
+block sits in `createAppointment` before the insert and in `updateAppointment` only when the
+technician changes - 409 `TECHNICIAN_EXCLUDED` naming the technician and the scope, nothing written;
+`{ overrideExclusion: { reason } }` under the new `OVERRIDE_TECHNICIAN_EXCLUSION` (manager, admin; 403
+/ 400 otherwise), one `placement_exclusion_overridden` row; the composition add inherits the visit's
+technician (no check); `lockTechnician` stays client-only (noted). **Decided (4):**
+`appointment_technicians` - one LEAD mirroring `assignedTechnicianId` (kept in step by its two writers;
+**115** rows backfilled on a copy of the dev DB, the handoff's 112 having grown) and SUPPORT rows from
+the sheet's crew block (`POST` / `DELETE /api/appointments/:id/crew`, one `appointment_crew_changed`
+row each); an excluded SUPPORT technician is refused the same way; the support technician's day lists
+the visit read-only ("Support"); production stays the lead's. **Decided (5):** dedicated actions
+`technician_preference_set` / `_cleared` on the location (or the account's customer for an ACCOUNT row
+- every location's History shows it), no new entity type. **Decided (6):** the queue row reads "Prefers
+<tech>" / "Never <tech>", the sheet's select marks each option and warns; an excluded technician stays
+choosable and the 409 opens the reason prompt for a manager and resends. **Decided (7):** the editors
+are open to every role (customer data), the override manager+, the crew routes ungated like every
+appointment write. **Decided (8):** Smart Schedule (Phase 9) will read the same table and rule -
+PREFERRED a weight, EXCLUDED a constraint; nothing built. **Migration**: two tables, five indexes and
+the LEAD backfill, printed once; **it has NOT run against the shared dev DB** - verification ran on a
+copy (`pestflow_verify`, dropped afterwards); the owner's `npm run dev:full` restart creates them and
+prints two lines (with the backfill count). Found and left: the technician CRUD routes are still not
+MANAGE_SETTINGS-gated; the Services tab's Reopen still posts `{ reason }` (noted a fourth time);
+`cancelAgreement` still writes CANCELED directly. **Restart `npm run dev:full` before manually testing -
+this pass adds two tables, a permission, seven routes and a body field on the placement routes, and none
+of the new UI (the preference editors in Edit / Add Location, the chips on the header and location
+cards, the queue hint, the sheet's marked select and warning, the override prompt, the crew block, the
+support card on the technician's day) has been rendered by anyone: the repo has no browser automation
+and the session had no browser.** Signatures and behavior are under "Shipped in Pass 30" at the end of
+`PLAN_ROADMAP_V2.md` Part D.
+
+Next up: **Pass 31** — dispatch board settings (`PLAN_ROADMAP_V2.md` Phase 4 table, C4.5): Settings ->
+Dispatch Board with the view interval (the board's "Slot Interval" today; keep 1 h / 2 h, add 30 min),
+the snap interval 15 / 30 / 60 (`dispatch_snap_minutes`; placement and the sheet's time inputs round to
+it) and the default visible hours (the board's session state stays an override). Branch from
+`origin/main` after confirming it contains Pass 30's merge. The handoff prompt for Pass 31 is the last
+section of this file; the Pass 31 session writes the next one.
 
 Phase 1's ordered plan, impact analysis, conflict resolutions, and per-pass verification steps live in
 `PLAN_BILLING_V1_1_EXECUTION.md` — read it when a pass builds on a Phase 1 helper (its "Shipped in
@@ -1583,7 +1621,9 @@ pointer and that prompt.
       earns the production value
 
     **Three gaps in §1.6.2, all of them "basis" rather than "engine":**
-    1. **Crew.** `services.assignedTechnicianId` / `appointments.assignedTechnicianId` are single FKs
+    1. **Crew.** `[Built in Pass 30, C4.4: appointment_technicians - one LEAD mirroring
+       appointments.assignedTechnicianId, SUPPORT rows from the dispatch sheet; production still
+       credits one technician until split allocation]` `services.assignedTechnicianId` / `appointments.assignedTechnicianId` are single FKs
        with no join table, so the app cannot record that two technicians ran a job.
     2. **Split allocation.** `production_value_entries.technicianId` is one nullable varchar, so an
        entry credits exactly one technician. Needs append-only allocation rows beneath the entry
@@ -1652,230 +1692,141 @@ pointer and that prompt.
 
 Replaced at the end of every pass (`AGENT_WORKING_AGREEMENT.md`, the end-of-pass step). The owner
 pastes it verbatim to start the next session; it is also the last thing in the finishing session's
-final message. Written 2026-10-02, after Pass 29 was pushed as
-`feature/phase-4-field-composition`. Its ground truth came from a read-only Explore subagent's
-inventory of the working tree at the start of Pass 29, plus the SQL it ran, re-checked against the
-tree after Pass 29's edits where those files were touched (schema, storage, routes, the dispatch and
-customer pages). They are that tree's, so run the SQL and grep the names before trusting any claim.
+final message. Written 2026-10-03, after Pass 30 was pushed as
+`feature/phase-4-technician-preferences-crew`. Its ground truth came from a read-only Explore subagent's
+inventory of the working tree during Pass 30, plus the SQL it ran, re-grepped against the tree after
+Pass 30's edits (the dispatch page, storage and routes moved; settings.tsx did not). They are that
+tree's, so run the SQL and grep the names before trusting any claim.
 
 ```text
-Start Pass 30 — Technician preferences and crew
-(PLAN_ROADMAP_V2.md Phase 4 table, row C4.4; B14 :274-282 "Preferred technician ... plus EXCLUDE_TECH"
-- preferences per location, an "apply to all locations" checkbox on the primary location writing the
-account-scoped row, exclusion a hard block on placement with a manager override and a reason, logged,
-preference a soft hint; PLAN_BILLING_V1_1.md D8 "Preferred technician" (soft constraint, location
-overrides customer-level, schema may land early) and the "Compensation & attribution" entry in
-CURRENT_FOCUS.md (search "Crew." - gap 1: single technician FKs, no join table; crew is a scheduling
-capability, split allocation follows it, the engine is Phase 7); Part E answer "B14: EXCLUDE_TECH, per
-location with apply-to-all-locations (C4.4)"; CANONICAL_DOMAIN_RULES_V1.md §6 Flag / §7 Hold (the
-scopeType account | location shape B14 cites - prose only, no table exists) and §16 User (the
-technician profile moves onto users in C5.7; technicians.userId is the bridge). Phase order: Pass 29
-(C4.3b) closed the row before it, so this is the next open Phase 4 row.) Read the CLAUDE.md docs in
-order first; CURRENT_FOCUS.md's last two entries (Pass 29 and "Next up") are the ones that matter.
+Start Pass 31 — Dispatch board settings
+(PLAN_ROADMAP_V2.md Phase 4 table, row C4.5 :386; Part A3 rows :117-118 "Dispatch "Slot Interval" ->
+rename "View Interval"" (PARTIAL) and "Schedule (snap) interval 15 / 30 / 60 min, configured in Dispatch
+Board settings" (ABSENT) - their file:line citations are stale, see below; canon Scheduling Rules §2
+"Schedule views". No Part B / Part E owner note covers interval, snap or visible hours: the row and the
+two Part A rows are the whole spec. Phase order: Pass 30 (C4.4) closed the row before it, so this is the
+last open Phase 4 row.) Read the CLAUDE.md docs in order first; CURRENT_FOCUS.md's last two entries
+(Pass 30 and "Next up") are the ones that matter.
 
-Branch feature/phase-4-technician-preferences-crew from origin/main. Confirm main contains the Pass 29
-merge (feature/phase-4-field-composition) before branching.
+Branch feature/phase-4-dispatch-board-settings from origin/main. Confirm main contains the Pass 30
+merge (feature/phase-4-technician-preferences-crew) before branching.
 
-The row: `technician_preferences` (scopeType account | location, technicianId, kind PREFERRED |
-EXCLUDED, note, created-by); editors in edit / add location and on the primary location with an
-"apply to all locations" checkbox that writes the account-scoped row; a chip on the card. Dispatch:
-EXCLUDED is a hard block on placement (manager override with a reason, audit-logged), PREFERRED a
-"Prefers <tech>" hint on the queue row and the sheet. Crew: `appointment_technicians` (lead +
-support) - the comp basis D8 collects here; production entries stay single-technician until Phase
-7's split allocation. Decide and state, in the pass: (1) the table shape - recommend one org-scoped
-`technician_preferences` table (id, orgId, scopeType ACCOUNT | LOCATION, accountId nullable,
-locationId nullable, technicianId FK technicians, kind PREFERRED | EXCLUDED, note, createdByUserId
-users FK, createdAt), a partial unique index per (scope row, technician) so one technician has one
-kind per scope, `shared/technician-preferences.ts` carrying the vocabulary, the resolve rule (a
-location row overrides an account row for the same technician; an EXCLUDED anywhere in scope
-blocks unless a location row says PREFERRED) and the refusal code; (2) the scope reach - a location
-reaches its account through locations.accountId (nullable, every row set on the dev DB) and
-"customer-level" means account-level (customers has no account column; accounts.legacyCustomerId
-is 1:1), so the "apply to all locations" checkbox writes the ACCOUNT row and the per-location
-editor writes the LOCATION row - state which wins and how the chip reads a location that inherits;
-(3) where the hard block sits - recommend inside createAppointment's transaction (before the insert)
-and inside updateAppointment when assignedTechnicianId changes, as a `PlacementRefusedError`
-modelled on AppointmentDispositionError (409 TECHNICIAN_EXCLUDED naming the technician and the
-scope), plus the composition add (attachServiceToAppointmentTx inherits the visit's technician, so
-no new check there); the override: `{ overrideExclusion: { reason } }` on the body, allowed for
-manager+ (recommend a new permission OVERRIDE_TECHNICIAN_EXCLUSION, manager and admin, the
-ISSUE_INVOICE_PREFINALIZATION precedent - a manager's override that is audited), refused 403
-otherwise, one audit row (`placement_exclusion_overridden` on the appointment, the reason and the
-preference row named); state whether lockTechnician (client-only today) joins the server check or
-stays as it is (recommend: left, noted); (4) the crew table - `appointment_technicians`
-(appointmentId FK, technicianId FK, role LEAD | SUPPORT, unique per appointment + technician, at
-most one LEAD) with appointments.assignedTechnicianId staying the LEAD (every reader - the board,
-the technician's day, the ticket's technician snapshot, production - keeps reading it); recommend a
-guarded backfill writing one LEAD row per assigned appointment (112 on the dev DB) printed once,
-and the sheet's crew editor (add / remove a SUPPORT technician) through a small route pair; say
-whether the support technician's day (getTechnicianWork) should list the visit (recommend: yes,
-read-only, badge "Support" - a crew member must see the stop; the ticket stays the lead's) or wait;
-(5) the audit vocabulary - `technician_preference` entity with `update` rows, or dedicated actions
-(`technician_preference_set` / `_cleared`); and the placement override action; (6) the chips - on
-the customer header card (account scope) and the location profile card (location scope), "Prefers
-<name>" / "Never <name>" with the note as the title; the queue row's "Prefers <tech>" hint and the
-sheet's technician select marking excluded technicians (disabled with the reason, or allowed with
-the override prompt - recommend allowed, the 409 prompting the reason, the dispositionDraftPrompt
-resend pattern); (7) gates - the preference editors open to every role like the location profile
-(or MANAGE_SETTINGS? recommend open: it is customer data, not settings), the override manager+;
-(8) what Smart Schedule (Phase 9) will read: the same table, PREFERRED as a weight, EXCLUDED as a
-constraint - state it, build nothing for it.
+The row: Settings -> Dispatch Board: **view interval** (the rename; keep 1 h / 2 h, add 30 min), **snap
+interval** 15 / 30 / 60 (`dispatch_snap_minutes`; drag placement and the sheet's time inputs round to
+it), default visible hours (the session override stays). Decide and state, in the pass:
+(1) the setting shape - recommend one shared module `shared/dispatch-board.ts` (the
+shared/invoice-on-finalize.ts / shared/service-report.ts model: the allowed values, the defaults, the
+keys, a normalize that returns the default for anything unknown, describe labels) with one app_settings
+key per value (`dispatch_view_interval_minutes` 30 | 60 | 120, default 120 - today's 2 h;
+`dispatch_snap_minutes` 15 | 30 | 60, default 60 - today's behavior, placement on the hour;
+`dispatch_default_start_hour` / `dispatch_default_end_hour`, defaults 8 and 18 - today's state), read
+together through one `GET /api/settings/dispatch-board` and written through one `PATCH` (MANAGE_SETTINGS,
+like every settings write but service-time-tracking), no seed row (the reader returns the defaults);
+or one JSON key - say which and why; validate start < end and the hours inside the board's range;
+(2) "drag placement" - **there is no drag-and-drop anywhere in the client**: placement is click-a-slot
+(handleSlotClick) and a move is click-then-confirm (pendingMove). Recommend: the snap rounds the sheet's
+Scheduled Start / End (a `step` of snap*60 on the datetime-local inputs and rounding on save) and every
+placement / move start (a slot start is already a multiple of the view interval; round it to the snap
+when the snap is coarser - say what 60-minute snap on a 30-minute view does); build no drag; say whether
+the server rounds too (recommend: no - a client rule, noted, as lockTechnician is);
+(3) the 30-minute view - every slot helper is whole-hour today and must move to minutes: getFullHourRange
+(clamps the interval to >= 1 hour), buildSlotDate(baseDate, hour) (minutes 0), getHourLabel (hour only),
+getSlotHourForDate (buckets by getHours), the slot keys `${tech}:${date}:${hour}`, configSummary
+("N-hour slots"), and isSameSlot, which compares hours only - so today a move inside the same hour is
+not seen as a time move and escapes lockTime; fix it with the minute slots and say so;
+(4) default visible hours - the settings seed the board's initial start / end / view interval; the
+Window popover's changes stay React state for the session (there is no persisted "session override" -
+nothing in localStorage, sessionStorage or the URL; it resets on reload, and the popover's footer already
+says "live for this session"); fix the hour-options bug while there (HOUR_OPTIONS is 6..20 but the start
+select's onChange clamps the end to min(start + interval*2, 21), a value the end select cannot show);
+(5) the rename - the UI says "Slot Interval" (inside the "Window" popover) and "Board Window" / "N-hour
+slots"; nothing says "Schedule interval" or "View Interval" - rename to "View Interval" and decide the
+summary's text ("30-min view");
+(6) where in Settings - settings.tsx is one flat page of cards with no tabs; recommend a "Dispatch Board"
+card in the existing pattern (disabled controls plus "Only an admin can change this setting." for a
+non-admin, dev behavior rule 6);
+(7) the multi-day viewport spill (viewportBounds is continuous across days, so on a 3-day or week view
+an off-window appointment on a middle day lands in the first or last slot via getSlotHourForDate's
+fallback) - recommend: noted, not fixed, unless the minute-slot rewrite makes it free - say which.
 
-Ground truth today (line numbers from the working tree at the end of Pass 29; they drift, the names
-do not; the Pass 30 inventory came from a read-only Explore subagent during Pass 29, re-checked
-against the tree after Pass 29's edits where those files were touched):
-- Schema (shared/schema.ts): technicians :172-194 (id, orgId, displayName, licenseId, status
-  default ACTIVE, email, phone, color, notes, userId nullable FK users :191 with the partial unique
-  index technicians_user_id_uidx in service-scheduling-bootstrap.ts:57); users :1216-1227; customers
-  :7-22 (no accountId, no locationId); accounts :26-35 (id, orgId, primaryLocationId, status,
-  legacyCustomerId unique - NO isPrimary); locations :51-72 (customerId NOT NULL, accountId nullable
-  FK :56 "TODO(Phase2) make non-null", isPrimary :62); appointments.assignedTechnicianId :256+ (FK),
-  assignedTo free text, lockTechnician; services.assignedTechnicianId; serviceRecords technicianId /
-  technicianName / technicianLicenseNumber; productionValueEntries technicianId (plain varchar, no
-  FK) + technicianName - one technician per entry; services now also carries addedInFieldByUserId /
-  fieldReviewedAt / fieldReviewedByUserId / fieldReviewedByLabel (Pass 29, :255-258 - the four
-  columns shift everything below them by ~14 lines against the subagent's numbers). Insert schemas:
-  insertLocationSchema (omits orgId and id only), insertTechnicianSchema, insertServiceSchema (now
-  omitting the four field columns too), insertAppointmentSchema, insertZoneSchema,
-  insertOpportunityAssignmentRuleSchema, insertUserSchema. NO flags or holds table exists in the
-  schema or the DB - canon §6 / §7 are prose; the nearest built scope precedent is customer_notes
-  (scope text default ACCOUNT, accountId, locationId, createdByUserId).
-- Server writers of a placement's technician (server/storage.ts, 12147 lines): appointments'
-  assigned_technician_id is written in exactly two places - createAppointment (:5065 region; the only
-  insert(appointments)) and updateAppointment (via .set(data); comment: technician / time / lock
-  changes are UNAUDITED until C5.1a, only notes is); every other update(appointments) leaves it alone.
-  Services inherit it through syncServicesForAppointmentTx (:2377 region, called from create and
-  update) and attachServiceToAppointmentTx :5624 (the add route and the grouped extras); the ticket
-  overwrites a service's technician at post / finalize. getTechnicianWork :6207 filters
-  eq(appointments.assignedTechnicianId). The hard block sits in createAppointment before its insert
-  and in updateAppointment when the technician changes; the shared refusal modelled on
-  AppointmentDispositionError / respondAppointmentDispositionError (routes.ts). lockTechnician is
-  enforced only on the client (schedule.tsx moveAppointmentToSlot); the server never reads it.
-  Routes: POST /api/appointments :2105 region (appointmentSchema), PATCH /api/appointments/:id
-  (updateAppointmentSchema = appointmentSchema.partial()), the composition routes :2155-2200, POST
-  /api/appointments/:id/disposition, the technician alias; POST /api/services and PATCH
-  /api/services/:id :1731 can carry assignedTechnicianId. No appointment write is permission-gated.
-- Settings -> Technicians: client/src/pages/settings.tsx TechnicianForm :919-1011 (the users query
-  :924, the userId Select :988, POST / PATCH :950-951), the list query :1672, the Technicians card
-  :2517-2560 ("Linked to ..." :2549). Routes GET /api/users :1370 region, GET /api/technicians,
-  POST /api/technicians (technicianSchema), PATCH /api/technicians/:id (updateTechnicianSchema) -
-  the technician POST and PATCH are NOT gated by MANAGE_SETTINGS although they are a Settings
-  surface; storage getTechnicians (ACTIVE unless includeInactive), createTechnician, updateTechnician,
-  assertTechnicianUserLink, getUsers (:3531-3573 region before Pass 29's +~35 lines in storage).
-- Customer screen (client/src/pages/customer-detail.tsx, 4318 lines): AddLocationDialog :643-824
-  (local useState form, no zod; POSTs /api/locations { location, initialContact }; isPrimary
-  checkbox :813; mounted :4020 region); EditLocationDialog :826-1085 (isPrimaryLocation :838 - on
-  the primary location it also edits the customer identity, so it IS the "customer edit modal" D8
-  names; PATCHes /api/customers/:id/locations/:locId/profile (routes.ts updateLocationProfileSchema,
-  storage updateLocationProfile), then optionally set-primary; the "Set as Primary Location" block
-  ~:1055-1075 (checkbox-edit-location-primary) is the natural neighbour for "apply to all
-  locations"; footer :1076-1081; mounted in the profile card's Dialog ~:4051). Customer header card
-  ~:3912-3965 with the chip row chip-primary-location / chip-billing (~:3950) + CustomerAgingChips -
-  the account-scoped chip sits here; the location selector DropdownMenu ~:3968-4020; the location
-  profile card card-location-profile ~:4045 with its badge row (Primary, Billing Override) ~:4048 -
-  the location chip sits here; LocationNotesPanel :1444-1474. No "apply to all locations" pattern
-  exists anywhere (the only hits are display text). ServicesTab :3060 gained the field-added badge
-  and Mark reviewed (:3418, :3452) in Pass 29.
-- Dispatch (client/src/pages/schedule.tsx, 2008 lines after Pass 29): the pending queue card
-  ("Pending Dispatch Queue"), the row div queue-row-${service.id} ~:1850 with its badge row and
-  answers line - the "Prefers <tech>" hint goes there; AppointmentSheet :196 (sheet-appointment-
-  details) with the technician picker a NATIVE <select> (not a shadcn Select) ~:590, onSave ~:675;
-  the parent's onSave -> updateAppointmentMutation (PATCH); scheduleMutation ~:1145 (POSTs
-  /api/appointments with assignedTechnicianId, then the grouped extras through the add route);
-  buildSlotDate :108; moveAppointmentToSlot ~:1395 (client-side lock checks); pendingMove /
-  confirmPendingMove ~:1417 (PATCH with assignedTechnicianId); handleSlotClick ~:1436 (the branch
-  point: queue placement vs move); the move-confirm AlertDialog ~:1975; the board card ~:1713-1768.
-  An EXCLUDED refusal comes back as a 409 from scheduleMutation and updateAppointmentMutation,
-  followed by a reason prompt and a resend - the dispositionDraftPrompt resend pattern (~:1340) is
-  the precedent. The composition row now carries FieldAddedBadge / MarkFieldReviewedButton
-  (:438-441) and describeCompositionResult reads nextStop (:1234).
-- Audit vocabulary (shared/audit.ts): AuditEntityType :24-35 (customer, location, invoice,
-  invoice_line_item, service, service_record, payment, credit_memo, agreement, opportunity,
-  appointment); AuditAction (27 members, field_service_reviewed last at :120); ENTITY_TYPE_LABELS /
-  ACTION_LABELS exhaustive Records (the compiler forces additions); the doc comments above the
-  unions. The override-plus-audit precedent is prefinalization_issue_override (storage.ts, the
-  invoice issue path). The writer is recordAuditLogTx.
-- Bootstraps (server/service-scheduling-bootstrap.ts): columnExists :13, indexExists :20,
-  tableExists :25; bootstrapOpportunityAssignment :397+ (Pass 26) is the newest NEW-TABLE model
-  (hadZones = tableExists -> CREATE TABLE IF NOT EXISTS -> index -> one-time log; FKs to zones(id)
-  and users(id)); bootstrapFieldComposition :374 (Pass 29) the newest column model; the chain ends
-  bootstrapServiceSchedulingFoundation (:357-362). The foundation runs from server/index.ts:99,
-  BEFORE tenancy (:109) and before bootstrapCanonicalAccounts (:114): a new table with an FK to
-  accounts is a boot-order trap on a fresh DB (accounts comes from drizzle push; customer_notes'
-  account_id was added without an FK in note-bootstrap.ts:29 for this reason) - decide FK or not and
-  say so. A new org-scoped table must be added to TABLES_REQUIRING_ORG_ID in
-  server/tenancy-bootstrap.ts:18-49 (zones :40, rules :41).
-- Permissions (shared/permissions.ts): the four roles :1; PERMISSIONS :3-74; ROLE_PERMISSIONS
-  :83-132 (technician :84: POST_SERVICE_TICKET, ADJUST_PRICE_NON_AGREEMENT, ADD_FIELD_SURCHARGE,
-  TAKE_PAYMENT_FIELD; support :90 adds FINALIZE_TICKET, REOPEN_TICKET, EDIT_TICKET, GENERATE_INVOICE,
-  SEND_INVOICE, ASSIGN_OPPORTUNITY, APPLY_PAYMENT, CONFIRM_PAYMENT; manager :104 everything but
-  MANAGE_SETTINGS; admin all); can :134; rolesWithPermission :139. Nothing resembles "override an
-  exclusion"; the analogs are ISSUE_INVOICE_PREFINALIZATION (manager+ override, audited) and
-  REOPEN_TICKET_OTHER (manager+ with a typed reason).
-- Production entries: createProductionValueEntriesForFinalizedRecord (storage.ts ~:2880 region):
-  the main entry and the SURCHARGE entry both take technicianId / technicianName from the TICKET's
-  snapshot (resolveServiceRecordTechnicianSnapshot: explicit technicianId, else
-  services.assignedTechnicianId, else appointments.assignedTechnicianId); the unique index
-  production_value_entries_record_uidx allows one main entry per ticket. "Stays single-technician"
-  means: the crew table adds lead and support rows, this method keeps crediting record.technicianId
-  (the lead stays appointments.assignedTechnicianId), nothing reads the crew until Phase 7.
-- DB today (run the SQL, never trust a doc's data claim; the shared dev DB was untouched by Pass
-  29, whose verification ran on a copy - so the four services columns do not exist there until the
-  owner's restart): technicians 2 (Austin Lowe, John Doe, both ACTIVE, 0 linked to a user);
-  locations 14 (14 with account_id, 10 is_primary); accounts 10 (every one with legacy_customer_id
-  and primary_location_id); customers 10 (4 with two locations); users 4 (one per role);
-  appointments 120 (112 with assigned_technician_id; the other 8 carry assigned_to text only);
-  services 103 (98 with a technician); production_value_entries 59 (57 with technician_id);
-  audit_logs 204; 46 public tables; no table name contains preference, crew, flag or hold.
-  locations columns: id, customer_id, name, address, city, state, zip, is_primary, property_type,
-  square_footage, lot_size, gate_code, notes, billing_profile_id, account_id, source, org_id;
-  accounts columns: id, primary_location_id, status, legacy_customer_id, created_at, updated_at,
-  org_id.
-- Docs versus code, found by the inventory: B14 (:280) calls scopeType "the flags/holds shape" - no
-  such tables exist; D8 says "customer edit modal" and "soft constraint" - no separate customer edit
-  modal exists (the primary location's EditLocationDialog is it) and B14 makes EXCLUDED a hard block;
-  "customer-level" means account-level (customers has no account column); the sheet's technician
-  picker is a native <select>; CURRENT_FOCUS's "Crew." gap entry is still accurate (no join table);
-  "manager override, audit-logged" has no basis today (technician changes on the PATCH are unaudited,
-  lockTechnician is client-only); the technician CRUD routes are ungated; no technician has a user_id.
-- Docs to carry: the C4.4 row (PLAN_ROADMAP_V2.md Phase 4 table) and C4.5; B14 :274-282; D8
-  "Preferred technician" in PLAN_BILLING_V1_1.md; the "Compensation & attribution" entry in
-  CURRENT_FOCUS.md (gap 1 Crew, the sequencing "Crew assignment -> the deferred scheduling pass");
-  canon §6 / §7 (if the preferences table takes their shape, say so there or add a "Technician
-  preferences" rule under Scheduling Rules), §11 (crew on the appointment: fields as built), §16;
-  "Shipped in Pass 29" ("Not touched" names C4.4); CURRENT_FOCUS.md's Pass 29 entry and its "Next up".
+Ground truth today (line numbers from the working tree at the end of Pass 30; they drift, the names do
+not; the Pass 31 inventory came from a read-only Explore subagent during Pass 30, re-grepped after Pass
+30's edits to schedule.tsx, which added ~236 lines above the board):
+- client/src/pages/schedule.tsx (2244 lines): VIEW_OPTIONS :70 (the day span: "1 Day" / "3 Day" /
+  "1 Week"), HOUR_OPTIONS :76 (6..20), SLOT_INTERVAL_OPTIONS = [1, 2] :77 (hours);
+  formatDateTimeLocalValue :86; buildSlotDate :120; getHourLabel :124; getFullHourRange :128;
+  getSlotHourForDate :137; isSameSlot :150; getAppointmentDurationMinutes :173; getViewportLabel :182;
+  formatSlotLabel :198 (already prints minutes); AppointmentCrewBlock :223 (Pass 30); AppointmentSheet
+  :346 with "Scheduled Start" :782 / "Scheduled End" :791 (datetime-local, no step, no rounding, Save
+  sends toISOString); Schedule() :1104; state boardStartHour 8 / boardEndHour 18 / slotIntervalHours 2
+  :1123-1125 (useState only); slotHours :1185; viewportBounds :1187; appointmentsByTechnicianAndSlot
+  :1221; scheduleMutation :1345 (start = the slot, end = slot + expectedDurationMinutes);
+  moveAppointmentToSlot :1604 (lock checks via isSameSlot); confirmPendingMove :1626 (end = slot +
+  getAppointmentDurationMinutes); handleSlotClick :1645; configSummary :1729; the "Board Window" card
+  :1751; the "Window" popover (Settings2 trigger) :1799-1804, "Visible Start Hour" :1807 (the 21 clamp
+  :1814), "Visible End Hour" :1823, "Slot Interval" :1833 (options "1 hour" / "2 hour"), footer :1843.
+  Pass 30 added the exclusion prompt and the effective-preferences query around scheduleMutation and
+  updateAppointmentMutation - leave them alone.
+- Settings (client/src/pages/settings.tsx, untouched by Pass 30): canManageSettings :1717 (MANAGE_SETTINGS
+  is admin only); Invoicing on Finalization: query ["/api/settings/invoice-on-finalize"] :1718, PATCH
+  mutation :1756-1766, card :2137-2163; Service Report (Switch) :1770-1785, card-service-report :2170;
+  Appointment Cancel / Reschedule Reasons :1666 / :1713 / :1720-1724 / :1786-1800, card :2691-2722; Service
+  Time Tracking :1712 / :1745-1755, card :2666-2689 (its PATCH is ungated - note, do not fix); Zones
+  :2350-2396 (copy: "dispatch and Smart Schedule will read the same zones later").
+- Server: the settings routes are PATCH, GETs open - service-time-tracking :2572 / :2577 (ungated),
+  appointment-cancel-reasons :2588 / :2597, invoice-on-finalize :2668 / :2673, attach-service-report
+  :2689 / :2694 (MANAGE_SETTINGS via requirePermission); inline zod schemas :395 (attachServiceReport),
+  :410 (serviceTimeTrackingMode), :416 (invoiceOnFinalizeMode). Storage has no generic app-settings
+  helper - one reader / writer pair per setting: getServiceTimeTrackingMode :7733,
+  getInvoiceOnFinalizeMode :7856 / setInvoiceOnFinalizeMode :7865 (insert ... onConflictDoUpdate on
+  [orgId, key]), getAttachServiceReportToInvoices :7880 (a Tx reader on DbReader). app_settings
+  (shared/schema.ts :593-600): org_id, key, value text, updated_at, PK (org_id, key).
+- No server code rounds a time anywhere; the technician's day (technician-work.tsx) reads no interval or
+  hours; no other page reads the board window (pages link to /schedule with date / appointmentId /
+  prefill params only).
+- DB today (run the SQL, never trust a doc's data claim; the shared dev DB was untouched by Pass 30,
+  whose verification ran on a copy - its two tables do not exist there until the owner's restart):
+  app_settings rows appointment_cancel_reschedule_reasons, attach_service_report_to_invoices (true),
+  invoice_on_finalize (PROMPT), service_time_tracking_mode (PROMPT_FOR_TIMEOUT), ticket_reopen_reasons -
+  no dispatch_ key anywhere in the code or the DB; 46 public tables (48 after the restart, with
+  technician_preferences and appointment_technicians); appointments 123.
+- Docs versus code, found by the inventory: the row says "drag placement" - there is no drag; the labels
+  are "Slot Interval" / "Window" / "Board Window", not "Schedule interval" / "View Interval"; Part A3
+  :117-118 cite schedule.tsx :838-886 / :40 / :430 / :75 / :679-707 and storage.ts :4324 / :4341 (now
+  :1799-1843 / :77 / :1125 / :120 / :1604-1660 and :7733 / :7750) and claim only two app_settings keys
+  (seven in the code, five rows); "the session override stays" names something that is plain React state.
+- Docs to carry: the C4.5 row; Part A3 rows :117-118 (mark DONE with the real citations); canon
+  Scheduling Rules §2 (state the view and snap intervals as settings - §3 / §4 are Pass 30's technician
+  preferences and crew); a "Shipped in Pass 31" record; CURRENT_FOCUS's Pass 31 entry and "Next up" (Phase
+  4 is complete after this row - the next pass in phase order is Pass 32, Phase 5's first open row, C5.1a; say so
+  and write that handoff unless I say otherwise).
 
-Build per C4.4: (1) server - the preferences table and its routes (list per account / location,
-set, clear; the "apply to all locations" write as the account-scoped row), the shared module, the
-hard block in createAppointment / updateAppointment with the manager override and its audit row,
-the crew table with the guarded LEAD backfill and its add / remove routes (one audit row each on the
-appointment), the technician's day listing support stops if decided; (2) client - the preference
-editors in AddLocationDialog / EditLocationDialog (with the checkbox on the primary location), the
-chips on the header card and the location card, the queue row's "Prefers <tech>" hint, the sheet's
-technician select marking exclusions and the override prompt on the 409, the sheet's crew block;
-(3) docs: canon, the roadmap rows, a "Shipped in Pass 30" record, CURRENT_FOCUS. Not touched: the
-technicians / users merge (C5.7), split allocation and the comp engine (Phase 7), Smart Schedule
-(Phase 9), the technician CRUD gates (note them), lockTechnician's server enforcement unless decided,
-the Services-tab reopen defect, cancelAgreement's direct CANCELED write, C5.6.
+Build per C4.5: (1) shared/dispatch-board.ts and the settings read / write (routes, storage, the
+MANAGE_SETTINGS gate); (2) client - the Dispatch Board card in Settings; the board reading the settings
+for its initial window, the 30-minute view (minute slots end to end, isSameSlot fixed), the rename, the
+snap on placement / move starts and the sheet's Start / End; (3) docs as above. Not touched: drag-and-
+drop (none exists), technician / day availability blocks (the popover's "follow-up pass"), the
+multi-day viewport spill unless decided, the service-time-tracking gate, Pass 30's preference / crew /
+override code on the board, lockTechnician's server enforcement, the technician CRUD gates, the
+Services-tab reopen defect, cancelAgreement's direct CANCELED write, C5.6.
 
-Environment: Node 24.21.0, npm run dev:full (restart it before manually testing), DEV_NOTES.md for
-the DB backup / restore, the copy-database recipe and the PowerShell traps, gh logged in so the
-session can open the PR. Verify on PORT=5001 as the previous passes did, against a copy per
-DEV_NOTES.md since this pass adds tables and a backfill (Passes 23-29 used the copy so the owner's
-restart prints any migration): npm run check; double boot (boot 1 prints the migration once - the
-copy taken from the shared DB prints Pass 29's four-column line too unless the owner restarted after
-PR #99, which is expected either way; boot 2 prints only "serving on port 5001" with every table
-count unchanged); the pass's API smoke test as all four roles (a preference set at a location and at
-the account through the checkbox, the resolve rule, a placement of an EXCLUDED technician refused
-409 with nothing written, the same with the manager's override and its audit row, support's override
-403, a PREFERRED hint in the reads, a crew SUPPORT added and removed with its audit rows, the LEAD
-backfill count, the technician's day for a support technician per the decision, every fixture
-deleted, counts back at baseline) and a Vite 200 on every touched client module; state plainly what
-was not rendered - the editors, the chips, the override prompt and the crew block cannot be judged
-without a browser.
+Environment: Node 24.21.0, npm run dev:full (restart it before manually testing), DEV_NOTES.md for the
+DB backup / restore, the copy-database recipe and the PowerShell traps, gh logged in so the session can
+open the PR. Verify on PORT=5001 as the previous passes did. This pass should add no table or column (a
+settings pass needs no seed row: the reader returns the defaults), so the shared DB is safe to verify
+against - but use the copy if anything structural lands, and note that a copy taken before the owner's
+restart after PR (Pass 30) prints Pass 30's two lines (the crew backfill count included), which is
+expected. npm run check; double boot (boot 2 prints only "serving on port 5001" with every table count
+unchanged); the pass's API smoke test as all four roles (the defaults with no row; admin's PATCH of each
+value and the read back; manager's / support's / the technician's PATCH 403; an unknown interval, a snap
+outside 15 / 30 / 60, start >= end and an hour off the board 400; the shared module's normalize and the
+rounding function pure - 15 / 30 / 60 at the boundaries, a time already on the snap unchanged; the
+app_settings rows the test wrote deleted or restored, counts back at baseline) and a Vite 200 on every
+touched client module; state plainly what was not rendered - the Settings card, the 30-minute board, the
+rounded sheet inputs and the renamed popover cannot be judged without a browser.
 
-Working agreement as always: one pass, one branch, update CURRENT_FOCUS and the roadmap's pass
-table at the end, replace the handoff prompt at the end of CURRENT_FOCUS.md with the one for the
-next pass (phase order: Pass 31, dispatch board settings, C4.5, whose spec is its row in the Phase 4
-table, unless I say otherwise), push, open the PR and stop. I merge.
+Working agreement as always: one pass, one branch, update CURRENT_FOCUS and the roadmap's pass table at
+the end, replace the handoff prompt at the end of CURRENT_FOCUS.md with the one for the next pass (phase
+order: Pass 32, C5.1a, the first open Phase 5 row, whose spec is its row in the Phase 5 table, unless I say
+otherwise), push, open the PR and stop. I merge.
 ```

@@ -42,6 +42,10 @@ interface TechnicianWorkVisit {
   customer?: Customer | null;
   location?: Location | null;
   services: TechnicianWorkService[];
+  /** Pass 30 (C4.4): LEAD - the visit is this technician's; SUPPORT - they are on its crew (read-only here, the ticket is the lead's). */
+  crewRole: "LEAD" | "SUPPORT";
+  /** Pass 30: the visit's crew, the lead first. */
+  crew: Array<{ technicianId: string; technicianName: string; role: "LEAD" | "SUPPORT" }>;
 }
 
 function formatDateInputValue(date: Date) {
@@ -456,8 +460,19 @@ export default function TechnicianWork() {
           {visits.map((visit) => {
             const completedCount = visit.services.filter(({ service, serviceRecord }) => service.status === "COMPLETED" || !!serviceRecord).length;
             const serviceLabels = visit.services.map(({ service }) => serviceTypeNameById.get(service.serviceTypeId || "") || "Service");
+            // Pass 30 (C4.4): a visit this technician supports is listed so the crew sees the stop,
+            // read-only - it does not open the Appointment Details (time in / out, tickets, cancel and
+            // the field add are the lead's).
+            const isSupport = visit.crewRole === "SUPPORT";
+            const lead = visit.crew?.find((member) => member.role === "LEAD") ?? null;
+            const supportNames = (visit.crew ?? []).filter((member) => member.role === "SUPPORT").map((member) => member.technicianName);
             return (
-            <Card key={visit.appointment.id} className="overflow-hidden transition-colors hover:bg-muted/10" onClick={() => setSelectedVisit(visit)}>
+            <Card
+              key={visit.appointment.id}
+              className={isSupport ? "overflow-hidden border-dashed" : "overflow-hidden transition-colors hover:bg-muted/10"}
+              onClick={isSupport ? undefined : () => setSelectedVisit(visit)}
+              data-testid={isSupport ? `card-support-visit-${visit.appointment.id}` : undefined}
+            >
               <CardHeader className="p-4">
                 <div className="flex items-start justify-between gap-3">
                   <div>
@@ -468,8 +483,16 @@ export default function TechnicianWork() {
                       <span>{getAddress(visit.location)}</span>
                     </p>
                     <p className="mt-2 text-sm text-muted-foreground">{serviceLabels.join(", ")}</p>
+                    {isSupport ? (
+                      <p className="mt-1 text-xs text-muted-foreground" data-testid={`text-support-lead-${visit.appointment.id}`}>
+                        Supporting {lead?.technicianName ?? "the lead"} - the lead posts the ticket.
+                      </p>
+                    ) : supportNames.length ? (
+                      <p className="mt-1 text-xs text-muted-foreground">Crew: {supportNames.join(", ")} (support)</p>
+                    ) : null}
                   </div>
                   <div className="flex flex-col items-end gap-2">
+                    {isSupport ? <Badge variant="outline" data-testid={`badge-support-${visit.appointment.id}`}>Support</Badge> : null}
                     <Badge variant={visit.appointment.status === "COMPLETED" ? "default" : "secondary"}>{visit.appointment.status}</Badge>
                     <span className="text-xs text-muted-foreground">{completedCount}/{visit.services.length} posted</span>
                   </div>

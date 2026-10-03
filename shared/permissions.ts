@@ -54,6 +54,12 @@ export const PERMISSIONS = {
   // under the system actor, never a person's permission; the rules and the
   // zones themselves are Settings, edited under MANAGE_SETTINGS.
   ASSIGN_OPPORTUNITY: "assign_opportunity",
+  // PLAN_ROADMAP_V2.md C4.4 (Pass 30; B14): place, re-assign or crew a visit
+  // with a technician the customer EXCLUDED (technician_preferences). Manager+,
+  // the ISSUE_INVOICE_PREFINALIZATION pattern: a manager's override, with a
+  // typed reason, recorded as placement_exclusion_overridden. Setting the
+  // preferences themselves is customer data, open to every role.
+  OVERRIDE_TECHNICIAN_EXCLUSION: "override_technician_exclusion",
   // PLAN_BILLING_V1_1.md D5, the payments ledger. TAKE_PAYMENT_FIELD records
   // a payment (it posts PENDING); the rest are office actions on the ledger.
   TAKE_PAYMENT_FIELD: "take_payment_field",
@@ -118,6 +124,7 @@ const ROLE_PERMISSIONS: Record<UserRole, ReadonlySet<Permission>> = {
     PERMISSIONS.ASSIGN_INVOICE_LOCATION,
     PERMISSIONS.ASSIGN_SALE_CREDIT,
     PERMISSIONS.ASSIGN_OPPORTUNITY,
+    PERMISSIONS.OVERRIDE_TECHNICIAN_EXCLUSION,
     PERMISSIONS.TAKE_PAYMENT_FIELD,
     PERMISSIONS.APPLY_PAYMENT,
     PERMISSIONS.CONFIRM_PAYMENT,

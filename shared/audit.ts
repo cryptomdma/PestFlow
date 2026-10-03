@@ -89,7 +89,24 @@ export type AuditEntityType =
  *  field-review, FINALIZE_TICKET). The snapshots are the four field columns
  *  ({ addedInFieldByUserId, fieldReviewedAt, fieldReviewedByUserId,
  *  fieldReviewedByLabel }) before and after; the add itself is recorded by
- *  the visit's appointment_composition_changed row. */
+ *  the visit's appointment_composition_changed row.
+ *  `technician_preference_set` / `technician_preference_cleared` (Pass 30,
+ *  C4.4): a customer's PREFERRED / EXCLUDED technician was set (created or
+ *  changed) or cleared. A LOCATION row is recorded on the `location`, an
+ *  ACCOUNT row ("all locations") on the account's `customer` (every location's
+ *  History tab carries its customer). The snapshots are the preference row
+ *  with the technician's name; a set's before is the row it replaced, if any.
+ *  `placement_exclusion_overridden` (Pass 30): a manager placed, re-assigned
+ *  or crewed a visit with a technician the customer EXCLUDED
+ *  (OVERRIDE_TECHNICIAN_EXCLUSION). On the `appointment`; the after carries
+ *  the technician, the reason, `via` (CREATE | UPDATE | CREW_ADD) and the
+ *  preference row that excluded them.
+ *  `appointment_crew_changed` (Pass 30): a SUPPORT technician was added to or
+ *  removed from a visit's crew (appointment_technicians). On the
+ *  `appointment`; the crew before and after, the after carrying `change`
+ *  (ADD | REMOVE, the technician, the role). The LEAD follows the visit's
+ *  technician silently, as the technician change itself is unaudited until
+ *  C5.1a. */
 export type AuditAction =
   | "update"
   | "invoice_drafted"
@@ -117,7 +134,11 @@ export type AuditAction =
   | "opportunity_auto_assigned"
   | "service_cancelled"
   | "appointment_composition_changed"
-  | "field_service_reviewed";
+  | "field_service_reviewed"
+  | "technician_preference_set"
+  | "technician_preference_cleared"
+  | "placement_exclusion_overridden"
+  | "appointment_crew_changed";
 
 const ENTITY_TYPE_LABELS: Record<AuditEntityType, string> = {
   customer: "Customer",
@@ -161,6 +182,10 @@ const ACTION_LABELS: Record<AuditAction, string> = {
   service_cancelled: "Service cancelled",
   appointment_composition_changed: "Visit services changed",
   field_service_reviewed: "Field-added service reviewed",
+  technician_preference_set: "Technician preference set",
+  technician_preference_cleared: "Technician preference cleared",
+  placement_exclusion_overridden: "Excluded technician scheduled (override)",
+  appointment_crew_changed: "Crew changed",
 };
 
 // Both take plain strings, not the unions: they render rows already in the

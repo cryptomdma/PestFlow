@@ -729,6 +729,46 @@ export const opportunityAssignmentRules = pgTable("opportunity_assignment_rules"
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
+// Pass 30 (PLAN_ROADMAP_V2.md C4.4; B14; PLAN_BILLING_V1_1.md D8): a
+// customer's standing word about a technician - PREFERRED (a hint) or
+// EXCLUDED (a hard block on placement, a manager's override with a reason).
+// Canon §6 / §7's account | location scope shape: an ACCOUNT row (account_id
+// set, "all locations", written from the primary location's editor) or a
+// LOCATION row (location_id set). One row per technician per scope row
+// (partial unique indexes in service-scheduling-bootstrap.ts); the location
+// row wins over the account row for the same technician
+// (shared/technician-preferences.ts resolveEffectivePreferences).
+export const technicianPreferences = pgTable("technician_preferences", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: varchar("org_id").notNull(),
+  scopeType: text("scope_type").notNull(),
+  accountId: varchar("account_id").references(() => accounts.id),
+  locationId: varchar("location_id").references(() => locations.id),
+  technicianId: varchar("technician_id").notNull().references(() => technicians.id),
+  kind: text("kind").notNull(),
+  note: text("note"),
+  createdByUserId: varchar("created_by_user_id").references(() => users.id),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+// Pass 30 (C4.4; CURRENT_FOCUS.md "Compensation & attribution", gap 1): the
+// visit's crew. Exactly one LEAD per appointment - always
+// appointments.assignedTechnicianId, kept in step by createAppointment and
+// updateAppointment - and any number of SUPPORT technicians, edited from the
+// dispatch sheet (shared/appointment-crew.ts). Every older reader keeps
+// reading assignedTechnicianId; production entries stay single-technician
+// until Phase 7's split allocation reads this table.
+export const appointmentTechnicians = pgTable("appointment_technicians", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: varchar("org_id").notNull(),
+  appointmentId: varchar("appointment_id").notNull().references(() => appointments.id),
+  technicianId: varchar("technician_id").notNull().references(() => technicians.id),
+  role: text("role").notNull(),
+  createdByUserId: varchar("created_by_user_id").references(() => users.id),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
 export const opportunityActivities = pgTable("opportunity_activities", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   orgId: varchar("org_id").notNull(),
@@ -1375,6 +1415,8 @@ export type Zone = typeof zones.$inferSelect;
 export type InsertZone = z.infer<typeof insertZoneSchema>;
 export type OpportunityAssignmentRule = typeof opportunityAssignmentRules.$inferSelect;
 export type InsertOpportunityAssignmentRule = z.infer<typeof insertOpportunityAssignmentRuleSchema>;
+export type TechnicianPreference = typeof technicianPreferences.$inferSelect;
+export type AppointmentTechnician = typeof appointmentTechnicians.$inferSelect;
 export type OpportunityActivity = typeof opportunityActivities.$inferSelect;
 export type InsertOpportunityActivity = z.infer<typeof insertOpportunityActivitySchema>;
 export type ProductApplication = typeof productApplications.$inferSelect;
