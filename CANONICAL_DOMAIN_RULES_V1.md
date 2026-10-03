@@ -409,6 +409,10 @@ Examples of behavior:
 * location-level DNS can block only that specific location
 * aggressive dog belongs as a Flag, not a Hold
 
+Neither Flags nor Holds has a table yet. The account | location scope shape both use was first built
+by `technician_preferences` (Scheduling Rules §3, Pass 30): a row is ACCOUNT-scoped (all of the
+account's locations) or LOCATION-scoped, and the location's row wins.
+
 ---
 
 ## 8. ServiceType
@@ -893,7 +897,9 @@ A scheduled dispatch placement for one or more Services.
   see "Composition" below)
 * agreementId nullable — plain varchar, no FK
 * serviceTypeId nullable — the representative's type
-* assignedTechnicianId nullable; assignedTo nullable (the technician's display name at placement)
+* assignedTechnicianId nullable; assignedTo nullable (the technician's display name at placement).
+  Since Pass 30 the technician is also the visit's **LEAD** in its crew (`appointment_technicians`,
+  Scheduling Rules §4), and a technician the customer EXCLUDED is refused at placement (§3)
 * source (`MANUAL` | `AGREEMENT_GENERATED` | `AGREEMENT_INITIAL`); generatedForDate nullable
 * scheduledDate — the planned start (NOT NULL)
 * scheduledEndDate nullable — the planned end, the only planned-duration carrier: set by the client
@@ -921,7 +927,7 @@ A scheduled dispatch placement for one or more Services.
 Not on the row, although earlier drafts of this section listed them: `accountId`,
 `serviceAgreementId`, `scheduledStart` / `scheduledEnd` (they are `scheduledDate` /
 `scheduledEndDate`), `timeWindowStart` / `timeWindowEnd` (the window is the Service's free-text
-`timeWindow`), `supportTechId` (crew is C4.4), `routeDate` / `routeSequence` (Smart Schedule, Phase
+`timeWindow`), `supportTechId` (the crew is the `appointment_technicians` table, Pass 30), `routeDate` / `routeSequence` (Smart Schedule, Phase
 9), `estimatedDurationMinutes` (the plan lives on `services.expectedDurationMinutes`), `updatedAt`,
 and `reportedPestType` / `reportedProblemNotes` (a customer's reported problem is recorded as a
 location note or the Service's notes today).
@@ -1638,6 +1644,8 @@ Examples:
 * `technicians` is a separate table today; this section already puts the technician profile (license,
   training, service area) on the User, which is where C5.7 moves it. Until then `technicians.userId`
   (Pass 12) is the nullable bridge from a technician profile to its login, one technician per user.
+* `technician_preferences` and `appointment_technicians` (Pass 30) key on `technicians.id` like every
+  other technician reference; C5.7 rewires them with the rest.
 
 ---
 
@@ -1868,6 +1876,36 @@ Design should support:
 * 1D / 3D / 1W / custom views
 * route metrics later
 * clickable appointment cards
+
+## 3. Technician preferences (PLAN_ROADMAP_V2.md C4.4; B14; PLAN_BILLING_V1_1.md D8; Pass 30)
+
+A customer's standing word about who services them, in `technician_preferences`
+(`shared/technician-preferences.ts`):
+
+* **PREFERRED** - a hint: "Prefers <tech>" on the dispatch queue and the sheet; a weight for Smart
+  Schedule later. It never blocks anything.
+* **EXCLUDED** - B14's EXCLUDE_TECH: the customer asked that this technician never be sent. A **hard
+  block** on placement: creating a visit with the technician, re-assigning a visit to them, or adding
+  them to its crew is refused (409 `TECHNICIAN_EXCLUDED`) unless a manager overrides with a reason
+  (`OVERRIDE_TECHNICIAN_EXCLUSION`, manager and admin), recorded as `placement_exclusion_overridden`
+  (§17). An unchanged technician is never re-checked.
+* **Scope.** A row is LOCATION-scoped (that location) or ACCOUNT-scoped (every location of the account -
+  D8's "customer level"), the Flag / Hold shape (§6, §7). The ACCOUNT row is written from the primary
+  location's editor ("Apply to all locations") and nowhere else. For one technician the **location's
+  row wins** over the account's: a location may lift an account-wide exclusion with its own PREFERRED,
+  or exclude a technician the account prefers. One row per technician per scope.
+* Setting and clearing a preference is open to every role (customer data, like the location profile)
+  and recorded (`technician_preference_set` / `technician_preference_cleared`, on the location or on the
+  account's customer).
+
+## 4. The crew (PLAN_ROADMAP_V2.md C4.4; Pass 30)
+
+`appointment_technicians` (`shared/appointment-crew.ts`) records who ran a visit as it is planned:
+exactly one **LEAD** - always the visit's `assignedTechnicianId`, moved with it - and any number of
+**SUPPORT** technicians, added and removed from the dispatch sheet (`appointment_crew_changed`, §17). A
+support technician sees the stop on their own day, read-only; the ticket, its technician snapshot and
+therefore the production ledger stay the lead's - one entry, one technician - until Phase 7's split
+allocation reads the crew.
 
 ---
 

@@ -39,6 +39,8 @@ const TABLES_REQUIRING_ORG_ID = [
   "opportunity_activities",
   "zones",
   "opportunity_assignment_rules",
+  "technician_preferences",
+  "appointment_technicians",
   "product_applications",
   "material_products",
   "target_pests",

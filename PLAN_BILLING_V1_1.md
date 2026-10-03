@@ -305,7 +305,12 @@ Decided now, built later, so they stop resurfacing as ambiguity:
 - **Preferred technician:** soft constraint only — a weighting for Smart Schedule and a visible hint for
   dispatch, freely overridable. Location-level (in edit/add location modal) overrides customer-level
   (customer edit modal, chip on card). Schema fields may land early; behavior lands with the
-  scheduling pass.
+  scheduling pass. **Built in Pass 30 (PLAN_ROADMAP_V2.md C4.4, 2026-10-03)**, with the owner's B14
+  addition: EXCLUDED is a hard block on placement with a manager's override and a reason (PREFERRED
+  stays the soft hint described here). "Customer-level" is the account-scoped row, set on the primary
+  location's Edit Location ("Apply to all locations") - there is no separate customer edit modal; the
+  primary location's dialog edits the customer identity. Crew (lead + support,
+  `appointment_technicians`) landed in the same pass.
 - **Opportunity taxonomy:** split axes — `category` = reason (NEW_SALE, SERVICE_DUE, RESCHEDULE,
   WINBACK, RETENTION; settings-managed) and `workType` = AGREEMENT | ONE_TIME. Migration maps existing
   types. (Opportunities pass.)

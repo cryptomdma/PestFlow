@@ -10,6 +10,8 @@ import {
   opportunityCategories,
   zones,
   opportunityAssignmentRules,
+  technicianPreferences,
+  appointmentTechnicians,
   agreements,
   agreementTemplates,
   agreementCancellationPolicies,
@@ -45,6 +47,7 @@ import {
   type OpportunityCategory, type InsertOpportunityCategory,
   type Zone, type InsertZone,
   type OpportunityAssignmentRule, type InsertOpportunityAssignmentRule,
+  type TechnicianPreference,
   type ProductApplication, type InsertProductApplication,
   type MaterialProduct, type InsertMaterialProduct,
   type TargetPest, type InsertTargetPest,
@@ -91,6 +94,34 @@ import {
   type ZeroBalanceLetterAgreement,
 } from "@shared/statements";
 import { can, PERMISSIONS, rolesWithPermission, type UserRole } from "@shared/permissions";
+import {
+  ACCOUNT_SCOPE_PRIMARY_ONLY,
+  EXCLUSION_OVERRIDE_FORBIDDEN,
+  EXCLUSION_OVERRIDE_REASON_REQUIRED,
+  LOCATION_HAS_NO_ACCOUNT,
+  PREFERENCE_NOT_FOUND,
+  TECHNICIAN_EXCLUDED,
+  TECHNICIAN_NOT_FOUND,
+  describeExclusionRefusal,
+  findExclusion,
+  resolveEffectivePreferences,
+  type EffectiveTechnicianPreference,
+  type ExclusionOverrideRequest,
+  type LocationTechnicianPreferences,
+  type TechnicianPreferenceKind,
+  type TechnicianPreferenceScope,
+  type TechnicianPreferenceView,
+} from "@shared/technician-preferences";
+import {
+  CREW_LEAD_NOT_REMOVABLE,
+  CREW_LEAD_REQUIRED,
+  CREW_MEMBER_EXISTS,
+  CREW_MEMBER_NOT_FOUND,
+  CREW_NOT_EDITABLE,
+  type AppointmentCrew,
+  type AppointmentCrewMember,
+  type AppointmentCrewRole,
+} from "@shared/appointment-crew";
 import { isTicketFinalized, isTicketInOfficeReview } from "@shared/ticket-status";
 import {
   REOPEN_OTHER_FORBIDDEN,
@@ -828,6 +859,97 @@ export interface FieldReviewServiceInput {
   actor?: AuditActor | null;
 }
 
+// Pass 30 (PLAN_ROADMAP_V2.md C4.4; B14): a placement of a technician the
+// customer EXCLUDED - 409 TECHNICIAN_EXCLUDED (the body names the technician,
+// the preference row and its scope, so the client can prompt a manager for
+// the override), 403 EXCLUSION_OVERRIDE_FORBIDDEN, 400
+// EXCLUSION_OVERRIDE_REASON_REQUIRED. Nothing is written before it is thrown.
+export class PlacementRefusedError extends Error {
+  constructor(
+    readonly status: 400 | 403 | 409,
+    readonly code: string,
+    message: string,
+    readonly exclusion: EffectiveTechnicianPreference | null = null,
+  ) {
+    super(message);
+    this.name = "PlacementRefusedError";
+  }
+}
+
+// Pass 30: a preference write the location forbids (an account-wide row off
+// the primary location, a location with no account) or names nothing.
+export class TechnicianPreferenceError extends Error {
+  constructor(readonly status: 404 | 409, readonly code: string, message: string) {
+    super(message);
+    this.name = "TechnicianPreferenceError";
+  }
+}
+
+// Pass 30: a crew change the visit forbids (shared/appointment-crew.ts codes).
+export class AppointmentCrewError extends Error {
+  constructor(readonly status: 404 | 409, readonly code: string, message: string) {
+    super(message);
+    this.name = "AppointmentCrewError";
+  }
+}
+
+/** Pass 30: what a placement carries for the exclusion check - the manager's override and who asks. */
+export interface PlacementOptions {
+  overrideExclusion?: ExclusionOverrideRequest | null;
+  actorRole?: UserRole | null;
+  actor?: AuditActor | null;
+}
+
+/** Pass 30: set (create or change) one technician's preference at a location or, from the primary location, for all locations. */
+export interface TechnicianPreferenceSetInput {
+  locationId: string;
+  technicianId: string;
+  kind: TechnicianPreferenceKind;
+  note?: string | null;
+  scope: TechnicianPreferenceScope;
+  actor?: AuditActor | null;
+}
+
+export interface TechnicianPreferenceClearInput {
+  locationId: string;
+  preferenceId: string;
+  actor?: AuditActor | null;
+}
+
+export interface AppointmentCrewAddInput extends PlacementOptions {
+  appointmentId: string;
+  technicianId: string;
+}
+
+export interface AppointmentCrewRemoveInput {
+  appointmentId: string;
+  technicianId: string;
+  actor?: AuditActor | null;
+}
+
+interface ExclusionOverrideApplied {
+  exclusion: EffectiveTechnicianPreference;
+  reason: string;
+}
+
+
+function technicianPreferenceAuditSnapshot(row: TechnicianPreference, technicianName: string) {
+  return {
+    id: row.id,
+    scopeType: row.scopeType,
+    accountId: row.accountId,
+    locationId: row.locationId,
+    technicianId: row.technicianId,
+    technicianName,
+    kind: row.kind,
+    note: row.note,
+  };
+}
+
+function crewAuditSnapshot(members: AppointmentCrewMember[]) {
+  return members.map((member) => ({ technicianId: member.technicianId, technicianName: member.technicianName, role: member.role }));
+}
+
 // Pass 15 (PLAN_ROADMAP_V2.md C2.5): a paid-in-full letter asked of a
 // location that still owes something. The route answers 409 with the code
 // and the balance; the office generates a location statement instead.
@@ -941,6 +1063,10 @@ export interface TechnicianWorkVisit {
   customer?: Customer | null;
   location?: Location | null;
   services: TechnicianWorkService[];
+  /** Pass 30 (C4.4): LEAD when the visit is this technician's (assignedTechnicianId); SUPPORT when they are on its crew - listed read-only, the ticket stays the lead's. */
+  crewRole: AppointmentCrewRole;
+  /** Pass 30: the visit's crew, the lead first. */
+  crew: AppointmentCrewMember[];
 }
 
 export interface OpportunityFilters {
@@ -1279,10 +1405,13 @@ export interface IStorage {
   getAppointments(): Promise<Appointment[]>;
   getAppointmentsByLocation(locationId: string): Promise<Appointment[]>;
   getAppointment(id: string): Promise<Appointment | undefined>;
-  createAppointment(data: InsertAppointment): Promise<Appointment>;
+  // Pass 30 (C4.4): `options` carries the exclusion override and who asks;
+  // an EXCLUDED technician is refused (PlacementRefusedError) without it.
+  createAppointment(data: InsertAppointment, options?: PlacementOptions): Promise<Appointment>;
   // Pass 28: the actor signs the appointment_composition_changed row a
-  // change of the visit's instructions (notes) writes.
-  updateAppointment(id: string, data: Partial<InsertAppointment>, actor?: AuditActor | null): Promise<Appointment | undefined>;
+  // change of the visit's instructions (notes) writes. Pass 30: a change of
+  // technician runs the exclusion check and moves the crew's LEAD.
+  updateAppointment(id: string, data: Partial<InsertAppointment>, actor?: AuditActor | null, options?: PlacementOptions): Promise<Appointment | undefined>;
   // Pass 27 (C4.2): the one cancel / reschedule path; a status PATCH to
   // CANCELED is refused by updateAppointment.
   dispositionAppointment(input: AppointmentDispositionInput): Promise<AppointmentDispositionResult | undefined>;
@@ -1302,6 +1431,17 @@ export interface IStorage {
   timeInAppointment(id: string): Promise<Appointment | undefined>;
   timeOutAppointment(id: string): Promise<Appointment | undefined>;
   getTechnicianWork(technicianId: string, date: string): Promise<TechnicianWorkVisit[]>;
+  // Pass 30 (C4.4; B14): technician preferences - the location's and its
+  // account's rows and the resolve rule; the effective map for the dispatch
+  // board; set / clear, one audit row each.
+  getLocationTechnicianPreferences(locationId: string): Promise<LocationTechnicianPreferences | undefined>;
+  getEffectiveTechnicianPreferences(locationIds: string[]): Promise<Record<string, EffectiveTechnicianPreference[]>>;
+  setTechnicianPreference(input: TechnicianPreferenceSetInput): Promise<LocationTechnicianPreferences | undefined>;
+  clearTechnicianPreference(input: TechnicianPreferenceClearInput): Promise<LocationTechnicianPreferences | undefined>;
+  // Pass 30: the visit's crew (appointment_technicians) - read, add / remove a SUPPORT technician.
+  getAppointmentCrew(appointmentId: string): Promise<AppointmentCrew | undefined>;
+  addAppointmentCrewMember(input: AppointmentCrewAddInput): Promise<AppointmentCrew | undefined>;
+  removeAppointmentCrewMember(input: AppointmentCrewRemoveInput): Promise<AppointmentCrew | undefined>;
   // D6: Price / COA applied / Due today for one visit, per service and summed.
   // Pass 19: with a draft, that service is priced at the draft price (nothing written).
   getVisitBillingSummary(appointmentId: string, draft?: VisitBillingDraftInput | null): Promise<VisitBillingSummary | undefined>;
@@ -5110,8 +5250,16 @@ export class DatabaseStorage implements IStorage {
     return appt;
   }
 
-  async createAppointment(data: InsertAppointment): Promise<Appointment> {
+  async createAppointment(data: InsertAppointment, options: PlacementOptions = {}): Promise<Appointment> {
     const appointment = await db.transaction(async (tx) => {
+      // Pass 30 (C4.4; B14): a technician the customer EXCLUDED at this
+      // location is refused before anything is written, unless a manager
+      // overrides with a reason.
+      const override = await this.assertPlacementAllowedTx(tx, {
+        locationId: data.locationId ?? null,
+        technicianId: data.assignedTechnicianId || null,
+        options,
+      });
       const [appt] = await tx.insert(appointments).values({
         ...data,
         orgId: this.orgId,
@@ -5126,6 +5274,8 @@ export class DatabaseStorage implements IStorage {
         await tx.update(services).set({ appointmentId: appt.id, updatedAt: new Date() }).where(and(eq(services.orgId, this.orgId), eq(services.id, appt.serviceId)));
       }
 
+      // Pass 30: the crew's LEAD mirrors the visit's technician.
+      await this.syncCrewLeadTx(tx, appt.id, appt.assignedTechnicianId);
       await this.syncServicesForAppointmentTx(tx, appt);
 
       if (appt.serviceId) {
@@ -5143,6 +5293,10 @@ export class DatabaseStorage implements IStorage {
           .where(and(eq(agreements.orgId, this.orgId), eq(agreements.id, appt.agreementId)));
 
         await this.syncAgreementInitialAppointmentDates(tx, appt.agreementId);
+      }
+
+      if (override) {
+        await this.recordExclusionOverrideTx(tx, { appointment: appt, override, via: "CREATE", previousTechnicianId: null, actor: options.actor });
       }
 
       return appt;
@@ -5200,7 +5354,7 @@ export class DatabaseStorage implements IStorage {
     return resolvedOpportunities.length;
   }
 
-  async updateAppointment(id: string, data: Partial<InsertAppointment>, actor?: AuditActor | null): Promise<Appointment | undefined> {
+  async updateAppointment(id: string, data: Partial<InsertAppointment>, actor?: AuditActor | null, options: PlacementOptions = {}): Promise<Appointment | undefined> {
     // Pass 27 (C4.2): CANCELED is written by dispositionAppointment() only -
     // the reason, the requeue, the opportunity choice and the audit row live
     // there. The board's old status PATCH cascaded every service to
@@ -5225,12 +5379,31 @@ export class DatabaseStorage implements IStorage {
         ? await this.getLinkedServicesForAppointmentTx(tx, existingAppointment.id, existingAppointment.serviceId)
         : [];
 
+      // Pass 30 (C4.4; B14): a change of technician to one the customer
+      // EXCLUDED at the visit's location is refused before anything is
+      // written, unless a manager overrides with a reason. An unchanged
+      // technician is never re-checked, so a sheet save on a visit placed
+      // before the exclusion was recorded still saves. The crew's LEAD
+      // follows the new technician.
+      const nextTechnicianId = data.assignedTechnicianId === undefined ? undefined : (data.assignedTechnicianId || null);
+      const technicianChanged = nextTechnicianId !== undefined && nextTechnicianId !== (existingAppointment.assignedTechnicianId ?? null);
+      const override = technicianChanged
+        ? await this.assertPlacementAllowedTx(tx, {
+            locationId: data.locationId ?? existingAppointment.locationId ?? null,
+            technicianId: nextTechnicianId ?? null,
+            options: { ...options, actor: options.actor ?? actor },
+          })
+        : null;
+
       const [updatedAppointment] = await tx
         .update(appointments)
         .set(data)
         .where(and(eq(appointments.orgId, this.orgId), eq(appointments.id, id)))
         .returning();
 
+      if (technicianChanged) {
+        await this.syncCrewLeadTx(tx, updatedAppointment.id, updatedAppointment.assignedTechnicianId);
+      }
       await this.syncServicesForAppointmentTx(tx, updatedAppointment);
 
       const [linkedAgreement] = await tx.select().from(agreements).where(and(eq(agreements.orgId, this.orgId), eq(agreements.initialAppointmentId, updatedAppointment.id)));
@@ -5250,7 +5423,482 @@ export class DatabaseStorage implements IStorage {
         });
       }
 
+      if (override) {
+        await this.recordExclusionOverrideTx(tx, {
+          appointment: updatedAppointment,
+          override,
+          via: "UPDATE",
+          previousTechnicianId: existingAppointment.assignedTechnicianId,
+          actor: options.actor ?? actor,
+        });
+      }
+
       return updatedAppointment;
+    });
+  }
+
+  // ---------------------------------------------------------------------
+  // Pass 30 (PLAN_ROADMAP_V2.md C4.4; B14; D8): technician preferences and
+  // the visit's crew. The vocabulary and the resolve rule are
+  // shared/technician-preferences.ts and shared/appointment-crew.ts.
+  // ---------------------------------------------------------------------
+
+  private async technicianNameMapTx(tx: DbReader): Promise<Map<string, string>> {
+    const rows = await tx
+      .select({ id: technicians.id, displayName: technicians.displayName })
+      .from(technicians)
+      .where(eq(technicians.orgId, this.orgId));
+    return new Map(rows.map((row) => [row.id, row.displayName]));
+  }
+
+  // The rows the resolve rule reads for some locations and their accounts.
+  private async preferenceRowsForScopesTx(tx: DbReader, locationIds: string[], accountIds: string[]): Promise<TechnicianPreference[]> {
+    const scopes: SQL[] = [];
+    if (locationIds.length) {
+      scopes.push(and(eq(technicianPreferences.scopeType, "LOCATION"), inArray(technicianPreferences.locationId, locationIds))!);
+    }
+    if (accountIds.length) {
+      scopes.push(and(eq(technicianPreferences.scopeType, "ACCOUNT"), inArray(technicianPreferences.accountId, accountIds))!);
+    }
+    if (!scopes.length) {
+      return [];
+    }
+    return tx
+      .select()
+      .from(technicianPreferences)
+      .where(and(eq(technicianPreferences.orgId, this.orgId), or(...scopes)))
+      .orderBy(asc(technicianPreferences.createdAt), asc(technicianPreferences.id));
+  }
+
+  // The resolve rule at one location: null when the location is not the org's.
+  private async resolveEffectivePreferencesTx(tx: DbReader, locationId: string): Promise<EffectiveTechnicianPreference[] | null> {
+    const [location] = await tx
+      .select({ id: locations.id, accountId: locations.accountId })
+      .from(locations)
+      .where(and(eq(locations.orgId, this.orgId), eq(locations.id, locationId)));
+    if (!location) {
+      return null;
+    }
+    const rows = await this.preferenceRowsForScopesTx(tx, [location.id], location.accountId ? [location.accountId] : []);
+    if (!rows.length) {
+      return [];
+    }
+    const names = await this.technicianNameMapTx(tx);
+    return resolveEffectivePreferences(rows, { locationId: location.id, accountId: location.accountId }, (id) => names.get(id) ?? "Unknown technician");
+  }
+
+  // The hard block (B14): placing `technicianId` at `locationId` when the
+  // customer EXCLUDED them there. Refused 409 without an override; with one,
+  // the role must hold OVERRIDE_TECHNICIAN_EXCLUSION (403) and the reason must
+  // be typed (400). Returns the override to record once the write is done, or
+  // null when nothing was excluded (an override sent for a technician who is
+  // not excluded is ignored - nothing to record).
+  private async assertPlacementAllowedTx(
+    tx: DbTransaction,
+    input: { locationId: string | null; technicianId: string | null; options: PlacementOptions },
+  ): Promise<ExclusionOverrideApplied | null> {
+    if (!input.locationId || !input.technicianId) {
+      return null;
+    }
+    const effective = await this.resolveEffectivePreferencesTx(tx, input.locationId);
+    const exclusion = findExclusion(effective ?? [], input.technicianId);
+    if (!exclusion) {
+      return null;
+    }
+    const override = input.options.overrideExclusion;
+    if (!override) {
+      throw new PlacementRefusedError(409, TECHNICIAN_EXCLUDED, describeExclusionRefusal(exclusion.technicianName, exclusion.scopeType), exclusion);
+    }
+    if (!can(input.options.actorRole ?? "", PERMISSIONS.OVERRIDE_TECHNICIAN_EXCLUSION)) {
+      const who = rolesWithPermission(PERMISSIONS.OVERRIDE_TECHNICIAN_EXCLUSION).join(" or ");
+      throw new PlacementRefusedError(403, EXCLUSION_OVERRIDE_FORBIDDEN, `Only a ${who} may schedule ${exclusion.technicianName}, whom the customer excluded`, exclusion);
+    }
+    const reason = override.reason?.trim() ?? "";
+    if (!reason) {
+      throw new PlacementRefusedError(400, EXCLUSION_OVERRIDE_REASON_REQUIRED, `Say why ${exclusion.technicianName} is being scheduled despite the customer's exclusion`, exclusion);
+    }
+    return { exclusion, reason };
+  }
+
+  private async recordExclusionOverrideTx(
+    tx: DbTransaction,
+    input: {
+      appointment: Appointment;
+      override: ExclusionOverrideApplied;
+      via: "CREATE" | "UPDATE" | "CREW_ADD";
+      previousTechnicianId?: string | null;
+      actor?: AuditActor | null;
+    },
+  ): Promise<void> {
+    const { exclusion, reason } = input.override;
+    await this.recordAuditLogTx(tx, {
+      entityType: "appointment",
+      entityId: input.appointment.id,
+      action: "placement_exclusion_overridden",
+      actor: input.actor,
+      before: input.via === "UPDATE" ? { assignedTechnicianId: input.previousTechnicianId ?? null } : undefined,
+      after: {
+        via: input.via,
+        technicianId: exclusion.technicianId,
+        technicianName: exclusion.technicianName,
+        reason,
+        preference: {
+          id: exclusion.preferenceId,
+          scopeType: exclusion.scopeType,
+          kind: exclusion.kind,
+          note: exclusion.note,
+        },
+      },
+    });
+  }
+
+  private async locationTechnicianPreferencesTx(tx: DbReader, locationId: string): Promise<LocationTechnicianPreferences | undefined> {
+    const [location] = await tx
+      .select({ id: locations.id, accountId: locations.accountId, isPrimary: locations.isPrimary })
+      .from(locations)
+      .where(and(eq(locations.orgId, this.orgId), eq(locations.id, locationId)));
+    if (!location) {
+      return undefined;
+    }
+    const rows = await this.preferenceRowsForScopesTx(tx, [location.id], location.accountId ? [location.accountId] : []);
+    const names = rows.length ? await this.technicianNameMapTx(tx) : new Map<string, string>();
+    const nameOf = (id: string) => names.get(id) ?? "Unknown technician";
+    const view = (row: TechnicianPreference): TechnicianPreferenceView => ({
+      id: row.id,
+      scopeType: row.scopeType,
+      accountId: row.accountId,
+      locationId: row.locationId,
+      technicianId: row.technicianId,
+      kind: row.kind,
+      note: row.note,
+      technicianName: nameOf(row.technicianId),
+      createdByUserId: row.createdByUserId,
+      createdAt: row.createdAt,
+    });
+    return {
+      locationId: location.id,
+      accountId: location.accountId,
+      isPrimaryLocation: !!location.isPrimary,
+      locationRows: rows.filter((row) => row.scopeType === "LOCATION").map(view),
+      accountRows: rows.filter((row) => row.scopeType === "ACCOUNT").map(view),
+      effective: resolveEffectivePreferences(rows, { locationId: location.id, accountId: location.accountId }, nameOf),
+    };
+  }
+
+  async getLocationTechnicianPreferences(locationId: string): Promise<LocationTechnicianPreferences | undefined> {
+    return this.locationTechnicianPreferencesTx(db, locationId);
+  }
+
+  // The dispatch board's read: the resolve rule at each location asked for,
+  // keyed by location id; a location with nothing in effect is left out.
+  async getEffectiveTechnicianPreferences(locationIds: string[]): Promise<Record<string, EffectiveTechnicianPreference[]>> {
+    const ids = Array.from(new Set(locationIds.filter(Boolean)));
+    if (!ids.length) {
+      return {};
+    }
+    const scoped = await db
+      .select({ id: locations.id, accountId: locations.accountId })
+      .from(locations)
+      .where(and(eq(locations.orgId, this.orgId), inArray(locations.id, ids)));
+    const accountIds = Array.from(new Set(scoped.map((location) => location.accountId).filter((id): id is string => !!id)));
+    const rows = await this.preferenceRowsForScopesTx(db, scoped.map((location) => location.id), accountIds);
+    if (!rows.length) {
+      return {};
+    }
+    const names = await this.technicianNameMapTx(db);
+    const result: Record<string, EffectiveTechnicianPreference[]> = {};
+    for (const location of scoped) {
+      const effective = resolveEffectivePreferences(rows, { locationId: location.id, accountId: location.accountId }, (id) => names.get(id) ?? "Unknown technician");
+      if (effective.length) {
+        result[location.id] = effective;
+      }
+    }
+    return result;
+  }
+
+  // Set one technician's preference: the location's row, or - from the
+  // primary location ("Apply to all locations") - the account's. One row per
+  // technician per scope, so a set over an existing row changes its kind and
+  // note. An unchanged set writes nothing. A LOCATION row is audited on the
+  // location, an ACCOUNT row on the account's customer (every location's
+  // History carries it).
+  async setTechnicianPreference(input: TechnicianPreferenceSetInput): Promise<LocationTechnicianPreferences | undefined> {
+    return db.transaction(async (tx) => {
+      const [location] = await tx
+        .select({ id: locations.id, accountId: locations.accountId, isPrimary: locations.isPrimary, customerId: locations.customerId })
+        .from(locations)
+        .where(and(eq(locations.orgId, this.orgId), eq(locations.id, input.locationId)));
+      if (!location) {
+        return undefined;
+      }
+      const scope = input.scope;
+      if (scope === "ACCOUNT") {
+        if (!location.accountId) {
+          throw new TechnicianPreferenceError(409, LOCATION_HAS_NO_ACCOUNT, "This location is not linked to an account, so there is no \"all locations\" to apply the preference to");
+        }
+        if (!location.isPrimary) {
+          throw new TechnicianPreferenceError(409, ACCOUNT_SCOPE_PRIMARY_ONLY, "A preference for all locations is set on the primary location");
+        }
+      }
+      const [technician] = await tx
+        .select({ id: technicians.id, displayName: technicians.displayName })
+        .from(technicians)
+        .where(and(eq(technicians.orgId, this.orgId), eq(technicians.id, input.technicianId)));
+      if (!technician) {
+        throw new TechnicianPreferenceError(404, TECHNICIAN_NOT_FOUND, "Technician not found");
+      }
+      const note = input.note?.trim() || null;
+      const scopeCondition = scope === "ACCOUNT"
+        ? eq(technicianPreferences.accountId, location.accountId!)
+        : eq(technicianPreferences.locationId, location.id);
+      const [existing] = await tx
+        .select()
+        .from(technicianPreferences)
+        .where(and(
+          eq(technicianPreferences.orgId, this.orgId),
+          eq(technicianPreferences.scopeType, scope),
+          scopeCondition,
+          eq(technicianPreferences.technicianId, technician.id),
+        ));
+      if (existing && existing.kind === input.kind && (existing.note ?? null) === note) {
+        return this.locationTechnicianPreferencesTx(tx, location.id);
+      }
+
+      const [row] = existing
+        ? await tx
+            .update(technicianPreferences)
+            .set({ kind: input.kind, note, updatedAt: new Date() })
+            .where(and(eq(technicianPreferences.orgId, this.orgId), eq(technicianPreferences.id, existing.id)))
+            .returning()
+        : await tx
+            .insert(technicianPreferences)
+            .values({
+              orgId: this.orgId,
+              scopeType: scope,
+              accountId: scope === "ACCOUNT" ? location.accountId : null,
+              locationId: scope === "LOCATION" ? location.id : null,
+              technicianId: technician.id,
+              kind: input.kind,
+              note,
+              createdByUserId: input.actor?.userId || null,
+            })
+            .returning();
+
+      await this.recordAuditLogTx(tx, {
+        entityType: scope === "ACCOUNT" ? "customer" : "location",
+        entityId: scope === "ACCOUNT" ? location.customerId : location.id,
+        action: "technician_preference_set",
+        actor: input.actor,
+        before: existing ? technicianPreferenceAuditSnapshot(existing, technician.displayName) : undefined,
+        after: technicianPreferenceAuditSnapshot(row, technician.displayName),
+      });
+      return this.locationTechnicianPreferencesTx(tx, location.id);
+    });
+  }
+
+  // Clear one row, named from a location it applies to: the location's own,
+  // or the account's from the primary location.
+  async clearTechnicianPreference(input: TechnicianPreferenceClearInput): Promise<LocationTechnicianPreferences | undefined> {
+    return db.transaction(async (tx) => {
+      const [location] = await tx
+        .select({ id: locations.id, accountId: locations.accountId, isPrimary: locations.isPrimary, customerId: locations.customerId })
+        .from(locations)
+        .where(and(eq(locations.orgId, this.orgId), eq(locations.id, input.locationId)));
+      if (!location) {
+        return undefined;
+      }
+      const [row] = await tx
+        .select()
+        .from(technicianPreferences)
+        .where(and(eq(technicianPreferences.orgId, this.orgId), eq(technicianPreferences.id, input.preferenceId)));
+      const applies = !!row && (
+        (row.scopeType === "LOCATION" && row.locationId === location.id) ||
+        (row.scopeType === "ACCOUNT" && !!location.accountId && row.accountId === location.accountId)
+      );
+      if (!row || !applies) {
+        throw new TechnicianPreferenceError(404, PREFERENCE_NOT_FOUND, "That preference was not found at this location");
+      }
+      if (row.scopeType === "ACCOUNT" && !location.isPrimary) {
+        throw new TechnicianPreferenceError(409, ACCOUNT_SCOPE_PRIMARY_ONLY, "A preference for all locations is cleared on the primary location");
+      }
+      const names = await this.technicianNameMapTx(tx);
+      await tx
+        .delete(technicianPreferences)
+        .where(and(eq(technicianPreferences.orgId, this.orgId), eq(technicianPreferences.id, row.id)));
+      await this.recordAuditLogTx(tx, {
+        entityType: row.scopeType === "ACCOUNT" ? "customer" : "location",
+        entityId: row.scopeType === "ACCOUNT" ? location.customerId : location.id,
+        action: "technician_preference_cleared",
+        actor: input.actor,
+        before: technicianPreferenceAuditSnapshot(row, names.get(row.technicianId) ?? "Unknown technician"),
+      });
+      return this.locationTechnicianPreferencesTx(tx, location.id);
+    });
+  }
+
+  // The visit's crew, the lead first then support by name.
+  private async crewMembersTx(tx: DbReader, appointmentId: string): Promise<AppointmentCrewMember[]> {
+    const rows = await tx
+      .select({
+        technicianId: appointmentTechnicians.technicianId,
+        role: appointmentTechnicians.role,
+        createdAt: appointmentTechnicians.createdAt,
+        technicianName: technicians.displayName,
+      })
+      .from(appointmentTechnicians)
+      .leftJoin(technicians, eq(technicians.id, appointmentTechnicians.technicianId))
+      .where(and(eq(appointmentTechnicians.orgId, this.orgId), eq(appointmentTechnicians.appointmentId, appointmentId)));
+    const members: AppointmentCrewMember[] = rows.map((row) => ({
+      technicianId: row.technicianId,
+      technicianName: row.technicianName ?? "Unknown technician",
+      role: row.role === "LEAD" ? "LEAD" : "SUPPORT",
+      createdAt: row.createdAt,
+    }));
+    return members.sort((a, b) => (a.role !== b.role ? (a.role === "LEAD" ? -1 : 1) : a.technicianName.localeCompare(b.technicianName)));
+  }
+
+  // The LEAD row mirrors appointments.assignedTechnicianId: called by the two
+  // writers of that column. A support technician promoted to lead loses the
+  // support row; a visit with no technician has no lead (its support rows
+  // stay, and a new support technician waits for a lead).
+  private async syncCrewLeadTx(tx: DbTransaction, appointmentId: string, leadTechnicianId: string | null): Promise<void> {
+    await tx.delete(appointmentTechnicians).where(and(
+      eq(appointmentTechnicians.orgId, this.orgId),
+      eq(appointmentTechnicians.appointmentId, appointmentId),
+      eq(appointmentTechnicians.role, "LEAD"),
+      leadTechnicianId ? ne(appointmentTechnicians.technicianId, leadTechnicianId) : undefined,
+    ));
+    if (!leadTechnicianId) {
+      return;
+    }
+    await tx.delete(appointmentTechnicians).where(and(
+      eq(appointmentTechnicians.orgId, this.orgId),
+      eq(appointmentTechnicians.appointmentId, appointmentId),
+      eq(appointmentTechnicians.technicianId, leadTechnicianId),
+      eq(appointmentTechnicians.role, "SUPPORT"),
+    ));
+    await tx
+      .insert(appointmentTechnicians)
+      .values({ orgId: this.orgId, appointmentId, technicianId: leadTechnicianId, role: "LEAD" })
+      .onConflictDoNothing();
+  }
+
+  async getAppointmentCrew(appointmentId: string): Promise<AppointmentCrew | undefined> {
+    const [appointment] = await db
+      .select({ id: appointments.id })
+      .from(appointments)
+      .where(and(eq(appointments.orgId, this.orgId), eq(appointments.id, appointmentId)));
+    if (!appointment) {
+      return undefined;
+    }
+    return { appointmentId: appointment.id, members: await this.crewMembersTx(db, appointment.id) };
+  }
+
+  private async loadCrewEditableAppointmentTx(tx: DbTransaction, appointmentId: string): Promise<Appointment | undefined> {
+    const [appointment] = await tx
+      .select()
+      .from(appointments)
+      .where(and(eq(appointments.orgId, this.orgId), eq(appointments.id, appointmentId)));
+    if (!appointment) {
+      return undefined;
+    }
+    if (appointment.status === "CANCELED" || appointment.status === "COMPLETED") {
+      throw new AppointmentCrewError(409, CREW_NOT_EDITABLE, "This visit is cancelled or completed - its crew is history");
+    }
+    return appointment;
+  }
+
+  // Add a SUPPORT technician. The visit needs a lead, the technician must not
+  // be on the crew already, and a technician the customer EXCLUDED is refused
+  // like a placement (the same override). One appointment_crew_changed row.
+  async addAppointmentCrewMember(input: AppointmentCrewAddInput): Promise<AppointmentCrew | undefined> {
+    return db.transaction(async (tx) => {
+      const appointment = await this.loadCrewEditableAppointmentTx(tx, input.appointmentId);
+      if (!appointment) {
+        return undefined;
+      }
+      if (!appointment.assignedTechnicianId) {
+        throw new AppointmentCrewError(409, CREW_LEAD_REQUIRED, "Assign the visit's technician first - a support technician joins a lead");
+      }
+      const [technician] = await tx
+        .select({ id: technicians.id, displayName: technicians.displayName })
+        .from(technicians)
+        .where(and(eq(technicians.orgId, this.orgId), eq(technicians.id, input.technicianId)));
+      if (!technician) {
+        throw new AppointmentCrewError(404, TECHNICIAN_NOT_FOUND, "Technician not found");
+      }
+      // Self-heal: the lead row exists before anything is compared to it.
+      await this.syncCrewLeadTx(tx, appointment.id, appointment.assignedTechnicianId);
+      const before = await this.crewMembersTx(tx, appointment.id);
+      if (before.some((member) => member.technicianId === technician.id)) {
+        throw new AppointmentCrewError(409, CREW_MEMBER_EXISTS, `${technician.displayName} is already on this visit's crew`);
+      }
+      const override = await this.assertPlacementAllowedTx(tx, {
+        locationId: appointment.locationId,
+        technicianId: technician.id,
+        options: input,
+      });
+      await tx.insert(appointmentTechnicians).values({
+        orgId: this.orgId,
+        appointmentId: appointment.id,
+        technicianId: technician.id,
+        role: "SUPPORT",
+        createdByUserId: input.actor?.userId || null,
+      });
+      const after = await this.crewMembersTx(tx, appointment.id);
+      await this.recordAuditLogTx(tx, {
+        entityType: "appointment",
+        entityId: appointment.id,
+        action: "appointment_crew_changed",
+        actor: input.actor,
+        before: { crew: crewAuditSnapshot(before) },
+        after: {
+          crew: crewAuditSnapshot(after),
+          change: { action: "ADD", technicianId: technician.id, technicianName: technician.displayName, role: "SUPPORT" },
+        },
+      });
+      if (override) {
+        await this.recordExclusionOverrideTx(tx, { appointment, override, via: "CREW_ADD", actor: input.actor });
+      }
+      return { appointmentId: appointment.id, members: after };
+    });
+  }
+
+  // Remove a SUPPORT technician. The lead leaves only by changing the visit's
+  // technician. One appointment_crew_changed row.
+  async removeAppointmentCrewMember(input: AppointmentCrewRemoveInput): Promise<AppointmentCrew | undefined> {
+    return db.transaction(async (tx) => {
+      const appointment = await this.loadCrewEditableAppointmentTx(tx, input.appointmentId);
+      if (!appointment) {
+        return undefined;
+      }
+      const before = await this.crewMembersTx(tx, appointment.id);
+      const member = before.find((candidate) => candidate.technicianId === input.technicianId);
+      if (!member) {
+        throw new AppointmentCrewError(404, CREW_MEMBER_NOT_FOUND, "That technician is not on this visit's crew");
+      }
+      if (member.role === "LEAD") {
+        throw new AppointmentCrewError(409, CREW_LEAD_NOT_REMOVABLE, "The lead is the visit's technician - change the technician instead");
+      }
+      await tx.delete(appointmentTechnicians).where(and(
+        eq(appointmentTechnicians.orgId, this.orgId),
+        eq(appointmentTechnicians.appointmentId, appointment.id),
+        eq(appointmentTechnicians.technicianId, member.technicianId),
+        eq(appointmentTechnicians.role, "SUPPORT"),
+      ));
+      const after = await this.crewMembersTx(tx, appointment.id);
+      await this.recordAuditLogTx(tx, {
+        entityType: "appointment",
+        entityId: appointment.id,
+        action: "appointment_crew_changed",
+        actor: input.actor,
+        before: { crew: crewAuditSnapshot(before) },
+        after: {
+          crew: crewAuditSnapshot(after),
+          change: { action: "REMOVE", technicianId: member.technicianId, technicianName: member.technicianName, role: "SUPPORT" },
+        },
+      });
+      return { appointmentId: appointment.id, members: after };
     });
   }
 
@@ -6207,12 +6855,24 @@ export class DatabaseStorage implements IStorage {
   async getTechnicianWork(technicianId: string, date: string): Promise<TechnicianWorkVisit[]> {
     const dayStart = new Date(`${date}T00:00:00`);
     const dayEnd = new Date(`${date}T23:59:59.999`);
+    // Pass 30 (C4.4): the visits this technician supports (a SUPPORT row in
+    // appointment_technicians) are listed beside the ones they lead - a crew
+    // member must see the stop - marked crewRole SUPPORT; the page shows them
+    // read-only and the ticket stays the lead's.
+    const supportedAppointmentIds = db
+      .select({ appointmentId: appointmentTechnicians.appointmentId })
+      .from(appointmentTechnicians)
+      .where(and(
+        eq(appointmentTechnicians.orgId, this.orgId),
+        eq(appointmentTechnicians.technicianId, technicianId),
+        eq(appointmentTechnicians.role, "SUPPORT"),
+      ));
     const technicianAppointments = await db
       .select()
       .from(appointments)
       .where(and(
         eq(appointments.orgId, this.orgId),
-        eq(appointments.assignedTechnicianId, technicianId),
+        or(eq(appointments.assignedTechnicianId, technicianId), inArray(appointments.id, supportedAppointmentIds)),
         gte(appointments.scheduledDate, dayStart),
         lte(appointments.scheduledDate, dayEnd),
         ne(appointments.status, "CANCELED"),
@@ -6241,6 +6901,8 @@ export class DatabaseStorage implements IStorage {
           service,
           serviceRecord: recordByServiceId.get(service.id) ?? null,
         })),
+        crewRole: appointment.assignedTechnicianId === technicianId ? "LEAD" : "SUPPORT",
+        crew: await this.crewMembersTx(db, appointment.id),
       });
     }
 

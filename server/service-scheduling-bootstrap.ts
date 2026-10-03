@@ -360,6 +360,77 @@ export async function bootstrapServiceSchedulingFoundation(): Promise<void> {
   await bootstrapOpportunityAssignment();
   await bootstrapAppointmentComposition();
   await bootstrapFieldComposition();
+  await bootstrapTechnicianPreferencesAndCrew();
+}
+
+// Pass 30 (PLAN_ROADMAP_V2.md C4.4; B14; D8). Two new tables, each printed
+// once when created and quiet after:
+//   1. technician_preferences - PREFERRED / EXCLUDED, ACCOUNT or LOCATION
+//      scoped (shared/technician-preferences.ts), one row per technician per
+//      scope row (two partial unique indexes). FKs to accounts, locations,
+//      technicians and users: this bootstrap runs before
+//      bootstrapCanonicalAccounts, but accounts and locations are never
+//      created by a bootstrap - they come from `db:push`, which creates this
+//      table too - so on any database this code can boot against, both
+//      exist by now (customer_notes.account_id went without an FK out of the
+//      same caution; it is not needed). No seed.
+//   2. appointment_technicians - the visit's crew (shared/appointment-crew.ts):
+//      one LEAD per appointment (partial unique index) mirroring
+//      appointments.assigned_technician_id, SUPPORT rows beside it. Guarded
+//      backfill on creation only: one LEAD row per appointment that has a
+//      technician, cancelled ones included (the row mirrors the column).
+async function bootstrapTechnicianPreferencesAndCrew(): Promise<void> {
+  const hadPreferences = await tableExists("technician_preferences");
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS technician_preferences (
+      id varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+      org_id varchar NOT NULL,
+      scope_type text NOT NULL,
+      account_id varchar REFERENCES accounts(id),
+      location_id varchar REFERENCES locations(id),
+      technician_id varchar NOT NULL REFERENCES technicians(id),
+      kind text NOT NULL,
+      note text,
+      created_by_user_id varchar REFERENCES users(id),
+      created_at timestamp NOT NULL DEFAULT now(),
+      updated_at timestamp NOT NULL DEFAULT now()
+    )
+  `);
+  await db.execute(sql`CREATE UNIQUE INDEX IF NOT EXISTS technician_preferences_account_uidx ON technician_preferences (account_id, technician_id) WHERE scope_type = 'ACCOUNT'`);
+  await db.execute(sql`CREATE UNIQUE INDEX IF NOT EXISTS technician_preferences_location_uidx ON technician_preferences (location_id, technician_id) WHERE scope_type = 'LOCATION'`);
+  if (!hadPreferences) {
+    console.log(
+      "[service-scheduling-bootstrap] Pass 30: technician_preferences created (org-scoped; ACCOUNT or LOCATION scope; PREFERRED a hint, EXCLUDED a hard block on placement " +
+        "with a manager's override) - one row per technician per scope, the location's row winning over the account's. No seed.",
+    );
+  }
+
+  const hadCrew = await tableExists("appointment_technicians");
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS appointment_technicians (
+      id varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+      org_id varchar NOT NULL,
+      appointment_id varchar NOT NULL REFERENCES appointments(id),
+      technician_id varchar NOT NULL REFERENCES technicians(id),
+      role text NOT NULL,
+      created_by_user_id varchar REFERENCES users(id),
+      created_at timestamp NOT NULL DEFAULT now()
+    )
+  `);
+  await db.execute(sql`CREATE UNIQUE INDEX IF NOT EXISTS appointment_technicians_member_uidx ON appointment_technicians (appointment_id, technician_id)`);
+  await db.execute(sql`CREATE UNIQUE INDEX IF NOT EXISTS appointment_technicians_lead_uidx ON appointment_technicians (appointment_id) WHERE role = 'LEAD'`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS appointment_technicians_technician_idx ON appointment_technicians (technician_id)`);
+  if (!hadCrew) {
+    const backfill = await db.execute(sql`
+      INSERT INTO appointment_technicians (org_id, appointment_id, technician_id, role)
+      SELECT org_id, id, assigned_technician_id, 'LEAD' FROM appointments WHERE assigned_technician_id IS NOT NULL
+      ON CONFLICT DO NOTHING
+    `);
+    console.log(
+      `[service-scheduling-bootstrap] Pass 30: appointment_technicians created (the visit's crew: one LEAD mirroring appointments.assigned_technician_id, SUPPORT beside it); ` +
+        `${backfill.rowCount ?? 0} LEAD row(s) backfilled, one per appointment with a technician. Production entries stay single-technician until Phase 7.`,
+    );
+  }
 }
 
 // Pass 29 (PLAN_ROADMAP_V2.md C4.3b; B13; Part E answer 7). One guarded step,

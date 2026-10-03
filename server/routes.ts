@@ -23,7 +23,13 @@ import { MAX_ZONE_NAME_LENGTH } from "@shared/zones";
 import { ZodError, z } from "zod";
 import type { Request } from "express";
 import { requirePermission } from "./auth";
-import { AppointmentDispositionError, DraftInvoiceDecisionRequiredError, OpportunityAssignmentError, PrefinalizationIssueError, ServiceCompositionError, ServiceKindError, StatementRefusedError, TicketEditError, TicketLockedError, TicketReopenError, VisitBillingDraftError } from "./storage";
+import { AppointmentCrewError, AppointmentDispositionError, DraftInvoiceDecisionRequiredError, OpportunityAssignmentError, PlacementRefusedError, PrefinalizationIssueError, ServiceCompositionError, ServiceKindError, StatementRefusedError, TechnicianPreferenceError, TicketEditError, TicketLockedError, TicketReopenError, VisitBillingDraftError } from "./storage";
+import {
+  MAX_EXCLUSION_OVERRIDE_REASON_LENGTH,
+  MAX_TECHNICIAN_PREFERENCE_NOTE_LENGTH,
+  TECHNICIAN_PREFERENCE_KINDS,
+  TECHNICIAN_PREFERENCE_SCOPES,
+} from "@shared/technician-preferences";
 import { SERVICE_WORK_KINDS } from "@shared/service-kind";
 import { isUtcDay, statementFileName } from "@shared/statements";
 import { APPOINTMENT_DISPOSITION_MODES, DISPOSITION_OPPORTUNITY_CHOICES } from "@shared/appointment-disposition";
@@ -292,7 +298,19 @@ export async function registerRoutes(
   // with 409 CANCEL_DISPOSITION_REQUIRED - cancelling is the disposition
   // route's, with its reason, requeue, opportunity choice and audit row. The
   // Q3 voidDraftInvoices answer left with it.
-  const updateAppointmentSchema = appointmentSchema.partial();
+  // Pass 30 (C4.4): `overrideExclusion: { reason }` - a manager placing a
+  // technician the customer EXCLUDED (OVERRIDE_TECHNICIAN_EXCLUSION, checked
+  // in storage with the exclusion). Taken off the body before the row is
+  // written.
+  const exclusionOverrideSchema = z.object({
+    reason: z.string().max(MAX_EXCLUSION_OVERRIDE_REASON_LENGTH),
+  }).strict();
+  const createAppointmentSchema = appointmentSchema.extend({
+    overrideExclusion: exclusionOverrideSchema.optional(),
+  });
+  const updateAppointmentSchema = appointmentSchema.partial().extend({
+    overrideExclusion: exclusionOverrideSchema.optional(),
+  });
   const serviceRecordSchema = insertServiceRecordSchema.omit({ serviceDate: true }).extend({
     serviceDate: z.coerce.date(),
   }).superRefine((value, ctx) => {
@@ -569,6 +587,33 @@ export async function registerRoutes(
   // 400 / 403 / 404 / 409 with the code from shared/appointment-composition.ts.
   const respondServiceCompositionError = (res: any, err: ServiceCompositionError) =>
     res.status(err.status).json({ message: err.message, code: err.code });
+  // Pass 30 (C4.4; B14): a placement of a technician the customer EXCLUDED -
+  // 409 TECHNICIAN_EXCLUDED with the technician and the preference row (the
+  // client prompts a manager for the override reason and resends), 403
+  // EXCLUSION_OVERRIDE_FORBIDDEN, 400 EXCLUSION_OVERRIDE_REASON_REQUIRED.
+  const respondPlacementRefused = (res: any, err: PlacementRefusedError) =>
+    res.status(err.status).json({
+      message: err.message,
+      code: err.code,
+      technicianId: err.exclusion?.technicianId ?? null,
+      technicianName: err.exclusion?.technicianName ?? null,
+      preferenceId: err.exclusion?.preferenceId ?? null,
+      scopeType: err.exclusion?.scopeType ?? null,
+      note: err.exclusion?.note ?? null,
+    });
+  // Pass 30: a preference write or a crew change refused - { code, message }.
+  const respondTechnicianPreferenceError = (res: any, err: TechnicianPreferenceError | AppointmentCrewError) =>
+    res.status(err.status).json({ message: err.message, code: err.code });
+  const technicianPreferenceSetSchema = z.object({
+    technicianId: z.string().min(1),
+    kind: z.enum(TECHNICIAN_PREFERENCE_KINDS),
+    note: z.string().max(MAX_TECHNICIAN_PREFERENCE_NOTE_LENGTH).nullable().optional(),
+    scope: z.enum(TECHNICIAN_PREFERENCE_SCOPES).optional(),
+  }).strict();
+  const appointmentCrewAddSchema = z.object({
+    technicianId: z.string().min(1),
+    overrideExclusion: exclusionOverrideSchema.optional(),
+  }).strict();
   // Pass 17 (C3.2): a reopen the reason forbids - 400
   // REOPEN_REASON_NOT_ON_LIST / REOPEN_REASON_TEXT_REQUIRED, 403
   // REOPEN_OTHER_FORBIDDEN.
@@ -1418,6 +1463,61 @@ export async function registerRoutes(
     }
   });
 
+  // Pass 30 (PLAN_ROADMAP_V2.md C4.4; B14; D8): technician preferences. Open
+  // to every role like the location profile - it is the customer's word, not
+  // a setting; only overriding an EXCLUDED technician at placement is gated
+  // (OVERRIDE_TECHNICIAN_EXCLUSION). The read returns the location's rows,
+  // its account's ("all locations") and the resolve rule applied; a set
+  // with scope ACCOUNT is the primary location's "Apply to all locations".
+  app.get("/api/locations/:id/technician-preferences", async (req, res) => {
+    const data = await req.storage.getLocationTechnicianPreferences(req.params.id);
+    if (!data) return res.status(404).json({ message: "Location not found" });
+    res.json(data);
+  });
+
+  app.put("/api/locations/:id/technician-preferences", async (req, res) => {
+    try {
+      const validated = technicianPreferenceSetSchema.parse(req.body);
+      const data = await req.storage.setTechnicianPreference({
+        locationId: req.params.id,
+        technicianId: validated.technicianId,
+        kind: validated.kind,
+        note: validated.note ?? null,
+        scope: validated.scope ?? "LOCATION",
+        actor: getAuditActor(req),
+      });
+      if (!data) return res.status(404).json({ message: "Location not found" });
+      res.json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      if (e instanceof TechnicianPreferenceError) return respondTechnicianPreferenceError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.delete("/api/locations/:id/technician-preferences/:preferenceId", async (req, res) => {
+    try {
+      const data = await req.storage.clearTechnicianPreference({
+        locationId: req.params.id,
+        preferenceId: req.params.preferenceId,
+        actor: getAuditActor(req),
+      });
+      if (!data) return res.status(404).json({ message: "Location not found" });
+      res.json(data);
+    } catch (e: any) {
+      if (e instanceof TechnicianPreferenceError) return respondTechnicianPreferenceError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  // The dispatch board's read: { [locationId]: effective preferences } for
+  // the comma-separated locationIds (the queue's and the sheet's locations).
+  app.get("/api/technician-preferences/effective", async (req, res) => {
+    const raw = typeof req.query.locationIds === "string" ? req.query.locationIds : "";
+    const locationIds = raw.split(",").map((id) => id.trim()).filter(Boolean).slice(0, 500);
+    res.json(await req.storage.getEffectiveTechnicianPreferences(locationIds));
+  });
+
   // Services
   app.get("/api/services", async (req, res) => {
     const data = await req.storage.getServices();
@@ -2098,12 +2198,16 @@ export async function registerRoutes(
 
   app.post("/api/appointments", async (req, res) => {
     try {
-      const validated = appointmentSchema.parse(req.body);
+      const { overrideExclusion, ...validated } = createAppointmentSchema.parse(req.body);
       const data = await req.storage.createAppointment({
         ...validated,
         scheduledDate: validated.scheduledDate,
         scheduledEndDate: validated.scheduledEndDate,
         generatedForDate: toDateOnlyStringOrNull(validated.generatedForDate),
+      }, {
+        overrideExclusion: overrideExclusion ?? null,
+        actorRole: req.user!.role as UserRole,
+        actor: getAuditActor(req),
       });
       // Pass 11d: the office's prompt at scheduling (D4 step 1) - a down
       // payment behind this visit's services that the office may collect,
@@ -2112,26 +2216,80 @@ export async function registerRoutes(
       res.status(201).json({ ...data, initialChargeDue });
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
+      if (e instanceof PlacementRefusedError) return respondPlacementRefused(res, e);
       res.status(400).json({ message: e.message });
     }
   });
 
   app.patch("/api/appointments/:id", async (req, res) => {
     try {
-      const validated = updateAppointmentSchema.parse(req.body);
+      const { overrideExclusion, ...validated } = updateAppointmentSchema.parse(req.body);
       // Pass 28: the actor signs the appointment_composition_changed row a
-      // change of the visit's instructions (notes) writes.
+      // change of the visit's instructions (notes) writes. Pass 30: a change
+      // of technician runs the exclusion check (the override and the role).
       const data = await req.storage.updateAppointment(req.params.id, {
         ...validated,
         scheduledDate: validated.scheduledDate,
         scheduledEndDate: validated.scheduledEndDate,
         generatedForDate: validated.generatedForDate === undefined ? undefined : toDateOnlyStringOrNull(validated.generatedForDate),
-      }, getAuditActor(req));
+      }, getAuditActor(req), {
+        overrideExclusion: overrideExclusion ?? null,
+        actorRole: req.user!.role as UserRole,
+        actor: getAuditActor(req),
+      });
       if (!data) return res.status(404).json({ message: "Appointment not found" });
       res.json(data);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
       if (e instanceof AppointmentDispositionError) return respondAppointmentDispositionError(res, e);
+      if (e instanceof PlacementRefusedError) return respondPlacementRefused(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  // Pass 30 (C4.4; CURRENT_FOCUS "Crew."): the visit's crew - the LEAD (the
+  // visit's technician, moved by the PATCH above) and SUPPORT technicians
+  // added and removed from the dispatch sheet, one appointment_crew_changed
+  // row each. Ungated like every appointment write (C5.6); a SUPPORT
+  // technician the customer excluded is refused like a placement, with the
+  // same manager override.
+  app.get("/api/appointments/:id/crew", async (req, res) => {
+    const data = await req.storage.getAppointmentCrew(req.params.id);
+    if (!data) return res.status(404).json({ message: "Appointment not found" });
+    res.json(data);
+  });
+
+  app.post("/api/appointments/:id/crew", async (req, res) => {
+    try {
+      const validated = appointmentCrewAddSchema.parse(req.body);
+      const data = await req.storage.addAppointmentCrewMember({
+        appointmentId: req.params.id,
+        technicianId: validated.technicianId,
+        overrideExclusion: validated.overrideExclusion ?? null,
+        actorRole: req.user!.role as UserRole,
+        actor: getAuditActor(req),
+      });
+      if (!data) return res.status(404).json({ message: "Appointment not found" });
+      res.status(201).json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      if (e instanceof PlacementRefusedError) return respondPlacementRefused(res, e);
+      if (e instanceof AppointmentCrewError) return respondTechnicianPreferenceError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.delete("/api/appointments/:id/crew/:technicianId", async (req, res) => {
+    try {
+      const data = await req.storage.removeAppointmentCrewMember({
+        appointmentId: req.params.id,
+        technicianId: req.params.technicianId,
+        actor: getAuditActor(req),
+      });
+      if (!data) return res.status(404).json({ message: "Appointment not found" });
+      res.json(data);
+    } catch (e: any) {
+      if (e instanceof AppointmentCrewError) return respondTechnicianPreferenceError(res, e);
       res.status(400).json({ message: e.message });
     }
   });
