@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useLocation, useSearch } from "wouter";
 import { Badge } from "@/components/ui/badge";
@@ -53,6 +53,25 @@ import {
   type SupportAssignment,
 } from "@shared/appointment-crew";
 import {
+  DEFAULT_DISPATCH_BOARD_SETTINGS,
+  DISPATCH_VIEW_INTERVALS,
+  boardEndHourOptions,
+  boardStartHourOptions,
+  describeSnapInterval,
+  describeViewInterval,
+  formatHourOfDay,
+  formatMinutesOfDay,
+  minutesOfDay,
+  slotStartFor,
+  slotStartsForWindow,
+  snapDateToInterval,
+  visibleEndHourFor,
+  windowEndMinutes,
+  type DispatchBoardSettings,
+  type DispatchSnapInterval,
+  type DispatchViewInterval,
+} from "@shared/dispatch-board";
+import {
   CalendarDays,
   ChevronLeft,
   ChevronRight,
@@ -87,8 +106,10 @@ const VIEW_OPTIONS = [
   { value: "week", label: "1 Week", step: 7 },
 ] as const;
 
-const HOUR_OPTIONS = Array.from({ length: 15 }, (_, index) => 6 + index);
-const SLOT_INTERVAL_OPTIONS = [1, 2];
+// Pass 31 (C4.5): the board's window and its intervals come from
+// shared/dispatch-board.ts - the view interval (30 / 60 / 120 minutes), the
+// snap interval (15 / 30 / 60) and the default visible hours are Settings;
+// the Window popover below overrides the window for this session only.
 
 function formatDateInputValue(date: Date) {
   const year = date.getFullYear();
@@ -131,42 +152,23 @@ function formatCurrency(cents: number | null | undefined) {
   return formatCents(cents);
 }
 
-function buildSlotDate(baseDate: Date, hour: number) {
-  return new Date(baseDate.getFullYear(), baseDate.getMonth(), baseDate.getDate(), hour, 0, 0, 0);
+// Pass 31: a slot is a start in minutes of day, not a whole hour, so a
+// 30-minute view works end to end (the keys, the labels, the move check).
+function buildSlotDate(baseDate: Date, slotStartMinutes: number) {
+  return new Date(baseDate.getFullYear(), baseDate.getMonth(), baseDate.getDate(), 0, slotStartMinutes, 0, 0);
 }
 
-function getHourLabel(hour: number) {
-  return new Date(2000, 0, 1, hour).toLocaleTimeString("en-US", { hour: "numeric" });
-}
-
-function getFullHourRange(startHour: number, endHour: number, intervalHours: number) {
-  const hours: number[] = [];
-  const safeInterval = Math.max(intervalHours, 1);
-  for (let hour = startHour; hour < endHour; hour += safeInterval) {
-    hours.push(hour);
-  }
-  return hours;
-}
-
-function getSlotHourForDate(dateLike: Date | string, slotHours: number[]) {
-  const hour = new Date(dateLike).getHours();
-  let selected = slotHours[0];
-  for (const slotHour of slotHours) {
-    if (slotHour <= hour) {
-      selected = slotHour;
-    } else {
-      break;
-    }
-  }
-  return selected;
-}
-
-function isSameSlot(a: Date | string, b: Date) {
+// Pass 31: a move is a change of the start time, to the minute. The old
+// isSameSlot compared hours only, so a move inside the same hour (a visit
+// saved at 8:15 from the sheet, clicked onto the 8:00 slot) was not a time
+// move and escaped lockTime.
+function isSameStart(a: Date | string, b: Date) {
   const left = new Date(a);
   return left.getFullYear() === b.getFullYear()
     && left.getMonth() === b.getMonth()
     && left.getDate() === b.getDate()
-    && left.getHours() === b.getHours();
+    && left.getHours() === b.getHours()
+    && left.getMinutes() === b.getMinutes();
 }
 
 function getCustomerLabel(customer?: Customer, location?: Location) {
@@ -440,11 +442,14 @@ function AppointmentSheet({
   onCancelService,
   isComposing,
   preferences,
+  snapMinutes,
 }: {
   appointment: Appointment | null;
   service: Service | null;
   /** Pass 30 (C4.4): the customer's technician preferences in effect at the visit's location. */
   preferences: EffectiveTechnicianPreference[];
+  /** Pass 31 (C4.5): Settings -> Dispatch Board's snap interval - what Scheduled Start / End round to on save. */
+  snapMinutes: DispatchSnapInterval;
   /** Every service on the visit, the representative included - what a disposition touches. */
   linkedServices: Service[];
   technicianOptions: Technician[];
@@ -851,14 +856,18 @@ function AppointmentSheet({
 
               <AppointmentCrewBlock appointment={appointment} technicianOptions={technicianOptions} preferences={preferences} />
 
+              {/* Pass 31 (C4.5): the inputs step by the snap interval and the
+                  save rounds both times to it (shared/dispatch-board.ts). */}
               <div className="grid gap-4 sm:grid-cols-2">
                 <div className="space-y-2">
                   <label className="text-sm font-medium">Scheduled Start</label>
                   <input
                     type="datetime-local"
                     value={scheduledDate}
+                    step={snapMinutes * 60}
                     onChange={(event) => setScheduledDate(event.target.value)}
                     className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    data-testid="input-sheet-scheduled-start"
                   />
                 </div>
                 <div className="space-y-2">
@@ -866,10 +875,15 @@ function AppointmentSheet({
                   <input
                     type="datetime-local"
                     value={scheduledEndDate}
+                    step={snapMinutes * 60}
                     onChange={(event) => setScheduledEndDate(event.target.value)}
                     className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                    data-testid="input-sheet-scheduled-end"
                   />
                 </div>
+                <p className="text-xs text-muted-foreground sm:col-span-2" data-testid="text-sheet-snap-hint">
+                  Times round to the nearest {describeSnapInterval(snapMinutes)} when saved (Settings &rarr; Dispatch Board).
+                </p>
               </div>
 
               <div className="space-y-2">
@@ -920,15 +934,23 @@ function AppointmentSheet({
                 </Button>
                 <Button variant="outline" onClick={() => onOpenChange(false)}>Close</Button>
                 <Button
-                  onClick={() => onSave({
-                    assignedTechnicianId: assignedTechnicianId || null,
-                    scheduledDate: new Date(scheduledDate).toISOString(),
-                    scheduledEndDate: scheduledEndDate ? new Date(scheduledEndDate).toISOString() : null,
-                    status,
-                    lockTime,
-                    lockTechnician,
-                    notes: notes.trim() || null,
-                  })}
+                  onClick={() => {
+                    // Pass 31: both times round to the snap (nearest; a half
+                    // rounds up). An end that rounds onto or before the start
+                    // keeps one snap of duration rather than inverting.
+                    const start = snapDateToInterval(new Date(scheduledDate), snapMinutes);
+                    let end = scheduledEndDate ? snapDateToInterval(new Date(scheduledEndDate), snapMinutes) : null;
+                    if (end && end.getTime() <= start.getTime()) end = new Date(start.getTime() + snapMinutes * 60000);
+                    onSave({
+                      assignedTechnicianId: assignedTechnicianId || null,
+                      scheduledDate: start.toISOString(),
+                      scheduledEndDate: end ? end.toISOString() : null,
+                      status,
+                      lockTime,
+                      lockTechnician,
+                      notes: notes.trim() || null,
+                    });
+                  }}
                   disabled={isSaving || !scheduledDate}
                 >
                   Save Appointment
@@ -1194,9 +1216,22 @@ export default function Schedule() {
   const [editingAppointmentId, setEditingAppointmentId] = useState<string | null>(null);
   const [detailServiceId, setDetailServiceId] = useState<string | null>(null);
   const [datePickerOpen, setDatePickerOpen] = useState(false);
-  const [boardStartHour, setBoardStartHour] = useState(8);
-  const [boardEndHour, setBoardEndHour] = useState(18);
-  const [slotIntervalHours, setSlotIntervalHours] = useState(2);
+  // Pass 31 (C4.5): the window's defaults are Settings -> Dispatch Board
+  // (GET /api/settings/dispatch-board - the defaults, today's board, until
+  // the office changes them). The Window popover writes a session override
+  // on top: React state, gone on reload, which is what its footer has
+  // always said. The snap has no override, but on the board it is never
+  // coarser than the view interval in use (a 30-minute view with a one-hour
+  // snap would place a :30 slot's click on the next hour), the same rule
+  // the settings enforce.
+  const { data: dispatchSettings, isLoading: dispatchSettingsLoading } = useQuery<DispatchBoardSettings>({ queryKey: ["/api/settings/dispatch-board"] });
+  const boardDefaults = dispatchSettings ?? DEFAULT_DISPATCH_BOARD_SETTINGS;
+  const [windowOverride, setWindowOverride] = useState<{ startHour?: number; endHour?: number; viewIntervalMinutes?: DispatchViewInterval }>({});
+  const boardStartHour = windowOverride.startHour ?? boardDefaults.defaultStartHour;
+  const boardEndHour = visibleEndHourFor(boardStartHour, windowOverride.endHour ?? boardDefaults.defaultEndHour);
+  const viewIntervalMinutes = windowOverride.viewIntervalMinutes ?? boardDefaults.viewIntervalMinutes;
+  const snapMinutes = Math.min(boardDefaults.snapMinutes, viewIntervalMinutes) as DispatchSnapInterval;
+  const windowOverridden = Object.keys(windowOverride).length > 0;
   const groupedServiceIds = useMemo(() => (params.get("serviceIds") || "").split(",").map((id) => id.trim()).filter(Boolean), [params]);
 
   const { data: technicians, isLoading: techniciansLoading } = useQuery<Technician[]>({ queryKey: ["/api/technicians?includeInactive=true"] });
@@ -1256,13 +1291,18 @@ export default function Schedule() {
 
   const currentView = VIEW_OPTIONS.find((option) => option.value === view)!;
   const boardDates = useMemo(() => Array.from({ length: currentView.step }, (_, index) => startOfDay(addDays(currentDate, index))), [currentDate, currentView.step]);
-  const slotHours = useMemo(() => getFullHourRange(boardStartHour, boardEndHour, slotIntervalHours), [boardEndHour, boardStartHour, slotIntervalHours]);
+  // Pass 31: the slot starts (minutes of day) and where each day's window
+  // really ends - the last slot's end, so 8 AM - 5 PM in two-hour columns
+  // ends at 6 PM with the grid.
+  const slotStarts = useMemo(() => slotStartsForWindow(boardStartHour, boardEndHour, viewIntervalMinutes), [boardEndHour, boardStartHour, viewIntervalMinutes]);
+  const windowStartMinutes = boardStartHour * 60;
+  const windowEnd = windowEndMinutes(slotStarts, viewIntervalMinutes, boardStartHour);
 
-  const viewportBounds = useMemo(() => {
-    const start = buildSlotDate(boardDates[0], boardStartHour);
-    const end = new Date(buildSlotDate(boardDates[boardDates.length - 1], boardEndHour).getTime() + slotIntervalHours * 60 * 60 * 1000);
-    return { start, end };
-  }, [boardDates, boardEndHour, boardStartHour, slotIntervalHours]);
+  // The fetch range for the support cards: the first day's start to the last day's end.
+  const viewportBounds = useMemo(() => ({
+    start: buildSlotDate(boardDates[0], windowStartMinutes),
+    end: buildSlotDate(boardDates[boardDates.length - 1], windowEnd),
+  }), [boardDates, windowEnd, windowStartMinutes]);
 
   // Pass 27b (C4.2b): what the board shows. A CANCELED placement - cancelled
   // or rescheduled alike - is history, not a card (owner, 2026-09-25): its
@@ -1274,12 +1314,21 @@ export default function Schedule() {
   // still need the row).
   const boardAppointments = useMemo(() => (appointments ?? []).filter(isBoardPlacement), [appointments]);
 
+  // Pass 31: "in view" is per day - the visit's own day is on the board and
+  // its start falls inside that day's window. The old test was one continuous
+  // range from the first day's start to the last day's end, so on a 3-day or
+  // week view an off-window visit on a middle day passed it and landed in the
+  // first or last slot of its row (the multi-day spill); it also let a visit
+  // up to one interval past the end hour ride the last slot.
+  const boardDayKeys = useMemo(() => new Set(boardDates.map(formatDateInputValue)), [boardDates]);
   const viewportAppointments = useMemo(() => {
     return boardAppointments.filter((appointment) => {
       const scheduled = new Date(appointment.scheduledDate);
-      return scheduled >= viewportBounds.start && scheduled < viewportBounds.end;
+      if (!boardDayKeys.has(formatDateInputValue(scheduled))) return false;
+      const minutes = minutesOfDay(scheduled);
+      return minutes >= windowStartMinutes && minutes < windowEnd;
     });
-  }, [boardAppointments, viewportBounds.end, viewportBounds.start]);
+  }, [boardAppointments, boardDayKeys, windowEnd, windowStartMinutes]);
 
   const visibleTechnicians = useMemo(() => {
     const base = (technicians ?? []).filter((technician) => technician.status === "ACTIVE");
@@ -1292,18 +1341,27 @@ export default function Schedule() {
     return [...base, ...extras];
   }, [technicianById, technicians, viewportAppointments]);
 
+  // Pass 31: one key shape for both maps and the grid - technician, day,
+  // slot start in minutes of day. A start no slot covers (none in practice,
+  // since viewportAppointments is already inside the window) has no key.
+  const slotKeyFor = useCallback((technicianId: string, scheduledDate: Date | string): string | null => {
+    const scheduled = new Date(scheduledDate);
+    const slotStart = slotStartFor(minutesOfDay(scheduled), slotStarts, viewIntervalMinutes);
+    return slotStart === null ? null : `${technicianId}:${formatDateInputValue(scheduled)}:${slotStart}`;
+  }, [slotStarts, viewIntervalMinutes]);
+
   const appointmentsByTechnicianAndSlot = useMemo(() => {
     const map = new Map<string, Appointment[]>();
     for (const appointment of viewportAppointments) {
       if (!appointment.assignedTechnicianId) continue;
-      const slotHour = getSlotHourForDate(appointment.scheduledDate, slotHours);
-      const key = `${appointment.assignedTechnicianId}:${formatDateInputValue(new Date(appointment.scheduledDate))}:${slotHour}`;
+      const key = slotKeyFor(appointment.assignedTechnicianId, appointment.scheduledDate);
+      if (!key) continue;
       const items = map.get(key) ?? [];
       items.push(appointment);
       map.set(key, items);
     }
     return map;
-  }, [slotHours, viewportAppointments]);
+  }, [slotKeyFor, viewportAppointments]);
 
   // Pass 30b (owner, 2026-10-03): a support technician's copy of each visit
   // they are crewed on - a second card on their row, so their time reads as
@@ -1318,14 +1376,14 @@ export default function Schedule() {
     for (const assignment of supportAssignments ?? []) {
       const appointment = byId.get(assignment.appointmentId);
       if (!appointment) continue;
-      const slotHour = getSlotHourForDate(appointment.scheduledDate, slotHours);
-      const key = `${assignment.technicianId}:${formatDateInputValue(new Date(appointment.scheduledDate))}:${slotHour}`;
+      const key = slotKeyFor(assignment.technicianId, appointment.scheduledDate);
+      if (!key) continue;
       const items = map.get(key) ?? [];
       items.push(appointment);
       map.set(key, items);
     }
     return map;
-  }, [slotHours, supportAssignments, viewportAppointments]);
+  }, [slotKeyFor, supportAssignments, viewportAppointments]);
 
   const selectedService = useMemo(() => (pendingServices ?? []).find((service) => service.id === selectedServiceId) ?? null, [pendingServices, selectedServiceId]);
   const selectedAppointment = useMemo(() => boardAppointments.find((appointment) => appointment.id === selectedAppointmentId) ?? null, [boardAppointments, selectedAppointmentId]);
@@ -1716,7 +1774,7 @@ export default function Schedule() {
   const moveAppointmentToSlot = (appointment: Appointment, technician: Technician, slotDate: Date) => {
     const currentTechId = appointment.assignedTechnicianId || "";
     const movingTechnician = currentTechId !== technician.id;
-    const movingTime = !isSameSlot(appointment.scheduledDate, slotDate);
+    const movingTime = !isSameStart(appointment.scheduledDate, slotDate);
 
     if (appointment.lockTechnician && movingTechnician) {
       toast({ title: "Technician locked", description: "Unlock technician assignment before reassigning this job.", variant: "destructive" });
@@ -1755,13 +1813,19 @@ export default function Schedule() {
   };
 
   const handleSlotClick = (technician: Technician, slotDate: Date) => {
+    // Pass 31 (C4.5): every start the board writes passes through the snap.
+    // A slot start is on the view grid and the snap in use is never coarser
+    // than the view interval, so this is the rule made literal, not a change
+    // of where a click lands. There is no drag-and-drop: placement is this
+    // click, a move is click-then-confirm (pendingMove).
+    const start = snapDateToInterval(slotDate, snapMinutes);
     if (selectedService) {
-      scheduleMutation.mutate({ service: selectedService, technician, slotDate });
+      scheduleMutation.mutate({ service: selectedService, technician, slotDate: start });
       return;
     }
 
     if (selectedAppointment) {
-      moveAppointmentToSlot(selectedAppointment, technician, slotDate);
+      moveAppointmentToSlot(selectedAppointment, technician, start);
     }
   };
 
@@ -1847,8 +1911,10 @@ export default function Schedule() {
     return (editingLocationOpportunities ?? []).filter((opportunity) => opportunity.status === "OPEN" && !!opportunity.sourceServiceId && serviceIds.has(opportunity.sourceServiceId)).length;
   }, [editingLinkedServices, editingLocationOpportunities]);
   const detailTechnicianName = detailService?.assignedTechnicianId ? technicianById.get(detailService.assignedTechnicianId)?.displayName || "" : "";
-  const configSummary = `${getHourLabel(boardStartHour)} - ${getHourLabel(boardEndHour)} | ${slotIntervalHours}-hour slots`;
-  const isLoading = techniciansLoading || appointmentsLoading || servicesLoading || pendingLoading || prefillServiceMutation.isPending;
+  // Pass 31: "8 AM - 6 PM | 30-min view" (was "N-hour slots"); the grid waits
+  // for the settings so it never renders the fallback window first.
+  const configSummary = `${formatHourOfDay(boardStartHour)} - ${formatHourOfDay(boardEndHour)} | ${describeViewInterval(viewIntervalMinutes).summary}`;
+  const isLoading = techniciansLoading || appointmentsLoading || servicesLoading || pendingLoading || dispatchSettingsLoading || prefillServiceMutation.isPending;
 
   return (
     <div className="mx-auto max-w-7xl space-y-6 p-6">
@@ -1923,6 +1989,11 @@ export default function Schedule() {
                 Window
               </Button>
             </PopoverTrigger>
+            {/* Pass 31 (C4.5): the session override of the window. The hour
+                options and the end-hour clamp share shared/dispatch-board.ts
+                with Settings (the old clamp reached 9 PM on a select that
+                stopped at 8 PM); "View Interval" was "Slot Interval", and 30
+                minutes joins 1 and 2 hours. */}
             <PopoverContent align="end" className="space-y-3">
               <div className="space-y-2">
                 <label className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Visible Start Hour</label>
@@ -1930,39 +2001,44 @@ export default function Schedule() {
                   value={boardStartHour}
                   onChange={(event) => {
                     const value = Number(event.target.value);
-                    setBoardStartHour(value);
-                    if (boardEndHour <= value + slotIntervalHours) {
-                      setBoardEndHour(Math.min(value + slotIntervalHours * 2, 21));
-                    }
+                    setWindowOverride((current) => ({ ...current, startHour: value, endHour: visibleEndHourFor(value, boardEndHour) }));
                   }}
                   className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  data-testid="select-board-start-hour"
                 >
-                  {HOUR_OPTIONS.map((hour) => <option key={`start-${hour}`} value={hour}>{getHourLabel(hour)}</option>)}
+                  {boardStartHourOptions().map((hour) => <option key={`start-${hour}`} value={hour}>{formatHourOfDay(hour)}</option>)}
                 </select>
               </div>
               <div className="space-y-2">
                 <label className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Visible End Hour</label>
                 <select
                   value={boardEndHour}
-                  onChange={(event) => setBoardEndHour(Number(event.target.value))}
+                  onChange={(event) => setWindowOverride((current) => ({ ...current, endHour: Number(event.target.value) }))}
                   className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  data-testid="select-board-end-hour"
                 >
-                  {HOUR_OPTIONS.filter((hour) => hour > boardStartHour).map((hour) => <option key={`end-${hour}`} value={hour}>{getHourLabel(hour)}</option>)}
+                  {boardEndHourOptions(boardStartHour).map((hour) => <option key={`end-${hour}`} value={hour}>{formatHourOfDay(hour)}</option>)}
                 </select>
               </div>
               <div className="space-y-2">
-                <label className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Slot Interval</label>
+                <label className="text-xs font-medium uppercase tracking-wide text-muted-foreground">View Interval</label>
                 <select
-                  value={slotIntervalHours}
-                  onChange={(event) => setSlotIntervalHours(Number(event.target.value))}
+                  value={viewIntervalMinutes}
+                  onChange={(event) => setWindowOverride((current) => ({ ...current, viewIntervalMinutes: Number(event.target.value) as DispatchViewInterval }))}
                   className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  data-testid="select-board-view-interval"
                 >
-                  {SLOT_INTERVAL_OPTIONS.map((hours) => <option key={`interval-${hours}`} value={hours}>{hours} hour</option>)}
+                  {DISPATCH_VIEW_INTERVALS.map((minutes) => <option key={`interval-${minutes}`} value={minutes}>{describeViewInterval(minutes).label}</option>)}
                 </select>
               </div>
               <p className="text-xs text-muted-foreground">
-                Board window configuration is live for this session. Technician/day availability blocks remain a follow-up pass.
+                Defaults come from Settings &rarr; Dispatch Board; changes here last for this session. Placements and typed times round to {describeSnapInterval(snapMinutes)}. Technician/day availability blocks remain a follow-up pass.
               </p>
+              {windowOverridden ? (
+                <Button type="button" variant="outline" size="sm" onClick={() => setWindowOverride({})} data-testid="button-board-window-reset">
+                  Back to the defaults
+                </Button>
+              ) : null}
             </PopoverContent>
           </Popover>
         </div>
@@ -2004,17 +2080,17 @@ export default function Schedule() {
           ) : (
             <div className="overflow-x-auto">
               <div className="min-w-[1080px]">
-                <div className="grid border-b bg-muted/20" style={{ gridTemplateColumns: `200px repeat(${boardDates.length * slotHours.length}, minmax(136px, 1fr))` }}>
+                <div className="grid border-b bg-muted/20" style={{ gridTemplateColumns: `200px repeat(${boardDates.length * slotStarts.length}, minmax(136px, 1fr))` }}>
                   <div className="border-r px-3 py-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">Technician</div>
-                  {boardDates.flatMap((date) => slotHours.map((hour) => (
-                    <div key={`${formatDateInputValue(date)}-${hour}`} className="border-r px-2 py-2 text-center text-xs font-medium text-muted-foreground">
+                  {boardDates.flatMap((date) => slotStarts.map((slotStart) => (
+                    <div key={`${formatDateInputValue(date)}-${slotStart}`} className="border-r px-2 py-2 text-center text-xs font-medium text-muted-foreground">
                       <div>{date.toLocaleDateString("en-US", { month: "short", day: "numeric" })}</div>
-                      <div>{getHourLabel(hour)}</div>
+                      <div>{formatMinutesOfDay(slotStart)}</div>
                     </div>
                   )))}
                 </div>
                 {visibleTechnicians.map((technician) => (
-                  <div key={technician.id} className="grid border-b last:border-b-0" style={{ gridTemplateColumns: `200px repeat(${boardDates.length * slotHours.length}, minmax(136px, 1fr))` }}>
+                  <div key={technician.id} className="grid border-b last:border-b-0" style={{ gridTemplateColumns: `200px repeat(${boardDates.length * slotStarts.length}, minmax(136px, 1fr))` }}>
                     <div className="border-r px-3 py-3">
                       <div className="flex items-center gap-2">
                         <span className="h-3 w-3 rounded-full" style={{ backgroundColor: technician.color || "#2563eb" }} />
@@ -2027,9 +2103,9 @@ export default function Schedule() {
                         </div>
                       </div>
                     </div>
-                    {boardDates.flatMap((date) => slotHours.map((hour) => {
-                      const slotDate = buildSlotDate(date, hour);
-                      const slotKey = `${technician.id}:${formatDateInputValue(slotDate)}:${hour}`;
+                    {boardDates.flatMap((date) => slotStarts.map((slotStart) => {
+                      const slotDate = buildSlotDate(date, slotStart);
+                      const slotKey = `${technician.id}:${formatDateInputValue(slotDate)}:${slotStart}`;
                       const slotAppointments = appointmentsByTechnicianAndSlot.get(slotKey) ?? [];
                       const slotSupportAppointments = supportAppointmentsBySlot.get(slotKey) ?? [];
                       const slotActionable = !!selectedService || !!selectedAppointment;
@@ -2039,7 +2115,7 @@ export default function Schedule() {
                           className={`min-h-[108px] border-r px-2 py-2 align-top transition-colors ${slotActionable ? "cursor-pointer hover:bg-primary/5" : "hover:bg-muted/20"}`}
                           onClick={() => slotActionable && handleSlotClick(technician, slotDate)}
                         >
-                          <div className="text-[11px] text-muted-foreground">{getHourLabel(hour)}</div>
+                          <div className="text-[11px] text-muted-foreground">{formatMinutesOfDay(slotStart)}</div>
                           <div className="mt-2 space-y-2">
                             {slotAppointments.map((appointment) => {
                               const linkedServices = servicesByAppointmentId.get(appointment.id)
@@ -2298,6 +2374,7 @@ export default function Schedule() {
         }}
         isSaving={updateAppointmentMutation.isPending}
         isDispositioning={dispositionMutation.isPending}
+        snapMinutes={snapMinutes}
         serviceTypeNameById={serviceTypeNameById}
         answersLabelFor={answersLabelFor}
         serviceTypes={serviceTypes ?? []}

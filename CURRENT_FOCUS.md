@@ -31,8 +31,9 @@ attribution, C3.7 - the last Phase 3 row) is merged (PR #96); Pass 26 (opportuni
 rules and zones, C4.1b - the first open Phase 4 row in phase order) is merged (PR #97); Pass 28
 (appointment composition on the server and the dispatch sheet, C4.3a) is merged (PR #98); Pass 29
 (appointment composition in the field, C4.3b) is merged (PR #99); Pass 30 (technician preferences and
-crew, C4.4) is merged (PR #100); Pass 30b (the owner's two additions to it, C4.4b) is pushed, awaiting
-merge; **next pass: 31, dispatch board settings** (C4.5). The roadmap
+crew, C4.4) is merged (PR #100); Pass 30b (the owner's two additions to it, C4.4b) is merged (PR #102);
+Pass 31 (dispatch board settings, C4.5 - the last Phase 4 row) is pushed, awaiting merge; **next pass:
+32, non-financial audit coverage** (C5.1a, the first Phase 5 row). The roadmap
 sequences every remaining item below; this file keeps the status pointer and, as its last
 section, the handoff prompt that starts the next session.
 
@@ -1433,7 +1434,7 @@ support card on the technician's day) has been rendered by anyone: the repo has 
 and the session had no browser.** Signatures and behavior are under "Shipped in Pass 30" at the end of
 `PLAN_ROADMAP_V2.md` Part D.
 
-Pass 30b (`feature/phase-4-crew-schedule-review`, 2026-10-03, C4.4b) pushed, awaiting merge. **The
+Pass 30b (`feature/phase-4-crew-schedule-review`, 2026-10-03, C4.4b) merged as PR #102. **The
 owner's two additions after Pass 30 merged** (`OWNER_FEEDBACK.md` FB-018, FB-019). **(1) The support
 technician's copy of the visit.** A SUPPORT technician now shows the visit on their own row of the
 dispatch board - a dashed "Support" card, "With <lead>", that opens the visit's sheet and is never
@@ -1460,12 +1461,59 @@ next-stop check still reads the lead's day only. **Nothing new was rendered in a
 card, the conflict dialog, the preference dialog and the sheet's warning reach the owner first. Signatures
 under "Shipped in Pass 30b" at the end of `PLAN_ROADMAP_V2.md` Part D.
 
-Next up: **Pass 31** — dispatch board settings (`PLAN_ROADMAP_V2.md` Phase 4 table, C4.5): Settings ->
-Dispatch Board with the view interval (the board's "Slot Interval" today; keep 1 h / 2 h, add 30 min),
-the snap interval 15 / 30 / 60 (`dispatch_snap_minutes`; placement and the sheet's time inputs round to
-it) and the default visible hours (the board's session state stays an override). Branch from
-`origin/main` after confirming it contains Pass 30's merge. The handoff prompt for Pass 31 is the last
-section of this file; the Pass 31 session writes the next one.
+Pass 31 (`feature/phase-4-dispatch-board-settings`, 2026-10-03, C4.5) pushed, awaiting merge. **Dispatch
+board settings** - the last Phase 4 row. **Decided (1), the shape:** one shared module
+`shared/dispatch-board.ts` and one `app_settings` row per value (`dispatch_view_interval_minutes` 30 | 60
+| 120, default 120; `dispatch_snap_minutes` 15 | 30 | 60, default 60; `dispatch_default_start_hour` /
+`dispatch_default_end_hour`, defaults 8 and 18, whole hours 6..21), no seed row (the reader returns the
+defaults - today's board), read together by `GET /api/settings/dispatch-board` and written by a partial
+`PATCH` (MANAGE_SETTINGS, like every settings write but service-time-tracking) that lays the body over
+what is stored, checks the four together and upserts only the keys given - 400
+`DISPATCH_BOARD_SETTINGS_INVALID` when start >= end or the snap is coarser than the view interval, a zod
+400 for an unknown interval, an hour off the board, a non-integer, an unknown field or an empty body. One
+key per value rather than one JSON key because each value then normalizes on its own (an unrecognised
+view falls back without losing the snap) and `dispatch_snap_minutes` is the key the row names. **Decided
+(2), the snap:** there is no drag-and-drop anywhere in the client - placement is a slot click, a move is
+click-then-confirm - so "drag placement rounds to it" became: the sheet's Scheduled Start / End step by
+the snap and round to it on save (nearest, a half up; an end that rounds onto or before the start keeps
+one snap of duration), and every placement / move start passes through `snapDateToInterval` in
+`handleSlotClick` - a no-op on a slot start, because the rules refuse a snap coarser than the view
+interval (a 60-minute snap on a 30-minute view would place a :30 slot's click on the next hour, in a
+different cell than the one clicked; the Settings card disables those options and sends the snap down
+with a finer view; on the board the snap in use is min(snap, view) when the session override picks a
+finer view). The server stores the snap and never rounds a time an API caller asked for (a client rule,
+noted, as lockTechnician is). **Decided (3), the 30-minute view:** slots are minutes of day end to end -
+`slotStartsForWindow`, `buildSlotDate(day, minutes)`, `formatMinutesOfDay` ("8:30 AM"), `slotStartFor`,
+the keys `tech:day:minutes` for the lead map, the support-card map and the grid; `isSameStart` compares to
+the minute, so a move inside the same hour is a time move and lockTime holds (and clicking a card's own
+slot now offers, with the confirm, to put it on the slot's start). **Decided (4), the hours:** the
+settings seed the board's window and the grid waits for them; the Window popover writes a session override
+(React state, reset on reload - there never was a persisted one, and the footer says so) with a "Back to
+the defaults" button; the hour options and the end-hour clamp come from the shared module (the old clamp
+set 21 on a select that stopped at 20 - the end select now reaches 9 PM); "in view" is per day - the
+visit's own day on the board and its start inside [start, the last slot's end) - which fixed the
+multi-day spill for free (an off-window visit on a middle day of a 3-day view used to land in the first
+or last slot) and stops a visit up to one interval past the end hour riding the last slot; Jobs In View
+counts what the grid shows. **Decided (5), the rename:** "View Interval" (was "Slot Interval") with 30
+minutes / 1 hour / 2 hours; the Board Window card reads "8 AM - 6 PM | 2-hour view". **Decided (6):** a
+"Dispatch Board" card on the flat Settings page, four selects saving at once, disabled with "Only an
+admin can change this setting." for a non-admin. No migration, no table, no column; verified against the
+shared dev DB (82 smoke assertions first run; double boot clean). Found and left: the
+service-time-tracking PATCH is still ungated; the technician CRUD routes are still not
+MANAGE_SETTINGS-gated; the Services tab's Reopen still posts `{ reason }`; `cancelAgreement` still writes
+CANCELED directly; the owner's FB-020 (a card spanning its duration, a conflict prompt on a duration
+change) is recorded as roadmap row C4.6, unscheduled. **Restart `npm run dev:full` before manually
+testing - this pass adds two routes and a shared module, and none of the new UI (the Settings card, the
+30-minute board, the renamed popover and its reset, the sheet's stepped inputs and their rounding) has
+been rendered by anyone: the repo has no browser automation and the session had no browser.** Signatures
+and behavior are under "Shipped in Pass 31" at the end of `PLAN_ROADMAP_V2.md` Part D.
+
+Next up: **Pass 32** — non-financial audit coverage (`PLAN_ROADMAP_V2.md` Phase 5 table, C5.1a - the first
+Phase 5 row; Phase 4 is complete): every mutation of customer, location, contact, billing profile,
+agreement, agreement template, appointment and service writes `audit_logs` through the existing helper,
+with new entity members in `shared/audit.ts`. Branch from `origin/main` after confirming it contains Pass
+31's merge. The handoff prompt for Pass 32 is the last section of this file; the Pass 32 session writes
+the next one.
 
 Phase 1's ordered plan, impact analysis, conflict resolutions, and per-pass verification steps live in
 `PLAN_BILLING_V1_1_EXECUTION.md` — read it when a pass builds on a Phase 1 helper (its "Shipped in
@@ -1720,143 +1768,211 @@ pointer and that prompt.
 
 Replaced at the end of every pass (`AGENT_WORKING_AGREEMENT.md`, the end-of-pass step). The owner
 pastes it verbatim to start the next session; it is also the last thing in the finishing session's
-final message. Written 2026-10-03, after Pass 30 was pushed as
-`feature/phase-4-technician-preferences-crew` (line numbers re-grepped after Pass 30b,
-`feature/phase-4-crew-schedule-review`). Its ground truth came from a read-only Explore subagent's
-inventory of the working tree during Pass 30, plus the SQL it ran, re-grepped against the tree after
-Pass 30's edits (the dispatch page, storage and routes moved; settings.tsx did not). They are that
-tree's, so run the SQL and grep the names before trusting any claim.
+final message. Written 2026-10-03, after Pass 31 was pushed as
+`feature/phase-4-dispatch-board-settings`. Its ground truth came from a read-only Explore subagent's
+inventory of the working tree at the start of Pass 31 (origin/main after PR #102), plus the SQL it
+ran, with the storage.ts / routes.ts line numbers re-grepped after Pass 31's edits (shared/audit.ts,
+the History tab and the audit routes were not touched by Pass 31). They are that tree's, so run the
+SQL and grep the names before trusting any claim.
 
 ```text
-Start Pass 31 — Dispatch board settings
-(PLAN_ROADMAP_V2.md Phase 4 table, row C4.5 :386; Part A3 rows :117-118 "Dispatch "Slot Interval" ->
-rename "View Interval"" (PARTIAL) and "Schedule (snap) interval 15 / 30 / 60 min, configured in Dispatch
-Board settings" (ABSENT) - their file:line citations are stale, see below; canon Scheduling Rules §2
-"Schedule views". No Part B / Part E owner note covers interval, snap or visible hours: the row and the
-two Part A rows are the whole spec. Phase order: Pass 30 (C4.4) and the owner's Pass 30b (C4.4b) closed
-the rows before it, so this is the last open Phase 4 row.) Read the CLAUDE.md docs in order first, and
-OWNER_FEEDBACK.md (its review process applies at the start and end of the session); CURRENT_FOCUS.md's
-last entries (Pass 30, Pass 30b and "Next up") are the ones that matter.
+Start Pass 32 — Non-financial audit coverage (D7 follow-up)
+(PLAN_ROADMAP_V2.md Phase 5 table, row C5.1a :396; Part A1 row :48 "Customer/account history log for all
+changes" (PARTIAL - its citation storage.ts:2186-2222 is stale and its "No contact / account / agreement /
+appointment entity in shared/audit.ts" is half false: agreement and appointment exist, contact and account
+do not, see below); PLAN_BILLING_V1_1.md D7 "Non-financial entities ... join the log in a follow-up pass -
+same table, same pattern, no new infrastructure"; canon §17 AuditLog. Part E owner answer 8 (who may
+revert: manager+) is C5.1b's, not this row's. No Part B / Part E owner note covers the audit rows
+themselves. Phase order: Pass 31 (C4.5) closed Phase 4; this is the first Phase 5 row. OWNER_FEEDBACK.md's
+FB-020 is recorded as roadmap row C4.6, unscheduled - build it only if I say so.) Read the CLAUDE.md docs in
+order first, and OWNER_FEEDBACK.md (its review process applies at the start and end of the session);
+CURRENT_FOCUS.md's last entries (Pass 30b, Pass 31 and "Next up") are the ones that matter.
 
-Branch feature/phase-4-dispatch-board-settings from origin/main. Confirm main contains the Pass 30b
-merge (feature/phase-4-crew-schedule-review) before branching.
+Branch feature/phase-5-audit-coverage from origin/main. Confirm main contains the Pass 31 merge
+(feature/phase-4-dispatch-board-settings) before branching.
 
-The row: Settings -> Dispatch Board: **view interval** (the rename; keep 1 h / 2 h, add 30 min), **snap
-interval** 15 / 30 / 60 (`dispatch_snap_minutes`; drag placement and the sheet's time inputs round to
-it), default visible hours (the session override stays). Decide and state, in the pass:
-(1) the setting shape - recommend one shared module `shared/dispatch-board.ts` (the
-shared/invoice-on-finalize.ts / shared/service-report.ts model: the allowed values, the defaults, the
-keys, a normalize that returns the default for anything unknown, describe labels) with one app_settings
-key per value (`dispatch_view_interval_minutes` 30 | 60 | 120, default 120 - today's 2 h;
-`dispatch_snap_minutes` 15 | 30 | 60, default 60 - today's behavior, placement on the hour;
-`dispatch_default_start_hour` / `dispatch_default_end_hour`, defaults 8 and 18 - today's state), read
-together through one `GET /api/settings/dispatch-board` and written through one `PATCH` (MANAGE_SETTINGS,
-like every settings write but service-time-tracking), no seed row (the reader returns the defaults);
-or one JSON key - say which and why; validate start < end and the hours inside the board's range;
-(2) "drag placement" - **there is no drag-and-drop anywhere in the client**: placement is click-a-slot
-(handleSlotClick) and a move is click-then-confirm (pendingMove). Recommend: the snap rounds the sheet's
-Scheduled Start / End (a `step` of snap*60 on the datetime-local inputs and rounding on save) and every
-placement / move start (a slot start is already a multiple of the view interval; round it to the snap
-when the snap is coarser - say what 60-minute snap on a 30-minute view does); build no drag; say whether
-the server rounds too (recommend: no - a client rule, noted, as lockTechnician is);
-(3) the 30-minute view - every slot helper is whole-hour today and must move to minutes: getFullHourRange
-(clamps the interval to >= 1 hour), buildSlotDate(baseDate, hour) (minutes 0), getHourLabel (hour only),
-getSlotHourForDate (buckets by getHours), the slot keys `${tech}:${date}:${hour}`, configSummary
-("N-hour slots"), and isSameSlot, which compares hours only - so today a move inside the same hour is
-not seen as a time move and escapes lockTime; fix it with the minute slots and say so;
-(4) default visible hours - the settings seed the board's initial start / end / view interval; the
-Window popover's changes stay React state for the session (there is no persisted "session override" -
-nothing in localStorage, sessionStorage or the URL; it resets on reload, and the popover's footer already
-says "live for this session"); fix the hour-options bug while there (HOUR_OPTIONS is 6..20 but the start
-select's onChange clamps the end to min(start + interval*2, 21), a value the end select cannot show);
-(5) the rename - the UI says "Slot Interval" (inside the "Window" popover) and "Board Window" / "N-hour
-slots"; nothing says "Schedule interval" or "View Interval" - rename to "View Interval" and decide the
-summary's text ("30-min view");
-(6) where in Settings - settings.tsx is one flat page of cards with no tabs; recommend a "Dispatch Board"
-card in the existing pattern (disabled controls plus "Only an admin can change this setting." for a
-non-admin, dev behavior rule 6);
-(7) the multi-day viewport spill (viewportBounds is continuous across days, so on a 3-day or week view
-an off-window appointment on a middle day lands in the first or last slot via getSlotHourForDate's
-fallback) - recommend: noted, not fixed, unless the minute-slot rewrite makes it free - say which.
+The row: every mutation of customer, location, contact, billing profile, agreement, agreement template,
+appointment and service (create / update / status) writes audit_logs through the existing helper, with new
+entity members in shared/audit.ts; excludes service_records (C3.1's ticket_edited) and price overrides
+(Pass 8). Decide and state, in the pass:
+(1) the vocabulary - new AuditEntityType members `contact`, `billing_profile`, `agreement_template`, and
+whether `billing_profile_template` and `account` join: recommend billing_profile_template YES (the row says
+"billing profile", the template is the org default C5.2 will read) and account NO (canon has no account
+history; Pass 30 put account-scoped rows on the customer; `accounts.status` / `primaryLocationId` move
+with the location invariant, so log them on the location); new actions - recommend the generic `created`
+/ `updated` / `status_changed`, plus `deleted` for deleteService's hard delete (the row omits deletes - log
+it with the before snapshot), with the entity type carrying the noun, since ENTITY_TYPE_LABELS /
+ACTION_LABELS are Record<Union, string> and every new member needs a label or npm run check fails;
+(2) the snapshot - whole row before / after (updateLocationProfile's pattern; DIFF_IGNORED_FIELDS strips
+id / orgId / updatedAt) for the simple entities (customer, location, contact, billing profile, the two
+templates, agreement) and the curated serviceAuditSnapshot / appointmentAuditSnapshot for service and
+appointment, extended with what they miss (the appointment's technician, scheduledDate / EndDate, status,
+locks; the service's status, appointmentId, assignedTechnicianId, dates); write an UPDATE row only when
+something changed (updateAgreement's guard), never updateLocationProfile's always-write - say whether you
+fix that one too;
+(3) the actor - fourteen storage methods take no actor today (listed below); add `actor?: AuditActor`
+and pass getAuditActor(req) from every route; system paths (generateServiceForAgreement, the billing
+run's agreement advance, ensurePrimaryLocationInvariant) write SYSTEM_AUDIT_ACTOR explicitly - say which
+paths are system;
+(4) the writes on GET - GET /api/agreements/location/:locationId (routes.ts :2052) and GET
+/api/location-counts/:locationId (:1385) call generateAgreementServicesForLocation, a write on a read; a
+service `created` row from there fires on page loads under the system actor - recommend: log it (it IS a
+creation, source AGREEMENT_GENERATED, actor System, one row per generated service) and say so, or leave
+agreement generation unlogged and say so; do not move the routes;
+(5) the read side - getAuditLogsForLocation's allRefs (storage.ts :1911) must collect contact ids (by
+location), billing_profile ids (by location and by the account), and agreement ids already; the templates
+are org-wide with no location - say where their rows are readable (recommend: GET
+/api/audit-logs?entityType=agreement_template&entityId= for a later Settings surface, nothing on the
+History tab now); fix the five invalidation keys that never refresh the History tab - ["/api/audit-logs"]
+in schedule.tsx :280, technician-work.tsx :215, technician-preferences.tsx :61, field-added-badge.tsx :45
+and ["/api/audit-logs/location", id] in service-cancel-dialog.tsx :40 (queryClient joins keys with "/" and
+staleTime is Infinity, so neither prefix-matches [`/api/audit-logs?locationId=${id}`]) with one
+predicate-based helper the way invalidate-invoice-views.ts :23 and opportunities.tsx :148 do it - recommend
+yes, in scope: the tab is this feature's surface;
+(6) the leftovers Passes 30 and 31 noted - cancelAgreement (storage.ts :5076) writes appointments.status
+= CANCELED directly (bypasses dispositionAppointment: no reason, no row) and the agreement's CANCELLED is
+unaudited; the Services tab's Reopen (customer-detail.tsx ~:3329) posts { reason } against a .strict()
+schema that wants reasonCode (a 400 today); the technician CRUD routes (routes.ts :1464 / :1475) are
+ungated - recommend: cancelAgreement's appointment write goes through the disposition (it then gets its
+row) or at least writes `status_changed`; the other two stay noted;
+(7) an index - audit_logs has only its pkey and audit_logs_org_id_idx; the History read ORs (entity_type,
+entity_id IN ...) lists - recommend `audit_logs_entity_idx` on (org_id, entity_type, entity_id) in the
+audit bootstrap (CREATE INDEX IF NOT EXISTS - additive, safe under the owner's server) and say so, or say
+why not;
+(8) canon §17 says writes go through recordAuditLog() inside the transaction - the transactional writer is
+the private recordAuditLogTx (storage.ts :1875); the public recordAuditLog (:1888, IStorage :1666) has no
+callers - recommend deleting it from IStorage and correcting §17 (also: §17 says a null actor means a
+system write, but getAuditActor yields nulls for a missing user too and the card prints "System" for
+both; SYSTEM_AUDIT_ACTOR (:372) is the explicit form - say which the new rows use).
 
-Ground truth today (line numbers from the working tree at the end of Pass 30b; they drift, the names do
-not; the Pass 31 inventory came from a read-only Explore subagent during Pass 30, re-grepped after Pass
-30b's edits to schedule.tsx, storage.ts and routes.ts):
-- client/src/pages/schedule.tsx (2404 lines): VIEW_OPTIONS :84 (the day span: "1 Day" / "3 Day" /
-  "1 Week"), HOUR_OPTIONS :90 (6..20), SLOT_INTERVAL_OPTIONS = [1, 2] :91 (hours);
-  formatDateTimeLocalValue :100; buildSlotDate :134; getHourLabel :138; getFullHourRange :142;
-  getSlotHourForDate :151; isSameSlot :164; getAppointmentDurationMinutes :187; getViewportLabel :196;
-  formatSlotLabel :212 (already prints minutes); AppointmentCrewBlock :253 (Pass 30 / 30b);
-  AppointmentSheet :415 with "Scheduled Start" :856 / "Scheduled End" :865 (datetime-local, no step, no
-  rounding, Save sends toISOString); Schedule() :1178; state boardStartHour 8 / boardEndHour 18 /
-  slotIntervalHours 2 :1197-1199 (useState only); slotHours :1259; viewportBounds :1261;
-  appointmentsByTechnicianAndSlot :1295; supportAppointmentsBySlot :1315 (Pass 30b - the support cards,
-  keyed exactly like the lead's map, so the minute-slot rewrite must change both); scheduleMutation :1454
-  (start = the slot, end = slot + expectedDurationMinutes); moveAppointmentToSlot :1716 (lock checks via
-  isSameSlot); confirmPendingMove :1738 (end = slot + getAppointmentDurationMinutes); handleSlotClick
-  :1757; configSummary :1850; the "Board Window" card :1872; the "Window" popover (Settings2 trigger)
-  :1922, "Visible Start Hour" :1928 (the 21 clamp :1935), "Visible End Hour" :1944, "Slot Interval" :1954
-  (options "1 hour" / "2 hour"), footer :1964. Pass 30 / 30b added the exclusion and preference prompts,
-  promptPlacementCheck / resendPlacement and the effective-preferences query around scheduleMutation and
-  updateAppointmentMutation, and the dashed support cards in the grid - leave their behavior alone.
-- Settings (client/src/pages/settings.tsx, untouched by Pass 30): canManageSettings :1717 (MANAGE_SETTINGS
-  is admin only); Invoicing on Finalization: query ["/api/settings/invoice-on-finalize"] :1718, PATCH
-  mutation :1756-1766, card :2137-2163; Service Report (Switch) :1770-1785, card-service-report :2170;
-  Appointment Cancel / Reschedule Reasons :1666 / :1713 / :1720-1724 / :1786-1800, card :2691-2722; Service
-  Time Tracking :1712 / :1745-1755, card :2666-2689 (its PATCH is ungated - note, do not fix); Zones
-  :2350-2396 (copy: "dispatch and Smart Schedule will read the same zones later").
-- Server: the settings routes are PATCH, GETs open - service-time-tracking :2602 / :2607 (ungated),
-  appointment-cancel-reasons :2618 / :2627, invoice-on-finalize :2698 / :2703, attach-service-report
-  :2719 / :2724 (MANAGE_SETTINGS via requirePermission); inline zod schemas :399 (attachServiceReport),
-  :414 (serviceTimeTrackingMode), :420 (invoiceOnFinalizeMode). Storage has no generic app-settings
-  helper - one reader / writer pair per setting: getServiceTimeTrackingMode :7915,
-  getInvoiceOnFinalizeMode :8038 / setInvoiceOnFinalizeMode :8047 (insert ... onConflictDoUpdate on
-  [orgId, key]), getAttachServiceReportToInvoices :8062 (a Tx reader on DbReader). app_settings
-  (shared/schema.ts :593-600): org_id, key, value text, updated_at, PK (org_id, key).
-- No server code rounds a time anywhere; the technician's day (technician-work.tsx) reads no interval or
-  hours; no other page reads the board window (pages link to /schedule with date / appointmentId /
-  prefill params only).
-- DB today (run the SQL, never trust a doc's data claim): app_settings rows
-  appointment_cancel_reschedule_reasons, attach_service_report_to_invoices (true), invoice_on_finalize
-  (PROMPT), service_time_tracking_mode (PROMPT_FOR_TIMEOUT), ticket_reopen_reasons - no dispatch_ key
-  anywhere in the code or the DB; 48 public tables (Pass 30's two included); appointments 126,
-  appointment_technicians 119, technician_preferences 2. Pass 30b added no table or column.
-- Docs versus code, found by the inventory: the row says "drag placement" - there is no drag; the labels
-  are "Slot Interval" / "Window" / "Board Window", not "Schedule interval" / "View Interval"; Part A3
-  :117-118 cite schedule.tsx :838-886 / :40 / :430 / :75 / :679-707 and storage.ts :4324 / :4341 (now
-  :1920-1964 / :91 / :1199 / :134 / :1716-1772 and :7915 / :7932) and claim only two app_settings keys
-  (seven in the code, five rows); "the session override stays" names something that is plain React state.
-- Docs to carry: the C4.5 row; Part A3 rows :117-118 (mark DONE with the real citations); canon
-  Scheduling Rules §2 (state the view and snap intervals as settings - §3 / §4 are Pass 30's technician
-  preferences and crew); a "Shipped in Pass 31" record; CURRENT_FOCUS's Pass 31 entry and "Next up" (Phase
-  4 is complete after this row - the next pass in phase order is Pass 32, Phase 5's first open row, C5.1a; say so
-  and write that handoff unless I say otherwise).
+Ground truth today (line numbers from the working tree at the end of Pass 31; they drift, the names do
+not; the inventory came from a read-only Explore subagent at the start of Pass 31, with storage.ts /
+routes.ts re-grepped after Pass 31's edits - shared/audit.ts, the History tab and the audit routes were not
+touched by Pass 31):
+- shared/audit.ts (258 lines): AuditEntityType :24-35 - 11 members: customer, location, invoice,
+  invoice_line_item, service, service_record, payment, credit_memo, agreement (Pass 12), opportunity (Pass
+  25), appointment (Pass 27); no contact / account / billing_profile / billing_profile_template /
+  agreement_template. AuditAction :117-149 - 32 members (update; invoice_drafted / _issued / _voided /
+  _line_edited (reserved, no writer); credit_memo_issued / _applied / _released / _voided;
+  payment_recorded / _confirmed / _applied / _released / _refunded / _voided; price_overridden,
+  ticket_reopened, ticket_edited, prefinalization_issue_override; appointment_cancelled,
+  appointment_rescheduled, surcharge_recorded, work_kind_changed, opportunity_auto_assigned,
+  service_cancelled; appointment_composition_changed, field_service_reviewed; technician_preference_set /
+  _cleared; placement_exclusion_overridden, appointment_crew_changed, placement_preference_bypassed).
+  ENTITY_TYPE_LABELS :151-163 and ACTION_LABELS :165-198 (Record<Union, string>); describeAuditEntityType
+  :202 / describeAuditAction :206 / humanize :210; AuditFieldChange :215; DIFF_IGNORED_FIELDS :225 (id,
+  orgId, org_id, updatedAt, updated_at; not exported); diffAuditSnapshots :235-245 ([] unless both sides
+  are plain objects - a create / delete row renders "no field-level differences"). Its :16-17 and
+  :107-109 say agreement editing and the technician change are "unaudited until C5.1a". Importers:
+  server/storage.ts (type-only) and client/src/components/audit-log-entry-card.tsx only.
+- server/storage.ts: SYSTEM_AUDIT_ACTOR :372 ({ userId: null, actorLabel: "System" }); AuditLogEntry {
+  entityType, entityId, action, actor?, before?, after? } and AuditLogWriter = Pick<typeof db, "insert">;
+  private recordAuditLogTx(tx, entry) :1875 - the writer all ~50 call sites use (actor?.userId || null,
+  actor?.actorLabel || null, before ?? null, after ?? null); public recordAuditLog(entry) :1888 (IStorage
+  :1666) writes outside any tx and has NO callers; getAuditLogsForEntity :1896; getAuditLogsForLocation
+  :1911 (collects location, customer, invoice, service_record, service, payment, credit_memo, agreement,
+  opportunity, appointment ids, then ORs (entityType, entityId IN ...), newest first; limit default 100,
+  max 500). Snapshots: serviceAuditSnapshot :1794, appointmentAuditSnapshot :1834, plus fieldReviewSnapshot,
+  technicianPreferenceAuditSnapshot, crewAuditSnapshot, snapshotTicketForAudit, opportunityAuditSnapshotTx;
+  describeUserTx and technicianNameMapTx name people. updateLocationProfile :3261 writes location/update
+  with whole rows before and after (ALWAYS, even unchanged) and customer/update when input.customer.
+  Unaudited writes, by entity (N = no row): customers - createCustomer :3206, updateCustomer :3212,
+  createCustomerWithPrimaryLocation :3217 (customer, account, location, account update, contact in one
+  tx). accounts (no entity type) - ensureAccountForLegacyCustomer, ensurePrimaryLocationInvariant (~:2036;
+  accounts + locations.isPrimary, uses db not tx). locations - createLocation :3478,
+  createLocationWithPrimaryContact :3489 (a contact too), updateLocation :3524 (no tx),
+  setPrimaryLocation :3546; audited: updateLocationProfile, set / clearTechnicianPreference. contacts -
+  createContact :3407 (demotes siblings), updateContact :3426 (the existing row read outside the tx),
+  setPrimaryContact :3450; no delete method. billing profiles - createBillingProfileTemplate :3562,
+  updateBillingProfileTemplate :3567, createBillingProfile :3580, updateBillingProfile :3585. agreements
+  - createAgreement :4986 (createAgreementFromTemplate delegates), updateAgreement :5020 (ONLY a
+  soldByUserId change writes agreement/update), cancelAgreement :5076 (CANCELLED, plus the direct
+  appointment CANCELED and service CANCELLED writes), linkAgreementInitialAppointment,
+  syncAgreementInitialAppointmentDates, advanceAgreementForCompletedAppointment / ...Service
+  (nextServiceDate), generateScheduleDrivenInvoice's nextBillingDate (the invoice row is audited).
+  agreement templates - createAgreementTemplate :4960, updateAgreementTemplate :4966 (isActive).
+  appointments - createAppointment :5311 (only the placement-check rows), updateAppointment :5416 (only
+  NOTES via appointment_composition_changed and the placement checks; technician, time, status and locks
+  unaudited - its own comment says so), timeInAppointment :7029 / timeOutAppointment :7046 (no actor),
+  completeService's appointment status, finalizeServiceRecord's COMPLETED, reopenServiceRecord's status
+  reset, deleteService's hard delete of the last service's appointment; audited: crew add / remove,
+  dispositionAppointment, the composition routes. services - createService :3864 (receives
+  context.actor, writes nothing), updateService :3907 (only work_kind_changed), deleteService :4013 (hard
+  delete), convertOpportunityToService, generateServiceForAgreement (~:2906, system),
+  syncServicesForAppointmentTx, createServiceRecord's service status, finalizeServiceRecord's COMPLETED,
+  reopenServiceRecord's SCHEDULED; audited: cancelService, markServiceFieldReviewed, the composition
+  routes (via the appointment row), price_overridden on updateServiceRecord / completeService.
+  Methods with no actor parameter: createCustomer, updateCustomer, createCustomerWithPrimaryLocation,
+  createContact, updateContact, setPrimaryContact, createLocation, createLocationWithPrimaryContact,
+  updateLocation, setPrimaryLocation, the four billing-profile / template methods, the two
+  agreement-template methods, deleteService, timeInAppointment, timeOutAppointment, createServiceRecord.
+- server/routes.ts: /api is behind requireAuth + attachOrgStorage (server/index.ts); getAuditActor(req)
+  :74; auditLogQuerySchema :154 (locationId, or entityType + entityId, never both; limit); GET
+  /api/audit-logs :1371. Every write route for the entities above is ungated (any session) except
+  services/:id/field-review (FINALIZE_TICKET), the service-records PATCH (EDIT_TICKET) / finalize
+  (FINALIZE_TICKET) / reopen (REOPEN_TICKET), and the inline can() checks on agreements
+  (ASSIGN_SALE_CREDIT on POST / PATCH /api/agreements, WAIVE_CANCELLATION_FEE on the cancel's override).
+  Writes on GET: /api/location-counts/:locationId :1385 and /api/agreements/location/:locationId :2052.
+  DELETE /api/services/:id :1924; POST /api/services/:id/complete :1934; POST /api/agreements/:id/cancel
+  :2111; POST / PATCH /api/technicians :1464 / :1475 (ungated).
+- Client: LocationHistoryTab (customer-detail.tsx :555, key [`/api/audit-logs?locationId=${id}`] :557;
+  its :551 comment "the only writer is the location/customer profile edit" is stale), AuditLogEntryCard
+  (audit-log-entry-card.tsx :45-82: entity badge, action badge, time, "By: actorLabel || System", the
+  diff; nested values JSON.stringify). invoice-detail-dialog.tsx :203 reads ?entityType=invoice&entityId=.
+  No other page reads audit rows. The five invalidation keys that never match the History key are listed
+  in (5); predicate-based ones work (invalidate-invoice-views.ts :23, opportunities.tsx :148).
+- audit_logs (shared/schema.ts :1283-1294): id, org_id, entity_type, entity_id, action, user_id (null
+  ok), actor_label (null ok), before_json / after_json (jsonb), created_at; indexes: pkey and
+  audit_logs_org_id_idx only; no FK.
+- DB today (run the SQL, never trust a doc's data claim): 234 audit_logs (225 with user_id, 8 with a null
+  actor_label) - agreement update 2; appointment cancelled 13 / composition 1 / crew 2 / rescheduled 2 /
+  preference_bypassed 1; customer update 14; invoice drafted 2 / issued 54 / voided 2 / payment_applied 36
+  / payment_confirmed 11 / payment_released 1 / update 1; location preference_cleared 1 / preference_set 4
+  / update 16; opportunity auto_assigned 1 / update 2; payment confirmed 28 / recorded 29 / voided 1;
+  service price_overridden 3; service_record prefinalization 1 / surcharge 2 / ticket_edited 2 /
+  ticket_reopened 2; no rows yet for work_kind_changed, service_cancelled, field_service_reviewed,
+  placement_exclusion_overridden or any credit_memo action. Counts: customers 10, accounts 10, locations
+  14, contacts 15, billing_profiles 2, billing_profile_templates 2, agreements 25, agreement_templates 3,
+  appointments 126, appointment_technicians 119, services 110, service_records 77; 48 public tables;
+  app_settings 5 rows (the four dispatch_ keys have no row until an admin changes one).
+- Docs versus code, found by the inventory: Part A1 :48 cites storage.ts:2186-2222 for
+  updateLocationProfile (now :3261) and says no agreement / appointment entity exists (both do, with rows
+  in the DB); canon §17 names recordAuditLog() as the in-transaction writer (it is recordAuditLogTx;
+  recordAuditLog is unused) and says a null actor means a system write (a missing user yields nulls too);
+  D7 and B21 speak of "account" history (no account entity); the row says "billing profile" (two tables)
+  and omits deletes.
+- Docs to carry: the C5.1a row (mark done with the as-built); Part A1 :48 (DONE with real citations);
+  canon §17 (the writer's name, the entity list, the system actor); PLAN_BILLING_V1_1.md D7's follow-up
+  sentence ("Built in Pass 32"); a "Shipped in Pass 32" record; CURRENT_FOCUS's Pass 32 entry and "Next
+  up" (phase order: Pass 33, C5.1b Customer-level History + Revert - its spec is its row in the Phase 5
+  table; say so and write that handoff unless I say otherwise).
 
-Build per C4.5: (1) shared/dispatch-board.ts and the settings read / write (routes, storage, the
-MANAGE_SETTINGS gate); (2) client - the Dispatch Board card in Settings; the board reading the settings
-for its initial window, the 30-minute view (minute slots end to end, isSameSlot fixed), the rename, the
-snap on placement / move starts and the sheet's Start / End; (3) docs as above. Not touched: drag-and-
-drop (none exists), technician / day availability blocks (the popover's "follow-up pass"), the
-multi-day viewport spill unless decided, the service-time-tracking gate, Pass 30's preference / crew /
-override code on the board, lockTechnician's server enforcement, the technician CRUD gates, the
-Services-tab reopen defect, cancelAgreement's direct CANCELED write, C5.6.
+Build per C5.1a: (1) shared/audit.ts members and labels; (2) storage - the actor parameter on the
+methods above, a row for every create / update-if-changed / status change listed, inside each method's
+transaction, the snapshots, allRefs for the new entities, the index if decided; (3) routes passing
+getAuditActor(req) everywhere a method gained the parameter; (4) the client's invalidation fix and nothing
+else on the History tab (the per-customer rollup and Revert are C5.1b); (5) docs as above. Not touched:
+service_records' content edits (ticket_edited), price overrides (price_overridden), the technician CRUD
+gates, the Services-tab reopen defect, C5.6's permissions, the write-on-GET routes themselves (log or
+skip, decided; do not move them), FB-020 / C4.6, Pass 31's dispatch settings.
 
 Environment: Node 24.21.0, npm run dev:full (restart it before manually testing), DEV_NOTES.md for the
 DB backup / restore, the copy-database recipe and the PowerShell traps, gh logged in so the session can
-open the PR. Verify on PORT=5001 as the previous passes did. This pass should add no table or column (a
-settings pass needs no seed row: the reader returns the defaults), so the shared DB is safe to verify
-against - but use the copy if anything structural lands; the owner's restart has already run Pass
-30's migration, so a copy prints nothing new. npm run check; double boot (boot 2 prints only "serving on port 5001" with every table count
-unchanged); the pass's API smoke test as all four roles (the defaults with no row; admin's PATCH of each
-value and the read back; manager's / support's / the technician's PATCH 403; an unknown interval, a snap
-outside 15 / 30 / 60, start >= end and an hour off the board 400; the shared module's normalize and the
-rounding function pure - 15 / 30 / 60 at the boundaries, a time already on the snap unchanged; the
-app_settings rows the test wrote deleted or restored, counts back at baseline) and a Vite 200 on every
-touched client module; state plainly what was not rendered - the Settings card, the 30-minute board, the
-rounded sheet inputs and the renamed popover cannot be judged without a browser.
+open the PR. Verify on PORT=5001 as the previous passes did. An index is an additive migration - safe
+against the shared dev DB under the owner's server (its old code never reads the index), or use the
+copy; the owner's restart has already run every earlier migration (Pass 31 had none), so a copy prints
+only the new line. npm run check; double boot (boot 2 prints only "serving on port 5001" with every table
+count unchanged); the pass's API smoke test as all four roles (a fixture customer with two locations, a
+contact, a billing profile, an agreement from a template, an appointment and a service through the real
+routes - then one update and one status change each, asserting one row per mutation with the actor's
+label, the entity, the before / after and the diff, and NO row for an unchanged update; a template edit's
+row readable by entityType + entityId; the History read listing the contact's and the profile's rows under
+the location; the system actor on an agreement-generated service if logged; deleteService's `deleted` row
+with the before snapshot; the fixture deleted in FK order with its audit rows, counts back at baseline)
+and a Vite 200 on every touched client module; state plainly what was not rendered - the History tab's
+new rows cannot be judged without a browser.
 
 Working agreement as always: one pass, one branch, update CURRENT_FOCUS and the roadmap's pass table at
 the end, replace the handoff prompt at the end of CURRENT_FOCUS.md with the one for the next pass (phase
-order: Pass 32, C5.1a, the first open Phase 5 row, whose spec is its row in the Phase 5 table, unless I say
-otherwise), push, open the PR and stop. I merge.
+order: Pass 33, C5.1b, unless I say otherwise), push, open the PR and stop. I merge.
 ```

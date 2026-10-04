@@ -114,8 +114,8 @@ are calibrated to Phase 1's: Pass 6 (four tables, routes, three dialogs) is the 
 
 | Note | Status | Evidence |
 |---|---|---|
-| Dispatch "Slot Interval" → rename "View Interval" | PARTIAL | control exists in the Window popover (`schedule.tsx:838-886`), options **1 h / 2 h only** (`:40`); it sets grid *column* width; state is session-only (`:430`, popover says so) |
-| Schedule (snap) interval 15 / 30 / 60 min, configured in Dispatch Board settings | ABSENT | placement snaps to the top of the slot hour (`buildSlotDate`, `:75`, `moveAppointmentToSlot`, `:679-707`); sheet start/end are free `datetime-local`; no dispatch section in `settings.tsx`; the only `app_settings` keys are `service_time_tracking_mode` and `appointment_cancel_reschedule_reasons` (`storage.ts:4324, 4341`) |
+| Dispatch "Slot Interval" → rename "View Interval" | DONE — Pass 31 (2026-10-03) | the Window popover's select is **View Interval** (`schedule.tsx` `select-board-view-interval`, ~:2029) with 30 minutes / 1 hour / 2 hours from `DISPATCH_VIEW_INTERVALS` (`shared/dispatch-board.ts`); the Board Window card reads "8 AM - 6 PM \| 2-hour view" (`configSummary`, ~:1916); the default is Settings → Dispatch Board's `dispatch_view_interval_minutes` and the popover's choice is a session override (`windowOverride`, ~:1229 - React state, reset on reload; there never was a persisted one) with a "Back to the defaults" button. The slots are minutes of day end to end, so the 30-minute view works (see "Shipped in Pass 31" at the end of Part D). Was: "Slot Interval", 1 h / 2 h only, `useState(2)` |
+| Schedule (snap) interval 15 / 30 / 60 min, configured in Dispatch Board settings | DONE — Pass 31 (2026-10-03) | `dispatch_snap_minutes` (15 / 30 / 60, default 60) on the Settings → Dispatch Board card (`settings.tsx` `card-dispatch-board`, ~:2770), read by the board: the sheet's Scheduled Start / End step by it and round to it on save (`snapDateToInterval`, nearest, a half up; `schedule.tsx` ~:941), and every placement / move start passes through it (`handleSlotClick`, ~:1815) - a no-op on a slot start, since the rules keep the snap no coarser than the view interval. **There is no drag-and-drop**: placement is a slot click, a move click-then-confirm. The server stores the snap and never rounds. Was: placement on the top of the slot hour, free `datetime-local` inputs, no dispatch section; "the only `app_settings` keys are …" was stale even then (seven keys in the code, five rows; eleven keys now - the four `dispatch_` keys have no row until an admin changes one) |
 | Moving an appointment on the board asks for confirmation | DONE — Pass 27 (2026-09-25) | click the card, click a slot, and "Move to <technician>, <day time>?" holds the move until confirmed (`pendingMove` / `confirmPendingMove` in `schedule.tsx`). Was: it moved on the click (`moveAppointmentToSlot`) — the accidental-reschedule risk the owner named |
 | Pending queue: name → location link, link to details | PARTIAL — the cancel DONE, Pass 28 (2026-09-29) | queue rows select for placement (a `div[role=button]` since Pass 28, `schedule.tsx` `queue-row-*`), name is plain text. Owner review of 2026-09-25 (Pass 27): a pending service can now be cancelled from its row without placing it first - **Cancel** opens the reason / opportunity dialog (`ServiceCancelDialog`, `POST /api/services/:id/cancel`; an agreement service is recycled, not cancelled). The details link stays C5.4 (Pass 36) |
 | Unschedule / reschedule to the queue (return a scheduled stop to pending) | DONE — Pass 27 (2026-09-25) | **Reschedule** on the dispatch sheet → `POST /api/appointments/:id/disposition { mode: RESCHEDULE }` → `dispositionAppointment`: CANCELED + `rescheduleRequested`, no reason, no opportunity, every service back to `PENDING_SCHEDULING` with its dates kept and `lastAppointmentId` set; the technician's route is the same path with origin FIELD. See "Shipped in Pass 27" at the end of Part D. Was: only the technician's `requestAppointmentCancelOrReschedule` |
@@ -384,7 +384,8 @@ so every field action is a route and every screen is data from a read — no pag
 | C4.3b (**Pass 29**) — **done** (`feature/phase-4-field-composition`, 2026-10-02; see "Shipped in Pass 29" at the end of Part D) | **Appointment composition in the field** (B13) — the technician's appointment details: each service displayed, editable on click (type, for non-agreement work); **Add service** as a small button; adding extends the visit's duration and refuses an overlap with the technician's next stop; instructions editable only on services the technician added; an added non-agreement service is **flagged for office review** (owner). Same routes as C4.3a. As built: `origin: "FIELD"` on the add route's body (one-time work only, 400 `FIELD_ADD_NEW_ONLY` on a queued service; the session user stamped on `services.addedInFieldByUserId`; 409 `NEXT_STOP_OVERLAP` when the extended end would pass the technician's next placement that day - the office's add is told, never refused); the flag is the stamp with `fieldReviewedAt` null, cleared by `POST /api/services/:id/field-review` (FINALIZE_TICKET, one `field_service_reviewed` row); the type through the C4.3a PATCH; the instructions through the generic PATCH, refused 403 `SERVICE_INSTRUCTIONS_LOCKED` to a technician on a service they did not add; the "Field-added - review" badge and **Mark reviewed** on the sheet, the Services tab and Service Ticket Review; the row's kind badge, agreement marker and planned duration; no new permission. | Add service in the field (tech-modal item 5) | C4.3a | — |
 | C4.4 (**Pass 30**) — **done** (`feature/phase-4-technician-preferences-crew`, 2026-10-03; see "Shipped in Pass 30" at the end of Part D) | **Technician preferences + crew** (B14). `technician_preferences` (`scopeType account \| location`, `technicianId`, `kind PREFERRED \| EXCLUDED`, note, created-by); editors in edit/add location and on the primary location with an "apply to all locations" checkbox that writes the account-scoped row; chip on the card. Dispatch: EXCLUDED is a **hard block** on placement (manager override with a reason, audit-logged), PREFERRED a "Prefers <tech>" hint on the queue row and the sheet. Crew: `appointment_technicians` (lead + support) — the comp basis D8 collects here; production entries stay single-technician until Phase 7's split allocation. As built: one org-scoped table in canon §6 / §7's account \| location shape (`shared/technician-preferences.ts`: the location's row wins over the account's for the same technician; ACCOUNT rows written and cleared from the primary location only); the block in `createAppointment` and in `updateAppointment` when the technician changes - 409 `TECHNICIAN_EXCLUDED` naming the technician and the scope, `{ overrideExclusion: { reason } }` under the new `OVERRIDE_TECHNICIAN_EXCLUSION` (manager+; 403 / 400 otherwise), one `placement_exclusion_overridden` row; the board prompts a manager for the reason and resends; `appointment_technicians` with one LEAD mirroring `assignedTechnicianId` (115 rows backfilled on the dev DB) and SUPPORT rows from the sheet's crew block (`POST` / `DELETE /api/appointments/:id/crew`, `appointment_crew_changed`; an excluded support technician is refused the same way); the support technician's day lists the stop read-only; preference editors in Edit / Add Location, open to every role; set / clear audited on the location or the account's customer. | Preferred technician; EXCLUDE_TECH; apply across locations; crew | — | — |
 | C4.4b (**Pass 30b**) — **done** (`feature/phase-4-crew-schedule-review`, 2026-10-03; see "Shipped in Pass 30b" at the end of Part D) | **Technician preferences + crew, owner's additions** (`OWNER_FEEDBACK.md` FB-018, FB-019, given after Pass 30 merged). (1) A support technician's copy of the visit on their own row of the board (a second card on the same visit - never a second appointment), and adding a support technician who is already booked during the visit is a prompt: 409 `CREW_SCHEDULE_CONFLICT` listing the clashing visits, resent with `confirmConflicts`. (2) Placing or re-assigning a visit to anyone but the customer's preferred technician is a prompt naming the preference: 409 `PREFERENCE_NOT_HONORED`, resent with `acknowledgePreference` (any role), logged `placement_preference_bypassed`; a manager's exclusion override covers it. | Support schedule copy; double booking; preferred-technician reminder | C4.4 | — |
-| C4.5 (**Pass 31**) | **Dispatch board settings.** Settings → Dispatch Board: **view interval** (the rename; keep 1 h / 2 h, add 30 min), **snap interval** 15 / 30 / 60 (`dispatch_snap_minutes`; drag placement and the sheet's time inputs round to it), default visible hours (the session override stays). | Schedule interval; View Interval | — | — |
+| C4.5 (**Pass 31**) — **done** (`feature/phase-4-dispatch-board-settings`, 2026-10-03; see "Shipped in Pass 31" at the end of Part D) | **Dispatch board settings.** Settings → Dispatch Board: **view interval** (the rename; keep 1 h / 2 h, add 30 min), **snap interval** 15 / 30 / 60 (`dispatch_snap_minutes`; drag placement and the sheet's time inputs round to it), default visible hours (the session override stays). As built: `shared/dispatch-board.ts` with one `app_settings` row per value (`dispatch_view_interval_minutes` 30 \| 60 \| 120, `dispatch_snap_minutes` 15 \| 30 \| 60, `dispatch_default_start_hour` / `_end_hour` whole hours 6..21; defaults 120 / 60 / 8 / 18 - today's board), no seed row, read together by `GET /api/settings/dispatch-board` and written by a partial `PATCH` (MANAGE_SETTINGS; 400 `DISPATCH_BOARD_SETTINGS_INVALID` when start >= end or the snap is coarser than the view interval); the board's slots are minutes of day end to end (the 30-minute view), `isSameStart` compares to the minute (a move inside the hour no longer escapes lockTime), the snap rounds the sheet's Start / End on save and every placement start (**there is no drag** - placement is a slot click, a move click-then-confirm; the server never rounds), the Window popover's "View Interval" (was "Slot Interval") and hours are a session override of the settings with the end-hour clamp fixed and a reset, and "in view" is per day (the multi-day spill fixed; a visit past the end hour no longer rides the last slot). | Schedule interval; View Interval | — | — |
+| C4.6 | **Visit duration on the board** (`OWNER_FEEDBACK.md` FB-020, 2026-10-03). A card spans its planned window - the stored end, else the representative service's duration, else 60 minutes (`plannedWindow`, Pass 30b) - across the slots it covers, instead of sitting in its start slot printing "N min"; a duration change on the sheet re-checks the lead's other visits and prompts on a clash the way Pass 30b's crew add does (today the lead's own placement is never checked - noted in Pass 30b). Board rendering on Pass 31's minute slots; no new data. **Unscheduled**: the owner sequences it against Phase 5. | FB-020 | C4.5 | — |
 
 Smart Schedule is Phase 9: it needs geocoded locations, technician skills, service windows and the
 zones from C4.1b, and only the last exists by then.
@@ -3633,6 +3634,86 @@ Behavior worth knowing:
   confirmed; the support-assignments read and its 400s; the support technician's day) and the Pass 30
   suite's 108 again; every count back at baseline; boot 2 only the serving line; Vite 200 on the page,
   the component and the three shared modules. **Not rendered in a browser.**
+
+**Shipped in Pass 31** (`feature/phase-4-dispatch-board-settings`, 2026-10-03) — the C4.5 row as built,
+the last Phase 4 row. No migration, no table, no column; no seed row.
+
+```ts
+// shared/dispatch-board.ts                    DISPATCH_VIEW_INTERVALS [30, 60, 120]; DISPATCH_SNAP_INTERVALS [15, 30, 60]; DISPATCH_BOARD_FIRST_HOUR 6 / DISPATCH_BOARD_LAST_HOUR 21;
+//                                             DispatchBoardSettings { viewIntervalMinutes, snapMinutes, defaultStartHour, defaultEndHour }; DEFAULT_DISPATCH_BOARD_SETTINGS (120 / 60 / 8 / 18);
+//                                             DISPATCH_BOARD_SETTING_FIELDS; DISPATCH_BOARD_SETTING_KEYS (dispatch_view_interval_minutes, dispatch_snap_minutes, dispatch_default_start_hour,
+//                                             dispatch_default_end_hour) / DISPATCH_BOARD_SETTING_KEY_LIST; DISPATCH_BOARD_SETTINGS_INVALID (the 400 code); isDispatchViewInterval /
+//                                             isDispatchSnapInterval / isBoardStartHour (6..20) / isBoardEndHour (7..21); boardStartHourOptions() / boardEndHourOptions(start);
+//                                             visibleEndHourFor(start, end) (keep an end after the start, else the next hour, capped at 21); formatMinutesOfDay(480) "8 AM" / (510) "8:30 AM";
+//                                             formatHourOfDay(h); describeDispatchBoardProblem(settings) -> string | null (unknown interval, hour off the board, start >= end, snap > view);
+//                                             normalizeDispatchBoardSettings(stored) (unknown -> its default; start >= end -> the default pair; snap > view -> the view); serializeDispatchBoardSetting;
+//                                             describeViewInterval(m) -> { label "30 minutes" | "1 hour" | "2 hours", summary "30-min view" | "1-hour view" | "2-hour view" }; describeSnapInterval(m);
+//                                             minutesOfDay(date); slotStartsForWindow(start, end, interval) (minutes of day; the last slot may run past the end hour);
+//                                             windowEndMinutes(starts, interval, start) (the last slot's end); slotStartFor(minutes, starts, interval) -> number | null (no clamping);
+//                                             snapDateToInterval(date, snap) (local; nearest, a half rounds up; seconds dropped; 11:50 PM at 60 rolls to the next midnight)
+// server/storage.ts                           DispatchBoardSettingsError (code DISPATCH_BOARD_SETTINGS_INVALID); getDispatchBoardSettings(); readDispatchBoardSettingsTx(reader: DbReader)
+//                                             (one inArray read of the four keys, then normalize); setDispatchBoardSettings(patch) (one tx: read, lay the patch over, describeDispatchBoardProblem,
+//                                             upsert only the keys given - a refused change writes nothing)
+// server/routes.ts                            GET /api/settings/dispatch-board (any session) -> DispatchBoardSettings; PATCH (requirePermission MANAGE_SETTINGS) with a partial .strict() body
+//                                             (dispatchBoardSettingsSchema: each value checked alone - z.number().int() + the shared guards / the hour bounds; "nothing to change" on {}) -> the
+//                                             full settings; 400 { code: DISPATCH_BOARD_SETTINGS_INVALID, message } on a cross-field refusal
+// client/src/pages/settings.tsx               the "Dispatch Board" card (card-dispatch-board; select-dispatch-view-interval / -snap-interval / -start-hour / -end-hour): each select PATCHes at
+//                                             once; a view below the snap carries snapMinutes = view, a start at or past the end carries visibleEndHourFor(start, end); the snap options coarser
+//                                             than the view are disabled; disabled + "Only an admin can change this setting." for a non-admin
+// client/src/pages/schedule.tsx               useQuery /api/settings/dispatch-board seeds the window (the grid waits for it); windowOverride { startHour?, endHour?, viewIntervalMinutes? }
+//                                             (session state; "Back to the defaults", button-board-window-reset); snapMinutes = min(the setting, the view in use); slotStarts (minutes of day) /
+//                                             windowStartMinutes / windowEnd; viewportBounds (the support cards' fetch range); viewportAppointments per day (boardDayKeys and
+//                                             [windowStartMinutes, windowEnd)); slotKeyFor(tech, date) -> `${tech}:${day}:${slotStart}` | null for the lead map, the support map and the grid;
+//                                             buildSlotDate(day, minutes); isSameStart (to the minute); handleSlotClick snaps the start before scheduleMutation / moveAppointmentToSlot;
+//                                             AppointmentSheet.snapMinutes (step on both datetime-local inputs, text-sheet-snap-hint, snapDateToInterval on Save, an end that rounds onto or
+//                                             before the start = start + snap); the Window popover's "View Interval" (select-board-view-interval), hours (select-board-start-hour / -end-hour
+//                                             from the shared options), footer; configSummary "8 AM - 6 PM | 2-hour view"
+```
+
+Behavior worth knowing:
+- **One key per value, not a JSON blob.** Each value normalizes on its own (an unrecognised view interval
+  falls back to 2 hours without losing the snap), the model is `invoice_on_finalize` /
+  `attach_service_report_to_invoices`, and `dispatch_snap_minutes` is the key the roadmap row names. No
+  seed row: the reader returns the defaults, which are today's board, so nothing changed for the office
+  until an admin touches the card.
+- **There is no drag.** The row says "drag placement rounds to it"; the client has no drag-and-drop
+  anywhere - placement is a slot click (`handleSlotClick`), a move is click-then-confirm (`pendingMove`).
+  So the snap governs the sheet's typed times (step + rounding on save) and, literally, every placement
+  start the board writes - which is a no-op, because the rules refuse a snap coarser than the view
+  interval: a 60-minute snap on a 30-minute view would place a :30 slot's click on the next hour, in a
+  different cell than the one clicked. The Settings card disables those snap options and sends the snap
+  down with a finer view; when the board's session override picks a finer view than the stored snap
+  allows, the snap in use is the view interval (the same rule the reader applies to stored rows).
+- **The server never rounds.** A client rule, like `lockTechnician`: the API stores the snap and writes
+  the time it was asked for (the field app's routes, Pass 29's add-service extension of the end, the
+  disposition all keep their times). Noted, not a gap.
+- **Minute slots.** `isSameStart` replaces the hours-only `isSameSlot`: a visit saved at 8:15 from the
+  sheet and clicked onto the 8:00 slot is now a time move (lockTime holds), and clicking a card's own slot
+  offers, with the usual confirm, to put it on the slot's start. The end hour's select reaches 9 PM (the
+  old start-hour clamp set 21 on a select that stopped at 20, a value it could not show).
+- **"In view" is per day.** The visit's own day is on the board and its start is inside
+  [start hour, the last slot's end). Before, one continuous range from the first day's start to the last
+  day's end let an off-window visit on a middle day of a 3-day or week view through, and
+  `getSlotHourForDate`'s clamp put it in the first or last slot of its row (the spill); the same range
+  also let a visit up to one interval past the end hour ride the last slot. Both gone; a visit before the
+  start hour was never shown and still is not; Jobs In View counts what the grid shows. The window of a
+  range that is not a multiple of the interval (8 AM - 5 PM in two-hour columns) ends with its last slot
+  (6 PM), with the grid.
+- **Verified 2026-10-03** (PORT=5001 against the shared dev DB - no migration, so no copy was needed;
+  the four rows the test wrote were deleted at the end): `npm run check` clean; 82 smoke assertions first
+  run (the pure module - the defaults, normalize on every key and both pairs, the four rules, the snap at
+  15 / 30 / 60 at the boundaries with a time already on the snap unchanged and seconds dropped, the slot
+  starts and the window's end, `slotStartFor` without clamping, the labels, the hour options and the clamp;
+  the read as all four roles with no row; the three non-admin 403s writing nothing; admin's PATCH of each
+  value alone and the read back as support; the upsert; fourteen 400s - an unknown interval, a snap off
+  the list, start >= end in one body and against the stored end, hours off the board at both edges, a
+  snap coarser than the view, a non-integer, a string, an unknown field, an empty body, a null - none
+  writing a row; the two-value bodies the card sends; stored garbage and inconsistent pairs read as the
+  rules say); boot 1 and boot 2 print only the serving line, every count unchanged but the smoke's four
+  session rows; Vite 200 on the page, the settings page and the shared module with the new symbols and
+  "Slot Interval" gone. **Nothing new was rendered in a browser** - the Settings card, the 30-minute
+  board, the renamed popover and its reset, the sheet's stepped inputs and their rounding reach the owner
+  first.
 
 ---
 
