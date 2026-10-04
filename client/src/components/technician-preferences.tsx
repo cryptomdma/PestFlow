@@ -14,11 +14,13 @@ import type { Technician } from "@shared/schema";
 import {
   MAX_EXCLUSION_OVERRIDE_REASON_LENGTH,
   MAX_TECHNICIAN_PREFERENCE_NOTE_LENGTH,
+  PREFERENCE_NOT_HONORED,
   TECHNICIAN_EXCLUDED,
   describePreferenceChip,
   describePreferenceTitle,
   describeTechnicianPreferenceRefusal,
   type LocationTechnicianPreferences,
+  type PreferenceNotHonoredRefusal,
   type TechnicianExcludedRefusal,
   type TechnicianPreferenceKind,
   type TechnicianPreferenceSetRequest,
@@ -315,6 +317,52 @@ export function getTechnicianExcludedRefusal(error: unknown): TechnicianExcluded
   return error.body as TechnicianExcludedRefusal;
 }
 
+/** Pass 30b: the 409 body of a placement that passes over the customer's preferred technician, or null. */
+export function getPreferenceNotHonoredRefusal(error: unknown): PreferenceNotHonoredRefusal | null {
+  if (!(error instanceof ApiError) || getApiErrorCode(error) !== PREFERENCE_NOT_HONORED) return null;
+  return error.body as PreferenceNotHonoredRefusal;
+}
+
+/**
+ * Pass 30b (owner, 2026-10-03): the reminder when a visit is placed on, or
+ * moved to, someone other than the customer's preferred technician - any
+ * role confirms, the request is resent with acknowledgePreference and the
+ * visit's history records it (placement_preference_bypassed).
+ */
+export function PreferenceBypassPrompt({
+  refusal,
+  onCancel,
+  onConfirm,
+}: {
+  refusal: PreferenceNotHonoredRefusal | null;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <Dialog open={!!refusal} onOpenChange={(open) => { if (!open) onCancel(); }}>
+      <DialogContent className="sm:max-w-md" data-testid="dialog-preference-bypass">
+        <DialogHeader>
+          <DialogTitle>The customer prefers {refusal?.preferred.map((entry) => entry.technicianName).join(" or ") ?? "another technician"}</DialogTitle>
+          <DialogDescription>{refusal?.message}</DialogDescription>
+        </DialogHeader>
+        {refusal?.preferred.some((entry) => entry.note) ? (
+          <div className="space-y-1 rounded-md border bg-muted/30 px-3 py-2 text-sm">
+            {refusal.preferred.filter((entry) => entry.note).map((entry) => (
+              <p key={entry.technicianId}>{entry.technicianName}: {entry.note}</p>
+            ))}
+          </div>
+        ) : null}
+        <DialogFooter>
+          <Button type="button" variant="outline" onClick={onCancel}>Cancel</Button>
+          <Button type="button" onClick={onConfirm} data-testid="button-preference-bypass-confirm">
+            Schedule {refusal?.technicianName ?? "anyway"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export function useCanOverrideExclusion(): boolean {
   const { user } = useAuth();
   return can(user?.role ?? "", PERMISSIONS.OVERRIDE_TECHNICIAN_EXCLUSION);
@@ -348,6 +396,11 @@ export function ExclusionOverridePrompt({
           <DialogDescription>{refusal?.message}</DialogDescription>
         </DialogHeader>
         {refusal?.note ? <p className="rounded-md border bg-muted/30 px-3 py-2 text-sm">Customer's note: {refusal.note}</p> : null}
+        {refusal?.preferred?.length ? (
+          <p className="text-sm text-muted-foreground" data-testid="text-exclusion-preferred">
+            The customer prefers {refusal.preferred.map((entry) => entry.technicianName).join(" or ")} - the override covers passing them over too.
+          </p>
+        ) : null}
         <div className="space-y-1.5">
           <p className="text-sm font-medium">Reason for the override</p>
           <Textarea

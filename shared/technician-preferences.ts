@@ -208,6 +208,31 @@ export function describeTechnicianPreferenceRefusal(code: string | null | undefi
   }
 }
 
+/**
+ * Pass 30b (owner, 2026-10-03): placing or re-assigning a visit to anyone but
+ * the customer's PREFERRED technician needs the user's confirmation - 409
+ * PREFERENCE_NOT_HONORED until the request carries `acknowledgePreference:
+ * true` (any role), recorded as placement_preference_bypassed. A manager's
+ * exclusion override covers it (one prompt, the override row names the
+ * preference passed over). The crew's SUPPORT technicians are not held to it:
+ * a preference names who services the visit, the lead.
+ */
+export const PREFERENCE_NOT_HONORED = "PREFERENCE_NOT_HONORED";
+
+export function describePreferenceBypass(preferredNames: string[], chosenName: string): string {
+  const names = preferredNames.join(" or ");
+  return `The customer prefers ${names}. Confirm to schedule ${chosenName} instead.`;
+}
+
+/** The 409 body of PREFERENCE_NOT_HONORED. */
+export interface PreferenceNotHonoredRefusal {
+  code: typeof PREFERENCE_NOT_HONORED;
+  message: string;
+  technicianId: string;
+  technicianName: string;
+  preferred: Array<{ technicianId: string; technicianName: string; scopeType: string; note: string | null }>;
+}
+
 /** The 409 body a client reads to prompt for an override. */
 export interface TechnicianExcludedRefusal {
   code: typeof TECHNICIAN_EXCLUDED;
@@ -217,4 +242,6 @@ export interface TechnicianExcludedRefusal {
   preferenceId: string;
   scopeType: TechnicianPreferenceScope;
   note: string | null;
+  /** Pass 30b: the preferred technicians the placement passes over, if any - the override covers them too. */
+  preferred?: Array<{ technicianId: string; technicianName: string; scopeType: string; note: string | null }>;
 }

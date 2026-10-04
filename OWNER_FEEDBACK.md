@@ -90,6 +90,13 @@ Product owner feedback from hands-on testing — notes for the dev to review, qu
   - These changes should go through the reschedule function.
 - [ ] **FB-015 — "Add Service" button**
   - Expands/shows the Add Service section (or opens a modal) rather than showing it by default.
+- [x] **FB-018 — Support technician: duplicate the job on their schedule; prompt on a conflict** (owner, in session, 2026-10-03)
+  - When a second (support) team member is added, the job shows on their schedule too, to prevent double booking.
+  - Adding a technician who already has a job at that time prompts first.
+  > **Review (2026-10-03):** DONE — Pass 30b, `feature/phase-4-crew-schedule-review` (roadmap C4.4b). Qualified in one respect: the copy is a second card on the same visit (dashed, "Support", on the support technician's row of the board), not a duplicate appointment - a second appointment would duplicate the services and the invoice. Adding a support technician with an overlapping visit (lead or support) is a 409 prompt listing the visits; "Add anyway" confirms and is logged. Not covered: moving a visit later does not re-check its support technicians, and a lead placement is still not checked for a clash.
+- [x] **FB-019 — Preferred technician: prompt when scheduling a different technician** (owner, in session, 2026-10-03)
+  - Placing the job on a technician other than the customer's preferred one reminds the user of the preference and requires approval.
+  > **Review (2026-10-03):** DONE — Pass 30b (roadmap C4.4b). Any role confirms ("The customer prefers X" / "Schedule Y"); the confirmation is logged on the visit (`placement_preference_bypassed`). A manager's exclusion override counts as the approval, so an excluded-and-not-preferred technician prompts once. Support technicians are not asked. Related open item FB-014 (lock the technician / time on Appointment Details behind Reschedule) is untouched; if it lands, the sheet's reminder moves with the technician change.
 
 ## Target Pests
 

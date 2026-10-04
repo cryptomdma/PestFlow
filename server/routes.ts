@@ -305,11 +305,15 @@ export async function registerRoutes(
   const exclusionOverrideSchema = z.object({
     reason: z.string().max(MAX_EXCLUSION_OVERRIDE_REASON_LENGTH),
   }).strict();
+  // Pass 30b: `acknowledgePreference: true` - the user confirmed placing
+  // someone other than the customer's preferred technician.
   const createAppointmentSchema = appointmentSchema.extend({
     overrideExclusion: exclusionOverrideSchema.optional(),
+    acknowledgePreference: z.boolean().optional(),
   });
   const updateAppointmentSchema = appointmentSchema.partial().extend({
     overrideExclusion: exclusionOverrideSchema.optional(),
+    acknowledgePreference: z.boolean().optional(),
   });
   const serviceRecordSchema = insertServiceRecordSchema.omit({ serviceDate: true }).extend({
     serviceDate: z.coerce.date(),
@@ -600,10 +604,19 @@ export async function registerRoutes(
       preferenceId: err.exclusion?.preferenceId ?? null,
       scopeType: err.exclusion?.scopeType ?? null,
       note: err.exclusion?.note ?? null,
+      // Pass 30b: PREFERENCE_NOT_HONORED names the technician chosen and the preferred ones passed over
+      // (TECHNICIAN_EXCLUDED lists the passed-over preference too - the override covers it).
+      ...(err.technician ? { technicianId: err.technician.id, technicianName: err.technician.name } : {}),
+      preferred: err.preferred.map((entry) => ({ technicianId: entry.technicianId, technicianName: entry.technicianName, scopeType: entry.scopeType, note: entry.note })),
     });
-  // Pass 30: a preference write or a crew change refused - { code, message }.
+  // Pass 30: a preference write or a crew change refused - { code, message };
+  // Pass 30b: CREW_SCHEDULE_CONFLICT adds `conflicts`.
   const respondTechnicianPreferenceError = (res: any, err: TechnicianPreferenceError | AppointmentCrewError) =>
-    res.status(err.status).json({ message: err.message, code: err.code });
+    res.status(err.status).json({
+      message: err.message,
+      code: err.code,
+      ...(err instanceof AppointmentCrewError && err.conflicts.length ? { conflicts: err.conflicts } : {}),
+    });
   const technicianPreferenceSetSchema = z.object({
     technicianId: z.string().min(1),
     kind: z.enum(TECHNICIAN_PREFERENCE_KINDS),
@@ -613,6 +626,8 @@ export async function registerRoutes(
   const appointmentCrewAddSchema = z.object({
     technicianId: z.string().min(1),
     overrideExclusion: exclusionOverrideSchema.optional(),
+    // Pass 30b: the user confirmed a schedule conflict (CREW_SCHEDULE_CONFLICT).
+    confirmConflicts: z.boolean().optional(),
   }).strict();
   // Pass 17 (C3.2): a reopen the reason forbids - 400
   // REOPEN_REASON_NOT_ON_LIST / REOPEN_REASON_TEXT_REQUIRED, 403
@@ -2198,7 +2213,7 @@ export async function registerRoutes(
 
   app.post("/api/appointments", async (req, res) => {
     try {
-      const { overrideExclusion, ...validated } = createAppointmentSchema.parse(req.body);
+      const { overrideExclusion, acknowledgePreference, ...validated } = createAppointmentSchema.parse(req.body);
       const data = await req.storage.createAppointment({
         ...validated,
         scheduledDate: validated.scheduledDate,
@@ -2206,6 +2221,7 @@ export async function registerRoutes(
         generatedForDate: toDateOnlyStringOrNull(validated.generatedForDate),
       }, {
         overrideExclusion: overrideExclusion ?? null,
+        acknowledgePreference: acknowledgePreference === true,
         actorRole: req.user!.role as UserRole,
         actor: getAuditActor(req),
       });
@@ -2223,7 +2239,7 @@ export async function registerRoutes(
 
   app.patch("/api/appointments/:id", async (req, res) => {
     try {
-      const { overrideExclusion, ...validated } = updateAppointmentSchema.parse(req.body);
+      const { overrideExclusion, acknowledgePreference, ...validated } = updateAppointmentSchema.parse(req.body);
       // Pass 28: the actor signs the appointment_composition_changed row a
       // change of the visit's instructions (notes) writes. Pass 30: a change
       // of technician runs the exclusion check (the override and the role).
@@ -2234,6 +2250,7 @@ export async function registerRoutes(
         generatedForDate: validated.generatedForDate === undefined ? undefined : toDateOnlyStringOrNull(validated.generatedForDate),
       }, getAuditActor(req), {
         overrideExclusion: overrideExclusion ?? null,
+        acknowledgePreference: acknowledgePreference === true,
         actorRole: req.user!.role as UserRole,
         actor: getAuditActor(req),
       });
@@ -2266,6 +2283,7 @@ export async function registerRoutes(
         appointmentId: req.params.id,
         technicianId: validated.technicianId,
         overrideExclusion: validated.overrideExclusion ?? null,
+        confirmConflicts: validated.confirmConflicts === true,
         actorRole: req.user!.role as UserRole,
         actor: getAuditActor(req),
       });
@@ -2277,6 +2295,18 @@ export async function registerRoutes(
       if (e instanceof AppointmentCrewError) return respondTechnicianPreferenceError(res, e);
       res.status(400).json({ message: e.message });
     }
+  });
+
+  // Pass 30b (owner, 2026-10-03): the board shows a support technician's copy
+  // of each visit they are crewed on - the SUPPORT rows of live visits that
+  // start in [from, to).
+  app.get("/api/appointment-crews/support", async (req, res) => {
+    const from = new Date(typeof req.query.from === "string" ? req.query.from : "");
+    const to = new Date(typeof req.query.to === "string" ? req.query.to : "");
+    if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime()) || from >= to) {
+      return res.status(400).json({ message: "from and to must be ISO dates, from before to" });
+    }
+    res.json(await req.storage.getSupportAssignments(from, to));
   });
 
   app.delete("/api/appointments/:id/crew/:technicianId", async (req, res) => {

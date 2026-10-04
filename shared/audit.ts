@@ -106,7 +106,14 @@ export type AuditEntityType =
  *  `appointment`; the crew before and after, the after carrying `change`
  *  (ADD | REMOVE, the technician, the role). The LEAD follows the visit's
  *  technician silently, as the technician change itself is unaudited until
- *  C5.1a. */
+ *  C5.1a.
+ *  `placement_preference_bypassed` (Pass 30b, owner 2026-10-03): a visit was
+ *  placed or re-assigned to someone other than the customer's PREFERRED
+ *  technician after the user confirmed the prompt (`acknowledgePreference`).
+ *  On the `appointment`; the after carries the technician chosen, `via`
+ *  (CREATE | UPDATE) and the preferred technicians passed over. A crew ADD
+ *  confirmed over a schedule conflict records `conflictsAcknowledged` in its
+ *  appointment_crew_changed row. */
 export type AuditAction =
   | "update"
   | "invoice_drafted"
@@ -138,7 +145,8 @@ export type AuditAction =
   | "technician_preference_set"
   | "technician_preference_cleared"
   | "placement_exclusion_overridden"
-  | "appointment_crew_changed";
+  | "appointment_crew_changed"
+  | "placement_preference_bypassed";
 
 const ENTITY_TYPE_LABELS: Record<AuditEntityType, string> = {
   customer: "Customer",
@@ -186,6 +194,7 @@ const ACTION_LABELS: Record<AuditAction, string> = {
   technician_preference_cleared: "Technician preference cleared",
   placement_exclusion_overridden: "Excluded technician scheduled (override)",
   appointment_crew_changed: "Crew changed",
+  placement_preference_bypassed: "Preferred technician passed over (confirmed)",
 };
 
 // Both take plain strings, not the unions: they render rows already in the

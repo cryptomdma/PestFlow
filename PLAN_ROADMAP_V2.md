@@ -383,6 +383,7 @@ so every field action is a route and every screen is data from a read — no pag
 | C4.3a (**Pass 28**) — **done** (`feature/phase-4-appointment-composition`, 2026-09-29; see "Shipped in Pass 28" at the end of Part D) | **Appointment composition, server + dispatch sheet** (B13) — add a service to an appointment (new or from the pending queue), remove / cancel / return ONE service to pending (the last service prompts to reschedule the appointment), change a service's type (agreement work stays locked) and duration, appointment instructions (`appointments.notes`) editable; all through `getLinkedServicesForAppointmentTx`. UI on the dispatch sheet. **Also (owner review of 2026-09-25): cancelling a `PENDING_SCHEDULING` service outright**, from the pending queue and the location's Services tab, with the disposition's semantics. As built: `shared/appointment-composition.ts`; four routes (`POST /api/appointments/:id/services`, `POST .../services/:serviceId/remove`, `PATCH .../services/:serviceId`, `POST /api/services/:id/cancel`), each one transaction and one audit row (`appointment_composition_changed` / `service_cancelled`); the representative follows the first remaining sibling; the planned end grows on add and never shrinks; a service landing on a visit converts its handoff opportunities like a placement (the board's attach and grouped placement use the same route); an agreement service's type is ADJUST_PRICE_AGREEMENT everywhere; the last active service is refused; a posted ticket, a settled service and an issued invoice refuse; the generic service PATCH refuses the lifecycle moves; the reasons list's write is MANAGE_SETTINGS; one `ServiceCancelDialog` on the sheet, the queue and the Services tab. | Appointment Details build-out; service-level cancel; cancel a pending service | C4.2 | — |
 | C4.3b (**Pass 29**) — **done** (`feature/phase-4-field-composition`, 2026-10-02; see "Shipped in Pass 29" at the end of Part D) | **Appointment composition in the field** (B13) — the technician's appointment details: each service displayed, editable on click (type, for non-agreement work); **Add service** as a small button; adding extends the visit's duration and refuses an overlap with the technician's next stop; instructions editable only on services the technician added; an added non-agreement service is **flagged for office review** (owner). Same routes as C4.3a. As built: `origin: "FIELD"` on the add route's body (one-time work only, 400 `FIELD_ADD_NEW_ONLY` on a queued service; the session user stamped on `services.addedInFieldByUserId`; 409 `NEXT_STOP_OVERLAP` when the extended end would pass the technician's next placement that day - the office's add is told, never refused); the flag is the stamp with `fieldReviewedAt` null, cleared by `POST /api/services/:id/field-review` (FINALIZE_TICKET, one `field_service_reviewed` row); the type through the C4.3a PATCH; the instructions through the generic PATCH, refused 403 `SERVICE_INSTRUCTIONS_LOCKED` to a technician on a service they did not add; the "Field-added - review" badge and **Mark reviewed** on the sheet, the Services tab and Service Ticket Review; the row's kind badge, agreement marker and planned duration; no new permission. | Add service in the field (tech-modal item 5) | C4.3a | — |
 | C4.4 (**Pass 30**) — **done** (`feature/phase-4-technician-preferences-crew`, 2026-10-03; see "Shipped in Pass 30" at the end of Part D) | **Technician preferences + crew** (B14). `technician_preferences` (`scopeType account \| location`, `technicianId`, `kind PREFERRED \| EXCLUDED`, note, created-by); editors in edit/add location and on the primary location with an "apply to all locations" checkbox that writes the account-scoped row; chip on the card. Dispatch: EXCLUDED is a **hard block** on placement (manager override with a reason, audit-logged), PREFERRED a "Prefers <tech>" hint on the queue row and the sheet. Crew: `appointment_technicians` (lead + support) — the comp basis D8 collects here; production entries stay single-technician until Phase 7's split allocation. As built: one org-scoped table in canon §6 / §7's account \| location shape (`shared/technician-preferences.ts`: the location's row wins over the account's for the same technician; ACCOUNT rows written and cleared from the primary location only); the block in `createAppointment` and in `updateAppointment` when the technician changes - 409 `TECHNICIAN_EXCLUDED` naming the technician and the scope, `{ overrideExclusion: { reason } }` under the new `OVERRIDE_TECHNICIAN_EXCLUSION` (manager+; 403 / 400 otherwise), one `placement_exclusion_overridden` row; the board prompts a manager for the reason and resends; `appointment_technicians` with one LEAD mirroring `assignedTechnicianId` (115 rows backfilled on the dev DB) and SUPPORT rows from the sheet's crew block (`POST` / `DELETE /api/appointments/:id/crew`, `appointment_crew_changed`; an excluded support technician is refused the same way); the support technician's day lists the stop read-only; preference editors in Edit / Add Location, open to every role; set / clear audited on the location or the account's customer. | Preferred technician; EXCLUDE_TECH; apply across locations; crew | — | — |
+| C4.4b (**Pass 30b**) — **done** (`feature/phase-4-crew-schedule-review`, 2026-10-03; see "Shipped in Pass 30b" at the end of Part D) | **Technician preferences + crew, owner's additions** (`OWNER_FEEDBACK.md` FB-018, FB-019, given after Pass 30 merged). (1) A support technician's copy of the visit on their own row of the board (a second card on the same visit - never a second appointment), and adding a support technician who is already booked during the visit is a prompt: 409 `CREW_SCHEDULE_CONFLICT` listing the clashing visits, resent with `confirmConflicts`. (2) Placing or re-assigning a visit to anyone but the customer's preferred technician is a prompt naming the preference: 409 `PREFERENCE_NOT_HONORED`, resent with `acknowledgePreference` (any role), logged `placement_preference_bypassed`; a manager's exclusion override covers it. | Support schedule copy; double booking; preferred-technician reminder | C4.4 | — |
 | C4.5 (**Pass 31**) | **Dispatch board settings.** Settings → Dispatch Board: **view interval** (the rename; keep 1 h / 2 h, add 30 min), **snap interval** 15 / 30 / 60 (`dispatch_snap_minutes`; drag placement and the sheet's time inputs round to it), default visible hours (the session override stays). | Schedule interval; View Interval | — | — |
 
 Smart Schedule is Phase 9: it needs geocoded locations, technician skills, service windows and the
@@ -3579,6 +3580,59 @@ Behavior worth knowing before the next pass touches it - the decisions, numbered
   permissions. **Nothing was rendered in a browser** - the repo has no browser automation and the
   session had no browser - so the editors, the chips, the queue hint, the sheet's marked select and
   warning, the override prompt, the crew block and the support card reach the owner first.
+
+**Shipped in Pass 30b** (`feature/phase-4-crew-schedule-review`, 2026-10-03) — the C4.4b row as built:
+the owner's two additions after Pass 30 merged (`OWNER_FEEDBACK.md` FB-018, FB-019). No migration.
+
+```ts
+// shared/appointment-crew.ts                  CREW_SCHEDULE_CONFLICT (409); DEFAULT_VISIT_MINUTES = 60; plannedWindow(start, end, fallbackMinutes) (the stored end, else the representative's
+//                                             duration, else 60); windowsOverlap(a, b) (back-to-back is not a clash); CrewScheduleConflict { appointmentId, role, scheduledDate, plannedEnd,
+//                                             customerName }; describeCrewConflict / describeCrewConflicts; SupportAssignment { appointmentId, technicianId }
+// shared/technician-preferences.ts            PREFERENCE_NOT_HONORED (409); describePreferenceBypass(preferredNames, chosenName); PreferenceNotHonoredRefusal; TechnicianExcludedRefusal.preferred?
+// shared/audit.ts                             AuditAction += placement_preference_bypassed; a crew ADD's change += conflictsAcknowledged; the override row's after += preferredBypassed
+// server/storage.ts                           PlacementOptions.acknowledgePreference; AppointmentCrewAddInput.confirmConflicts; PlacementRefusedError += preferred, technician;
+//                                             AppointmentCrewError += conflicts; assertPlacementAllowedTx(..., checkPreference) -> { override, preferenceBypassed } (createAppointment and
+//                                             updateAppointment check the preference, the crew add does not); recordPlacementChecksTx (the override row, or one placement_preference_bypassed
+//                                             row: via CREATE | UPDATE, the technician chosen, the preferred passed over); plannedWindowsTx; findTechnicianConflictsTx(tx, appointment,
+//                                             technicianId) (lead or support, not CANCELED, overlapping); addAppointmentCrewMember: exclusion first, then the conflict;
+//                                             getSupportAssignments(from, to)
+// server/routes.ts                            POST / PATCH /api/appointments body += acknowledgePreference?: boolean; POST /api/appointments/:id/crew body += confirmConflicts?: boolean;
+//                                             respondPlacementRefused += preferred (and the chosen technician on PREFERENCE_NOT_HONORED); crew refusals += conflicts;
+//                                             GET /api/appointment-crews/support?from=&to= (400 on bad dates)
+// client/src/components/technician-preferences.tsx   getPreferenceNotHonoredRefusal; PreferenceBypassPrompt ("The customer prefers X" / "Schedule Y"); ExclusionOverridePrompt names the
+//                                             preference the override also passes over
+// client/src/pages/schedule.tsx               promptPlacementCheck / resendPlacement (both prompts resend the same request with what was confirmed so far); the sheet's "Not the customer's
+//                                             preferred technician" warning; AppointmentCrewBlock's conflict dialog (dialog-crew-conflict, "Add anyway"); the board's support cards
+//                                             (supportAppointmentsBySlot, card-support-<appointment>-<technician>: dashed, "Support", "With <lead>", opens the sheet, never selected for a move);
+//                                             invalidateSupportAssignments on a crew change and an appointment update
+```
+
+Behavior worth knowing:
+- **The support copy is a card, not a row.** Duplicating the appointment would double its services and
+  its invoice; the support card reads the crew and opens the same visit. The lead's card is the one that
+  moves it; the board's analytics still count the visit once, on the lead.
+- **What a clash is.** Another live visit (not CANCELED) of the same technician, as lead or support,
+  whose planned window overlaps this one - the window being the stored end, else the representative
+  service's expected duration, else 60 minutes; back-to-back (one ends as the other starts) is not a
+  clash. Checked when a SUPPORT technician is added, after the exclusion; the user confirms or cancels.
+  Not checked (noted): moving a visit later re-checks nothing against its support technicians, and the
+  lead's own placement is not checked for a clash (it never was).
+- **The preference reminder.** Only when the visit's location has a PREFERRED technician in effect and
+  the technician chosen is none of them; any role confirms. An unassigned visit, an unchanged
+  technician and a support add are not asked. With an exclusion, the manager's override is the one
+  prompt and its row lists the preference passed over.
+- **Verified 2026-10-03** (PORT=5001 against a copy of the dev DB, dropped afterwards; the copy already
+  had Pass 30's tables, so boot 1 printed only the serving line): `npm run check` clean; 54 new smoke
+  assertions first run (the pure window / overlap / text functions; the reminder as support and as the
+  technician, a non-boolean 400, the confirmation and its CREATE row, the preferred technician and an
+  unassigned visit not asked, the PATCH reminder and its UPDATE row, an unchanged technician not asked;
+  the excluded technician's 409 naming the preference and the override alone placing with
+  `preferredBypassed` and no bypass row; a location preferring both technicians not asking; a support
+  clash with a lead visit 409 then confirmed with `conflictsAcknowledged`, back-to-back accepted at once,
+  a clash with a support visit, the 60-minute fallback window, exclusion then conflict then both
+  confirmed; the support-assignments read and its 400s; the support technician's day) and the Pass 30
+  suite's 108 again; every count back at baseline; boot 2 only the serving line; Vite 200 on the page,
+  the component and the three shared modules. **Not rendered in a browser.**
 
 ---
 

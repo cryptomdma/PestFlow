@@ -48,6 +48,60 @@ export const CREW_LEAD_NOT_REMOVABLE = "CREW_LEAD_NOT_REMOVABLE";
 export const CREW_MEMBER_NOT_FOUND = "CREW_MEMBER_NOT_FOUND";
 /** 409: the visit is cancelled or completed - its crew is history. */
 export const CREW_NOT_EDITABLE = "CREW_NOT_EDITABLE";
+/**
+ * Pass 30b (owner, 2026-10-03): 409 - the support technician already has a
+ * visit (as lead or support) whose planned window overlaps this one. The body
+ * lists `conflicts`; the add is resent with `confirmConflicts: true` once the
+ * user confirms, and the ADD row records what was acknowledged.
+ */
+export const CREW_SCHEDULE_CONFLICT = "CREW_SCHEDULE_CONFLICT";
+
+/** A visit's planned length when it has no end and its service names no duration (the board's fallback). */
+export const DEFAULT_VISIT_MINUTES = 60;
+
+/** The planned window: the stored end, else start + the representative's duration, else start + DEFAULT_VISIT_MINUTES. */
+export function plannedWindow(start: Date | string, end: Date | string | null | undefined, fallbackMinutes: number | null | undefined): { start: Date; end: Date } {
+  const from = new Date(start);
+  const stored = end ? new Date(end) : null;
+  if (stored && stored.getTime() > from.getTime()) {
+    return { start: from, end: stored };
+  }
+  const minutes = fallbackMinutes && fallbackMinutes > 0 ? fallbackMinutes : DEFAULT_VISIT_MINUTES;
+  return { start: from, end: new Date(from.getTime() + minutes * 60000) };
+}
+
+/** Two windows overlap when each starts before the other ends; back-to-back (end == start) does not. */
+export function windowsOverlap(a: { start: Date; end: Date }, b: { start: Date; end: Date }): boolean {
+  return a.start.getTime() < b.end.getTime() && b.start.getTime() < a.end.getTime();
+}
+
+export interface CrewScheduleConflict {
+  appointmentId: string;
+  /** The technician's role on the other visit. */
+  role: AppointmentCrewRole;
+  scheduledDate: string | Date;
+  plannedEnd: string | Date;
+  customerName: string;
+}
+
+function formatTime(value: string | Date): string {
+  return new Date(value).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+}
+
+/** "John Doe is already booked 9:00 AM - 10:00 AM (Smith, lead)." - the 409's message and the prompt's lines. */
+export function describeCrewConflict(conflict: CrewScheduleConflict): string {
+  return `${formatTime(conflict.scheduledDate)} - ${formatTime(conflict.plannedEnd)}: ${conflict.customerName || "a visit"} (${conflict.role === "LEAD" ? "lead" : "support"})`;
+}
+
+export function describeCrewConflicts(technicianName: string, conflicts: CrewScheduleConflict[]): string {
+  return `${technicianName} is already booked during this visit: ${conflicts.map(describeCrewConflict).join("; ")}. Confirm to add them anyway.`;
+}
+
+/** Pass 30b: the board's support cards - GET /api/appointment-crews/support?from=&to=. */
+export interface SupportAssignment {
+  appointmentId: string;
+  technicianId: string;
+}
 
 export function describeCrewRefusal(code: string | null | undefined): string | null {
   switch (code) {
@@ -61,6 +115,7 @@ export function describeCrewRefusal(code: string | null | undefined): string | n
       return "That technician is not on this visit's crew.";
     case CREW_NOT_EDITABLE:
       return "This visit is cancelled or completed - its crew is history.";
+    // CREW_SCHEDULE_CONFLICT has no fixed text: the server's message names the visits.
     default:
       return null;
   }
