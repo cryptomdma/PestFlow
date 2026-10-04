@@ -1877,6 +1877,24 @@ Design should support:
 * route metrics later
 * clickable appointment cards
 
+Since Pass 31 (PLAN_ROADMAP_V2.md C4.5) the board's geometry is Settings -> Dispatch Board
+(`shared/dispatch-board.ts`; one `app_settings` row per value, no seed row - the defaults are the board
+as it was):
+
+* **View interval** - the width of a board column, and so one placement slot: 30 minutes, 1 hour or 2
+  hours (default 2 hours).
+* **Snap interval** - what a time typed on the appointment sheet rounds to when saved (nearest, a half
+  up), and what every placement start passes through: 15, 30 or 60 minutes (default 60). Never coarser
+  than the view interval, so a placement lands on the slot that was clicked. A client rule: the server
+  stores it and never rounds a time an API caller asked for. There is no drag-and-drop; placement is a
+  slot click, a move is click-then-confirm.
+* **Default visible hours** - the window the board opens with, whole hours from 6 AM to 9 PM (default
+  8 AM - 6 PM). The board's Window popover overrides the hours and the view interval for the session
+  only; the snap has no override.
+
+A visit is in view when its own day is on the board and its start falls inside that day's window; a
+slot is a start in minutes of day; a move is a change of the start, to the minute.
+
 ## 3. Technician preferences (PLAN_ROADMAP_V2.md C4.4; B14; PLAN_BILLING_V1_1.md D8; Pass 30)
 
 A customer's standing word about who services them, in `technician_preferences`
