@@ -111,6 +111,14 @@ const VIEW_OPTIONS = [
 // snap interval (15 / 30 / 60) and the default visible hours are Settings;
 // the Window popover below overrides the window for this session only.
 
+// Pass 31b (owner, OWNER_FEEDBACK.md FB-021): the grid's geometry. The
+// technician column is fixed; on the 1-day view the slot columns share the
+// page's full width with no floor, so a day fits without horizontal
+// scrolling even in the 30-minute view (the hover card carries what a narrow
+// card truncates). A 3-day or week view keeps a floor per column and scrolls.
+const TECH_COLUMN_PX = 160;
+const MULTI_DAY_MIN_COLUMN_PX = 96;
+
 function formatDateInputValue(date: Date) {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
@@ -1914,10 +1922,18 @@ export default function Schedule() {
   // Pass 31: "8 AM - 6 PM | 30-min view" (was "N-hour slots"); the grid waits
   // for the settings so it never renders the fallback window first.
   const configSummary = `${formatHourOfDay(boardStartHour)} - ${formatHourOfDay(boardEndHour)} | ${describeViewInterval(viewIntervalMinutes).summary}`;
+  // Pass 31b (FB-021): the grid fits the page on the 1-day view and scrolls on a multi-day one.
+  const boardColumns = boardDates.length * slotStarts.length;
+  const boardGridTemplate = `${TECH_COLUMN_PX}px repeat(${boardColumns}, minmax(0, 1fr))`;
+  const boardMinWidth = boardDates.length === 1 ? undefined : `${TECH_COLUMN_PX + boardColumns * MULTI_DAY_MIN_COLUMN_PX}px`;
+  const denseColumns = viewIntervalMinutes === 30;
   const isLoading = techniciansLoading || appointmentsLoading || servicesLoading || pendingLoading || dispatchSettingsLoading || prefillServiceMutation.isPending;
 
+  // Pass 31b (owner, FB-021): the page is full-width, and nothing that comes
+  // and goes sits above the navigation row - the in-view figures are the last
+  // section of the page and the selection box sits just below the board.
   return (
-    <div className="mx-auto max-w-7xl space-y-6 p-6">
+    <div className="space-y-6 p-6">
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <div>
           <h1 className="text-2xl font-bold tracking-tight" data-testid="text-page-title">Dispatch Board</h1>
@@ -1932,25 +1948,6 @@ export default function Schedule() {
         </div>
       </div>
 
-      <div className="grid gap-3 md:grid-cols-3">
-        <Card><CardContent className="p-4"><div className="flex items-center justify-between gap-3"><div><p className="text-xs uppercase tracking-wide text-muted-foreground">Jobs In View</p><p className="mt-1 text-2xl font-semibold">{analytics.jobs}</p></div><ClipboardList className="h-5 w-5 text-muted-foreground" /></div></CardContent></Card>
-        <Card><CardContent className="p-4"><div className="flex items-center justify-between gap-3"><div><p className="text-xs uppercase tracking-wide text-muted-foreground">Scheduled Revenue</p><p className="mt-1 text-2xl font-semibold">{formatCurrency(analytics.revenueCents)}</p></div><DollarSign className="h-5 w-5 text-muted-foreground" /></div></CardContent></Card>
-        <Card><CardContent className="p-4"><div className="flex items-center justify-between gap-3"><div><p className="text-xs uppercase tracking-wide text-muted-foreground">Board Window</p><p className="mt-1 text-sm font-semibold">{configSummary}</p><p className="mt-1 text-xs text-muted-foreground">{getViewportLabel(boardDates)}</p></div><Clock3 className="h-5 w-5 text-muted-foreground" /></div></CardContent></Card>
-      </div>
-
-      {analytics.byTechnician.length > 0 ? (
-        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-          {analytics.byTechnician.map((row) => (
-            <Card key={row.technicianName}>
-              <CardContent className="p-4">
-                <p className="text-sm font-medium">{row.technicianName}</p>
-                <p className="mt-1 text-xs text-muted-foreground">{row.jobs} jobs in view</p>
-                <p className="mt-2 text-sm font-semibold">{formatCurrency(row.revenueCents)}</p>
-              </CardContent>
-            </Card>
-          ))}
-        </div>
-      ) : null}
 
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <div className="flex items-center gap-2 flex-wrap">
@@ -2044,29 +2041,6 @@ export default function Schedule() {
         </div>
       </div>
 
-      {(selectedService || selectedAppointment) ? (
-        <Card className="border-primary/30 bg-primary/5">
-          <CardContent className="flex items-center justify-between gap-3 p-4">
-            <div className="text-sm">
-              {selectedService ? (
-                <>
-                  <p className="font-medium">Scheduling selected service</p>
-                  <p className="text-muted-foreground">Click an empty slot to create a new visit, or click an existing appointment card at the same location to add this service to that visit.</p>
-                  {selectedService.timeWindow ? <p className="text-muted-foreground">Preferred time window: {selectedService.timeWindow}</p> : null}
-                </>
-              ) : selectedAppointment ? (
-                <>
-                  <p className="font-medium">Move / reassign selected appointment</p>
-                  <p className="text-muted-foreground">Click a new slot to move it. Locked dimensions stay fixed. This visit currently includes {(servicesByAppointmentId.get(selectedAppointment.id)?.length ?? 1)} service(s).</p>
-                </>
-              ) : null}
-            </div>
-            <Button variant="ghost" size="sm" onClick={() => { setSelectedServiceId(null); setSelectedAppointmentId(null); }}>
-              Clear Selection
-            </Button>
-          </CardContent>
-        </Card>
-      ) : null}
 
       <Card>
         <CardHeader className="pb-3">
@@ -2079,18 +2053,18 @@ export default function Schedule() {
             <div className="py-10 text-center text-sm text-muted-foreground">No technicians available for dispatch in this viewport.</div>
           ) : (
             <div className="overflow-x-auto">
-              <div className="min-w-[1080px]">
-                <div className="grid border-b bg-muted/20" style={{ gridTemplateColumns: `200px repeat(${boardDates.length * slotStarts.length}, minmax(136px, 1fr))` }}>
+              <div style={{ minWidth: boardMinWidth }} data-testid="board-grid">
+                <div className="grid border-b bg-muted/20" style={{ gridTemplateColumns: boardGridTemplate }}>
                   <div className="border-r px-3 py-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">Technician</div>
                   {boardDates.flatMap((date) => slotStarts.map((slotStart) => (
-                    <div key={`${formatDateInputValue(date)}-${slotStart}`} className="border-r px-2 py-2 text-center text-xs font-medium text-muted-foreground">
+                    <div key={`${formatDateInputValue(date)}-${slotStart}`} className={`border-r ${denseColumns ? "px-1" : "px-2"} py-2 text-center text-xs font-medium text-muted-foreground`}>
                       <div>{date.toLocaleDateString("en-US", { month: "short", day: "numeric" })}</div>
                       <div>{formatMinutesOfDay(slotStart)}</div>
                     </div>
                   )))}
                 </div>
                 {visibleTechnicians.map((technician) => (
-                  <div key={technician.id} className="grid border-b last:border-b-0" style={{ gridTemplateColumns: `200px repeat(${boardDates.length * slotStarts.length}, minmax(136px, 1fr))` }}>
+                  <div key={technician.id} className="grid border-b last:border-b-0" style={{ gridTemplateColumns: boardGridTemplate }}>
                     <div className="border-r px-3 py-3">
                       <div className="flex items-center gap-2">
                         <span className="h-3 w-3 rounded-full" style={{ backgroundColor: technician.color || "#2563eb" }} />
@@ -2112,7 +2086,7 @@ export default function Schedule() {
                       return (
                         <div
                           key={slotKey}
-                          className={`min-h-[108px] border-r px-2 py-2 align-top transition-colors ${slotActionable ? "cursor-pointer hover:bg-primary/5" : "hover:bg-muted/20"}`}
+                          className={`min-h-[108px] border-r ${denseColumns ? "px-1 py-1.5" : "px-2 py-2"} align-top transition-colors ${slotActionable ? "cursor-pointer hover:bg-primary/5" : "hover:bg-muted/20"}`}
                           onClick={() => slotActionable && handleSlotClick(technician, slotDate)}
                         >
                           <div className="text-[11px] text-muted-foreground">{formatMinutesOfDay(slotStart)}</div>
@@ -2156,7 +2130,7 @@ export default function Schedule() {
                                 <HoverCard key={appointment.id} openDelay={150}>
                                   <HoverCardTrigger asChild>
                                     <div
-                                      className={`rounded-md border px-2 py-2 text-xs shadow-sm transition-colors ${statusTone} ${isSelected ? "border-primary ring-1 ring-primary" : ""}`}
+                                      className={`rounded-md border ${denseColumns ? "px-1.5 py-1.5" : "px-2 py-2"} text-xs shadow-sm transition-colors ${statusTone} ${isSelected ? "border-primary ring-1 ring-primary" : ""}`}
                                       onClick={(event) => {
                                         event.stopPropagation();
                                         handleAppointmentCardClick(appointment);
@@ -2179,7 +2153,7 @@ export default function Schedule() {
                                           </button>
                                         </div>
                                       </div>
-                                      <div className={`mt-2 flex items-center justify-between gap-2 text-[11px] ${mutedTextTone}`}>
+                                      <div className={`mt-2 flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5 text-[11px] ${mutedTextTone}`}>
                                         <span>{new Date(appointment.scheduledDate).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}</span>
                                         {durationMinutes ? <span>{durationMinutes} min</span> : null}
                                       </div>
@@ -2217,7 +2191,7 @@ export default function Schedule() {
                               return (
                                 <div
                                   key={`support-${appointment.id}`}
-                                  className="cursor-pointer rounded-md border border-dashed border-slate-400 bg-slate-50 px-2 py-2 text-xs text-slate-800"
+                                  className={`cursor-pointer rounded-md border border-dashed border-slate-400 bg-slate-50 ${denseColumns ? "px-1.5 py-1.5" : "px-2 py-2"} text-xs text-slate-800`}
                                   onClick={(event) => {
                                     event.stopPropagation();
                                     setEditingAppointmentId(appointment.id);
@@ -2249,6 +2223,34 @@ export default function Schedule() {
           )}
         </CardContent>
       </Card>
+
+      {/* Pass 31b (owner, FB-021): the selection box sits below the board, not
+          above it, so selecting never moves the board or the navigation row.
+          The empty slots' "Place service here" / "Move here" hints already say
+          the board is in placement mode. */}
+      {(selectedService || selectedAppointment) ? (
+        <Card className="border-primary/30 bg-primary/5" data-testid="card-selection-banner">
+          <CardContent className="flex items-center justify-between gap-3 p-4">
+            <div className="text-sm">
+              {selectedService ? (
+                <>
+                  <p className="font-medium">Scheduling selected service</p>
+                  <p className="text-muted-foreground">Click an empty slot to create a new visit, or click an existing appointment card at the same location to add this service to that visit.</p>
+                  {selectedService.timeWindow ? <p className="text-muted-foreground">Preferred time window: {selectedService.timeWindow}</p> : null}
+                </>
+              ) : selectedAppointment ? (
+                <>
+                  <p className="font-medium">Move / reassign selected appointment</p>
+                  <p className="text-muted-foreground">Click a new slot to move it. Locked dimensions stay fixed. This visit currently includes {(servicesByAppointmentId.get(selectedAppointment.id)?.length ?? 1)} service(s).</p>
+                </>
+              ) : null}
+            </div>
+            <Button variant="ghost" size="sm" onClick={() => { setSelectedServiceId(null); setSelectedAppointmentId(null); }}>
+              Clear Selection
+            </Button>
+          </CardContent>
+        </Card>
+      ) : null}
 
       <Card>
         <CardHeader className="pb-3">
@@ -2339,6 +2341,32 @@ export default function Schedule() {
           )}
         </CardContent>
       </Card>
+
+      {/* Pass 31b (owner, FB-021): the in-view figures are the last section of
+          the page. The per-technician cards exist only when something is in
+          view, so above the board they moved the navigation row every time
+          the window changed. */}
+      <div className="space-y-3" data-testid="section-board-analytics">
+        <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">In view</p>
+        <div className="grid gap-3 md:grid-cols-3">
+          <Card><CardContent className="p-4"><div className="flex items-center justify-between gap-3"><div><p className="text-xs uppercase tracking-wide text-muted-foreground">Jobs In View</p><p className="mt-1 text-2xl font-semibold">{analytics.jobs}</p></div><ClipboardList className="h-5 w-5 text-muted-foreground" /></div></CardContent></Card>
+          <Card><CardContent className="p-4"><div className="flex items-center justify-between gap-3"><div><p className="text-xs uppercase tracking-wide text-muted-foreground">Scheduled Revenue</p><p className="mt-1 text-2xl font-semibold">{formatCurrency(analytics.revenueCents)}</p></div><DollarSign className="h-5 w-5 text-muted-foreground" /></div></CardContent></Card>
+          <Card><CardContent className="p-4"><div className="flex items-center justify-between gap-3"><div><p className="text-xs uppercase tracking-wide text-muted-foreground">Board Window</p><p className="mt-1 text-sm font-semibold">{configSummary}</p><p className="mt-1 text-xs text-muted-foreground">{getViewportLabel(boardDates)}</p></div><Clock3 className="h-5 w-5 text-muted-foreground" /></div></CardContent></Card>
+        </div>
+        {analytics.byTechnician.length > 0 ? (
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+            {analytics.byTechnician.map((row) => (
+              <Card key={row.technicianName}>
+                <CardContent className="p-4">
+                  <p className="text-sm font-medium">{row.technicianName}</p>
+                  <p className="mt-1 text-xs text-muted-foreground">{row.jobs} jobs in view</p>
+                  <p className="mt-2 text-sm font-semibold">{formatCurrency(row.revenueCents)}</p>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        ) : null}
+      </div>
 
       <AppointmentSheet
         appointment={editingAppointment}

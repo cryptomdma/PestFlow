@@ -32,7 +32,8 @@ rules and zones, C4.1b - the first open Phase 4 row in phase order) is merged (P
 (appointment composition on the server and the dispatch sheet, C4.3a) is merged (PR #98); Pass 29
 (appointment composition in the field, C4.3b) is merged (PR #99); Pass 30 (technician preferences and
 crew, C4.4) is merged (PR #100); Pass 30b (the owner's two additions to it, C4.4b) is merged (PR #102);
-Pass 31 (dispatch board settings, C4.5 - the last Phase 4 row) is pushed, awaiting merge; **next pass:
+Pass 31 (dispatch board settings, C4.5 - the last Phase 4 row, with the owner's FB-021 board layout as
+Pass 31b on the same PR) is pushed, awaiting merge; **next pass:
 32, non-financial audit coverage** (C5.1a, the first Phase 5 row). The roadmap
 sequences every remaining item below; this file keeps the status pointer and, as its last
 section, the handoff prompt that starts the next session.
@@ -1508,6 +1509,16 @@ testing - this pass adds two routes and a shared module, and none of the new UI 
 been rendered by anyone: the repo has no browser automation and the session had no browser.** Signatures
 and behavior are under "Shipped in Pass 31" at the end of `PLAN_ROADMAP_V2.md` Part D.
 
+Pass 31b (Pass 31's branch and PR, 2026-10-04, C4.5b) - the owner's `OWNER_FEEDBACK.md` FB-021, given while
+PR #103 was open: **the board's layout.** The page is full-width and the 1-day view's slot columns share
+it with no minimum, so a day fits without horizontal scrolling at every view interval (the 30-minute
+view's cards are narrow - compact padding; the hover card carries the detail); a 3-day or week view keeps
+a 96 px floor per column and scrolls. Nothing variable sits above the navigation row any more: the
+in-view figures (Jobs In View, Scheduled Revenue, Board Window, the per-technician cards) moved to the
+bottom of the page under "In view" - moved, not removed - and the selection box ("Clear Selection") sits
+directly below the board, above the pending queue. Client only; `npm run check` clean, one boot, Vite
+200. **Not rendered in a browser.**
+
 Next up: **Pass 32** — non-financial audit coverage (`PLAN_ROADMAP_V2.md` Phase 5 table, C5.1a - the first
 Phase 5 row; Phase 4 is complete): every mutation of customer, location, contact, billing profile,
 agreement, agreement template, appointment and service writes `audit_logs` through the existing helper,
@@ -1784,7 +1795,8 @@ do not, see below); PLAN_BILLING_V1_1.md D7 "Non-financial entities ... join the
 same table, same pattern, no new infrastructure"; canon §17 AuditLog. Part E owner answer 8 (who may
 revert: manager+) is C5.1b's, not this row's. No Part B / Part E owner note covers the audit rows
 themselves. Phase order: Pass 31 (C4.5) closed Phase 4; this is the first Phase 5 row. OWNER_FEEDBACK.md's
-FB-020 is recorded as roadmap row C4.6, unscheduled - build it only if I say so.) Read the CLAUDE.md docs in
+FB-020 is recorded as roadmap row C4.6, unscheduled - build it only if I say so; FB-021, the board's layout,
+shipped as Pass 31b on Pass 31's PR.) Read the CLAUDE.md docs in
 order first, and OWNER_FEEDBACK.md (its review process applies at the start and end of the session);
 CURRENT_FOCUS.md's last entries (Pass 30b, Pass 31 and "Next up") are the ones that matter.
 
@@ -1824,7 +1836,7 @@ location), billing_profile ids (by location and by the account), and agreement i
 are org-wide with no location - say where their rows are readable (recommend: GET
 /api/audit-logs?entityType=agreement_template&entityId= for a later Settings surface, nothing on the
 History tab now); fix the five invalidation keys that never refresh the History tab - ["/api/audit-logs"]
-in schedule.tsx :280, technician-work.tsx :215, technician-preferences.tsx :61, field-added-badge.tsx :45
+in schedule.tsx :288, technician-work.tsx :215, technician-preferences.tsx :61, field-added-badge.tsx :45
 and ["/api/audit-logs/location", id] in service-cancel-dialog.tsx :40 (queryClient joins keys with "/" and
 staleTime is Infinity, so neither prefix-matches [`/api/audit-logs?locationId=${id}`]) with one
 predicate-based helper the way invalidate-invoice-views.ts :23 and opportunities.tsx :148 do it - recommend
