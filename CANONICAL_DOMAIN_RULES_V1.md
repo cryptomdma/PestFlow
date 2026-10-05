@@ -1683,6 +1683,18 @@ an unchanged save leaves no row. There is no `account` entity: the account's fac
 location whose primary flag moved or on the customer. `service_records`' content edits are D9's
 `ticket_edited`; a price change is Pass 8's `price_overridden`.
 
+Since Pass 33 (C5.1b) the customer screen reads the log two ways - the location's slice (the History
+tab) and the customer's rollup (every location of the account plus the account-level rows: the
+customer's own, the account's billing profiles with no location) - and offers **Revert** on a row to a
+manager+ (`REVERT_HISTORY`, a configurable permission once C5.6's role profiles exist). A revert is the
+`reverted` action: the fields the source row changed are put back through the entity's own write path
+(a customer, location, contact, billing profile, template or agreement update), which records one
+`reverted` row with the same whole-row snapshots, the after naming the source row; the log itself is
+never touched. A `created` or `deleted` row, a financial row (a void and a re-entry, never a revert), a
+service / appointment / opportunity row, a special action's row, an agreement's cancellation and a
+location made non-primary are refused - their inverses are their own workflows - and a row whose fields
+have moved since is refused as stale until the newer change is reverted first.
+
 ### Fields
 
 * id

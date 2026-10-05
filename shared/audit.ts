@@ -143,12 +143,25 @@ export type AuditEntityType =
  *  server derives from an agreement's own schedule - the generated service,
  *  the recurrence advancing nextServiceDate, the billing run's
  *  nextBillingDate - is signed by the system actor ("System"); everything a
- *  request causes is signed by that request's user. */
+ *  request causes is signed by that request's user.
+ *  `reverted` (Pass 33, C5.1b; PLAN_BILLING_V1_1.md D7, B21): a manager put
+ *  the fields an earlier row changed back to that row's `before` values -
+ *  a NEW forward change through the entity's own write path (updateCustomer,
+ *  updateLocation, updateContact, the billing profile and template writers,
+ *  updateAgreement), never a rollback of the log. The entity's write path
+ *  writes this row INSTEAD of its generic `update` / `status_changed` (one
+ *  row per revert), with the same whole-row snapshots, the after carrying
+ *  `reverted` = { auditLogId, action, createdAt, actorLabel } naming the
+ *  source row (extractAuditRevertedRef; the key is on the diff's ignore list
+ *  so it never reads as a field change). Which rows may be reverted is
+ *  describeAuditRevertability below; who may is REVERT_HISTORY
+ *  (shared/permissions.ts, manager+ until C5.6). */
 export type AuditAction =
   | "update"
   | "created"
   | "status_changed"
   | "deleted"
+  | "reverted"
   | "invoice_drafted"
   | "invoice_issued"
   | "invoice_voided"
@@ -204,6 +217,7 @@ const ACTION_LABELS: Record<AuditAction, string> = {
   created: "Created",
   status_changed: "Status changed",
   deleted: "Deleted",
+  reverted: "Reverted",
   invoice_drafted: "Draft invoice created",
   invoice_issued: "Invoice issued",
   invoice_voided: "Invoice voided",
@@ -264,8 +278,20 @@ export interface AuditFieldChange {
 // own timestamp. Pass 32: `updatedByUserId` likewise - the agreement writers
 // stamp it with the session user on every save (D7: "single last-actor stamps
 // remain for display; the log is the truth"), so it would turn a no-op save by
-// a different user into a row of its own.
-const DIFF_IGNORED_FIELDS = new Set(["id", "orgId", "org_id", "updatedAt", "updated_at", "updatedByUserId", "updated_by_user_id"]);
+// a different user into a row of its own. Pass 33: `reverted` is the marker a
+// `reverted` row's after snapshot carries (the source row it put back) - not
+// a column, rendered by the card as its own line above the diff, never as a
+// field change; and the server's stale check skips it the same way.
+/** The key on a `reverted` row's after snapshot that names the source row. */
+export const AUDIT_REVERTED_MARKER = "reverted";
+
+// The read's clamp (server/storage.ts clampAuditLogLimit): a caller may ask
+// for up to this many rows per read. Pass 33: the customer-level History asks
+// for the maximum and says so when it got exactly that many - paging is a
+// later pass.
+export const AUDIT_LOG_DEFAULT_LIMIT = 100;
+export const AUDIT_LOG_MAX_LIMIT = 500;
+const DIFF_IGNORED_FIELDS = new Set(["id", "orgId", "org_id", "updatedAt", "updated_at", "updatedByUserId", "updated_by_user_id", AUDIT_REVERTED_MARKER]);
 
 /**
  * Field-level diff of an audit row's before/after snapshots. `beforeJson` and
@@ -304,6 +330,141 @@ export function auditChangeAction(before: unknown, after: unknown): "update" | "
 
 export function auditSnapshotsDiffer(before: unknown, after: unknown): boolean {
   return diffAuditSnapshots(before, after).length > 0;
+}
+
+/**
+ * Pass 33 (C5.1b): the fields of `expected` (a snapshot, or the slice of one)
+ * whose value on `current` (the entity's row now) differs - the ignore list
+ * applies. The server's stale check: a revert puts back the fields its source
+ * row changed, so those fields must still hold the values that row left them
+ * with; any that moved since are named in the 409 HISTORY_STALE so the user
+ * reverts the newer change first (a revert is a forward change from the state
+ * the user saw). Also what the client would need to tell staleness, had it the
+ * current row.
+ */
+export function auditSnapshotDrift(expected: unknown, current: unknown): string[] {
+  if (!isPlainRecord(expected) || !isPlainRecord(current)) {
+    return [];
+  }
+  return Object.keys(expected)
+    .filter((field) => !DIFF_IGNORED_FIELDS.has(field))
+    .filter((field) => !valuesEqual(expected[field], current[field]));
+}
+
+/** The source row a `reverted` row names, read off its after snapshot. */
+export interface AuditRevertedRef {
+  auditLogId: string;
+  action: string;
+  createdAt: string;
+  actorLabel: string | null;
+}
+
+export function extractAuditRevertedRef(after: unknown): AuditRevertedRef | null {
+  if (!isPlainRecord(after)) return null;
+  const marker = after[AUDIT_REVERTED_MARKER];
+  if (!isPlainRecord(marker) || typeof marker.auditLogId !== "string" || typeof marker.action !== "string") return null;
+  return {
+    auditLogId: marker.auditLogId,
+    action: marker.action,
+    createdAt: typeof marker.createdAt === "string" ? marker.createdAt : "",
+    actorLabel: typeof marker.actorLabel === "string" ? marker.actorLabel : null,
+  };
+}
+
+// Pass 33 (C5.1b): which rows Revert may act on, decided here once so the
+// History surfaces show the button exactly where the server would accept
+// the request (the server re-runs this and adds the checks that need the
+// database: the entity still exists, the fields are not stale, the write
+// path's own refusals). Revertable: a generic change row - `update`,
+// `status_changed`, or an earlier `reverted` (a revert is a forward change,
+// so reverting it is another) - of an entity whose whole row goes through a
+// plain update: customer, location, contact, billing profile, the two org
+// templates, agreement. Not revertable, each with its code:
+//   - `created` (the inverse is a delete) and `deleted` (the inverse is a
+//     re-create with the old id) - out of scope, decided;
+//   - the financial entities (invoice, line, payment, credit memo, ticket) -
+//     D7: a money correction is a void and a re-entry, never a revert;
+//   - service, appointment and opportunity rows - their snapshots are
+//     curated subsets and their lifecycle moves are refused by the PATCHes
+//     (a cancel needs the disposition, a type change is locked...);
+//   - every special action (the preference set / clear, the placement
+//     overrides, the crew change...) - their write paths are their own;
+//   - an agreement's cancellation (the `status_changed` whose after is
+//     CANCELLED): the cancel is a workflow that cancelled visits and services
+//     with it; the agreement comes back as a new agreement, not a revert;
+//   - a location made non-primary (before.isPrimary false): the account's
+//     invariant would re-promote something at once - revert the other
+//     location's row instead, the one that was primary before.
+export const REVERTABLE_AUDIT_ENTITY_TYPES = [
+  "customer",
+  "location",
+  "contact",
+  "billing_profile",
+  "billing_profile_template",
+  "agreement_template",
+  "agreement",
+] as const satisfies readonly AuditEntityType[];
+export type RevertableAuditEntityType = (typeof REVERTABLE_AUDIT_ENTITY_TYPES)[number];
+
+export const REVERTABLE_AUDIT_ACTIONS = ["update", "status_changed", "reverted"] as const satisfies readonly AuditAction[];
+
+export const FINANCIAL_AUDIT_ENTITY_TYPES = ["invoice", "invoice_line_item", "payment", "credit_memo", "service_record"] as const satisfies readonly AuditEntityType[];
+
+export const HISTORY_REVERT_CODES = {
+  ROW_NOT_FOUND: "HISTORY_ROW_NOT_FOUND",
+  CREATED_NOT_REVERTABLE: "HISTORY_CREATED_NOT_REVERTABLE",
+  DELETED_NOT_REVERTABLE: "HISTORY_DELETED_NOT_REVERTABLE",
+  FINANCIAL_NOT_REVERTABLE: "HISTORY_FINANCIAL_NOT_REVERTABLE",
+  ENTITY_NOT_REVERTABLE: "HISTORY_ENTITY_NOT_REVERTABLE",
+  ACTION_NOT_REVERTABLE: "HISTORY_ACTION_NOT_REVERTABLE",
+  CANCELLATION_NOT_REVERTABLE: "HISTORY_CANCELLATION_NOT_REVERTABLE",
+  PRIMARY_NOT_REVERTABLE: "HISTORY_PRIMARY_NOT_REVERTABLE",
+  SNAPSHOT_NOT_REVERTABLE: "HISTORY_SNAPSHOT_NOT_REVERTABLE",
+  ENTITY_GONE: "HISTORY_ENTITY_GONE",
+  NOTHING_TO_REVERT: "HISTORY_NOTHING_TO_REVERT",
+  STALE: "HISTORY_STALE",
+} as const;
+export type HistoryRevertCode = (typeof HISTORY_REVERT_CODES)[keyof typeof HISTORY_REVERT_CODES];
+
+export type AuditRevertability =
+  | { revertable: true; entityType: RevertableAuditEntityType; fields: string[] }
+  | { revertable: false; code: HistoryRevertCode; reason: string };
+
+export function isRevertableAuditEntityType(entityType: string): entityType is RevertableAuditEntityType {
+  return (REVERTABLE_AUDIT_ENTITY_TYPES as readonly string[]).includes(entityType);
+}
+
+/** The pure half of "may this row be reverted" - the row alone, no database. */
+export function describeAuditRevertability(row: { entityType: string; action: string; beforeJson: unknown; afterJson: unknown }): AuditRevertability {
+  if (row.action === "created") {
+    return { revertable: false, code: HISTORY_REVERT_CODES.CREATED_NOT_REVERTABLE, reason: "A creation is not reverted; the inverse would be a delete." };
+  }
+  if (row.action === "deleted") {
+    return { revertable: false, code: HISTORY_REVERT_CODES.DELETED_NOT_REVERTABLE, reason: "A deletion is not reverted; the inverse would re-create the record." };
+  }
+  if ((FINANCIAL_AUDIT_ENTITY_TYPES as readonly string[]).includes(row.entityType)) {
+    return { revertable: false, code: HISTORY_REVERT_CODES.FINANCIAL_NOT_REVERTABLE, reason: "Financial records are corrected by a void and a re-entry, never a revert." };
+  }
+  if (!isRevertableAuditEntityType(row.entityType)) {
+    return { revertable: false, code: HISTORY_REVERT_CODES.ENTITY_NOT_REVERTABLE, reason: `A ${describeAuditEntityType(row.entityType).toLowerCase()} change is reverted through its own workflow, not from History.` };
+  }
+  if (!(REVERTABLE_AUDIT_ACTIONS as readonly string[]).includes(row.action)) {
+    return { revertable: false, code: HISTORY_REVERT_CODES.ACTION_NOT_REVERTABLE, reason: `"${describeAuditAction(row.action)}" is reverted through its own workflow, not from History.` };
+  }
+  if (!isPlainRecord(row.beforeJson) || !isPlainRecord(row.afterJson)) {
+    return { revertable: false, code: HISTORY_REVERT_CODES.SNAPSHOT_NOT_REVERTABLE, reason: "This row has no before and after to put back." };
+  }
+  if (row.entityType === "agreement" && row.afterJson.status === "CANCELLED" && row.beforeJson.status !== "CANCELLED") {
+    return { revertable: false, code: HISTORY_REVERT_CODES.CANCELLATION_NOT_REVERTABLE, reason: "An agreement cancellation is not reverted; its visits and services were cancelled with it. Create a new agreement instead." };
+  }
+  const fields = diffAuditSnapshots(row.beforeJson, row.afterJson).map((change) => change.field);
+  if (row.entityType === "location" && fields.includes("isPrimary") && row.beforeJson.isPrimary === false) {
+    return { revertable: false, code: HISTORY_REVERT_CODES.PRIMARY_NOT_REVERTABLE, reason: "A location is not made non-primary by a revert; revert the row of the location that was primary before." };
+  }
+  if (!fields.length) {
+    return { revertable: false, code: HISTORY_REVERT_CODES.NOTHING_TO_REVERT, reason: "This row changed nothing the diff shows." };
+  }
+  return { revertable: true, entityType: row.entityType, fields };
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {

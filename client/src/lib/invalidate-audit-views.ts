@@ -16,3 +16,30 @@ export function invalidateAuditViews() {
     predicate: (query) => String(query.queryKey[0] ?? "").startsWith("/api/audit-logs"),
   });
 }
+
+// Pass 33 (C5.1b): after a Revert, the reverted entity's own reads - the
+// customer screen's compat read and switcher for a customer or location, the
+// contacts list, the billing profiles, the templates on Settings, the
+// agreements tab - so the screen shows the put-back values without a reload.
+// Keyed by the entity type the server answered with; each prefix matches the
+// first element of the query keys those surfaces use.
+const REVERTED_ENTITY_KEY_PREFIXES: Record<string, string[]> = {
+  customer: ["/api/customer-detail-compat", "/api/customers", "/api/locations", "/api/location-balances"],
+  location: ["/api/customer-detail-compat", "/api/locations", "/api/location-counts", "/api/technician-preferences"],
+  contact: ["/api/contacts", "/api/location-counts"],
+  billing_profile: ["/api/billing-profiles", "/api/accounts", "/api/locations", "/api/customer-detail-compat"],
+  billing_profile_template: ["/api/billing-profile-templates"],
+  agreement_template: ["/api/agreement-templates"],
+  agreement: ["/api/agreements", "/api/location-counts", "/api/services", "/api/appointments"],
+};
+
+export function invalidateRevertedEntityViews(entityType: string) {
+  const prefixes = REVERTED_ENTITY_KEY_PREFIXES[entityType] ?? [];
+  if (!prefixes.length) return;
+  queryClient.invalidateQueries({
+    predicate: (query) => {
+      const key = String(query.queryKey[0] ?? "");
+      return prefixes.some((prefix) => key.startsWith(prefix));
+    },
+  });
+}

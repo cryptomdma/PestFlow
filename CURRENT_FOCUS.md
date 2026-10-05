@@ -34,7 +34,8 @@ rules and zones, C4.1b - the first open Phase 4 row in phase order) is merged (P
 crew, C4.4) is merged (PR #100); Pass 30b (the owner's two additions to it, C4.4b) is merged (PR #102);
 Pass 31 (dispatch board settings, C4.5 - the last Phase 4 row, with the owner's FB-021 board layout as
 Pass 31b on the same PR) is merged (PR #103); Pass 32 (non-financial audit coverage, C5.1a - the first
-Phase 5 row) is pushed, awaiting merge; **next pass: 33, customer-level History + Revert** (C5.1b). The roadmap
+Phase 5 row) is merged (PR #104); Pass 33 (customer-level History + Revert, C5.1b) is pushed, awaiting
+merge; **next pass: 34, Billing profile on the customer screen** (C5.2). The roadmap
 sequences every remaining item below; this file keeps the status pointer and, as its last
 section, the handoff prompt that starts the next session.
 
@@ -1519,7 +1520,7 @@ bottom of the page under "In view" - moved, not removed - and the selection box 
 directly below the board, above the pending queue. Client only; `npm run check` clean, one boot, Vite
 200. **Not rendered in a browser.**
 
-Pass 32 (`feature/phase-5-audit-coverage`, 2026-10-04, C5.1a) pushed, awaiting merge. **Non-financial
+Pass 32 (`feature/phase-5-audit-coverage`, 2026-10-04, C5.1a) merged as PR #104. **Non-financial
 audit coverage** - the first Phase 5 row, D7's follow-up. Every create / update / status change of a
 customer, location, contact, billing profile (instance and org template), agreement, agreement template,
 appointment and service now writes `audit_logs` inside its own transaction. **Decided (1), vocabulary:**
@@ -1554,12 +1555,69 @@ renders only two-sided diffs - C5.1b's, with the rollup and Revert). Signatures 
 "Shipped in Pass 32" at the end of `PLAN_ROADMAP_V2.md` Part D. **The owner's restart after the merge
 prints nothing for the index** (CREATE INDEX IF NOT EXISTS is silent).
 
-Next up: **Pass 33** — customer-level History + Revert (`PLAN_ROADMAP_V2.md` Phase 5 table, C5.1b): a
-History view on the customer that rolls up every location plus the account-level rows; Revert on a row
-= a new forward update through the entity's normal write path, logged as `reverted` naming the source
-row; manager+ until C5.6 makes it a configurable permission (Part E answer 8). Branch from
-`origin/main` after confirming it contains Pass 32's merge. The handoff prompt for Pass 33 is the last
-section of this file; the Pass 33 session writes the next one.
+Pass 33 (`feature/phase-5-customer-history-revert`, 2026-10-05, C5.1b) pushed, awaiting merge.
+**Customer-level History + Revert** - the second Phase 5 row. **Decided (1), the read:** `?customerId=`
+is the third exclusive form of `GET /api/audit-logs`, backed by `getAuditLogsForCustomer` - the
+account's locations (keyed on the account, the screen's own source; `locations.customerId` only for a
+legacy customer with no account row, and the read never creates one) with every record anchored to them,
+plus the customer's own rows, the account's billing profiles with no location and any contact with no
+location; newest first at the read's clamp (500 - the client asks for exactly that and says "Showing the
+latest 500 changes" when it got that many; paging is a later pass); each row annotated `locationId` /
+`locationName` (null = "Account") from the refs collected; the two reads share one ref collector, so the
+location tab returns exactly the rows it did. **Decided (2), where:** a **History** button on the
+customer screen's toolbar beside Statement opening a right-hand sheet with a location filter ("Every
+location" / "Account level" / each location) and a record-type filter, the account-level rows folded
+into the one stream under an "Account" chip - the tab list is location-scoped by canon, so no
+customer-level tab; the per-location History tab untouched; open to every role. **Decided (3), which
+rows revert:** the pure rule is shared (`shared/audit.ts` `describeAuditRevertability`, run by the
+client for the button and by the server first): `update` / `status_changed` / `reverted` rows (a revert
+of a revert is a redo) of customer, location, contact, billing profile, the two org templates and
+agreement. Refused with a 409 code and nothing written: `created` / `deleted` (their inverses are a
+delete / a re-create - out of scope), the financial entities (D7: void and re-enter), service /
+appointment / opportunity rows (curated snapshots, lifecycle moves the PATCHes refuse; not special-cased),
+every special action, an agreement's cancellation (the cancel took visits and services with it), a
+location made non-primary (the invariant would re-promote at once), a gone entity, and a stale row -
+**a revert puts back the fields the row changed, not the whole row**, and "stale" means those fields no
+longer hold the row's after values (the body carries the current row and the drift), so an unrelated
+later edit neither blocks nor is clobbered, and a later row on the same field must be reverted first.
+**Decided (4), the write - ONE row:** `POST /api/history/:auditLogId/revert` (not under
+`/api/audit-logs`; the table's API stays read-only and this writes nothing to it directly) under
+`REVERT_HISTORY`: the storage plans (the row, the entity now, the payload = before's values for the
+changed fields minus id / orgId / createdAt / the actor stamps / the ownership keys / the agreement's
+derived fields, timestamps back to Dates), the route validates the planned payload with the SAME zod
+schema the entity's PATCH uses and applies the PATCH's own permission rule (an agreement's sale credit),
+and the entity's existing update method replays it with `AuditChangeOptions` - its own `auditChangeTx`
+writes `reverted` INSTEAD of `update`, the after carrying `reverted` = { auditLogId, action, createdAt,
+actorLabel }, after re-checking the fields inside its transaction (a concurrent edit rolls the revert
+back as 409). The write path's refusals pass through: the agreement's "Use the agreement cancellation
+workflow" 400 (a row whose before is CANCELLED), the plan requirement, the location invariant (reverting
+the "lost primary" row makes it primary again and writes the sibling's `update` - two rows, the second a
+consequence), the contact's demotions; a plan change re-derives the snapshot and nextBillingDate (not
+pure, stated). **Decided (5):** `reverted` joins `AuditAction`; the marker key joins the diff's ignore
+list (never a field change; the stale check skips it); the read limits moved to the shared module.
+**Decided (6), the card:** `canRevert` / `onRevert` / `revertPending`; an AlertDialog confirm listing
+the fields that go back; `invalidateAuditViews()` plus the entity's own reads after; a one-sided row
+renders its snapshot; a location chip; a "Reverted the <action> of <date> by <label>" line. **Decided
+(7):** `REVERT_HISTORY` in the manager set, `can()` per site, 403 regardless. **Decided (8):** the
+account-level rows are the customer's own (Pass 30's account-scoped preferences included), the
+account-default billing profiles and location-less contacts, under "Account". **Fixed on the way:**
+`?tab=communications` selected nothing; `server/auth.ts`'s comment named a file that does not exist;
+four stale A1 citations. No migration. Verified against the shared dev DB on PORT=5001: `npm run check`
+clean, 63 smoke assertions first run (the reads, every refusal code, the reverts of six entity kinds, a
+revert of a revert, the invariant's two rows, the write path's 400, cleanup to baseline), double boot
+clean, Vite 200 on the six touched modules. **Not rendered in a browser:** the History sheet, its filters,
+the Revert button and its confirm, the one-sided snapshot, the location chip and the "Reverted the..."
+line - restart `npm run dev:full` before trying them. Signatures and behavior under "Shipped in Pass 33"
+at the end of `PLAN_ROADMAP_V2.md` Part D. **The owner's restart after the merge prints nothing** (no
+migration).
+
+Next up: **Pass 34** — Billing profile on the customer screen (`PLAN_ROADMAP_V2.md` Phase 5 table,
+C5.2): a selector in edit / add location (inherit the account default / override), the account default
+on the customer edit (the primary location's identity block - there is no separate customer modal), an
+org default template in Settings (`default_billing_profile_template_id`) used at customer creation, and
+the "Billing: Per-location / Default" chip reading real data. Branch from `origin/main` after confirming
+it contains Pass 33's merge. The handoff prompt for Pass 34 is the last section of this file; the Pass
+34 session writes the next one.
 
 Phase 1's ordered plan, impact analysis, conflict resolutions, and per-pass verification steps live in
 `PLAN_BILLING_V1_1_EXECUTION.md` — read it when a pass builds on a Phase 1 helper (its "Shipped in
@@ -1814,256 +1872,257 @@ pointer and that prompt.
 
 Replaced at the end of every pass (`AGENT_WORKING_AGREEMENT.md`, the end-of-pass step). The owner
 pastes it verbatim to start the next session; it is also the last thing in the finishing session's
-final message. Written 2026-10-04, after Pass 32 was pushed as
-`feature/phase-5-audit-coverage`. Its ground truth came from a read-only Explore subagent's inventory
-of the working tree at the start of Pass 32 (origin/main after PR #103), plus the SQL it ran, with
-the storage.ts / routes.ts / shared/audit.ts line numbers re-grepped after Pass 32's edits
-(customer-detail.tsx, audit-log-entry-card.tsx and shared/permissions.ts were not touched by Pass 32
-beyond one comment and one import). They are that tree's, so run the SQL and grep the names before
-trusting any claim.
+final message. Written 2026-10-05, after Pass 33 was pushed as
+`feature/phase-5-customer-history-revert`. Its ground truth came from a read-only Explore subagent's
+inventory of the working tree at the start of Pass 33 (origin/main after PR #104), plus the SQL it
+ran, with the line numbers of the six files Pass 33 edited (storage.ts, routes.ts, shared/audit.ts,
+shared/permissions.ts, customer-detail.tsx, audit-log-entry-card.tsx) re-grepped after its edits.
+They are that tree's, so run the SQL and grep the names before trusting any claim.
 
 ```text
-Start Pass 33 — Customer-level History + Revert (C5.1b)
-(PLAN_ROADMAP_V2.md Phase 5 table, row C5.1b :399 "A History view on the customer that rolls up every
-location plus account-level rows; Revert on a row = a new forward update through the entity's normal
-write path, logged as `reverted` naming the source row; manager+ until C5.6 makes it a configurable
-permission (owner)"; Part A1 row :48 (DONE for the rows, "No revert and no per-customer rollup yet -
-C5.1b"); Part B B21 :317-322 ("Revert" = a new forward change that records what it reverted; Owner:
-agreed); Part E answer 8 :3747 (who may revert: manager+ interim, a configurable permission once role
-profiles exist, C5.6); PLAN_BILLING_V1_1.md D7 :292 ("Revert to previous state" = a new forward change
-recorded in the log, never a rollback of the log itself; :289 append-only, no update / delete route may
-exist for the table); canon §17 (CANONICAL_DOMAIN_RULES_V1.md :1652+: append-only, "Revert to previous
-state" is itself a recorded change, the writer is recordAuditLogTx inside the transaction, the explicit
-system actor). Phase order: Pass 32 (C5.1a) opened Phase 5 with the rows; this is the second Phase 5
-row. OWNER_FEEDBACK.md: no open item covers History or Revert; FB-020 is roadmap row C4.6, unscheduled -
-build it only if I say so.) Read the CLAUDE.md docs in order first, and OWNER_FEEDBACK.md (its review
-process applies at the start and end of the session); CURRENT_FOCUS.md's last entries (Pass 31, Pass
-32 and "Next up") are the ones that matter.
+Start Pass 34 — Billing profile on the customer screen (C5.2)
+(PLAN_ROADMAP_V2.md Phase 5 table, row C5.2 :403 "Selector in edit/add location (inherit account
+default / override), account default on the customer edit modal, org default template in Settings
+(`default_billing_profile_template_id`) used at customer creation; the 'Billing: Per-location / Default'
+chip reads real data"; Part A1 rows :58-59 (the billing-profile inventory of 2026-09-17: the resolver
+order, "`customers.defaultBillingProfileId` exists with no UI"); :307 (B-item: "a billing profile the
+location actually selects" is what Phase 6's card-on-file needs); :728 (Pass 11c's parties: "Until C5.2
+no screen creates a profile or gives one an address"); :1125 and :1138 (Pass 11c / the fee dialog's
+notes); PLAN_BILLING_V1_1.md :181 ("no screen can create a billing profile or give one an address
+today") and :280; CURRENT_FOCUS.md :411, :591, :951; canon §4 BillingProfile (CANONICAL_DOMAIN_RULES_V1.md
+:227-258) and the Scope Rules "Default inheritance" (:1731-1739). Phase order: Pass 33 (C5.1b) was the
+second Phase 5 row; this is the third. OWNER_FEEDBACK.md: no open item covers billing profiles; FB-020
+is roadmap row C4.6, unscheduled - build it only if I say so.) Read the CLAUDE.md docs in order first,
+and OWNER_FEEDBACK.md (its review process applies at the start and end of the session);
+CURRENT_FOCUS.md's last entries (Pass 32, Pass 33 and "Next up") are the ones that matter.
 
-Branch feature/phase-5-customer-history-revert from origin/main. Confirm main contains the Pass 32
-merge (feature/phase-5-audit-coverage) before branching.
+Branch feature/phase-5-billing-profile-customer-screen from origin/main. Confirm main contains the
+Pass 33 merge (feature/phase-5-customer-history-revert) before branching.
 
-The row, in two halves. (A) The customer-level History: one read that rolls up every location of the
-customer's account plus the account-level rows, surfaced on the customer screen. (B) Revert: a
-manager+ action on a row that puts the entity back to the row's `before` state through the entity's
-own write path and records a `reverted` row naming the source row. Decide and state, in the pass:
-(1) the read - recommend `?customerId=` on auditLogQuerySchema (routes.ts :154; today locationId |
-entityType + entityId, never both - keep that, add the third exclusive form) backed by a new
-getAuditLogsForCustomer(customerId, limit) beside getAuditLogsForLocation (storage.ts :2002): the
-union of every account location's refs (getCustomerDetailCompat :3503 lists locations by accountId;
-getLocations :3676 by customerId - the same set on today's data, 0 mismatches, say which you key on
-and why), plus customer:[id] once, plus the account-default billing profiles (billing_profiles where
-account_id = X and location_id is null - the per-location read already includes the account's
-profiles); mind the clamp (AUDIT_LOG_DEFAULT_LIMIT 100 / MAX 500 ~:402, clampAuditLogLimit :1684): a
-customer with two locations and a few months of rows passes 100 - say whether the rollup takes a
-higher default, a limit from the client or paging (recommend: the client asks for 500 and the panel
-says "showing the latest N" when it got exactly the limit; paging is a later pass); each row needs
-the location it belongs to for the rollup to read - recommend the read annotates each row with
-locationId / locationName resolved from the refs it collected (a map entity -> location built while
-collecting), returned as an extra field on the row shape (AuditLog & { locationId?, locationName? }),
-or say why a second request per row is fine (it is not);
-(2) where it sits - the customer screen's tab list is location-scoped (customer-detail.tsx :4218 "D)
-Location-scoped tabs", one TabsList, history at :4229 / :4365 rendering LocationHistoryTab
-:561 for the active location only); the customer-level surfaces are the header card (the chips row :4018-4019 with
-CustomerAgingChips, Pass 14's rollup precedent) and the toolbar row (the location switcher :4036, Add
-Location, the account Statement button :4090 opening StatementDialog :4095 - Pass 15's
-customer-wide precedent); recommend a "History" button on the toolbar beside Statement opening a Sheet
-(the dispatch sheet's component) that lists the rollup with each row's location named and a filter by
-location / entity type, leaving the per-location History tab as it is - or say why a customer-level
-tab is better (there is no customer-level TabsList to add it to; dev rule 6: no dead control);
-(3) which rows are revertable - recommend: `update` and `status_changed` rows whose entity still
-exists and whose before snapshot is a whole row the entity's write path accepts - customer (PATCH
-/api/customers/:id, insertCustomerSchema.partial() - every column; or the profile route for the
-primary location's identity fields), location (PATCH /api/locations/:id - every column incl. isPrimary;
-or the profile route), contact (PATCH /api/contacts/:id - pick(firstName, lastName, email, phone,
-phoneType, role, isPrimary)), billing_profile (PATCH /api/billing-profiles/:id - every column),
-billing_profile_template / agreement_template (their PATCHes), agreement (PATCH /api/agreements/:id -
-refuses a status move to CANCELLED, 400; a billing plan change rebuilds billingPlanSnapshot and
-nextBillingDate so a replay is not pure; soldByUserId needs ASSIGN_SALE_CREDIT); NOT revertable, each
-with its 409 code: a `created` row (the inverse is a delete - out of scope, say so), a `deleted` row
-(the inverse is a re-create with the old id - out of scope), a service or appointment row (the
-snapshots are curated subsets and the lifecycle moves are refused by the PATCHes: CANCEL_DISPOSITION_REQUIRED,
-SERVICE_CANCEL_REQUIRED, SERVICE_REMOVE_REQUIRED, SERVICE_TYPE_LOCKED - say whether a technician / time
-/ notes revert on an appointment is worth special-casing; recommend not in this pass), every financial
-row (invoice / payment / credit_memo / service_record: D7's void + re-entry, never a revert), the
-technician_preference rows (set / clear are their write paths - recommend not in this pass, or replay
-through setTechnicianPreference / clearTechnicianPreference), opportunity rows (its own PATCH; say),
-and a row whose entity has moved since (the current row differs from the source's `after`) - recommend:
-refuse with 409 HISTORY_STALE and the current row, so the user reverts the newer row first (a revert
-is a forward change from the state the user saw);
-(4) the Revert write - recommend one route POST /api/history/:auditLogId/revert (NOT under
-/api/audit-logs: routes.ts :1362-1376 says the table's API is read-only and no POST may be added
-there - a revert does not write the table directly, it goes through the entity's path, but keep the
-letter of it), requirePermission(PERMISSIONS.REVERT_HISTORY) with a new manager-set member in
-shared/permissions.ts (:3-80 the list, :110-137 the manager set; admin inherits via
-Object.values; the Pass 30 precedent is OVERRIDE_TECHNICIAN_EXCLUSION :62), backed by a storage
-revertAuditLogEntry({ auditLogId, actor, actorRole }) that: reads the row, checks it is revertable
-(above), intersects its `before` with the entity's writable fields (strip id / orgId / createdAt /
-updatedAt / updatedByUserId and the derived fields the handoff lists), calls the entity's existing
-update method with that payload inside one transaction (updateCustomer / updateLocation /
-updateContact / updateBillingProfile / updateBillingProfileTemplate / updateAgreementTemplate /
-updateAgreement - each already writes its own `update` / `status_changed` row via auditChangeTx), and
-then writes the `reverted` row itself: entityType the entity's, entityId, action `reverted`, before =
-the row before the revert, after = { ...the row after, reverted: { auditLogId, action, createdAt,
-actorLabel } } - so one revert leaves TWO rows (the entity's generic `update` from the write path and
-the `reverted` naming the source) or ONE (say which; recommend ONE: pass the write path an option to
-skip its own row, or write `reverted` INSTEAD of `update` by letting auditChangeTx take the action -
-the second is simpler: auditChangeTx(tx, type, id, before, after, actor, { action: "reverted", extra })
-); the entity's refusals (zod 400s, the agreement's CANCELLED 400, ASSIGN_SALE_CREDIT 403) pass
-through unchanged;
-(5) the vocabulary - `reverted` joins AuditAction (shared/audit.ts :147-183) with its label
-("Reverted") and the doc comment; DIFF_IGNORED_FIELDS :268 gains nothing; diffAuditSnapshots :279 and
-auditChangeAction :299 unchanged; say whether the `reverted` row's `after.reverted` sub-object shows
-in the card's diff (it will, as a JSON string - decide: strip it in the card, or render it as "Reverted
-<action> of <date> by <label>" above the diff);
-(6) the card - AuditLogEntryCard (audit-log-entry-card.tsx :45-82) has no action slot and prints
-"Recorded with no field-level differences" for a one-sided row (a `created` / `deleted`); recommend:
-an optional `onRevert` prop (the button shown only when the caller says the row is revertable and
-can(REVERT_HISTORY)), the confirm as an AlertDialog (client/src/components/ui/alert-dialog.tsx; the
-RESCHEDULE confirm in schedule.tsx :1079-1101 is the pattern; ExclusionOverridePrompt in
-technician-preferences.tsx :377-431 is the manager-prompt pattern), invalidateAuditViews() after plus
-the entity's own reads (the compat read for customer / location, contacts/by-location, the agreement
-list...); and render a one-sided row's snapshot (the row's non-null fields) instead of the
-"no differences" line - this pass owns the History surface, so say yes or why not; a `locationName`
-line on the rollup's rows;
-(7) who may revert - manager+ (Part E answer 8): the new permission in the manager set; the client
-checks can(user?.role, PERMISSIONS.REVERT_HISTORY) per site (there is no useCan hook; the one
-precedent hook is useCanOverrideExclusion technician-preferences.tsx :366); support and technician see
-no button; the server answers 403 regardless;
-(8) the account-level rows - today the customer entity carries Pass 30's ACCOUNT-scoped preference
-rows and the customer's own rows; the account-default billing profile is a billing_profile row with
-location_id null; the primary flip is on the locations - say which of these the rollup's "account
-level" section lists and whether it is labelled "Account" or folded into the stream.
+The row, in four parts, and the fact that shapes all of them: there are THREE default / override
+pointers today and only one is read. (a) `billing_profiles.location_id` is the forward pointer - the
+only one `resolveBillingProfileForLocation` reads (storage.ts :4132: an active row with location_id =
+this location, else the active account-level rows (location_id null) with isDefault first, else the
+first; it reads through `db`, not the caller's tx). (b) `locations.billing_profile_id` (schema.ts :70) is
+the legacy reverse pointer: the resolver never reads it, but `getCustomerDetailCompat.hasBillingOverride`
+(:3791, `relatedLocations.some((l) => !!l.billingProfileId)`) and both "Billing Override" badges
+(customer-detail.tsx :4086 the switcher row, :4146 the Location Profile card) do, and the header chip
+`chip-billing` (:4033-4034) prints "Per-location" / "Default" from it - "Default" even when no profile
+exists at all. (c) `customers.default_billing_profile_id` (schema.ts :20) is read by nothing on the
+server or the client (set for one customer on the dev DB). Decide and state, in the pass:
+(1) which pointer is the truth - recommend `billing_profiles.location_id` (canon §4's shape, the
+resolver's, Pass 11c's invoice parties): the compat read and the two badges switch to it (the compat
+read gains a `billing` projection - recommend { source: "ACCOUNT_DEFAULT" | "LOCATION_OVERRIDE" |
+"NONE", profileId, label, billingType, invoiceTerms } for the selected location, resolved by the same
+resolver, so the chip reads "Billing: <label> (account default)" / "<label> (this location)" / "No
+billing profile" - real data, dev rule 6); `locations.billing_profile_id` either kept in sync by the
+profile write path (write both) or retired from every reader and left as a dead column for a later
+cleanup (recommend: retire the readers, keep writing it for now so Pass 11c's bootstrap backfill stays
+true, note the column for C5.5-style hygiene); `customers.default_billing_profile_id` - say it is dead
+(no reader) and leave it, or drop it in the pass (a column drop = the copy-database recipe; recommend
+leave, say so);
+(2) the org default - recommend one `app_settings` key `default_billing_profile_template_id` in a new
+`shared/billing-profile-defaults.ts` on Pass 31's one-key pattern (shared/dispatch-board.ts :41-68:
+the key, no seed row - the reader returns null = no default; `GET /api/settings/billing-defaults` open,
+`PATCH` under MANAGE_SETTINGS, 400 when the template is unknown or inactive; storage
+`getBillingDefaults` / `setBillingDefaults` beside `getDispatchBoardSettings` :8845 /
+`setDispatchBoardSettings` :8866 / `readDispatchBoardSettingsTx` :8849); a "Billing defaults" card on
+Settings (settings.tsx: the Dispatch Board card :2770-2852 is the pattern - `canManageSettings` :1731,
+disabled with "Only an admin can change this setting." :2850) with a select over the active templates
+(`GET /api/billing-profile-templates`, :1275) and "None"; say whether the settings write is audited
+(none of the set* app_settings writers is, and there is no `app_setting` entity type - recommend not in
+this pass, note it);
+(3) creation - `createCustomerWithPrimaryLocation` (storage.ts :3703; route :900, body
+createCustomerWithLocationSchema :99 { customer, location, initialContact? }) creates the account-default
+`billing_profiles` row from the org default template when one is set (accountId = the new account,
+locationId null, templateId, label = the template's name, billingType, invoiceTerms =
+defaultInvoiceTerms, isDefault true, status active), inside the same transaction, audited `created`
+(Pass 32's `auditCreatedTx`, entity `billing_profile`); no template set = no profile (the resolver
+returns undefined, as today); `createLocation` :3981 / `createLocationWithPrimaryContact` :3991 create
+nothing (a location inherits); say whether existing accounts with no profile get one (recommend no
+backfill - the owner sets the default and new customers take it; an existing account gets its default
+the first time someone picks "account default" with no row, or never);
+(4) the selector in Add / Edit Location (customer-detail.tsx `AddLocationDialog` :670,
+`EditLocationDialog` :880; the forms' fields are in the Pass 34 inventory) - "Billing" radio: inherit the
+account default (the row's label shown, "no account default yet" when none) | override for this
+location, the override's fields (label, billingType, invoiceTerms when invoice_terms, billingName,
+billingAddress; the card / ACH tokens are Phase 6's - never typed here); on save the override row is
+created (`POST /api/billing-profiles` :1316) or updated (`PATCH /api/billing-profiles/:id` :1327) or,
+when switching back to inherit, retired - recommend `status: "inactive"`, never deleted: invoices carry
+`billingProfileSnapshot.profileId` (schema.ts :928) and the resolver already filters on active - and
+`locations.billing_profile_id` written alongside (decision 1); the account default's fields editable on
+the primary location's EditLocationDialog identity block (the inventory: there is no separate customer
+edit modal - the primary location's dialog IS the customer editor, Pass 30's precedent for "Apply to all
+locations"), so "account default on the customer edit modal" means that block: the account-default
+row's label / type / terms / billing name / address, created there from the org default (or blank) when
+the account has none;
+(5) the permission - the billing-profile and template routes have NO requirePermission today (:1275-1332);
+decide: templates are Settings (recommend MANAGE_SETTINGS on their POST / PATCH, matching every other
+settings write; the Settings card's Add / Edit then disable for a non-admin as the other cards do), profile
+instances are customer data (recommend open to every role like the location PATCH, or support+ - say);
+(6) the audit read's comment - `getAuditLogsForLocation` (storage.ts :2201) pulls the account's profiles
+(`accountId = X`, so sibling locations' overrides ride along) while its comment says "own override and
+the account's default": decide (recommend: narrow to the location's own override + the account's
+location-less rows, now that the customer-level History (Pass 33) carries every override with its
+location), and keep `getAuditLogsForCustomer` :2245 as it is;
+(7) the invoice side - `resolveInvoiceTermsForLocationTx` :10456 / `resolveInvoicePartiesTx` :10423 /
+`computeDueDateFromInvoiceTerms` :1879 / `statementBillToTx` :13588 read the resolver; nothing changes
+there, but the smoke test proves an invoice issued after an override is chosen carries that profile's
+snapshot and terms (the Pass 19 invoiced-visit fixture: post, finalize, generate-from-service-record);
+(8) the fee dialog's note (add-fee-adjustment-dialog.tsx :45-46 "A 404 means no profile resolves") and
+service-completion-dialog.tsx :271 ("the billing-profile display waits for C5.2") - the ticket header
+shows the resolved profile's label / terms beside the billing-plan pill, or say why not (recommend yes,
+one line, read from `GET /api/locations/:id/billing-profile` :1310 which already exists).
 
-Ground truth today (line numbers from the working tree at the end of Pass 32; they drift, the names do
-not; the inventory came from a read-only Explore subagent at the start of Pass 32 on the tree before
-its edits, with storage.ts / routes.ts / shared/audit.ts re-grepped after them; the client files,
-shared/permissions.ts and server/auth.ts were not changed by Pass 32 beyond customer-detail.tsx's one
-comment, one import and eleven invalidateAuditViews() calls):
-- shared/audit.ts (320 lines): AuditEntityType :34-48 (15 members: customer, location, contact,
-  billing_profile, billing_profile_template, invoice, invoice_line_item, service, service_record,
-  payment, credit_memo, agreement, agreement_template, opportunity, appointment); AuditAction :147-183
-  (35 members: update, created, status_changed, deleted + the 31 financial / scheduling ones; no
-  `reverted`); ENTITY_TYPE_LABELS :184 / ACTION_LABELS :202 (Record<Union, string> - every new member
-  needs a label or npm run check fails); DIFF_IGNORED_FIELDS :268 (id, orgId, org_id, updatedAt,
-  updated_at, updatedByUserId, updated_by_user_id; not exported); diffAuditSnapshots :279 ([] unless
-  both sides are plain objects); auditChangeAction :299 ("update" | "status_changed" | null);
-  auditSnapshotsDiffer :305. Importers: server/storage.ts (auditChangeAction + the types),
-  client/src/components/audit-log-entry-card.tsx.
-- server/storage.ts (13521 lines): AuditActor :369; SYSTEM_AUDIT_ACTOR :378; AuditLogEntry :383;
-  recordAuditLogTx :1933 (the only writer; no public form); auditCreatedTx :1956 / auditChangeTx :1960
-  (returns false and writes nothing when auditChangeAction is null) / auditDeletedTx :1967;
-  agreementAuditSnapshotTx :1975 ({ ...row, soldBy }); serviceAuditSnapshot :1811 (curated: id,
-  status, customerId, locationId, appointmentId, lastAppointmentId, assignedTechnicianId, agreementId,
-  serviceTypeId, source, workKind, answersServiceId, expectedDurationMinutes, priceCents, dueDate,
-  generatedForDate, serviceWindowStart/End, timeWindow, schedulingMode, notes, the four field-review
-  columns); appointmentRowAuditSnapshot :1873 (status, customerId, locationId, agreementId, source,
-  assignedTechnicianId, serviceId, serviceTypeId, generatedForDate, scheduledDate, scheduledEndDate,
-  timeInAt, timeOutAt, durationMinutes, lockTime, lockTechnician, assignedTo, notes, the cancel /
-  reschedule fields) and appointmentAuditSnapshot :1903 (+ services); getAuditLogsForEntity :1983;
-  getAuditLogsForLocation :2002 (location.customerId + accountId; contacts by location; billing
-  profiles by location OR the account; invoices, tickets, services, payments, credit memos,
-  agreements, opportunities, appointments by locationId; allRefs :2072; OR of (entityType, inArray),
-  newest first, clampAuditLogLimit); IStorage has getAuditLogsForEntity / getAuditLogsForLocation only
-  (the public recordAuditLog is gone). The write paths a revert would replay: updateCustomer :3401
-  (actor; bare set), updateLocationProfile :3462 (location + optional customer, whole rows, the Pass 32
-  guard), updateContact :3627 (demotes siblings when isPrimary), setPrimaryContact :3658,
-  updateLocation :3733 (re-resolves accountId, the invariant inside its tx), setPrimaryLocation :3761,
-  updateBillingProfileTemplate :3793, updateBillingProfile :3823, updateAgreementTemplate :5276,
-  updateAgreement :5335 (throws on status -> CANCELLED; normalizeAgreementUpdate stamps
-  updatedByUserId; resolveBillingPlanChangeTx on a plan change; assertOrgUserTx on soldBy; the
-  initial-appointment sync; generateAgreementServicesForLocation after), updateAppointment :5795
-  (409 CANCEL_DISPOSITION_REQUIRED on CANCELED; the exclusion / preference checks on a technician
-  change; syncServicesForAppointmentTx; notes -> composition row, else `update`), updateService :4171
-  (SERVICE_CANCEL_REQUIRED / SERVICE_REMOVE_REQUIRED 409, SERVICE_TYPE_LOCKED / SERVICE_INSTRUCTIONS_LOCKED 403,
-  work_kind_changed + `update`). Pass 30's account-scoped preference rows are written on the
-  `customer` (setTechnicianPreference :6207 / clearTechnicianPreference :6283: entityType scope ===
-  "ACCOUNT" ? "customer" : "location"). getCustomerDetailCompat (:3503) lists the screen's locations
-  by accountId via resolveAccountIdForLegacyCustomer; getLocations(customerId) (:3676) by customerId.
-- server/routes.ts (3675 lines): getAuditActor :74; auditLogQuerySchema :154 (locationId | entityType
-  + entityId; limit coerce int positive); GET /api/audit-logs :1377 (ungated like every read; the
-  comment :1362-1376 says read-only, no POST / PATCH / DELETE counterpart for the table); the entity
-  PATCHes: customers :997 (insertCustomerSchema.partial(); notes rerouted to a scoped note), contacts
-  :1054 (updateContactSchema pick + the phoneType check), locations :1153 (insertLocationSchema.partial()),
-  the profile :1165 (updateLocationProfileSchema :111-126; the primary-only customer edit, the type and
-  companyName checks, the four required identity fields), billing-profile-templates :1287 /
-  billing-profiles :1322 (.partial()), agreement-templates :2045, agreements :2095 (ASSIGN_SALE_CREDIT
-  on a sold-by change), appointments :2264, services :1870. requirePermission: server/auth.ts :109
-  (403 { message }, no code). shared/permissions.ts: PERMISSIONS :3-80, ROLE_PERMISSIONS :89-139
-  (technician :90-95, support :96-109, manager :110-137, admin :138 = Object.values), can :141,
-  rolesWithPermission :146. Client: no useCan hook; each site calls can(user?.role ?? "",
-  PERMISSIONS.X) with useAuth() (customer-detail.tsx :122, :1556, :2660, :2666, :3143, :3736);
-  useCanOverrideExclusion technician-preferences.tsx :367.
-- Client: customer-detail.tsx (4380 lines) - CustomerDetail :3716; ?tab allow-list :3741 (contacts,
-  agreements, services, invoices, communications, opportunities, history - note the comms trigger's
-  value is "comms", so ?tab=communications selects nothing: a pre-existing mismatch, fix it if you
-  touch the tab list); the compat read, the header card (its chips row :4018-4019: CustomerAgingChips,
-  TechnicianPreferenceChips), the toolbar (:4036+: the switcher, Add Location, Statement :4090, StatementDialog :4095), the location-scoped TabsList :4218+, the history
-  trigger :4229 and content :4365 (LocationHistoryTab :561, key [`/api/audit-logs?locationId=${id}`],
-  no limit -> 100, no paging); AuditLogEntryCard (audit-log-entry-card.tsx :45-82; formatAuditTimestamp
-  :12; formatAuditValue :29 - nested values JSON.stringify; the one-sided row's line :76); the invoice
-  modal reads ?entityType=invoice&entityId= (invoice-detail-dialog.tsx :203, showEntityType false :602).
-  invalidateAuditViews (client/src/lib/invalidate-audit-views.ts) is what every mutation calls; call it
-  after a revert too. AlertDialog exports: client/src/components/ui/alert-dialog.tsx :127-139.
-  UI_STANDARDIZATION_BRIEF.md: cards :36-43, tabs :45-51, "do not introduce buttons or tabs that are not
-  wired" :92-97.
-- audit_logs (shared/schema.ts :1283-1299): id, org_id, entity_type, entity_id, action, user_id (null
-  ok), actor_label (null ok), before_json / after_json (jsonb), created_at; indexes: pkey,
-  audit_logs_org_id_idx, audit_logs_entity_idx (org_id, entity_type, entity_id - Pass 32); no FK.
-- DB today (run the SQL, never trust a doc's data claim): 234 audit_logs before Pass 32's smoke (its
-  fixture rows were deleted; the owner's own use since may have added `created` / `update` rows -
-  count by entity_type, action); customers 10, accounts 10, locations 14 (4 customers with 2
-  locations, each 2), contacts 15, billing_profiles 2 (1 account-level with location_id null),
-  billing_profile_templates 2, agreements 25, agreement_templates 3, appointments 126, services 110,
-  service_records 77; 48 public tables; locations with a null account 0; customers without an account
-  0; technician_preferences 3, all LOCATION-scoped (no customer-entity preference rows yet).
-- Docs versus code, found by the inventory and left for you: PLAN_ROADMAP_V2.md A1 :46 cites
-  CustomerAgingChips at customer-detail.tsx:3661 (now :4018), :47 Make Primary at :3824-3835 (now
-  :4304) and "ContactForm :340-360" (it is ContactDialogForm :1134), :44 the Services tab at
-  :3054-3063 (ServicesTab :3111); server/auth.ts :108 says "see server/permissions.ts" (the file is
-  shared/permissions.ts); customer-detail.tsx's ?tab allow-list says "communications" while the trigger
-  is "comms". Fix the ones your pass touches; list the rest.
-- Docs to carry: the C5.1b row (mark done with the as-built); Part A1 :48 ("No revert" -> DONE);
-  B21 :317-322 (the revert sentence -> built); canon §17 (the revert sentence stays; add the
-  `reverted` action and who may); PLAN_BILLING_V1_1.md D7 :292 ("Built in Pass 33"); shared/permissions.ts'
-  C5.6 note if a permission is added; a "Shipped in Pass 33" record; CURRENT_FOCUS's Pass 33 entry and
-  "Next up" (phase order: Pass 34, C5.2 Billing profile on the customer screen - its spec is its row in
-  the Phase 5 table; say so and write that handoff unless I say otherwise).
+Ground truth today (line numbers from the working tree at the end of Pass 33; they drift, the names do
+not; the inventory came from a read-only Explore subagent at the start of Pass 33 on origin/main after
+PR #104, with the six files Pass 33 edited re-grepped after its edits):
+- shared/schema.ts: customers :7-22 (`defaultBillingProfileId` :20, no FK, no reader); accounts :26-35
+  (no billing column); locations :51-72 (`billingProfileId` :70, no FK in schema or DB);
+  billingProfileTemplates :77-88 (id, orgId, name, description, isActive, billingType card | ach |
+  invoice_terms | cash | check, defaultInvoiceTerms, sortOrder, timestamps); billingProfiles :95-113
+  (accountId notNull, locationId nullable = account level, templateId, label notNull, billingType,
+  billingName, billingAddress, cardOnFileToken, achToken, invoiceTerms, lastFour, isDefault, status,
+  timestamps; the `.references()` on accountId / locationId / templateId are NOT in the DB - the
+  bootstrap only adds columns); appSettings :593-600 (orgId, key, value text, updatedAt; PK (orgId,
+  key)); insertBillingProfileTemplateSchema :1323 / insertBillingProfileSchema :1324 (omit orgId, id,
+  timestamps); insertCustomerSchema :1319 includes defaultBillingProfileId; insertLocationSchema :1322
+  includes billingProfileId; invoices.billingProfileSnapshot :928.
+- server/billing-profile-bootstrap.ts (`bootstrapBillingProfiles` :14, server/index.ts :120): creates
+  billing_profile_templates, ALTERs billing_profiles (no REFERENCES), migrates the reverse pointer into
+  the forward one (`SET location_id = l.id` :61), indexes on account_id / location_id. No
+  `default_billing_profile_template_id` anywhere (code, app_settings, bootstraps). server/seed.ts :64-69
+  seeds four templates (Card on File, ACH Autopay, Net 30 Invoice, Due on Receipt) - the dev DB has
+  different ones, so the seed never ran there.
+- server/storage.ts (13810 lines): CustomerDetailCompatProjection :351 ({ legacyCustomer, account,
+  primaryLocation, selectedLocation, relatedLocations, hasBillingOverride }); CreateCustomerWithPrimaryLocationInput
+  :514; createCustomer :3679 (no profile); createCustomerWithPrimaryLocation :3703 (customer, account,
+  primary location, optional contact, no profile, no setting read); getCustomerDetailCompat :3791;
+  createLocation :3981 / createLocationWithPrimaryContact :3991 (spread any billingProfileId passed, no
+  profile handling); getBillingProfileTemplates :4061 (active only unless includeInactive);
+  createBillingProfileTemplate :4073 (its comment: "the template is the org default C5.2 will read at
+  customer creation"); getBillingProfilesForAccount :4099 (every row, no status filter);
+  createBillingProfile :4103 / updateBillingProfile :4111 (audited; neither checks that locationId
+  belongs to accountId, enforces one isDefault, nor touches locations.billingProfileId);
+  resolveBillingProfileForLocation :4132; the app_settings pattern getDispatchBoardSettings :8845 /
+  readDispatchBoardSettingsTx :8849 / setDispatchBoardSettings :8866 (upsert `onConflictDoUpdate` on
+  [orgId, key], only the changed keys; no generic getSetting / setSetting; none of the set* writers is
+  audited); resolveInvoicePartiesTx :10423 (Bill To: the profile's billingAddress, else the override's
+  own address, else the primary location); resolveInvoiceTermsForLocationTx :10456; statementBillToTx
+  :13588; computeDueDateFromInvoiceTerms :1879 (DUE_ON_RECEIPT / NET_15 / NET_30 / NET_60);
+  getAuditLogsForLocation :2201 (the account's profiles ride along); getAuditLogsForCustomer :2245.
+- server/routes.ts (3740 lines): createCustomerWithLocationSchema :99; GET /api/customer-detail-compat
+  :840; POST /api/customers :877; POST /api/customers/create-with-primary-location :900; POST
+  /api/locations :1103; PATCH /api/customers/:customerId/locations/:locationId/profile :~1165
+  (updateLocationProfileSchema :111-126 omits customerId / accountId / isPrimary from the location and
+  picks six customer fields - `billingProfileId` passes, `defaultBillingProfileId` cannot); the billing
+  routes, all UNGATED: GET /api/billing-profile-templates :1275 (?includeInactive=true), POST :1281,
+  PATCH :1292 (updateBillingProfileTemplateSchema = .partial()), GET /api/accounts/:accountId/billing-profiles
+  :1305, GET /api/locations/:locationId/billing-profile :1310 (the resolver; 404 "No billing profile
+  resolved for this location"), POST /api/billing-profiles :1316, PATCH /api/billing-profiles/:id :1327;
+  the settings routes: every GET open, every PATCH MANAGE_SETTINGS except service-time-tracking :2696
+  (still ungated, noted since Pass 31); dispatchBoardSettingsSchema :419; GET / PATCH
+  /api/settings/dispatch-board :2833 / :2838. requirePermission: server/auth.ts :109. MANAGE_SETTINGS is
+  admin only (shared/permissions.ts :148 admin = Object.values; the manager set :119-147 holds
+  REVERT_HISTORY since Pass 33 but not MANAGE_SETTINGS).
+- Client: customer-detail.tsx (4414 lines) - CustomerDetailCompatResponse :92 (hasBillingOverride :97;
+  no `account` field though the server returns one; `BillingProfile` imported and unused);
+  AddLocationDialog :670 ({ customerId, customerType, onClose }: nickname, firstName, lastName, email,
+  phone, source, address, city, state, zip, propertyType, isPrimary, gateCode, squareFootage + the
+  preference drafts; POST /api/locations { location, initialContact }, then the preference PUTs,
+  invalidates the compat predicate, contacts and invalidateAuditViews(); NO billing selector);
+  EditLocationDialog :880 ({ customer, location, totalLocations, onClose }: firstName, lastName,
+  companyName, email, phone, customerType, name, address, city, state, zip, propertyType, source,
+  squareFootage, gateCode, setAsPrimary; the "Customer identity" block on the primary location; PATCH
+  .../profile { location, customer? } then set-primary; embeds TechnicianPreferencesEditor; NO billing
+  selector); hasBillingOverride :3773; the chip `chip-billing` :4033-4034; the switcher's "Billing
+  Override" badge :4086; the Location Profile card's `badge-billing-override` :4146; the toolbar: the
+  switcher, Add Location, Statement :4108, History :4125 (Pass 33). customers.tsx :70-98 posts
+  create-with-primary-location with customer, location (name "Primary Location") and initialContact -
+  nothing billing-related. settings.tsx (Settings :1649): BillingProfileTemplateForm :434-508 (name,
+  description, billingType, defaultInvoiceTerms when invoice_terms, isActive, sortOrder; POST / PATCH
+  :457-458; invalidates ["/api/billing-profile-templates?includeInactive=true"] :462; the query :1722);
+  the Billing Profile Templates card :2010 (its Add / Edit NOT gated by canManageSettings - matching the
+  ungated route); canManageSettings :1731; the Dispatch Board card :2770-2852 (the settings-card pattern:
+  useQuery with a DEFAULT fallback, a PATCH mutation of a partial, selects saving on change, "Only an
+  admin can change this setting." :2850). No screen creates or edits a billing profile INSTANCE; reads
+  only: add-fee-adjustment-dialog.tsx :45-52 and :135-136 (["/api/locations", id, "billing-profile"],
+  404 = none), invoice-detail-dialog.tsx :312, :499-545 (the snapshot display);
+  service-completion-dialog.tsx :271 ("the billing-profile display waits for C5.2").
+- DB today (run the SQL, never trust a doc's data claim): billing_profiles 2 - `dded27ea-...` "Corporate
+  Card" (card, last_four 4242, is_default t, account `db19381a-...` = customer `1bd31e91-...` Sarah Chen /
+  Golden Gate, location_id NULL = the account default) and `8fa46a3a-...` "Westside Invoice"
+  (invoice_terms, invoice_terms NULL, location_id `50ed9f99-...` Westside Location, and
+  locations.billing_profile_id matches); billing_profile_templates 2 - `78658bf4-...` COD (invoice_terms,
+  DUE_ON_RECEIPT, sort 0) and `93ada57d-...` Test Net 15 (NET_15); no profile references a template;
+  locations 14 (1 with billing_profile_id); accounts 10; customers 10 (1 with default_billing_profile_id
+  = Corporate Card); app_settings 7 rows (appointment_cancel_reschedule_reasons,
+  attach_service_report_to_invoices true, dispatch_snap_minutes 15, dispatch_view_interval_minutes 60,
+  invoice_on_finalize PROMPT, service_time_tracking_mode PROMPT_FOR_TIMEOUT, ticket_reopen_reasons), no
+  default_billing_profile_template_id; invoices by snapshot profileId: Corporate Card 18, Westside 1,
+  null 59; audit_logs 236 at the start of Pass 33 (its fixture rows were deleted; the owner's own use
+  since may have added rows - count by entity_type, action; billing_profile rows 0 before Pass 33's
+  smoke). Golden Gate's two locations both RESOLVE a profile; the other nine accounts have none.
+- Docs versus code, found by the inventory and left for you: PLAN_ROADMAP_V2.md :58 cites
+  customer-detail.tsx:3633,3659 for the badges (now :4086 / :4146) and storage.ts:2522 for the
+  resolver (now :4132), and its "account default" means billing_profiles rows with location_id null,
+  not customers.defaultBillingProfileId; :59 should say the column is never read; CURRENT_FOCUS.md :591
+  ("null when no profile resolves, which is every location on the dev DB until C5.2"), :411-412 and
+  PLAN_ROADMAP_V2.md :728-729, :1123-1125 claim no location resolves a profile on the dev DB - wrong
+  (Golden Gate's two do; 19 invoices carry a profileId); the true narrower claim is "no screen can
+  create or assign one, and nine accounts have none" (PLAN_BILLING_V1_1.md :180-183 is accurate); canon
+  §4's field list omits locationId, templateId and lastFour, and its "primary location / account
+  context provides the default" is account-level rows only in code (there is no primary-location-scoped
+  profile); schema.ts's `.references()` on billingProfiles are not in the DB; the getAuditLogsForLocation
+  comment (decision 6); every set* app_settings write is unaudited (decision 2); server/seed.ts's
+  templates differ from the dev DB's. Fix the ones your pass touches; list the rest.
+- Docs to carry: the C5.2 row (mark done with the as-built); A1 :58-59; B-item :307 (what Phase 6 needs
+  now exists); :728, :1125, :1138; PLAN_BILLING_V1_1.md :181 and :280; CURRENT_FOCUS.md :411, :591,
+  :951; canon §4 (the field list, the inheritance sentence) and the Scope Rules if the shape changes;
+  shared/schema.ts :90-94's comment; the storage comment above createBillingProfileTemplate;
+  service-completion-dialog.tsx :271; a "Shipped in Pass 34" record; CURRENT_FOCUS's Pass 34 entry and
+  "Next up" (phase order: Pass 35, C5.3 Agreement vocabulary - its spec is its row in the Phase 5 table
+  :404; say so and write that handoff unless I say otherwise).
 
-Build per C5.1b: (1) shared/audit.ts `reverted` + label; shared/permissions.ts REVERT_HISTORY (manager
-set); (2) storage - getAuditLogsForCustomer (the union, each row annotated with its location) and
-revertAuditLogEntry (the revertable test, the replay through the entity's path, the `reverted` row, the
-409 codes in a small error class the way ServiceCompositionError works); (3) routes - the customerId
-form of GET /api/audit-logs and POST /api/history/:auditLogId/revert (requirePermission), the error
-class mapped to its codes; (4) client - the customer-level History surface (recommend the toolbar
-button + Sheet), the Revert button and confirm on AuditLogEntryCard for revertable rows under can(),
-invalidateAuditViews() plus the entity's reads after, the one-sided row's snapshot rendered; (5) docs
-as above. Not touched: the per-location History tab's query (it stays), the financial rows, the
-service / appointment / opportunity / preference rows' revert (refused with a code, decided), a
-`created` / `deleted` revert, C5.6's role profiles (the permission is the interim), FB-020 / C4.6.
+Build per C5.2: (1) shared/billing-profile-defaults.ts (the key, the reader's null default, the
+normalizer) and the settings read / write + the Settings card; (2) storage - the compat read's `billing`
+projection, the creation of the account-default profile from the org default inside
+createCustomerWithPrimaryLocation (audited), the override create / update / retire path (through the
+existing writers; `locations.billing_profile_id` per decision 1), any guard the writers need (an
+override's locationId must belong to its accountId; one active default per account); (3) routes - the
+settings routes, the gates per decision 5, whatever the selector needs beyond the existing
+billing-profile routes (recommend nothing new: the dialogs call POST / PATCH /api/billing-profiles and the
+profile PATCH); (4) client - the selector in Add / Edit Location, the account default's fields on the
+primary location's identity block, the chip and the two badges reading the projection, the Settings
+card, the ticket header's one line (decision 8); (5) docs as above. Not touched: Phase 6's card / ACH
+capture (the tokens stay untyped; last four is C6.1), QBO, the statement's Bill To rules (Pass 15), the
+invoice document (Pass 11c), FB-020 / C4.6, a column drop unless you decide one (then the copy-database
+recipe).
 
 Environment: Node 24.21.0, npm run dev:full (restart it before manually testing), DEV_NOTES.md for the
 DB backup / restore, the copy-database recipe and the PowerShell traps, gh logged in so the session
-can open the PR. Verify on PORT=5001 as the previous passes did: a pass with no table / column change
-verifies against the shared dev DB (Pass 32 did; its index is already there); the previous session's
-scratchpad (C:/Users/Austin/AppData/Local/Temp/claude/c--Dev-PestFlow/<session>/scratchpad - the
-newest holds patch.cjs (it takes absolute paths now), boot.sh, stop.sh, counts.sql, smoke32.mts,
-replace-handoff.cjs, pass33-inventory.md) is the starting kit. In a smoke test send
-`Connection: close` on every fetch (a pooled keep-alive socket goes stale during slow SQL checks and
-the next request dies with ECONNRESET - Pass 32 lost a run to it), and clean up a hard-deleted
-entity's audit rows by the customerId its snapshots carry. npm run check; double boot (boot 2 prints
-only "serving on port 5001" with every table count unchanged); the pass's API smoke test as all four
-roles (a fixture customer with two locations and rows on both and on the customer; the customer read
-returns the union newest first with each row's location named, the account-default profile's rows
-included, the templates' excluded; a revert of a customer `update` as manager - the entity row back to
-`before`, ONE `reverted` row naming the source (or two, as decided), the read refreshed; the same as
-support 403; a revert of a `created` row, a financial row, a service row and a stale row each refused
-with its code and nothing written; a revert that the entity's path refuses (an agreement row whose
-before is CANCELLED) passes the 400 through; the fixture deleted in FK order with its rows, counts back
-at baseline) and a Vite 200 on every touched client module; state plainly what was not rendered - the
-History sheet and the Revert confirm cannot be judged without a browser.
+can open the PR. Verify on PORT=5001 as the previous passes did: a pass with no column drop verifies
+against the shared dev DB (Passes 31-33 did) with the smoke test snapshotting and restoring the
+app_settings row it owns; the previous session's scratchpad
+(C:/Users/Austin/AppData/Local/Temp/claude/c--Dev-PestFlow/<session>/scratchpad - the newest holds
+patch.cjs (absolute === FILE paths), boot.sh (re-point its S= line), stop.sh, counts.sql, smoke33.mts,
+replace-handoff.cjs, pass34-inventory.md) is the starting kit. In a smoke test send `Connection: close`
+on every fetch, derive the cleanup from the DB by the fixture email, and clean a hard-deleted entity's
+audit rows by the customerId its snapshots carry. npm run check; double boot (boot 2 prints only
+"serving on port 5001" with every table count unchanged; no migration unless you add one); the pass's
+API smoke test as all four roles (the setting's GET open and PATCH 403 / 200 / 400 unknown template;
+a customer created with the default set gets an account-default profile audited `created`, without it
+none; a second location inherits (the resolver answers the account default; the compat projection says
+ACCOUNT_DEFAULT); an override chosen on it (the row created, the projection LOCATION_OVERRIDE, the
+badge's source), edited, then switched back to inherit (the row inactive, never deleted, the projection
+back to ACCOUNT_DEFAULT); an invoice issued on the override location carries that profile's snapshot
+and terms; the account default's fields edited from the primary location's dialog path; the template
+routes' gates; the History reads (Pass 32 / 33) listing the profile rows with the right location; the
+fixture deleted in FK order with its rows, the app_settings row restored, counts back at baseline) and a
+Vite 200 on every touched client module; state plainly what was not rendered - the selector, the
+Settings card and the chip cannot be judged without a browser.
 
 Working agreement as always: one pass, one branch, update CURRENT_FOCUS and the roadmap's pass table at
 the end, replace the handoff prompt at the end of CURRENT_FOCUS.md with the one for the next pass (phase
-order: Pass 34, C5.2, unless I say otherwise), push, open the PR and stop. I merge.
+order: Pass 35, C5.3, unless I say otherwise), push, open the PR and stop. I merge.
 ```

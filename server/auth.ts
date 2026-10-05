@@ -105,7 +105,7 @@ export const attachOrgStorage: RequestHandler = (req, res, next) => {
 };
 
 // Must run after requireAuth. 403s if the logged-in user's role doesn't
-// carry the given permission - see server/permissions.ts for the matrix.
+// carry the given permission - see shared/permissions.ts for the matrix.
 export function requirePermission(permission: Permission): RequestHandler<any> {
   return (req, res, next) => {
     if (!req.user || !can(req.user.role, permission)) {

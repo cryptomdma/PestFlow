@@ -38,14 +38,14 @@ are calibrated to Phase 1's: Pass 6 (four tables, routes, three dialogs) is the 
 | Names/addresses hyperlinked — dispatch board cards | DONE | `schedule.tsx:998-1012` customer label navigates to `/customers/:id?locationId=` |
 | … — dispatch appointment sheet, hover card, Service Details dialog | ABSENT | `schedule.tsx:220-225, 370-371, 1036` plain text |
 | … — Service Ticket Review list + modal | PARTIAL | plain text at `service-ticket-review.tsx:486, 538, 546`; only an "Open Location" button at `:648`; batch rows plain at `:695` |
-| … — Service History page / location Services tab | ABSENT | `services.tsx:386` plain span; Services tab has no customer column (`customer-detail.tsx:3054-3063`) |
+| … — Service History page / location Services tab | ABSENT | `services.tsx:386` plain span; Services tab has no customer column (`ServicesTab`, `customer-detail.tsx:3123`) |
 | … — invoice rows | ABSENT | customer and location are plain text on both invoice surfaces |
 | Aging report (current/30/60/90/90+) | DONE — Pass 14 (2026-09-24) | `GET /api/reports/aging` behind the Reports page's Aging section, and `GET /api/customers/:id/aging` on the customer screen; buckets Current (0-30) / 31-60 / 61-90 / Over 90 **days since invoiced** (B20), derived in `shared/aging.ts` at read time, nothing stored. See "Shipped in Pass 14" at the end of Part D. Was: only `isOverdue()` in `invoices.tsx:56` (still the Overdue tile's due-date test, deliberately distinct) and an Overdue count in `reports.tsx:207` |
-| Customer-wide (all locations) balance in the header | DONE — Pass 14 (2026-09-24) | `CustomerAgingChips` beside the primary-location chip (`customer-detail.tsx:3661`): Open $X across all locations, the oldest bucket, on account, pending confirmation - a rollup of the locations; the balance still lives at each location. Was: the header card showed no money |
+| Customer-wide (all locations) balance in the header | DONE — Pass 14 (2026-09-24) | `CustomerAgingChips` beside the primary-location chip (`customer-detail.tsx:4036`): Open $X across all locations, the oldest bucket, on account, pending confirmation - a rollup of the locations; the balance still lives at each location. Was: the header card showed no money |
 | Location balance below location notes | DONE — Pass 14 (2026-09-24); placement revised in Pass 15b (2026-09-25, owner's note) | `LocationAgingSummaryRow` inside `LocationNotesPanel`, one row directly below the notes (Current always, other buckets only when owed, on account / pending, no invoice links); the full `LocationAgingStrip` with the invoices behind each bucket moved to the Invoices tab under the ledger panel. Was: the strip as a second card under the notes panel in the profile grid's right column. The Ledger panel's Balance card and the switcher's Open / on-account line (`getLocationBalancesByCustomer`) are unchanged and agree with it (verified) |
 | Preferred technician (location + customer level) | DONE — Pass 30 (2026-10-03) | `technician_preferences` (`shared/technician-preferences.ts`): PREFERRED (a hint) or EXCLUDED (B14's EXCLUDE_TECH - a hard block on placement with a manager's override), per location or for all of the account's locations ("Apply to all locations" on the primary location's Edit Location); chips on the customer header card (all locations) and the location profile card (what applies here); the dispatch queue row's "Prefers <tech>" / "Never <tech>" and the sheet's select. See "Shipped in Pass 30" at the end of Part D. Was: no column, no UI anywhere |
-| "Make Primary" inside the contact modal | PARTIAL | inline button on the contact card (`customer-detail.tsx:3824-3835`); the add/edit dialog already has an `isPrimary` checkbox (`ContactForm`, `:340-360`) |
-| Customer/account history log for all changes | DONE — Pass 32 (2026-10-04), the rows; the customer-level view and Revert are C5.1b (Pass 33) | Every create / update / status change of a customer, location, contact, billing profile (instance and org template), agreement, agreement template, appointment and service writes `audit_logs` inside its transaction (`server/storage.ts` `auditCreatedTx` / `auditChangeTx` / `auditDeletedTx` :1956-1971, called from `createCustomer` :3391 through `generateScheduleDrivenInvoice` :10877); `shared/audit.ts` gained `contact`, `billing_profile`, `billing_profile_template`, `agreement_template` and the actions `created` / `status_changed` / `deleted` (:34-48, :147-183); an unchanged save writes nothing (`auditChangeAction` :299); the location History read (`getAuditLogsForLocation` :2002) lists the contacts' and billing profiles' rows too. No `account` entity by decision (the primary flip is logged on the locations). See "Shipped in Pass 32" at the end of Part D. Was: only `updateLocationProfile()` wrote `customer` / `location` `update` rows, on every save. **No revert** and no per-customer rollup yet - C5.1b. |
+| "Make Primary" inside the contact modal | PARTIAL | inline button on the contact card (`customer-detail.tsx:4338`); the add/edit dialog already has an `isPrimary` checkbox (`ContactDialogForm`, `:1146`) |
+| Customer/account history log for all changes | DONE — Pass 32 (2026-10-04), the rows; Pass 33 (2026-10-05), the customer-level History and Revert | Every create / update / status change of a customer, location, contact, billing profile (instance and org template), agreement, agreement template, appointment and service writes `audit_logs` inside its transaction (`server/storage.ts` `auditCreatedTx` / `auditChangeTx` / `auditDeletedTx` :1956-1971, called from `createCustomer` :3391 through `generateScheduleDrivenInvoice` :10877); `shared/audit.ts` gained `contact`, `billing_profile`, `billing_profile_template`, `agreement_template` and the actions `created` / `status_changed` / `deleted` (:34-48, :147-183); an unchanged save writes nothing (`auditChangeAction` :299); the location History read (`getAuditLogsForLocation` :2002) lists the contacts' and billing profiles' rows too. No `account` entity by decision (the primary flip is logged on the locations). See "Shipped in Pass 32" at the end of Part D. Was: only `updateLocationProfile()` wrote `customer` / `location` `update` rows, on every save. **Pass 33 (C5.1b)** added the customer-level History (a sheet from the customer screen's toolbar over `GET /api/audit-logs?customerId=`: every location of the account plus the account-level rows, each row naming its location) and **Revert** (`POST /api/history/:auditLogId/revert`, manager+ `REVERT_HISTORY`: the fields a row changed are put back through the entity's own write path, recorded as one `reverted` row naming the source) - see "Shipped in Pass 33" at the end of Part D. |
 | Payment without an invoice (cash/check) | DONE | `record-payment-dialog.tsx:96` sends `applyToInvoiceId: null` when no invoice; opens from the ledger panel (location-level and per-invoice) and the Invoices screen |
 | Pre-payments / deposits (half-down at scheduling) | DONE | an unapplied payment designated to the agreement (`payments.designatedAgreementId`, `schema.ts:738`, D4); offered first by the D4 prompt and the field's "COA available" |
 | Payment application (+ release) UI | DONE | `ApplySourceDialog` (`location-ledger-panel.tsx:102-175`) applies one payment or credit memo to a chosen invoice; Release exists on applications; the D4 "Apply location balance" prompt fires after Generate and from open rows |
@@ -319,7 +319,12 @@ account is shown beside, never netted.
 new forward change that records what it reverted. **Owner:** agreed, old notes. C5.1. **Built:** the
 rows in Pass 32 (C5.1a - every non-financial create / update / status change, no `account` entity: the
 account's facts are logged on the location whose primary flag moved or on the customer); the
-customer-level view and Revert are C5.1b (Pass 33).
+customer-level History and Revert in Pass 33 (C5.1b, 2026-10-05): a History sheet from the customer
+screen's toolbar rolling up every location plus the account-level rows, and Revert on a row - the
+fields that row changed put back through the entity's own write path, recorded as a `reverted` row
+naming the source; manager+ (`REVERT_HISTORY`) until C5.6. A `created`, a `deleted`, a financial, a
+service / appointment / opportunity row and an agreement's cancellation are refused with a code - the
+inverse of each is its own workflow, never a revert.
 
 **B22. "Invoices are not being created upon finalization."** Resolved in Pass 5. Under the default
 `PROMPT`, "Later" creates nothing on purpose; `OFF` creates nothing at all. **Owner:** confirmed.
@@ -399,7 +404,7 @@ zones from C4.1b, and only the last exists by then.
 | # | Unit | Notes covered | Depends on | Open decision |
 |---|---|---|---|---|
 | C5.1a (**Pass 32**) — **done** (`feature/phase-5-audit-coverage`, 2026-10-04; see "Shipped in Pass 32" at the end of Part D) | **Non-financial audit coverage (D7 follow-up).** Every mutation of customer, location, contact, billing profile, agreement, agreement template, appointment, and service (create / update / status) writes the log through the existing helper, with new entity members in `shared/audit.ts`. Excludes `service_records` (C3.1's `ticket_edited`) and price overrides (Pass 8). As built: `contact`, `billing_profile`, `billing_profile_template`, `agreement_template` join `AuditEntityType` (no `account` - the primary flip is logged on the locations, the account's facts sit on the customer); `created` / `status_changed` / `deleted` join `AuditAction` beside the existing `update` (one member for "updated"); three private writers (`auditCreatedTx` / `auditChangeTx` / `auditDeletedTx`) write inside each method's transaction, a change only when the History tab's own diff would show something (`auditChangeAction`; `updateLocationProfile`'s always-write fixed), `status_changed` when `status` moved; whole-row snapshots for the simple entities (the agreement's with its sold-by user named), the curated `serviceAuditSnapshot` / `appointmentAuditSnapshot` grown for the two scheduling entities; the fourteen actor-less storage methods take `actor` and every route passes `getAuditActor(req)`; an agreement's own schedule executing - the generated service (also from the three write-on-GET routes), the recurrence advance, the billing run's `nextBillingDate` - signs as `SYSTEM_AUDIT_ACTOR`; `cancelAgreement`'s visits carry the disposition's cancel fields and a `status_changed` each; `deleteService` writes `deleted` (and no longer fails on the crew FK); the location History read lists the contacts' and the billing profiles' rows, the templates are read by `entityType` + `entityId`; `audit_logs_entity_idx` on (org_id, entity_type, entity_id); the dead public `recordAuditLog` removed; the client's five dead `["/api/audit-logs"]` invalidations replaced by `invalidateAuditViews()` and every mutation that now writes a row calls it. | Customer/account history log | — | — |
-| C5.1b (**Pass 33**) | **Customer-level History + Revert.** A History view on the customer that rolls up every location plus account-level rows; **Revert** on a row = a new forward update through the entity's normal write path, logged as `reverted` naming the source row; manager+ until C5.6 makes it a configurable permission (owner). | History for all changes; revert | C5.1a | — |
+| C5.1b (**Pass 33**) — **done** (`feature/phase-5-customer-history-revert`, 2026-10-05; see "Shipped in Pass 33" at the end of Part D) | **Customer-level History + Revert.** A History view on the customer that rolls up every location plus account-level rows; **Revert** on a row = a new forward update through the entity's normal write path, logged as `reverted` naming the source row; manager+ until C5.6 makes it a configurable permission (owner). As built: `GET /api/audit-logs?customerId=` (the third exclusive form) backed by `getAuditLogsForCustomer` - the account's locations (keyed on the account, the screen's own source; `locations.customerId` only for a legacy customer with no account row) with every record anchored to them, plus the customer's own rows, the account's billing profiles with no location and any contact with no location, newest first at the read's clamp, each row annotated `locationId` / `locationName` (null = "Account"); a **History** button on the customer screen's toolbar beside Statement opening a sheet with a location filter and a record-type filter (the tab list is location-scoped by canon, so no customer-level tab); the per-location History tab untouched. Revert: `POST /api/history/:auditLogId/revert` under `REVERT_HISTORY` (manager+; the table's own API stays read-only) - the storage plans it (`shared/audit.ts` `describeAuditRevertability`: `update` / `status_changed` / `reverted` rows of customer, location, contact, billing profile, the two templates and agreement; the entity must exist; the fields the row changed must still hold its after values, else 409 `HISTORY_STALE` with the current row), the route validates the planned payload with the entity's own zod schema and the agreement's sale-credit rule, and the entity's existing update method replays it - ONE `reverted` row (the write path writes it instead of its `update`, the after carrying `reverted` = { auditLogId, action, createdAt, actorLabel }), re-checking the fields inside its transaction. Refused with a code: `created` / `deleted` rows, the financial entities, service / appointment / opportunity rows, the special actions (preference set / clear...), an agreement's cancellation, a location made non-primary. The card renders a one-sided row's snapshot, the location chip, the "Reverted the ... of ..." line and the Revert button with an AlertDialog confirm; the reverted entity's own reads refresh. | History for all changes; revert | C5.1a | — |
 | C5.2 (**Pass 34**) | **Billing profile on the customer screen.** Selector in edit/add location (inherit account default / override), account default on the customer edit modal, org default template in Settings (`default_billing_profile_template_id`) used at customer creation; the "Billing: Per-location / Default" chip reads real data. | Billing profile from customer screen; add-location setup; default in settings | — | — |
 | C5.3 (**Pass 35**) | **Agreement vocabulary.** A settings-managed **Agreement types** list (seeded Pest control / Termite / Mosquito / Wildlife / Evaluation) with dropdowns on template and agreement; the existing free text migrated into entries the office can rename or merge; no hardcoded structure list (B8). `CUSTOM` recurrence → explicit DAY / WEEK with the `CUSTOM(N)` → `DAY(N)` migration (7 agreements, 2 templates). | Agreement Type dropdown; CUSTOM recurrence | — | — |
 | C5.4 (**Pass 36**) | **UI hygiene.** Hyperlinks on the dispatch sheet, hover card, Service Details dialog, pending-queue rows, the Ticket Review list and modal, and the Service History page; a details link from the pending queue (service details + location); the `schedulingMode` badge humanized ("Scheduling: auto-eligible") with no auto-schedule promise (dev rule 6); Make Primary moves into the contact dialog (inline button removed); New Service modal `max-w-2xl`. May be split across other passes that touch the same files. | Hyperlinks; pending-queue links; AUTO_ELIGIBLE pill; Make Primary; widen modal | — | — |
@@ -3838,6 +3843,150 @@ count unchanged. Vite 200 on the eight touched client modules and `shared/audit.
 in a browser:** the History tab's new rows (a `created` or `deleted` row prints "Recorded with no
 field-level differences" - the card renders only a two-sided diff; rendering a one-sided row's
 snapshot is C5.1b's, with the per-customer rollup and Revert).
+
+---
+
+**Shipped in Pass 33** (`feature/phase-5-customer-history-revert`, 2026-10-05) — the C5.1b row as built,
+the second Phase 5 row. No migration, no table, no column, no seed row; verified against the shared dev
+DB.
+
+```ts
+// shared/audit.ts                             AuditAction + reverted (36 members; label "Reverted"); AUDIT_REVERTED_MARKER ("reverted" - the key on a reverted row's after
+//                                             naming the source; on the diff's ignore list); AUDIT_LOG_DEFAULT_LIMIT 100 / AUDIT_LOG_MAX_LIMIT 500 (moved here from storage.ts);
+//                                             auditSnapshotDrift(expected, current) -> the fields of expected whose current value differs (the ignore list applies);
+//                                             AuditRevertedRef { auditLogId, action, createdAt, actorLabel } + extractAuditRevertedRef(after); REVERTABLE_AUDIT_ENTITY_TYPES
+//                                             (customer, location, contact, billing_profile, billing_profile_template, agreement_template, agreement) / RevertableAuditEntityType
+//                                             / isRevertableAuditEntityType; REVERTABLE_AUDIT_ACTIONS (update, status_changed, reverted); FINANCIAL_AUDIT_ENTITY_TYPES;
+//                                             HISTORY_REVERT_CODES (HISTORY_ROW_NOT_FOUND 404; HISTORY_CREATED_ / DELETED_ / FINANCIAL_ / ENTITY_ / ACTION_ / CANCELLATION_ /
+//                                             PRIMARY_ / SNAPSHOT_NOT_REVERTABLE, HISTORY_ENTITY_GONE, HISTORY_NOTHING_TO_REVERT, HISTORY_STALE - 409);
+//                                             describeAuditRevertability(row) -> { revertable: true, entityType, fields } | { revertable: false, code, reason } (pure; the
+//                                             client's button and the server's plan share it)
+// shared/permissions.ts                       REVERT_HISTORY ("revert_history") in the manager set (admin inherits via Object.values)
+// server/storage.ts                           AuditChangeOptions { action?: "reverted"; reverted?: AuditRevertedRef; expectFields? } - the last optional argument of updateCustomer,
+//                                             updateLocation, updateContact, updateBillingProfile, updateBillingProfileTemplate, updateAgreementTemplate, updateAgreement (IStorage
+//                                             too), handed to auditChangeTx(tx, type, id, before, after, actor, options?) which re-checks expectFields against `before` INSIDE the
+//                                             transaction (HistoryRevertError 409 HISTORY_STALE - the update rolls back) and writes `reverted` with after + { reverted } instead
+//                                             of the generic action; recordAuditLogTx returns the row id; AuditRef { entityType, entityId, locationId }; private
+//                                             collectLocationAuditRefs(locationIds) / queryAuditLogsForRefs(refs, limit) shared by getAuditLogsForLocation (the same rows as
+//                                             before) and getAuditLogsForCustomer(customerId, limit) -> AuditLogWithLocation[] (AuditLog & { locationId, locationName }, null =
+//                                             account level); HistoryRevertError(status 404 | 409, code, message, current?, drift?); planAuditLogRevert(auditLogId) ->
+//                                             AuditLogRevertPlan { row, entityType, entityId, fields, payload, expectFields, current, source }; revertAuditLogEntry({ auditLogId,
+//                                             payload?, actor }) -> AuditLogRevertResult { entityType, entityId, entity, source, revertedAuditLogId }; REVERT_STRIPPED_FIELDS /
+//                                             REVERT_ENTITY_STRIPPED_FIELDS / REVERT_TIMESTAMP_FIELDS / AGREEMENT_INITIAL_CHARGE_FIELDS; private readRevertableEntity(type, id)
+// server/routes.ts                            auditLogQuerySchema: locationId | customerId | entityType + entityId (exactly one form); GET /api/audit-logs?customerId=&limit=;
+//                                             POST /api/history/:auditLogId/revert (requirePermission REVERT_HISTORY): planAuditLogRevert -> the entity's own zod schema on the
+//                                             planned payload (revertPayloadSchemas) -> the agreement's ASSIGN_SALE_CREDIT rule -> revertAuditLogEntry; a HistoryRevertError
+//                                             answers { message, code, current?, drift? } (respondHistoryRevertError); zod 400s and the write path's own 400 { message } pass through
+// client/src/lib/invalidate-audit-views.ts    invalidateRevertedEntityViews(entityType) - the reverted entity's own reads, by query-key prefix
+// client/src/components/audit-log-entry-card.tsx  AuditLogEntry (AuditLog & { locationId?, locationName? }); useAuditLogRevert() (the mutation: POST, the toasts,
+//                                             invalidateAuditViews + invalidateRevertedEntityViews; a HISTORY_STALE refreshes History); AuditLogEntryCard({ entry, showEntityType?,
+//                                             canRevert?, onRevert?, revertPending? }) - the location chip ("Account" for null), the "Reverted the <action> of <date> by <label>"
+//                                             line, a one-sided row's snapshot (snapshotFields), the Revert button (canRevert && onRevert && describeAuditRevertability(entry)
+//                                             .revertable) and its AlertDialog confirm listing the fields that go back
+// client/src/components/customer-history-sheet.tsx  CustomerHistorySheet({ open, onOpenChange, customerId, customerLabel, locations }) - the rollup at AUDIT_LOG_MAX_LIMIT, a
+//                                             location filter (Every location / Account level / each location) and a record-type filter, the count badge, "Showing the latest
+//                                             500 changes" at the limit, the cards with Revert
+// client/src/pages/customer-detail.tsx        the toolbar's History button (button-account-history, every role) beside Statement + the sheet; LocationHistoryTab passes
+//                                             canRevert / onRevert / revertPending; ?tab=communications maps to the "comms" trigger (the pre-existing mismatch fixed)
+```
+
+**Decided (1), the read.** `?customerId=` is the third exclusive form of the one audit read, backed by
+`getAuditLogsForCustomer`. The locations are keyed on the **account** (canon §2: the account groups the
+locations, and the screen itself lists them by accountId in `getCustomerDetailCompat`); only a legacy
+customer with no account row falls back to `locations.customerId` (none on the dev data), and the read
+never creates an account the way the compat read's resolver does - a read should not write. The two
+reads share one ref collector (`collectLocationAuditRefs`) so the location tab and the rollup never
+disagree about what a location's History holds; the per-location read returns exactly the rows it did.
+Account level: the customer's own rows (its field changes, Pass 30's account-scoped preferences), the
+account's billing profiles with no location and any contact with no location; a location's override
+profile sits with its location. The org templates stay out, as on the tab. Each row is annotated
+`locationId` / `locationName` from the refs collected (one map, no second request); the clamp stands at
+500 and the client asks for exactly that, saying "Showing the latest 500 changes" when it got that
+many - paging is a later pass. **Decided (2), where it sits.** A **History** button on the toolbar
+beside Statement (Pass 15's customer-wide precedent) opening a right-hand sheet (the component the note
+revisions and the dispatch sheet use) with a location filter ("Every location" / "Account level" / each
+location) and a record-type filter; the account-level rows are folded into the one stream with an
+"Account" chip, not a separate section. The tab list is location-scoped by canon (UI rule 3), so there is
+no customer-level TabsList to add to; the per-location History tab is untouched. Open to every role - a
+read. **Decided (3), which rows revert.** The pure half lives in `shared/audit.ts`
+(`describeAuditRevertability`), run by the client to show the button and by the server before the
+database checks: `update`, `status_changed` and `reverted` rows (a revert is a forward change, so
+reverting one is another - a redo) of customer, location, contact, billing profile, the two org
+templates and agreement. Refused, each with its 409 code and nothing written: `created` (the inverse is
+a delete) and `deleted` (the inverse is a re-create with the old id) - out of scope, decided; the
+financial entities (D7: a void and a re-entry, never a revert); service, appointment and opportunity rows
+(curated snapshots, lifecycle moves the PATCHes refuse - a technician / time / notes revert on a visit is
+not special-cased, decided); every special action (the preference set / clear, the placement overrides,
+the crew change) - their write paths are their own; an agreement's cancellation (the `status_changed`
+whose after is CANCELLED: the cancel took visits and services with it; a new agreement, not a revert);
+a location made non-primary (the invariant would re-promote something at once - revert the row of the
+location that was primary before instead); a row whose entity is gone (`HISTORY_ENTITY_GONE`); and a
+row whose fields have moved since (`HISTORY_STALE`, the current row and the drift in the body). **The
+revert puts back the fields the row changed, not the whole row**: the plan intersects the row's diff
+with what the entity's write path accepts (never id / orgId / createdAt / the actor stamps / the
+ownership keys customerId, accountId, locationId on a contact / the agreement's derived
+billingPlanSnapshot, nextBillingDate, contractUploadedAt, expectedServiceCount, soldBy; the agreement's
+initial-charge block moves as one), and "stale" means those fields no longer hold the row's after values
+- so an unrelated later edit (someone else's, the billing run's) neither blocks the revert nor is
+clobbered by it, and a later row on the same field must be reverted first. **Decided (4), the write -
+ONE row.** `POST /api/history/:auditLogId/revert`, not under `/api/audit-logs` (the table's API stays
+read-only; this writes nothing to it directly). The storage plans, the route validates the planned
+payload with the SAME zod schema the entity's PATCH uses (a rule added since the row was written refuses
+the replay as a 400 the way the PATCH would; jsonb's ISO strings go back to Dates first) and applies the
+PATCH's own permission rule (an agreement's sale credit), then `revertAuditLogEntry` replays through the
+entity's existing update method with `AuditChangeOptions`: the method's own `auditChangeTx` writes
+`reverted` INSTEAD of its generic `update` / `status_changed` - the whole-row snapshots as any edit, the
+after carrying `reverted` = { auditLogId, action, createdAt, actorLabel } - after re-checking the
+fields against the row it replaced inside its transaction, so a concurrent edit rolls the revert back as
+409 rather than overwriting it. The write path's refusals pass through unchanged: `updateAgreement`'s
+"Use the agreement cancellation workflow" 400 (a row whose before is CANCELLED), `requireBillingPlanId`,
+`assertOrgUserTx`, the location invariant (reverting the row of the location that lost primary makes it
+primary again and writes the other location's `update` - two rows, the second a consequence), the
+contact's demotions. A plan change on an agreement re-derives `billingPlanSnapshot` and `nextBillingDate`
+as any plan change does, so that one replay is not pure (stated). **Decided (5), the vocabulary.**
+`reverted` joins `AuditAction` ("Reverted"); the marker key joins the diff's ignore list so it never
+reads as a field change and the stale check skips it; `diffAuditSnapshots` / `auditChangeAction` are
+otherwise unchanged; the read limits moved to the shared module so the client and the clamp agree.
+**Decided (6), the card.** `canRevert` + `onRevert` + `revertPending` props; the button only where the
+shared rule says the row is revertable; the confirm is an AlertDialog (the RESCHEDULE confirm's pattern)
+listing the fields that go back (after -> before) and saying a new change is recorded, nothing removed;
+after a revert `invalidateAuditViews()` plus the entity's own reads (`invalidateRevertedEntityViews`, by
+key prefix: the compat read, contacts, billing profiles, the templates, agreements); a one-sided row
+(`created` / `deleted`) renders its snapshot's non-empty fields instead of "no differences" - yes, this
+pass owns the surface; the rollup's rows carry a location chip, "Account" for the account-level ones; a
+`reverted` row says "Reverted the <action> of <date> by <label>" above its diff. **Decided (7), who.**
+`REVERT_HISTORY` in the manager set (Part E answer 8; C5.6 makes it a profile permission); each site
+calls `can(user?.role, PERMISSIONS.REVERT_HISTORY)` with `useAuth()` (there is no useCan hook, as before);
+support and technician see no button; the server answers 403 regardless. **Decided (8), account level.**
+The rollup's account-level rows are the customer entity's (its own field changes and Pass 30's
+ACCOUNT-scoped preference rows), the account's billing profiles with `location_id` null and any contact
+with no location; the primary flip sits on each location (named). Folded into the stream under an
+"Account" chip, selectable by the filter. **Fixed on the way:** `?tab=communications` selected nothing
+(the trigger's value is "comms") - both spellings land on the tab; `server/auth.ts` pointed at a
+`server/permissions.ts` that does not exist; the A1 citations for the aging chips, Make Primary, the
+contact form and the Services tab. **Verified** (PORT=5001 against the shared dev DB; no migration):
+`npm run check` clean; 63 smoke assertions on the first run - the shared rule and the drift helper pure,
+the permission's holders, a fixture customer with two locations, a contact on each, an account-default
+and an override billing profile, the templates, an agreement on the second location, a manual service;
+rows on both locations and the customer; the customer read as support: the union newest first, every row
+annotated (the customer's and the account-default profile's as account, the second location's contact,
+agreement and generated service as that location), the templates excluded, the three query forms
+exclusive, the per-location read unchanged; Revert as support and technician 403; a stale customer row
+409 with the current row and the drift; the newest customer row reverted as manager - the phone back,
+ONE `reverted` row by Heritage Manager with whole rows and the marker naming the source, its diff
+[phone]; the same row again 409 stale; the older row then revertable; a revert of a revert as admin;
+the read refreshed with the `reverted` row on top; a location, a contact (two fields), the
+account-default profile, a template and an agreement (soldBy on both sides, nextBillingDate untouched)
+reverted with one row each; the "became primary" row refused, the "lost primary" row stale while it is
+primary again, then reverted through the invariant (two rows); `created`, financial, service, preference
+set, unknown, `deleted`, the cancellation and a gone entity refused with their codes and nothing written;
+a row whose before is CANCELLED passes the write path's 400 through; every `reverted` row this run
+signed by the manager or the admin and naming an existing row; the fixture deleted in FK order, counts
+back at baseline (+4 session rows). Boot 1 and boot 2 print only "serving on port 5001"; every table
+count unchanged. Vite 200 on the four touched client modules and the two shared ones. **Not rendered in
+a browser:** the History sheet, its filters and the limit note, the Revert button, the AlertDialog
+confirm, the one-sided snapshot, the location chip and the "Reverted the..." line - the repo has no
+browser automation and the session had no browser; restart `npm run dev:full` before trying them.
 
 ---
 
