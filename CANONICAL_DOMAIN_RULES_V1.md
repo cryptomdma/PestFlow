@@ -1664,14 +1664,24 @@ The table is **append-only**. Rows are never updated or deleted — not by a rou
 method. A correction is a new forward row describing the correction, never a rollback of the log.
 "Revert to previous state" is itself a recorded change.
 
-Writes go through the single `recordAuditLog()` helper in `server/storage.ts`, called from inside
-the same transaction as the mutation being recorded so the row commits or rolls back with it. The
-actor comes from the session; no route accepts a client-supplied actor. A null actor means a
-system-driven write (e.g. the nightly billing run) — not an unknown user.
+Writes go through the single private `recordAuditLogTx()` helper in `server/storage.ts`, called from
+inside the same transaction as the mutation being recorded so the row commits or rolls back with it
+(there is no public, out-of-transaction form - the one that existed had no caller and left in Pass
+32). The actor comes from the session; no route accepts a client-supplied actor. A system-driven
+write - an agreement's own schedule executing (the service it generates, the recurrence advancing
+`nextServiceDate`, the billing run's `nextBillingDate`) - passes `SYSTEM_AUDIT_ACTOR` explicitly
+(`userId` null, `actorLabel` "System"); the History tab prints "System" for any null label. Every
+other row, derived writes included, is signed by the user whose request caused it.
 
 `entity_type` and `action` are plain text columns constrained at compile time by the
 `AuditEntityType` / `AuditAction` unions in `shared/audit.ts`, so the vocabulary can't drift the
-way `appointments.status` did before D1a.
+way `appointments.status` did before D1a. Since Pass 32 (C5.1a, D7's follow-up) every entity below
+carries a trail: customer, location, contact, billing profile (instance and org template), agreement,
+agreement template, appointment and service write `created` / `update` / `status_changed` /
+`deleted` rows beside the financial actions - a change only when the diff would show something, so
+an unchanged save leaves no row. There is no `account` entity: the account's facts are logged on the
+location whose primary flag moved or on the customer. `service_records`' content edits are D9's
+`ticket_edited`; a price change is Pass 8's `price_overridden`.
 
 ### Fields
 

@@ -876,7 +876,7 @@ export async function registerRoutes(
       const data = await req.storage.createCustomer({
         ...validated,
         notes: null,
-      });
+      }, getAuditActor(req));
       if (customerNotesBody) {
         await req.storage.saveScopedNote({
           scope: "ACCOUNT",
@@ -962,6 +962,7 @@ export async function registerRoutes(
           notes: null,
         },
         initialContact,
+        actor: getAuditActor(req),
       });
 
       if (customerNotesBody) {
@@ -1000,7 +1001,7 @@ export async function registerRoutes(
       const data = await req.storage.updateCustomer(req.params.id, {
         ...validated,
         notes: validated.notes !== undefined ? null : validated.notes,
-      });
+      }, getAuditActor(req));
       if (!data) return res.status(404).json({ message: "Customer not found" });
       if (customerNotesBody !== undefined) {
         await req.storage.saveScopedNote({
@@ -1042,7 +1043,7 @@ export async function registerRoutes(
         phone: normalizePhone(validated.phone) || null,
         phoneType: phoneType || null,
         role: validated.role?.trim() || null,
-      });
+      }, getAuditActor(req));
       res.status(201).json(data);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
@@ -1064,7 +1065,7 @@ export async function registerRoutes(
         phone: validated.phone === undefined ? undefined : normalizePhone(validated.phone) || null,
         phoneType: validated.phoneType === undefined ? undefined : phoneType || null,
         role: validated.role === undefined ? undefined : validated.role?.trim() || null,
-      });
+      }, getAuditActor(req));
       if (!data) return res.status(404).json({ message: "Contact not found" });
       res.json(data);
     } catch (e: any) {
@@ -1075,7 +1076,7 @@ export async function registerRoutes(
 
   app.post("/api/contacts/:id/set-primary", async (req, res) => {
     try {
-      const data = await req.storage.setPrimaryContact(req.params.id);
+      const data = await req.storage.setPrimaryContact(req.params.id, getAuditActor(req));
       if (!data) return res.status(404).json({ message: "Contact not found" });
       res.json(data);
     } catch (e: any) {
@@ -1125,11 +1126,12 @@ export async function registerRoutes(
               notes: null,
             },
             initialContact,
+            actor: getAuditActor(req),
           })
         : await req.storage.createLocation({
             ...locationPayload,
             notes: null,
-          });
+          }, getAuditActor(req));
       if (locationNotesBody) {
         await req.storage.saveScopedNote({
           scope: "LOCATION",
@@ -1139,7 +1141,7 @@ export async function registerRoutes(
         });
       }
       if (locationPayload.isPrimary) {
-        await req.storage.setPrimaryLocation(data.customerId, data.id);
+        await req.storage.setPrimaryLocation(data.customerId, data.id, getAuditActor(req));
       }
       res.status(201).json(data);
     } catch (e: any) {
@@ -1151,7 +1153,7 @@ export async function registerRoutes(
   app.patch("/api/locations/:id", async (req, res) => {
     try {
       const validated = insertLocationSchema.partial().parse(req.body);
-      const data = await req.storage.updateLocation(req.params.id, validated);
+      const data = await req.storage.updateLocation(req.params.id, validated, getAuditActor(req));
       if (!data) return res.status(404).json({ message: "Location not found" });
       res.json(data);
     } catch (e: any) {
@@ -1257,7 +1259,7 @@ export async function registerRoutes(
     try {
       const loc = await req.storage.getLocation(req.params.id);
       if (!loc) return res.status(404).json({ message: "Location not found" });
-      await req.storage.setPrimaryLocation(loc.customerId, loc.id);
+      await req.storage.setPrimaryLocation(loc.customerId, loc.id, getAuditActor(req));
       res.json({ success: true });
     } catch (e: any) {
       res.status(400).json({ message: e.message });
@@ -1274,7 +1276,7 @@ export async function registerRoutes(
   app.post("/api/billing-profile-templates", async (req, res) => {
     try {
       const validated = insertBillingProfileTemplateSchema.parse(req.body);
-      const data = await req.storage.createBillingProfileTemplate(validated);
+      const data = await req.storage.createBillingProfileTemplate(validated, getAuditActor(req));
       res.status(201).json(data);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
@@ -1285,7 +1287,7 @@ export async function registerRoutes(
   app.patch("/api/billing-profile-templates/:id", async (req, res) => {
     try {
       const validated = updateBillingProfileTemplateSchema.parse(req.body);
-      const data = await req.storage.updateBillingProfileTemplate(req.params.id, validated);
+      const data = await req.storage.updateBillingProfileTemplate(req.params.id, validated, getAuditActor(req));
       if (!data) return res.status(404).json({ message: "Billing profile template not found" });
       res.json(data);
     } catch (e: any) {
@@ -1309,7 +1311,7 @@ export async function registerRoutes(
   app.post("/api/billing-profiles", async (req, res) => {
     try {
       const validated = insertBillingProfileSchema.parse(req.body);
-      const data = await req.storage.createBillingProfile(validated);
+      const data = await req.storage.createBillingProfile(validated, getAuditActor(req));
       res.status(201).json(data);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
@@ -1320,7 +1322,7 @@ export async function registerRoutes(
   app.patch("/api/billing-profiles/:id", async (req, res) => {
     try {
       const validated = updateBillingProfileSchema.parse(req.body);
-      const data = await req.storage.updateBillingProfile(req.params.id, validated);
+      const data = await req.storage.updateBillingProfile(req.params.id, validated, getAuditActor(req));
       if (!data) return res.status(404).json({ message: "Billing profile not found" });
       res.json(data);
     } catch (e: any) {
@@ -1361,8 +1363,12 @@ export async function registerRoutes(
 
   // Audit history (D7). This is the whole API surface for audit_logs and it is
   // read-only on purpose: the table is append-only, so no POST/PATCH/DELETE
-  // counterpart may be added here. Rows are written only by storage-layer
-  // recordAuditLog() calls, from the session actor, never from a request body.
+  // counterpart may be added here. Rows are written only inside storage-layer
+  // transactions (recordAuditLogTx), from the session actor, never from a
+  // request body. Pass 32 (C5.1a): the org-wide templates have no location,
+  // so their rows are read here by entityType (agreement_template,
+  // billing_profile_template) + entityId; everything else a location owns is
+  // in the locationId read.
   //
   // Not permission-gated, matching every other read route in this file (only
   // mutations carry requirePermission). Who may read financial history is a
@@ -1923,7 +1929,7 @@ export async function registerRoutes(
 
   app.delete("/api/services/:id", async (req, res) => {
     try {
-      const deleted = await req.storage.deleteService(req.params.id);
+      const deleted = await req.storage.deleteService(req.params.id, getAuditActor(req));
       if (!deleted) return res.status(404).json({ message: "Service not found" });
       res.status(204).send();
     } catch (e: any) {
@@ -2028,7 +2034,7 @@ export async function registerRoutes(
   app.post("/api/agreement-templates", async (req, res) => {
     try {
       const validated = agreementTemplateSchema.parse(req.body);
-      const data = await req.storage.createAgreementTemplate(validated);
+      const data = await req.storage.createAgreementTemplate(validated, getAuditActor(req));
       res.status(201).json(data);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
@@ -2039,7 +2045,7 @@ export async function registerRoutes(
   app.patch("/api/agreement-templates/:id", async (req, res) => {
     try {
       const validated = updateAgreementTemplateSchema.parse(req.body);
-      const data = await req.storage.updateAgreementTemplate(req.params.id, validated);
+      const data = await req.storage.updateAgreementTemplate(req.params.id, validated, getAuditActor(req));
       if (!data) return res.status(404).json({ message: "Agreement template not found" });
       res.json(data);
     } catch (e: any) {
@@ -2414,7 +2420,7 @@ export async function registerRoutes(
 
   app.post("/api/appointments/:id/time-in", async (req, res) => {
     try {
-      const data = await req.storage.timeInAppointment(req.params.id);
+      const data = await req.storage.timeInAppointment(req.params.id, getAuditActor(req));
       if (!data) return res.status(404).json({ message: "Appointment not found" });
       res.json(data);
     } catch (e: any) {
@@ -2424,7 +2430,7 @@ export async function registerRoutes(
 
   app.post("/api/appointments/:id/time-out", async (req, res) => {
     try {
-      const data = await req.storage.timeOutAppointment(req.params.id);
+      const data = await req.storage.timeOutAppointment(req.params.id, getAuditActor(req));
       if (!data) return res.status(404).json({ message: "Appointment not found" });
       res.json(data);
     } catch (e: any) {
@@ -2505,7 +2511,7 @@ export async function registerRoutes(
   app.post("/api/service-records", async (req, res) => {
     try {
       const validated = serviceRecordSchema.parse(req.body);
-      const data = await req.storage.createServiceRecord(validated);
+      const data = await req.storage.createServiceRecord(validated, getAuditActor(req));
       res.status(201).json(data);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);

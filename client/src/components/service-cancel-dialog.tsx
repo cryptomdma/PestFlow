@@ -16,6 +16,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, getApiErrorCode, getApiErrorMessage, queryClient } from "@/lib/queryClient";
+import { invalidateAuditViews } from "@/lib/invalidate-audit-views";
 import type { Opportunity, Service } from "@shared/schema";
 import type { DispositionOpportunityChoice } from "@shared/appointment-disposition";
 import { describeCompositionRefusal, describeServiceCancelEffect, type ServiceCancelRequest, type ServiceCancelResult } from "@shared/appointment-composition";
@@ -32,12 +33,12 @@ export function invalidateAfterServiceCancel(locationId: string | null | undefin
   queryClient.invalidateQueries({ queryKey: ["/api/opportunities"] });
   queryClient.invalidateQueries({ queryKey: ["/api/opportunities/by-location"] });
   queryClient.invalidateQueries({ queryKey: ["/api/invoices"] });
+  invalidateAuditViews();
   if (locationId) {
     queryClient.invalidateQueries({ queryKey: ["/api/services/by-location", locationId] });
     queryClient.invalidateQueries({ queryKey: ["/api/appointments/by-location", locationId] });
     queryClient.invalidateQueries({ queryKey: ["/api/opportunities/by-location", locationId] });
     queryClient.invalidateQueries({ queryKey: ["/api/location-counts", locationId] });
-    queryClient.invalidateQueries({ queryKey: ["/api/audit-logs/location", locationId] });
   }
 }
 

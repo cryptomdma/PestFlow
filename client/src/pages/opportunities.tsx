@@ -10,6 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Skeleton } from "@/components/ui/skeleton";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { apiRequest, getApiErrorMessage, queryClient } from "@/lib/queryClient";
+import { invalidateAuditViews } from "@/lib/invalidate-audit-views";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth";
 import { can, PERMISSIONS } from "@shared/permissions";
@@ -145,7 +146,7 @@ export default function Opportunities() {
     onSuccess: (updated) => {
       queryClient.invalidateQueries({ predicate: (query) => String(query.queryKey[0]).startsWith("/api/opportunities") });
       queryClient.invalidateQueries({ queryKey: ["/api/opportunities/by-location", updated.locationId] });
-      queryClient.invalidateQueries({ predicate: (query) => String(query.queryKey[0]).startsWith("/api/audit-logs") });
+      invalidateAuditViews();
     },
     onError: (err: unknown) => toast({ title: "Opportunity not updated", description: getApiErrorMessage(err), variant: "destructive" }),
   });

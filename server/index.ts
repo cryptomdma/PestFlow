@@ -5,6 +5,7 @@ import { serveStatic } from "./static";
 import { createServer } from "http";
 import { seedDatabase } from "./seed";
 import { bootstrapCanonicalAccounts } from "./account-bootstrap";
+import { bootstrapAudit } from "./audit-bootstrap";
 import { bootstrapCanonicalNotes, bootstrapCanonicalNoteTables } from "./note-bootstrap";
 import { bootstrapAgreements } from "./agreement-bootstrap";
 import { bootstrapServiceSchedulingFoundation } from "./service-scheduling-bootstrap";
@@ -107,6 +108,8 @@ app.use((req, res, next) => {
   await bootstrapTax().catch((e) => console.error("Tax bootstrap error:", e));
   await bootstrapBillingRun().catch((e) => console.error("Billing run bootstrap error:", e));
   await bootstrapTenancy().catch((e) => console.error("Tenancy bootstrap error:", e));
+  // Pass 32 (C5.1a): the audit reads' index - after tenancy, which owns org_id.
+  await bootstrapAudit().catch((e) => console.error("Audit bootstrap error:", e));
   await bootstrapMoney().catch((e) => console.error("Money bootstrap error:", e));
   await backfillExpectedServiceCounts().catch((e) => console.error("Production value backfill error:", e));
 

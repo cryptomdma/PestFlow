@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { useAuth } from "@/hooks/use-auth";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, getApiErrorCode, getApiErrorMessage, queryClient } from "@/lib/queryClient";
+import { invalidateAuditViews } from "@/lib/invalidate-audit-views";
 import { cn } from "@/lib/utils";
 import { describeCompositionRefusal, describeFieldAddedService, isFieldAdded, needsFieldReview, type FieldReviewFields } from "@shared/appointment-composition";
 import { can, PERMISSIONS } from "@shared/permissions";
@@ -42,7 +43,7 @@ export function invalidateAfterFieldReview(locationId?: string | null) {
   queryClient.invalidateQueries({ queryKey: ["/api/services/by-location"] });
   queryClient.invalidateQueries({ queryKey: ["/api/appointments"] });
   queryClient.invalidateQueries({ queryKey: ["/api/service-records"] });
-  queryClient.invalidateQueries({ queryKey: ["/api/audit-logs"] });
+  invalidateAuditViews();
   if (locationId) {
     queryClient.invalidateQueries({ queryKey: ["/api/services/by-location", locationId] });
   }

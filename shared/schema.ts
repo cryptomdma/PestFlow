@@ -1,5 +1,5 @@
 ﻿import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, integer, boolean, timestamp, decimal, jsonb, date, primaryKey, uniqueIndex, type AnyPgColumn } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, integer, boolean, timestamp, decimal, jsonb, date, primaryKey, uniqueIndex, index, type AnyPgColumn } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 import { relations } from "drizzle-orm";
@@ -1291,7 +1291,12 @@ export const auditLogs = pgTable("audit_logs", {
   beforeJson: jsonb("before_json"),
   afterJson: jsonb("after_json"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
-});
+}, (table) => ({
+  // Pass 32 (C5.1a): both reads filter on (org, entity_type, entity_id IN
+  // ...) - the History tab ORs a dozen such lists. Created on an existing
+  // database by server/audit-bootstrap.ts (CREATE INDEX IF NOT EXISTS).
+  entityIdx: index("audit_logs_entity_idx").on(table.orgId, table.entityType, table.entityId),
+}));
 
 // Transactional outbox for the four integration ports (server/integrations/**).
 // A domain change and its outbox_events row are written in the same DB
