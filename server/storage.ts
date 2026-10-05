@@ -289,6 +289,16 @@ import {
   serviceReportFileName,
 } from "@shared/service-report";
 import {
+  DISPATCH_BOARD_SETTINGS_INVALID,
+  DISPATCH_BOARD_SETTING_FIELDS,
+  DISPATCH_BOARD_SETTING_KEYS,
+  DISPATCH_BOARD_SETTING_KEY_LIST,
+  describeDispatchBoardProblem,
+  normalizeDispatchBoardSettings,
+  serializeDispatchBoardSetting,
+  type DispatchBoardSettings,
+} from "@shared/dispatch-board";
+import {
   agingAsOf,
   agingFiguresOf,
   compareLocationAging,
@@ -897,6 +907,17 @@ export class TechnicianPreferenceError extends Error {
   }
 }
 
+// Pass 31 (C4.5): a dispatch board setting the shared rules refuse - start
+// not before end, a snap coarser than the view interval, an hour off the
+// board (shared/dispatch-board.ts). The route answers 400 with the code.
+export class DispatchBoardSettingsError extends Error {
+  readonly code = DISPATCH_BOARD_SETTINGS_INVALID;
+  constructor(message: string) {
+    super(message);
+    this.name = "DispatchBoardSettingsError";
+  }
+}
+
 // Pass 30: a crew change the visit forbids (shared/appointment-crew.ts codes).
 export class AppointmentCrewError extends Error {
   constructor(readonly status: 404 | 409, readonly code: string, message: string, readonly conflicts: CrewScheduleConflict[] = []) {
@@ -1501,6 +1522,13 @@ export interface IStorage {
   // by getInvoiceDocumentContext when an invoice PDF is first rendered.
   getAttachServiceReportToInvoices(): Promise<boolean>;
   setAttachServiceReportToInvoices(enabled: boolean): Promise<AppSetting>;
+  // Pass 31 (C4.5): Settings -> Dispatch Board - the view interval, the snap
+  // interval and the default visible hours (shared/dispatch-board.ts), one
+  // app_settings row per value and no seed row: a missing or unrecognised
+  // row reads as its default. The write takes a partial, validates the four
+  // together and upserts only the values given.
+  getDispatchBoardSettings(): Promise<DispatchBoardSettings>;
+  setDispatchBoardSettings(patch: Partial<DispatchBoardSettings>): Promise<DispatchBoardSettings>;
 
   getMaterialProducts(includeInactive?: boolean): Promise<MaterialProduct[]>;
   createMaterialProduct(data: InsertMaterialProduct): Promise<MaterialProduct>;
@@ -8079,6 +8107,57 @@ export class DatabaseStorage implements IStorage {
       })
       .returning();
     return setting;
+  }
+
+  // Pass 31 (C4.5): the dispatch board's four settings, read in one query
+  // and normalized together (shared/dispatch-board.ts: an unrecognised value
+  // reads as its default, a start / end pair out of order as the default
+  // pair, a snap coarser than the view as the view). No seed row.
+  async getDispatchBoardSettings(): Promise<DispatchBoardSettings> {
+    return this.readDispatchBoardSettingsTx(db);
+  }
+
+  private async readDispatchBoardSettingsTx(reader: DbReader): Promise<DispatchBoardSettings> {
+    const rows = await reader
+      .select()
+      .from(appSettings)
+      .where(and(eq(appSettings.orgId, this.orgId), inArray(appSettings.key, DISPATCH_BOARD_SETTING_KEY_LIST)));
+    const byKey = new Map(rows.map((row) => [row.key, row.value] as const));
+    return normalizeDispatchBoardSettings({
+      viewIntervalMinutes: byKey.get(DISPATCH_BOARD_SETTING_KEYS.viewIntervalMinutes),
+      snapMinutes: byKey.get(DISPATCH_BOARD_SETTING_KEYS.snapMinutes),
+      defaultStartHour: byKey.get(DISPATCH_BOARD_SETTING_KEYS.defaultStartHour),
+      defaultEndHour: byKey.get(DISPATCH_BOARD_SETTING_KEYS.defaultEndHour),
+    });
+  }
+
+  // The body is partial: the values given are laid over what is stored, the
+  // four are checked together, and only the values given are upserted - one
+  // transaction, so a refused change writes nothing.
+  async setDispatchBoardSettings(patch: Partial<DispatchBoardSettings>): Promise<DispatchBoardSettings> {
+    return db.transaction(async (tx) => {
+      const current = await this.readDispatchBoardSettingsTx(tx);
+      const next: DispatchBoardSettings = {
+        viewIntervalMinutes: patch.viewIntervalMinutes ?? current.viewIntervalMinutes,
+        snapMinutes: patch.snapMinutes ?? current.snapMinutes,
+        defaultStartHour: patch.defaultStartHour ?? current.defaultStartHour,
+        defaultEndHour: patch.defaultEndHour ?? current.defaultEndHour,
+      };
+      const changed = DISPATCH_BOARD_SETTING_FIELDS.filter((field) => patch[field] !== undefined);
+      const problem = describeDispatchBoardProblem(next);
+      if (problem) throw new DispatchBoardSettingsError(problem);
+      for (const field of changed) {
+        const value = serializeDispatchBoardSetting(next[field]);
+        await tx
+          .insert(appSettings)
+          .values({ orgId: this.orgId, key: DISPATCH_BOARD_SETTING_KEYS[field], value })
+          .onConflictDoUpdate({
+            target: [appSettings.orgId, appSettings.key],
+            set: { value, updatedAt: new Date() },
+          });
+      }
+      return next;
+    });
   }
 
   async getProductApplicationsByServiceRecord(serviceRecordId: string): Promise<ProductApplication[]> {

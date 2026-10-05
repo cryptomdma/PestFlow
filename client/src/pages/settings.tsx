@@ -34,12 +34,26 @@ import { OPPORTUNITY_SOURCES, OPPORTUNITY_WORK_TYPES, describeOpportunitySource,
 import { describeZipCodes, normalizeZipCodes, splitZipCodeText } from "@shared/zones";
 import { ANY_MATCHER_LABEL, describeRuleMatchers, describeRuleProblems, sortAssignmentRules } from "@shared/opportunity-assignment";
 import { INVOICE_ON_FINALIZE_MODES, describeInvoiceOnFinalizeMode, normalizeInvoiceOnFinalizeMode, type InvoiceOnFinalizeMode } from "@shared/invoice-on-finalize";
+import {
+  DEFAULT_DISPATCH_BOARD_SETTINGS,
+  DISPATCH_SNAP_INTERVALS,
+  DISPATCH_VIEW_INTERVALS,
+  boardEndHourOptions,
+  boardStartHourOptions,
+  describeSnapInterval,
+  describeViewInterval,
+  formatHourOfDay,
+  visibleEndHourFor,
+  type DispatchBoardSettings,
+  type DispatchSnapInterval,
+  type DispatchViewInterval,
+} from "@shared/dispatch-board";
 import { isOnList, matchListEntry } from "@shared/material-lists";
 import { ListMultiSelect } from "@/components/list-multi-select";
 import { Switch } from "@/components/ui/switch";
 import { ServiceWorkKindBadge } from "@/components/service-work-kind-badge";
 import { SERVICE_WORK_KINDS, describeServiceWorkKind, formatServiceWorkKind, normalizeServiceWorkKind, type ServiceWorkKind } from "@shared/service-kind";
-import { Plus, Settings as SettingsIcon, Wrench, FileText, Users, ShieldCheck, FlaskConical, Bug, CreditCard, CalendarClock, Percent, Scale, Building2, Receipt, MapPin, UserCheck, ArrowUp, ArrowDown, AlertTriangle } from "lucide-react";
+import { Plus, Settings as SettingsIcon, Wrench, FileText, Users, ShieldCheck, FlaskConical, Bug, CreditCard, CalendarClock, Percent, Scale, Building2, Receipt, MapPin, UserCheck, ArrowUp, ArrowDown, AlertTriangle, LayoutGrid } from "lucide-react";
 import type { AgreementCancellationPolicy, AgreementTemplate, BillingPlan, BillingProfileTemplate, MaterialProduct, OpportunityAssignmentRule, OpportunityCategory, OpportunityDisposition, Organization, ServiceType, TargetPest, TaxRate, TaxRule, Technician, UserSummary, Zone } from "@shared/schema";
 
 function formatTemplateRecurrence(template: AgreementTemplate) {
@@ -1783,6 +1797,31 @@ export default function Settings() {
     },
     onError: (error: Error) => toast({ title: "Unable to update the service report setting", description: error.message, variant: "destructive" }),
   });
+  // Pass 31 (C4.5): Settings -> Dispatch Board - the view interval, the snap
+  // interval and the default visible hours (shared/dispatch-board.ts). Read
+  // by anyone (the board seeds its window from it); the PATCH is
+  // MANAGE_SETTINGS, so the selects are disabled - not hidden - for everyone
+  // else (dev behavior rule 6). Each select saves at once; a change that
+  // would break a cross-field rule carries the other value along (a start at
+  // or past the end moves the end to the next hour; a view finer than the
+  // snap brings the snap down to it), and the server refuses anything else
+  // with a 400 that the toast shows.
+  const { data: dispatchBoardData } = useQuery<DispatchBoardSettings>({ queryKey: ["/api/settings/dispatch-board"] });
+  const dispatchBoard = dispatchBoardData ?? DEFAULT_DISPATCH_BOARD_SETTINGS;
+  const updateDispatchBoardMutation = useMutation({
+    mutationFn: async (patch: Partial<DispatchBoardSettings>) => {
+      const response = await apiRequest("PATCH", "/api/settings/dispatch-board", patch);
+      return (await response.json()) as DispatchBoardSettings;
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/settings/dispatch-board"] });
+      toast({
+        title: "Dispatch board settings updated",
+        description: `${describeViewInterval(data.viewIntervalMinutes).summary}, ${describeSnapInterval(data.snapMinutes)} snap, ${formatHourOfDay(data.defaultStartHour)} - ${formatHourOfDay(data.defaultEndHour)}. The board reads these on its next load.`,
+      });
+    },
+    onError: (error: Error) => toast({ title: "Unable to update the dispatch board settings", description: getApiErrorMessage(error), variant: "destructive" }),
+  });
   const updateAppointmentCancelReasonsMutation = useMutation({
     mutationFn: async () => {
       const reasons = appointmentCancelReasonsText
@@ -2718,6 +2757,97 @@ export default function Settings() {
           >
             {updateAppointmentCancelReasonsMutation.isPending ? "Saving..." : "Save Reasons"}
           </Button>
+        </CardContent>
+      </Card>
+
+      {/* Pass 31 (C4.5): the dispatch board's four settings. The view
+          interval is the board's column width; the snap is what a time typed
+          on the appointment sheet rounds to (a placement lands on its slot's
+          start, and the rules keep the snap no coarser than the view); the
+          hours are the board's default window, which the board's own Window
+          popover overrides for a session. One app_settings row per value, no
+          seed row - the defaults are today's board. */}
+      <Card data-testid="card-dispatch-board">
+        <CardHeader>
+          <CardTitle className="text-base font-semibold flex items-center gap-2"><LayoutGrid className="h-4 w-4" /> Dispatch Board</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="grid max-w-2xl gap-4 sm:grid-cols-2">
+            <div className="space-y-2">
+              <Label>View interval</Label>
+              <Select
+                value={String(dispatchBoard.viewIntervalMinutes)}
+                onValueChange={(value) => {
+                  const viewIntervalMinutes = Number(value) as DispatchViewInterval;
+                  updateDispatchBoardMutation.mutate(dispatchBoard.snapMinutes > viewIntervalMinutes
+                    ? { viewIntervalMinutes, snapMinutes: viewIntervalMinutes as DispatchSnapInterval }
+                    : { viewIntervalMinutes });
+                }}
+                disabled={!canManageSettings || updateDispatchBoardMutation.isPending}
+              >
+                <SelectTrigger data-testid="select-dispatch-view-interval"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {DISPATCH_VIEW_INTERVALS.map((minutes) => (
+                    <SelectItem key={minutes} value={String(minutes)}>{describeViewInterval(minutes).label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">The width of a board column; each column is one placement slot.</p>
+            </div>
+            <div className="space-y-2">
+              <Label>Snap interval</Label>
+              <Select
+                value={String(dispatchBoard.snapMinutes)}
+                onValueChange={(value) => updateDispatchBoardMutation.mutate({ snapMinutes: Number(value) as DispatchSnapInterval })}
+                disabled={!canManageSettings || updateDispatchBoardMutation.isPending}
+              >
+                <SelectTrigger data-testid="select-dispatch-snap-interval"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {DISPATCH_SNAP_INTERVALS.map((minutes) => (
+                    <SelectItem key={minutes} value={String(minutes)} disabled={minutes > dispatchBoard.viewIntervalMinutes}>{describeSnapInterval(minutes)}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">What Scheduled Start and End on the appointment sheet round to when saved. Never coarser than the view interval, so a placement lands on the slot that was clicked.</p>
+            </div>
+            <div className="space-y-2">
+              <Label>Visible start hour</Label>
+              <Select
+                value={String(dispatchBoard.defaultStartHour)}
+                onValueChange={(value) => {
+                  const defaultStartHour = Number(value);
+                  updateDispatchBoardMutation.mutate({ defaultStartHour, defaultEndHour: visibleEndHourFor(defaultStartHour, dispatchBoard.defaultEndHour) });
+                }}
+                disabled={!canManageSettings || updateDispatchBoardMutation.isPending}
+              >
+                <SelectTrigger data-testid="select-dispatch-start-hour"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {boardStartHourOptions().map((hour) => (
+                    <SelectItem key={hour} value={String(hour)}>{formatHourOfDay(hour)}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label>Visible end hour</Label>
+              <Select
+                value={String(dispatchBoard.defaultEndHour)}
+                onValueChange={(value) => updateDispatchBoardMutation.mutate({ defaultEndHour: Number(value) })}
+                disabled={!canManageSettings || updateDispatchBoardMutation.isPending}
+              >
+                <SelectTrigger data-testid="select-dispatch-end-hour"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {boardEndHourOptions(dispatchBoard.defaultStartHour).map((hour) => (
+                    <SelectItem key={hour} value={String(hour)}>{formatHourOfDay(hour)}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            The hours and the view interval are the board's defaults each time it loads; the Window popover on the Dispatch Board changes them for that session only. The snap has no session override.
+          </p>
+          {!canManageSettings ? <p className="text-xs text-muted-foreground">Only an admin can change this setting.</p> : null}
         </CardContent>
       </Card>
 

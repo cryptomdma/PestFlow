@@ -23,7 +23,7 @@ import { MAX_ZONE_NAME_LENGTH } from "@shared/zones";
 import { ZodError, z } from "zod";
 import type { Request } from "express";
 import { requirePermission } from "./auth";
-import { AppointmentCrewError, AppointmentDispositionError, DraftInvoiceDecisionRequiredError, OpportunityAssignmentError, PlacementRefusedError, PrefinalizationIssueError, ServiceCompositionError, ServiceKindError, StatementRefusedError, TechnicianPreferenceError, TicketEditError, TicketLockedError, TicketReopenError, VisitBillingDraftError } from "./storage";
+import { AppointmentCrewError, AppointmentDispositionError, DispatchBoardSettingsError, DraftInvoiceDecisionRequiredError, OpportunityAssignmentError, PlacementRefusedError, PrefinalizationIssueError, ServiceCompositionError, ServiceKindError, StatementRefusedError, TechnicianPreferenceError, TicketEditError, TicketLockedError, TicketReopenError, VisitBillingDraftError } from "./storage";
 import {
   MAX_EXCLUSION_OVERRIDE_REASON_LENGTH,
   MAX_TECHNICIAN_PREFERENCE_NOTE_LENGTH,
@@ -37,6 +37,15 @@ import { COMPOSITION_ORIGINS } from "@shared/appointment-composition";
 import { can, PERMISSIONS, type UserRole } from "@shared/permissions";
 import { INVOICE_ON_FINALIZE_MODES, normalizeInvoiceOnFinalizeMode } from "@shared/invoice-on-finalize";
 import { normalizeAttachServiceReport } from "@shared/service-report";
+import {
+  DISPATCH_BOARD_FIRST_HOUR,
+  DISPATCH_BOARD_LAST_HOUR,
+  DISPATCH_SNAP_INTERVALS,
+  DISPATCH_VIEW_INTERVALS,
+  isDispatchSnapInterval,
+  isDispatchViewInterval,
+  type DispatchBoardSettings,
+} from "@shared/dispatch-board";
 import { MAX_SURCHARGE_LABEL_LENGTH } from "@shared/field-surcharge";
 import {
   INITIAL_CHARGE_AMOUNT_MODES,
@@ -399,6 +408,15 @@ export async function registerRoutes(
   const attachServiceReportSchema = z.object({
     enabled: z.boolean(),
   });
+  // Pass 31 (C4.5): a partial change to the dispatch board's settings. Each
+  // value present is checked on its own here; the four together (start before
+  // end, snap not coarser than the view) in storage against what is stored.
+  const dispatchBoardSettingsSchema = z.object({
+    viewIntervalMinutes: z.number().int().refine(isDispatchViewInterval, { message: `must be one of ${DISPATCH_VIEW_INTERVALS.join(", ")}` }).optional(),
+    snapMinutes: z.number().int().refine(isDispatchSnapInterval, { message: `must be one of ${DISPATCH_SNAP_INTERVALS.join(", ")}` }).optional(),
+    defaultStartHour: z.number().int().min(DISPATCH_BOARD_FIRST_HOUR).max(DISPATCH_BOARD_LAST_HOUR - 1).optional(),
+    defaultEndHour: z.number().int().min(DISPATCH_BOARD_FIRST_HOUR + 1).max(DISPATCH_BOARD_LAST_HOUR).optional(),
+  }).strict().refine((body) => Object.values(body).some((value) => value !== undefined), { message: "nothing to change" });
   const materialProductSchema = insertMaterialProductSchema.extend({
     activeIngredientPercent: z.union([z.string(), z.number()]).nullable().optional()
       .transform((value) => value === undefined || value === null || value === "" ? null : String(value)),
@@ -2728,6 +2746,32 @@ export async function registerRoutes(
       res.json({ enabled: normalizeAttachServiceReport(data.value) });
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  // Pass 31 (C4.5): Settings -> Dispatch Board - the view interval, the snap
+  // interval and the default visible hours (shared/dispatch-board.ts).
+  // Readable by anyone (the board seeds its window from it); the PATCH is
+  // MANAGE_SETTINGS like every settings write. The body is partial; a change
+  // the shared rules refuse is 400 DISPATCH_BOARD_SETTINGS_INVALID with the
+  // reason, and nothing is written. No seed row: the read answers the
+  // defaults (today's board) until the office changes something. The snap is
+  // stored here and applied by the board - the server never rounds a time an
+  // API caller asked for.
+  app.get("/api/settings/dispatch-board", async (req, res) => {
+    const settings = await req.storage.getDispatchBoardSettings();
+    res.json(settings);
+  });
+
+  app.patch("/api/settings/dispatch-board", requirePermission(PERMISSIONS.MANAGE_SETTINGS), async (req, res) => {
+    try {
+      const validated = dispatchBoardSettingsSchema.parse(req.body);
+      const settings = await req.storage.setDispatchBoardSettings(validated as Partial<DispatchBoardSettings>);
+      res.json(settings);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      if (e instanceof DispatchBoardSettingsError) return res.status(400).json({ code: e.code, message: e.message });
       res.status(400).json({ message: e.message });
     }
   });
