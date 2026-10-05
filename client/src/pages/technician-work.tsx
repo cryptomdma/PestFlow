@@ -19,6 +19,7 @@ import { FieldAddedBadge } from "@/components/field-added-badge";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth";
 import { apiRequest, getApiErrorCode, getApiErrorMessage, queryClient } from "@/lib/queryClient";
+import { invalidateAuditViews } from "@/lib/invalidate-audit-views";
 import { can, PERMISSIONS } from "@shared/permissions";
 import { isTicketFinalized, isTicketReopened, technicianMayPostTicket } from "@shared/ticket-status";
 import { centsToDollarString, dollarsToCents } from "@shared/money";
@@ -209,10 +210,11 @@ export default function TechnicianWork() {
     queryClient.invalidateQueries({ queryKey: ["/api/services/pending"] });
     queryClient.invalidateQueries({ queryKey: ["/api/opportunities"] });
     // Pass 29: the composition changes the services, the location's rows
-    // and the History tab too.
+    // and the History tab too (Pass 32: through the predicate - the old
+    // ["/api/audit-logs"] key never matched the tab's string key).
     queryClient.invalidateQueries({ queryKey: ["/api/services"] });
     queryClient.invalidateQueries({ queryKey: ["/api/services/by-location"] });
-    queryClient.invalidateQueries({ queryKey: ["/api/audit-logs"] });
+    invalidateAuditViews();
   };
   const timeInMutation = useMutation({
     mutationFn: async (appointmentId: string) => {

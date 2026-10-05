@@ -70,7 +70,7 @@ import {
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, or, inArray, notInArray, sql, gt, gte, lte, lt, asc, desc, ne, isNull, isNotNull, ilike, like, count, sum, max, type SQL } from "drizzle-orm";
-import type { AuditAction, AuditEntityType } from "@shared/audit";
+import { auditChangeAction, type AuditAction, type AuditEntityType } from "@shared/audit";
 import { PLACEHOLDER_LOCATION_NAME, PLACEHOLDER_LOCATION_NOTE } from "./account-bootstrap";
 import { createHash } from "crypto";
 import type { InvoiceDocumentBranding, InvoiceDocumentContext, ServiceReportDocumentContext, ServiceReportMaterialLine, StatementDocumentContext, StatementDocumentParty } from "./documents/types";
@@ -365,10 +365,16 @@ export interface AuditActor {
   actorLabel?: string | null;
 }
 
-// Canon §17: a null actor is a system-driven write, not an unknown user; the
-// label names the writer on the History tab. Pass 26 (C4.1b): the assignment
-// rules stamp an opportunity's assignee under this actor - a rule is the
-// office's standing instruction, not a person's act or permission.
+// Canon §17: the explicit form of a system-driven write - no user, the label
+// "System" the History tab prints. Pass 26 (C4.1b): the assignment rules stamp
+// an opportunity's assignee under this actor - a rule is the office's standing
+// instruction, not a person's act or permission. Pass 32 (C5.1a, the same
+// reasoning): an agreement's own schedule executing - the service it
+// generates, the recurrence advancing nextServiceDate, the billing run's
+// nextBillingDate - signs as System, whichever request happened to run it;
+// everything else a request causes, derived writes included (the primary
+// flag the location invariant flips, the agreement dates a placement
+// re-derives), is signed by that request's user.
 export const SYSTEM_AUDIT_ACTOR: AuditActor = { userId: null, actorLabel: "System" };
 
 // One audit row. `before`/`after` are whole-row snapshots (or the relevant
@@ -385,7 +391,7 @@ export interface AuditLogEntry {
   after?: unknown;
 }
 
-// Structural minimum recordAuditLog() needs from its caller: satisfied by both
+// Structural minimum recordAuditLogTx() needs from its caller: satisfied by both
 // `db` and a transaction handle, so a caller already inside db.transaction()
 // passes its `tx` and gets the audit row committed atomically with the
 // mutation it describes.
@@ -400,11 +406,13 @@ export interface CreateCustomerWithPrimaryLocationInput {
   customer: InsertCustomer;
   location: Omit<InsertLocation, "customerId" | "accountId" | "isPrimary">;
   initialContact?: Omit<InsertContact, "customerId" | "locationId">;
+  actor?: AuditActor | null;
 }
 
 export interface CreateLocationWithPrimaryContactInput {
   location: InsertLocation;
   initialContact?: Omit<InsertContact, "customerId" | "locationId">;
+  actor?: AuditActor | null;
 }
 
 export interface UpdateLocationProfileInput {
@@ -1350,8 +1358,11 @@ export interface SaveScopedNoteInput {
 export interface IStorage {
   getCustomers(): Promise<Customer[]>;
   getCustomer(id: string): Promise<Customer | undefined>;
-  createCustomer(data: InsertCustomer): Promise<Customer>;
-  updateCustomer(id: string, data: Partial<InsertCustomer>): Promise<Customer | undefined>;
+  // Pass 32 (C5.1a): every create / update / status change below writes
+  // audit_logs inside its transaction, signed by the actor the route passes
+  // (routes.ts getAuditActor); the methods that took no actor gained one.
+  createCustomer(data: InsertCustomer, actor?: AuditActor | null): Promise<Customer>;
+  updateCustomer(id: string, data: Partial<InsertCustomer>, actor?: AuditActor | null): Promise<Customer | undefined>;
   getCustomerDetailCompat(legacyCustomerId: string, selectedLocationId?: string): Promise<CustomerDetailCompatProjection | undefined>;
   getAccountInvariantSummary(): Promise<AccountInvariantSummary>;
   createCustomerWithPrimaryLocation(input: CreateCustomerWithPrimaryLocationInput): Promise<Customer>;
@@ -1359,25 +1370,25 @@ export interface IStorage {
 
   getContacts(customerId: string): Promise<Contact[]>;
   getContactsByLocation(locationId: string): Promise<Contact[]>;
-  createContact(data: InsertContact): Promise<Contact>;
-  updateContact(id: string, data: Partial<InsertContact>): Promise<Contact | undefined>;
-  setPrimaryContact(contactId: string): Promise<Contact | undefined>;
+  createContact(data: InsertContact, actor?: AuditActor | null): Promise<Contact>;
+  updateContact(id: string, data: Partial<InsertContact>, actor?: AuditActor | null): Promise<Contact | undefined>;
+  setPrimaryContact(contactId: string, actor?: AuditActor | null): Promise<Contact | undefined>;
 
   getLocations(customerId: string): Promise<Location[]>;
   getAllLocations(): Promise<Location[]>;
   getLocation(id: string): Promise<Location | undefined>;
-  createLocation(data: InsertLocation): Promise<Location>;
+  createLocation(data: InsertLocation, actor?: AuditActor | null): Promise<Location>;
   createLocationWithPrimaryContact(input: CreateLocationWithPrimaryContactInput): Promise<Location>;
-  updateLocation(id: string, data: Partial<InsertLocation>): Promise<Location | undefined>;
-  setPrimaryLocation(customerId: string, locationId: string): Promise<void>;
+  updateLocation(id: string, data: Partial<InsertLocation>, actor?: AuditActor | null): Promise<Location | undefined>;
+  setPrimaryLocation(customerId: string, locationId: string, actor?: AuditActor | null): Promise<void>;
 
   getBillingProfileTemplates(includeInactive?: boolean): Promise<BillingProfileTemplate[]>;
-  createBillingProfileTemplate(data: InsertBillingProfileTemplate): Promise<BillingProfileTemplate>;
-  updateBillingProfileTemplate(id: string, data: Partial<InsertBillingProfileTemplate>): Promise<BillingProfileTemplate | undefined>;
+  createBillingProfileTemplate(data: InsertBillingProfileTemplate, actor?: AuditActor | null): Promise<BillingProfileTemplate>;
+  updateBillingProfileTemplate(id: string, data: Partial<InsertBillingProfileTemplate>, actor?: AuditActor | null): Promise<BillingProfileTemplate | undefined>;
 
   getBillingProfilesForAccount(accountId: string): Promise<BillingProfile[]>;
-  createBillingProfile(data: InsertBillingProfile): Promise<BillingProfile>;
-  updateBillingProfile(id: string, data: Partial<InsertBillingProfile>): Promise<BillingProfile | undefined>;
+  createBillingProfile(data: InsertBillingProfile, actor?: AuditActor | null): Promise<BillingProfile>;
+  updateBillingProfile(id: string, data: Partial<InsertBillingProfile>, actor?: AuditActor | null): Promise<BillingProfile | undefined>;
   resolveBillingProfileForLocation(locationId: string): Promise<BillingProfile | undefined>;
 
   getNotesByLocation(locationId: string): Promise<CustomerNote[]>;
@@ -1402,7 +1413,7 @@ export interface IStorage {
   createService(data: InsertService, context?: ServiceWriteContext): Promise<Service>;
   updateService(id: string, data: Partial<InsertService>, context?: ServiceWriteContext): Promise<Service | undefined>;
   updateServiceType(id: string, data: Partial<InsertServiceType>): Promise<ServiceType | undefined>;
-  deleteService(id: string): Promise<boolean>;
+  deleteService(id: string, actor?: AuditActor | null): Promise<boolean>;
   getOpportunities(filters?: OpportunityFilters): Promise<Opportunity[]>;
   getOpportunity(id: string): Promise<Opportunity | undefined>;
   getOpportunitiesByLocation(locationId: string): Promise<Opportunity[]>;
@@ -1439,8 +1450,8 @@ export interface IStorage {
 
   getAgreementTemplates(): Promise<AgreementTemplate[]>;
   getAgreementTemplate(id: string): Promise<AgreementTemplate | undefined>;
-  createAgreementTemplate(data: InsertAgreementTemplate): Promise<AgreementTemplate>;
-  updateAgreementTemplate(id: string, data: Partial<InsertAgreementTemplate>): Promise<AgreementTemplate | undefined>;
+  createAgreementTemplate(data: InsertAgreementTemplate, actor?: AuditActor | null): Promise<AgreementTemplate>;
+  updateAgreementTemplate(id: string, data: Partial<InsertAgreementTemplate>, actor?: AuditActor | null): Promise<AgreementTemplate | undefined>;
 
   getAgreementsByLocation(locationId: string): Promise<Agreement[]>;
   getAgreement(id: string): Promise<Agreement | undefined>;
@@ -1477,8 +1488,8 @@ export interface IStorage {
   // Pass 29 (C4.3b): the office's review of a service a technician added
   // from the field - the review stamp, one field_service_reviewed row.
   markServiceFieldReviewed(input: FieldReviewServiceInput): Promise<Service | undefined>;
-  timeInAppointment(id: string): Promise<Appointment | undefined>;
-  timeOutAppointment(id: string): Promise<Appointment | undefined>;
+  timeInAppointment(id: string, actor?: AuditActor | null): Promise<Appointment | undefined>;
+  timeOutAppointment(id: string, actor?: AuditActor | null): Promise<Appointment | undefined>;
   getTechnicianWork(technicianId: string, date: string): Promise<TechnicianWorkVisit[]>;
   // Pass 30 (C4.4; B14): technician preferences - the location's and its
   // account's rows and the resolve rule; the effective map for the dispatch
@@ -1500,7 +1511,7 @@ export interface IStorage {
   getServiceRecords(): Promise<ServiceRecord[]>;
   getServiceRecordsByLocation(locationId: string): Promise<ServiceRecord[]>;
   getServiceRecord(id: string): Promise<ServiceRecord | undefined>;
-  createServiceRecord(data: InsertServiceRecord): Promise<ServiceRecord>;
+  createServiceRecord(data: InsertServiceRecord, actor?: AuditActor | null): Promise<ServiceRecord>;
   updateServiceRecord(id: string, input: UpdateServiceRecordInput): Promise<ServiceRecord | undefined>;
   completeService(input: CompleteServiceInput): Promise<CompleteServiceResult | undefined>;
   finalizeServiceRecord(id: string, actor?: AuditActor): Promise<FinalizeServiceRecordResult | undefined>;
@@ -1661,9 +1672,11 @@ export interface IStorage {
 
   getLocationScopedCounts(locationId: string): Promise<{ contacts: number; appointments: number; agreements: number; services: number; invoices: number; communications: number; opportunities: number }>;
 
-  // Append-only by decision (D7): a write and two reads, deliberately no
-  // update or delete counterpart on this interface or on any route.
-  recordAuditLog(entry: AuditLogEntry): Promise<void>;
+  // Append-only by decision (D7): two reads and no write on this interface -
+  // every row is written inside a storage method's transaction by the
+  // private recordAuditLogTx (canon §17); deliberately no update or delete
+  // counterpart here or on any route. (The public recordAuditLog that sat
+  // here had no caller and left in Pass 32.)
   getAuditLogsForEntity(entityType: string, entityId: string, limit?: number): Promise<AuditLog[]>;
   getAuditLogsForLocation(locationId: string, limit?: number): Promise<AuditLog[]>;
 }
@@ -1791,27 +1804,50 @@ function opportunityTaxonomyColumns(source: string, hasAgreement: boolean): { ca
 // Pass 28: what an audit row records of one service - the fields a
 // disposition, a composition change or a cancel can move, never the whole
 // row. Read by appointmentAuditSnapshot below and by service_cancelled.
+// Pass 32 (C5.1a): and by the service's own created / update / status_changed
+// / deleted rows, so it grew the fields those can move - where the service
+// is, where it came from, the agreement cycle it was generated for, its
+// scheduling mode and time window, the callback link.
 function serviceAuditSnapshot(service: Service) {
   return {
     id: service.id,
     status: service.status,
+    customerId: service.customerId,
+    locationId: service.locationId,
     appointmentId: service.appointmentId,
     lastAppointmentId: service.lastAppointmentId,
     assignedTechnicianId: service.assignedTechnicianId,
     agreementId: service.agreementId,
     serviceTypeId: service.serviceTypeId,
+    source: service.source,
     workKind: service.workKind,
+    answersServiceId: service.answersServiceId,
     expectedDurationMinutes: service.expectedDurationMinutes,
     priceCents: service.priceCents,
     dueDate: service.dueDate,
+    generatedForDate: service.generatedForDate,
     serviceWindowStart: service.serviceWindowStart,
     serviceWindowEnd: service.serviceWindowEnd,
+    timeWindow: service.timeWindow,
+    schedulingMode: service.schedulingMode,
     notes: service.notes,
     // Pass 29: the field-add stamp and the office's review, so an ADD from
     // the field and a later review both diff.
     addedInFieldByUserId: service.addedInFieldByUserId,
     fieldReviewedAt: service.fieldReviewedAt,
+    fieldReviewedByUserId: service.fieldReviewedByUserId,
+    fieldReviewedByLabel: service.fieldReviewedByLabel,
   };
+}
+
+// Pass 32: the two kind fields work_kind_changed records on its own, taken
+// out of a service `update` written in the same request so they are not
+// diffed twice.
+function serviceAuditSnapshotWithoutKind(service: Service): Record<string, unknown> {
+  const snapshot: Record<string, unknown> = { ...serviceAuditSnapshot(service) };
+  delete snapshot.workKind;
+  delete snapshot.answersServiceId;
+  return snapshot;
 }
 
 // Pass 29: what field_service_reviewed records - the four field columns.
@@ -1830,15 +1866,29 @@ function fieldReviewSnapshot(service: Service) {
 // Pass 28 (decision 4): plus the visit's instructions (notes), its planned
 // end (scheduledEndDate) and each service's type, duration and kind, so a
 // composition change (appointment_composition_changed) diffs too.
-// Services are sorted by id so the before and after lists line up.
-function appointmentAuditSnapshot(appointment: Appointment, linkedServices: Service[]) {
+// Pass 32 (C5.1a): the row part on its own, for the status rows a time-in,
+// a post, a finalization or a reopen write without re-reading the services -
+// and grown by what the generic rows can move: where the visit is and came
+// from, its technician's time stamps, the locks.
+function appointmentRowAuditSnapshot(appointment: Appointment) {
   return {
     status: appointment.status,
+    customerId: appointment.customerId,
+    locationId: appointment.locationId,
+    agreementId: appointment.agreementId,
+    source: appointment.source,
     assignedTechnicianId: appointment.assignedTechnicianId,
     serviceId: appointment.serviceId,
     serviceTypeId: appointment.serviceTypeId,
+    generatedForDate: appointment.generatedForDate,
     scheduledDate: appointment.scheduledDate,
     scheduledEndDate: appointment.scheduledEndDate,
+    timeInAt: appointment.timeInAt,
+    timeOutAt: appointment.timeOutAt,
+    durationMinutes: appointment.durationMinutes,
+    lockTime: appointment.lockTime,
+    lockTechnician: appointment.lockTechnician,
+    assignedTo: appointment.assignedTo,
     notes: appointment.notes,
     cancelReason: appointment.cancelReason,
     cancelNotes: appointment.cancelNotes,
@@ -1846,6 +1896,13 @@ function appointmentAuditSnapshot(appointment: Appointment, linkedServices: Serv
     cancelRequestedByLabel: appointment.cancelRequestedByLabel,
     rescheduleRequested: appointment.rescheduleRequested,
     rescheduleRequestedAt: appointment.rescheduleRequestedAt,
+  };
+}
+
+// Services are sorted by id so the before and after lists line up.
+function appointmentAuditSnapshot(appointment: Appointment, linkedServices: Service[]) {
+  return {
+    ...appointmentRowAuditSnapshot(appointment),
     services: [...linkedServices]
       .sort((left, right) => left.id.localeCompare(right.id))
       .map(serviceAuditSnapshot),
@@ -1861,17 +1918,18 @@ function escapeLikePattern(value: string): string {
 export class DatabaseStorage implements IStorage {
   constructor(private readonly orgId: string) {}
 
-  // The one write path into audit_logs (D7). Call this from inside the same
-  // db.transaction() as the mutation being recorded, passing that `tx`: an
-  // audit row that outlived a rolled-back payment would be worse than no row,
-  // and a mutation that committed without its row is the gap D7 exists to
-  // close. Use the public recordAuditLog() below only where the mutation
-  // genuinely isn't transactional.
+  // The one write path into audit_logs (D7, canon §17). Call this from inside
+  // the same db.transaction() as the mutation being recorded, passing that
+  // `tx`: an audit row that outlived a rolled-back payment would be worse
+  // than no row, and a mutation that committed without its row is the gap D7
+  // exists to close. Every mutation here is transactional, so there is no
+  // public, out-of-transaction form (the unused one left in Pass 32).
   //
   // `actor` comes from the session (routes.ts getAuditActor), never from the
-  // request body - no route trusts a client-supplied actor. Passing no actor
-  // records a null one, which is how system-driven writes (the nightly billing
-  // run) should appear; don't invent a placeholder user for them.
+  // request body - no route trusts a client-supplied actor. A system-driven
+  // write passes SYSTEM_AUDIT_ACTOR explicitly (userId null, "System");
+  // don't invent a placeholder user for it. A null label renders as "System"
+  // on the History tab either way.
   private async recordAuditLogTx(tx: AuditLogWriter, entry: AuditLogEntry): Promise<void> {
     await tx.insert(auditLogs).values({
       orgId: this.orgId,
@@ -1885,8 +1943,37 @@ export class DatabaseStorage implements IStorage {
     });
   }
 
-  async recordAuditLog(entry: AuditLogEntry): Promise<void> {
-    await this.recordAuditLogTx(db, entry);
+  // Pass 32 (C5.1a): the three generic rows every entity in D7's follow-up
+  // list writes. A create records the row it made (no before); a change
+  // records the row before and after, and only when something the History
+  // tab's diff would show moved (shared/audit.ts auditChangeAction - the
+  // diff's own ignore list, so a save that changed nothing writes nothing
+  // and an edit's row never reads "no field-level differences"), as
+  // `status_changed` when `status` moved and `update` otherwise; a delete
+  // records the row it removed (no after). Snapshots are whole rows for the
+  // simple entities and the curated serviceAuditSnapshot /
+  // appointmentAuditSnapshot for the two scheduling entities.
+  private async auditCreatedTx(tx: AuditLogWriter, entityType: AuditEntityType, entityId: string, after: unknown, actor: AuditActor | null | undefined): Promise<void> {
+    await this.recordAuditLogTx(tx, { entityType, entityId, action: "created", actor: actor ?? null, after });
+  }
+
+  private async auditChangeTx(tx: AuditLogWriter, entityType: AuditEntityType, entityId: string, before: unknown, after: unknown, actor: AuditActor | null | undefined): Promise<boolean> {
+    const action = auditChangeAction(before, after);
+    if (!action) return false;
+    await this.recordAuditLogTx(tx, { entityType, entityId, action, actor: actor ?? null, before, after });
+    return true;
+  }
+
+  private async auditDeletedTx(tx: AuditLogWriter, entityType: AuditEntityType, entityId: string, before: unknown, actor: AuditActor | null | undefined): Promise<void> {
+    await this.recordAuditLogTx(tx, { entityType, entityId, action: "deleted", actor: actor ?? null, before });
+  }
+
+  // Pass 32: an agreement's row for the log - the whole row plus the sold-by
+  // user's name, so the History tab reads a sale-credit change as people
+  // (Pass 12's { soldByUserId, soldBy } shape, now inside the one row an
+  // agreement write produces).
+  private async agreementAuditSnapshotTx(reader: Pick<typeof db, "select">, agreement: Agreement) {
+    return { ...agreement, soldBy: await this.describeUserTx(reader, agreement.soldByUserId) };
   }
 
   // Every audit row for one entity, newest first. `createdAt` defaults to
@@ -1903,20 +1990,40 @@ export class DatabaseStorage implements IStorage {
   }
 
   // What the location screen's History panel renders: the location row plus the
-  // legacy customer record that owns it (since one profile edit writes both),
-  // plus the location's invoices as of D1. As passes 4-8 land, the remaining
-  // financial records anchored to this location (payments, credit memos,
-  // service tickets) get added to `refs` here - extend this list rather than
-  // adding a second rollup query.
+  // legacy customer record that owns it (one profile edit writes both, and
+  // Pass 30's account-scoped preferences sit on the customer), plus every
+  // record anchored to this location - invoices (D1), tickets, services,
+  // the ledger (D5), agreements, opportunities, appointments and, since Pass
+  // 32 (C5.1a), its contacts and the billing profiles that apply to it (its
+  // own override and the account's default). The org-wide templates
+  // (agreement_template, billing_profile_template) have no location and are
+  // read by entityType + entityId only. Extend this list rather than adding a
+  // second rollup query; the per-customer rollup is C5.1b's.
   async getAuditLogsForLocation(locationId: string, limit?: number): Promise<AuditLog[]> {
     const [location] = await db
-      .select({ customerId: locations.customerId })
+      .select({ customerId: locations.customerId, accountId: locations.accountId })
       .from(locations)
       .where(and(eq(locations.orgId, this.orgId), eq(locations.id, locationId)));
 
     if (!location) {
       return [];
     }
+
+    // Pass 32: the location's contacts, and the billing profiles that apply
+    // here - the location's own override and the account's default.
+    const locationContacts = await db
+      .select({ id: contacts.id })
+      .from(contacts)
+      .where(and(eq(contacts.orgId, this.orgId), eq(contacts.locationId, locationId)));
+    const locationBillingProfiles = await db
+      .select({ id: billingProfiles.id })
+      .from(billingProfiles)
+      .where(and(
+        eq(billingProfiles.orgId, this.orgId),
+        location.accountId
+          ? or(eq(billingProfiles.locationId, locationId), eq(billingProfiles.accountId, location.accountId))
+          : eq(billingProfiles.locationId, locationId),
+      ));
 
     // Invoices anchored to this location (D1). Collected as ids rather than
     // joined, because audit_logs.entity_id is plain text with no FK - the
@@ -1965,6 +2072,8 @@ export class DatabaseStorage implements IStorage {
     const allRefs: Array<{ entityType: AuditEntityType; entityIds: string[] }> = [
       { entityType: "location", entityIds: [locationId] },
       { entityType: "customer", entityIds: [location.customerId] },
+      { entityType: "contact", entityIds: locationContacts.map((contact) => contact.id) },
+      { entityType: "billing_profile", entityIds: locationBillingProfiles.map((profile) => profile.id) },
       { entityType: "invoice", entityIds: locationInvoices.map((invoice) => invoice.id) },
       { entityType: "service_record", entityIds: locationTickets.map((ticket) => ticket.id) },
       { entityType: "service", entityIds: locationServices.map((service) => service.id) },
@@ -2034,10 +2143,18 @@ export class DatabaseStorage implements IStorage {
     return currentMax + 1;
   }
 
-  private async ensurePrimaryLocationInvariant(accountId: string, preferredLocationId?: string): Promise<void> {
-    const relatedLocations = await db.select().from(locations).where(and(eq(locations.orgId, this.orgId), eq(locations.accountId, accountId)));
+  // Pass 32 (C5.1a): runs inside the caller's transaction (it used to write
+  // through `db` after the caller's commit) and records each location whose
+  // primary flag it flipped as that location's `update` row - the whole row
+  // before and after - signed by the request that caused it, or by System
+  // when the invariant repaired itself with no request behind it. The
+  // account's primaryLocationId and status move with it and are not logged
+  // on their own: canon has no account history, and the location rows say
+  // the same thing.
+  private async ensurePrimaryLocationInvariant(tx: DbTransaction, accountId: string, preferredLocationId?: string, actor?: AuditActor | null): Promise<void> {
+    const relatedLocations = await tx.select().from(locations).where(and(eq(locations.orgId, this.orgId), eq(locations.accountId, accountId)));
     if (relatedLocations.length === 0) {
-      await db.update(accounts).set({ primaryLocationId: null, updatedAt: new Date() }).where(and(eq(accounts.orgId, this.orgId), eq(accounts.id, accountId)));
+      await tx.update(accounts).set({ primaryLocationId: null, updatedAt: new Date() }).where(and(eq(accounts.orgId, this.orgId), eq(accounts.id, accountId)));
       return;
     }
 
@@ -2052,12 +2169,18 @@ export class DatabaseStorage implements IStorage {
       primaryCandidate = relatedLocations[0];
     }
 
-    await db.update(locations).set({ isPrimary: false }).where(and(eq(locations.orgId, this.orgId), eq(locations.accountId, accountId)));
-    await db.update(locations).set({ isPrimary: true }).where(and(eq(locations.orgId, this.orgId), eq(locations.id, primaryCandidate.id)));
-    await db
+    await tx.update(locations).set({ isPrimary: false }).where(and(eq(locations.orgId, this.orgId), eq(locations.accountId, accountId)));
+    await tx.update(locations).set({ isPrimary: true }).where(and(eq(locations.orgId, this.orgId), eq(locations.id, primaryCandidate.id)));
+    await tx
       .update(accounts)
       .set({ primaryLocationId: primaryCandidate.id, updatedAt: new Date() })
       .where(and(eq(accounts.orgId, this.orgId), eq(accounts.id, accountId)));
+
+    for (const location of relatedLocations) {
+      const isPrimary = location.id === primaryCandidate.id;
+      if ((location.isPrimary ?? false) === isPrimary) continue;
+      await this.auditChangeTx(tx, "location", location.id, location, { ...location, isPrimary }, actor ?? SYSTEM_AUDIT_ACTOR);
+    }
   }
 
   private normalizeAgreementInsert(data: InsertAgreement, actor?: AuditActor): InsertAgreement {
@@ -2825,10 +2948,17 @@ export class DatabaseStorage implements IStorage {
     return normalizeDateOnly(serviceRecord?.serviceDate) || normalizeDateOnly(appointment.scheduledDate);
   }
 
+  // Pass 32 (C5.1a): a placement, a move or a ticket on the agreement's
+  // initial appointment re-derives its dates - recorded as the agreement's
+  // `update` under the actor of the request that caused it (System when
+  // there is none). The agreement writers (create / update / link) pass
+  // `audit: false` and record the final row themselves, so one request is
+  // one row.
   private async syncAgreementInitialAppointmentDates(
     tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
     agreementId: string,
-    actor?: AuditActor,
+    actor?: AuditActor | null,
+    options: { audit?: boolean } = {},
   ) {
     const [agreement] = await tx.select().from(agreements).where(and(eq(agreements.orgId, this.orgId), eq(agreements.id, agreementId)));
     if (!agreement?.initialAppointmentId) {
@@ -2862,7 +2992,35 @@ export class DatabaseStorage implements IStorage {
       .where(and(eq(agreements.orgId, this.orgId), eq(agreements.id, agreement.id)))
       .returning();
 
+    if (options.audit !== false && updatedAgreement) {
+      await this.auditChangeTx(
+        tx,
+        "agreement",
+        agreement.id,
+        await this.agreementAuditSnapshotTx(tx, agreement),
+        await this.agreementAuditSnapshotTx(tx, updatedAgreement),
+        actor ?? SYSTEM_AUDIT_ACTOR,
+      );
+    }
+
     return updatedAgreement;
+  }
+
+  // Pass 32: the initial appointment taking the agreement (agreementId,
+  // source AGREEMENT_INITIAL) - the appointment's `update` row when it moved.
+  private async attachInitialAppointmentTx(tx: DbTransaction, appointmentId: string, agreementId: string, actor?: AuditActor | null): Promise<void> {
+    const [before] = await tx.select().from(appointments).where(and(eq(appointments.orgId, this.orgId), eq(appointments.id, appointmentId)));
+    if (!before) {
+      return;
+    }
+    const [after] = await tx
+      .update(appointments)
+      .set({ agreementId, source: "AGREEMENT_INITIAL" })
+      .where(and(eq(appointments.orgId, this.orgId), eq(appointments.id, appointmentId)))
+      .returning();
+    if (after) {
+      await this.auditChangeTx(tx, "appointment", appointmentId, appointmentRowAuditSnapshot(before), appointmentRowAuditSnapshot(after), actor);
+    }
   }
 
   private async ensureAgreementContactRequiredOpportunityTx(
@@ -2934,6 +3092,7 @@ export class DatabaseStorage implements IStorage {
       : nextServiceDate;
 
     if (serviceForCycle) {
+      const cycleBefore = serviceForCycle;
       const [updatedServiceForCycle] = await tx
         .update(services)
         .set({
@@ -2946,6 +3105,12 @@ export class DatabaseStorage implements IStorage {
         .where(and(eq(services.orgId, this.orgId), eq(services.id, serviceForCycle.id)))
         .returning();
       serviceForCycle = updatedServiceForCycle ?? serviceForCycle;
+      // Pass 32: the cycle's backfill is a write too - a System `update`
+      // only when it filled something in (on most reads it changes nothing
+      // and writes no row).
+      if (updatedServiceForCycle) {
+        await this.auditChangeTx(tx, "service", cycleBefore.id, serviceAuditSnapshot(cycleBefore), serviceAuditSnapshot(updatedServiceForCycle), SYSTEM_AUDIT_ACTOR);
+      }
       await this.ensureAgreementContactRequiredOpportunityTx(tx, agreement, serviceForCycle, nextServiceDate);
       return null;
     }
@@ -2986,7 +3151,21 @@ export class DatabaseStorage implements IStorage {
     }).returning();
 
     await this.ensureAgreementContactRequiredOpportunityTx(tx, agreement, createdService, nextServiceDate);
+    // Pass 32 (C5.1a, decided): the agreement's standing instruction made
+    // this service - logged `created` under System (Pass 26's rule-vs-person
+    // reasoning), whichever request ran the generation: an agreement write,
+    // a finalization's advance, or one of the three GET routes that generate
+    // on read (/api/location-counts/:id, /api/appointments/by-location/:id,
+    // /api/agreements/location/:id). It IS a creation, once per cycle, so a
+    // page load that generates nothing writes nothing.
+    await this.auditCreatedTx(tx, "service", createdService.id, serviceAuditSnapshot(createdService), SYSTEM_AUDIT_ACTOR);
     return createdService;
+  }
+
+  // Pass 32: the recurrence moving nextServiceDate after a completed visit is
+  // the agreement's own rule executing - the agreement's `update`, System.
+  private async auditAgreementAdvanceTx(tx: DbTransaction, before: Agreement, after: Agreement): Promise<void> {
+    await this.auditChangeTx(tx, "agreement", before.id, await this.agreementAuditSnapshotTx(tx, before), await this.agreementAuditSnapshotTx(tx, after), SYSTEM_AUDIT_ACTOR);
   }
 
   private async advanceAgreementForCompletedAppointment(
@@ -3016,6 +3195,7 @@ export class DatabaseStorage implements IStorage {
 
     const [updatedAgreement] = await tx.select().from(agreements).where(and(eq(agreements.orgId, this.orgId), eq(agreements.id, agreement.id)));
     if (updatedAgreement) {
+      await this.auditAgreementAdvanceTx(tx, agreement, updatedAgreement);
       await this.generateServiceForAgreement(tx, updatedAgreement);
     }
   }
@@ -3047,6 +3227,7 @@ export class DatabaseStorage implements IStorage {
 
     const [updatedAgreement] = await tx.select().from(agreements).where(and(eq(agreements.orgId, this.orgId), eq(agreements.id, agreement.id)));
     if (updatedAgreement) {
+      await this.auditAgreementAdvanceTx(tx, agreement, updatedAgreement);
       await this.generateServiceForAgreement(tx, updatedAgreement);
     }
   }
@@ -3203,20 +3384,38 @@ export class DatabaseStorage implements IStorage {
     return customer;
   }
 
-  async createCustomer(data: InsertCustomer): Promise<Customer> {
-    const [customer] = await db.insert(customers).values({ ...data, orgId: this.orgId }).returning();
+  // Pass 32 (C5.1a): the customer, location and contact writers below each
+  // record their row inside their transaction - `created` with the row made,
+  // `update` / `status_changed` with the whole row before and after when
+  // something moved, nothing when nothing did.
+  async createCustomer(data: InsertCustomer, actor?: AuditActor | null): Promise<Customer> {
+    const customer = await db.transaction(async (tx) => {
+      const [created] = await tx.insert(customers).values({ ...data, orgId: this.orgId }).returning();
+      await this.auditCreatedTx(tx, "customer", created.id, created, actor);
+      return created;
+    });
     await this.ensureAccountForLegacyCustomer(customer.id);
     return customer;
   }
 
-  async updateCustomer(id: string, data: Partial<InsertCustomer>): Promise<Customer | undefined> {
-    const [customer] = await db.update(customers).set(data).where(and(eq(customers.orgId, this.orgId), eq(customers.id, id))).returning();
-    return customer;
+  async updateCustomer(id: string, data: Partial<InsertCustomer>, actor?: AuditActor | null): Promise<Customer | undefined> {
+    return db.transaction(async (tx) => {
+      const [existing] = await tx.select().from(customers).where(and(eq(customers.orgId, this.orgId), eq(customers.id, id)));
+      if (!existing) {
+        return undefined;
+      }
+      const [customer] = await tx.update(customers).set(data).where(and(eq(customers.orgId, this.orgId), eq(customers.id, id))).returning();
+      if (customer) {
+        await this.auditChangeTx(tx, "customer", customer.id, existing, customer, actor);
+      }
+      return customer;
+    });
   }
 
   async createCustomerWithPrimaryLocation(input: CreateCustomerWithPrimaryLocationInput): Promise<Customer> {
     const createdCustomer = await db.transaction(async (tx) => {
       const [customer] = await tx.insert(customers).values({ ...input.customer, orgId: this.orgId }).returning();
+      await this.auditCreatedTx(tx, "customer", customer.id, customer, input.actor);
 
       const [account] = await tx
         .insert(accounts)
@@ -3242,14 +3441,16 @@ export class DatabaseStorage implements IStorage {
         .update(accounts)
         .set({ primaryLocationId: location.id, updatedAt: new Date() })
         .where(and(eq(accounts.orgId, this.orgId), eq(accounts.id, account.id)));
+      await this.auditCreatedTx(tx, "location", location.id, location, input.actor);
 
       if (input.initialContact) {
-        await tx.insert(contacts).values({
+        const [contact] = await tx.insert(contacts).values({
           ...input.initialContact,
           orgId: this.orgId,
           customerId: customer.id,
           locationId: location.id,
-        });
+        }).returning();
+        await this.auditCreatedTx(tx, "contact", contact.id, contact, input.actor);
       }
 
       return customer;
@@ -3276,14 +3477,9 @@ export class DatabaseStorage implements IStorage {
         .where(and(eq(locations.orgId, this.orgId), eq(locations.id, input.locationId)))
         .returning();
 
-      await this.recordAuditLogTx(tx, {
-        entityType: "location",
-        entityId: updatedLocation.id,
-        action: "update",
-        actor: input.actor,
-        before: existingLocation,
-        after: updatedLocation,
-      });
+      // Pass 32: only when something moved (this used to write a row on
+      // every save, changed or not - the one always-write in the file).
+      await this.auditChangeTx(tx, "location", updatedLocation.id, existingLocation, updatedLocation, input.actor);
 
       let updatedCustomer: Customer | undefined;
       if (input.customer) {
@@ -3294,14 +3490,7 @@ export class DatabaseStorage implements IStorage {
           .returning();
         updatedCustomer = customer;
 
-        await this.recordAuditLogTx(tx, {
-          entityType: "customer",
-          entityId: customer.id,
-          action: "update",
-          actor: input.actor,
-          before: existingCustomer,
-          after: customer,
-        });
+        await this.auditChangeTx(tx, "customer", customer.id, existingCustomer, customer, input.actor);
       }
 
       return { customer: updatedCustomer, location: updatedLocation };
@@ -3404,7 +3593,7 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(contacts).where(and(eq(contacts.orgId, this.orgId), eq(contacts.locationId, locationId)));
   }
 
-  async createContact(data: InsertContact): Promise<Contact> {
+  async createContact(data: InsertContact, actor?: AuditActor | null): Promise<Contact> {
     const createdContact = await db.transaction(async (tx) => {
       const existingLocationContacts = data.locationId
         ? await tx.select().from(contacts).where(and(eq(contacts.orgId, this.orgId), eq(contacts.locationId, data.locationId)))
@@ -3414,27 +3603,43 @@ export class DatabaseStorage implements IStorage {
 
       if (data.locationId && shouldBePrimary) {
         await tx.update(contacts).set({ isPrimary: false }).where(and(eq(contacts.orgId, this.orgId), eq(contacts.locationId, data.locationId)));
+        await this.auditDemotedContactsTx(tx, existingLocationContacts, actor);
       }
 
       const [contact] = await tx.insert(contacts).values({ ...data, orgId: this.orgId, isPrimary: shouldBePrimary }).returning();
+      await this.auditCreatedTx(tx, "contact", contact.id, contact, actor);
       return contact;
     });
 
     return createdContact;
   }
 
-  async updateContact(id: string, data: Partial<InsertContact>): Promise<Contact | undefined> {
-    const [existing] = await db.select().from(contacts).where(and(eq(contacts.orgId, this.orgId), eq(contacts.id, id)));
-    if (!existing) {
-      return undefined;
+  // Pass 32: a primary change demotes the location's other contacts in one
+  // statement - one `update` row for each that was primary, since each is a
+  // row that moved (the contact promoted gets its own row from the caller).
+  private async auditDemotedContactsTx(tx: DbTransaction, siblings: Contact[], actor: AuditActor | null | undefined, keepId?: string): Promise<void> {
+    for (const sibling of siblings) {
+      if (sibling.id === keepId || !sibling.isPrimary) continue;
+      await this.auditChangeTx(tx, "contact", sibling.id, sibling, { ...sibling, isPrimary: false }, actor);
     }
+  }
 
-    const nextLocationId = data.locationId ?? existing.locationId;
-    const requestedPrimary = data.isPrimary ?? existing.isPrimary ?? false;
-
+  async updateContact(id: string, data: Partial<InsertContact>, actor?: AuditActor | null): Promise<Contact | undefined> {
     return db.transaction(async (tx) => {
+      // Pass 32: the existing row is read inside the transaction (it was read
+      // outside it) so the before snapshot is the row the update replaced.
+      const [existing] = await tx.select().from(contacts).where(and(eq(contacts.orgId, this.orgId), eq(contacts.id, id)));
+      if (!existing) {
+        return undefined;
+      }
+
+      const nextLocationId = data.locationId ?? existing.locationId;
+      const requestedPrimary = data.isPrimary ?? existing.isPrimary ?? false;
+
       if (nextLocationId && requestedPrimary) {
+        const siblings = await tx.select().from(contacts).where(and(eq(contacts.orgId, this.orgId), eq(contacts.locationId, nextLocationId)));
         await tx.update(contacts).set({ isPrimary: false }).where(and(eq(contacts.orgId, this.orgId), eq(contacts.locationId, nextLocationId)));
+        await this.auditDemotedContactsTx(tx, siblings, actor, id);
       }
 
       const [updatedContact] = await tx
@@ -3443,23 +3648,29 @@ export class DatabaseStorage implements IStorage {
         .where(and(eq(contacts.orgId, this.orgId), eq(contacts.id, id)))
         .returning();
 
+      if (updatedContact) {
+        await this.auditChangeTx(tx, "contact", updatedContact.id, existing, updatedContact, actor);
+      }
       return updatedContact;
     });
   }
 
-  async setPrimaryContact(contactId: string): Promise<Contact | undefined> {
-    const [existing] = await db.select().from(contacts).where(and(eq(contacts.orgId, this.orgId), eq(contacts.id, contactId)));
-    if (!existing?.locationId) {
-      return existing;
-    }
+  async setPrimaryContact(contactId: string, actor?: AuditActor | null): Promise<Contact | undefined> {
+    return db.transaction(async (tx) => {
+      const [existing] = await tx.select().from(contacts).where(and(eq(contacts.orgId, this.orgId), eq(contacts.id, contactId)));
+      if (!existing?.locationId) {
+        return existing;
+      }
 
-    const updatedContact = await db.transaction(async (tx) => {
-      await tx.update(contacts).set({ isPrimary: false }).where(and(eq(contacts.orgId, this.orgId), eq(contacts.locationId, existing.locationId!)));
+      const siblings = await tx.select().from(contacts).where(and(eq(contacts.orgId, this.orgId), eq(contacts.locationId, existing.locationId)));
+      await tx.update(contacts).set({ isPrimary: false }).where(and(eq(contacts.orgId, this.orgId), eq(contacts.locationId, existing.locationId)));
       const [contact] = await tx.update(contacts).set({ isPrimary: true }).where(and(eq(contacts.orgId, this.orgId), eq(contacts.id, contactId))).returning();
+      await this.auditDemotedContactsTx(tx, siblings, actor, contactId);
+      if (contact) {
+        await this.auditChangeTx(tx, "contact", contact.id, existing, contact, actor);
+      }
       return contact;
     });
-
-    return updatedContact;
   }
 
   async getLocations(customerId: string): Promise<Location[]> {
@@ -3475,21 +3686,24 @@ export class DatabaseStorage implements IStorage {
     return loc;
   }
 
-  async createLocation(data: InsertLocation): Promise<Location> {
+  // Pass 32: each location writer runs in one transaction with the primary
+  // invariant inside it (the invariant used to run through `db` after the
+  // insert or update had committed), so the `created` / `update` row and the
+  // invariant's own rows commit or roll back with the write.
+  async createLocation(data: InsertLocation, actor?: AuditActor | null): Promise<Location> {
     const accountId = data.accountId || await this.resolveAccountIdForLegacyCustomer(data.customerId);
-    const [location] = await db.insert(locations).values({ ...data, orgId: this.orgId, accountId }).returning();
-    if (data.isPrimary) {
-      await this.ensurePrimaryLocationInvariant(accountId, location.id);
-    } else {
-      await this.ensurePrimaryLocationInvariant(accountId);
-    }
-    return location;
+    return db.transaction(async (tx) => {
+      const [location] = await tx.insert(locations).values({ ...data, orgId: this.orgId, accountId }).returning();
+      await this.auditCreatedTx(tx, "location", location.id, location, actor);
+      await this.ensurePrimaryLocationInvariant(tx, accountId, data.isPrimary ? location.id : undefined, actor);
+      return location;
+    });
   }
 
   async createLocationWithPrimaryContact(input: CreateLocationWithPrimaryContactInput): Promise<Location> {
     const accountId = input.location.accountId || await this.resolveAccountIdForLegacyCustomer(input.location.customerId);
 
-    const createdLocation = await db.transaction(async (tx) => {
+    return db.transaction(async (tx) => {
       const [location] = await tx
         .insert(locations)
         .values({
@@ -3498,30 +3712,25 @@ export class DatabaseStorage implements IStorage {
           accountId,
         })
         .returning();
+      await this.auditCreatedTx(tx, "location", location.id, location, input.actor);
 
       if (input.initialContact) {
-        await tx.insert(contacts).values({
+        const [contact] = await tx.insert(contacts).values({
           ...input.initialContact,
           orgId: this.orgId,
           customerId: location.customerId,
           locationId: location.id,
           isPrimary: true,
-        });
+        }).returning();
+        await this.auditCreatedTx(tx, "contact", contact.id, contact, input.actor);
       }
 
+      await this.ensurePrimaryLocationInvariant(tx, accountId, location.isPrimary ? location.id : undefined, input.actor);
       return location;
     });
-
-    if (createdLocation.isPrimary) {
-      await this.ensurePrimaryLocationInvariant(accountId, createdLocation.id);
-    } else {
-      await this.ensurePrimaryLocationInvariant(accountId);
-    }
-
-    return createdLocation;
   }
 
-  async updateLocation(id: string, data: Partial<InsertLocation>): Promise<Location | undefined> {
+  async updateLocation(id: string, data: Partial<InsertLocation>, actor?: AuditActor | null): Promise<Location | undefined> {
     const [existing] = await db.select().from(locations).where(and(eq(locations.orgId, this.orgId), eq(locations.id, id)));
     if (!existing) {
       return undefined;
@@ -3531,25 +3740,34 @@ export class DatabaseStorage implements IStorage {
     const accountId = data.accountId || await this.resolveAccountIdForLegacyCustomer(customerId);
     const payload: Partial<InsertLocation> = { ...data, accountId };
 
-    const [loc] = await db.update(locations).set(payload).where(and(eq(locations.orgId, this.orgId), eq(locations.id, id))).returning();
-    if (!loc?.accountId) {
-      return loc;
-    }
+    return db.transaction(async (tx) => {
+      const [loc] = await tx.update(locations).set(payload).where(and(eq(locations.orgId, this.orgId), eq(locations.id, id))).returning();
+      if (!loc) {
+        return undefined;
+      }
+      await this.auditChangeTx(tx, "location", loc.id, existing, loc, actor);
+      if (!loc.accountId) {
+        return loc;
+      }
 
-    await this.ensurePrimaryLocationInvariant(loc.accountId, loc.isPrimary ? loc.id : undefined);
-    if (existing.accountId && existing.accountId !== loc.accountId) {
-      await this.ensurePrimaryLocationInvariant(existing.accountId);
-    }
-    return loc;
+      await this.ensurePrimaryLocationInvariant(tx, loc.accountId, loc.isPrimary ? loc.id : undefined, actor);
+      if (existing.accountId && existing.accountId !== loc.accountId) {
+        await this.ensurePrimaryLocationInvariant(tx, existing.accountId, undefined, actor);
+      }
+      return loc;
+    });
   }
 
-  async setPrimaryLocation(_customerId: string, locationId: string): Promise<void> {
+  async setPrimaryLocation(_customerId: string, locationId: string, actor?: AuditActor | null): Promise<void> {
     const [targetLocation] = await db.select().from(locations).where(and(eq(locations.orgId, this.orgId), eq(locations.id, locationId)));
-    if (!targetLocation?.accountId) {
+    const accountId = targetLocation?.accountId;
+    if (!accountId) {
       return;
     }
 
-    await this.ensurePrimaryLocationInvariant(targetLocation.accountId, locationId);
+    await db.transaction(async (tx) => {
+      await this.ensurePrimaryLocationInvariant(tx, accountId, locationId, actor);
+    });
   }
 
   async getBillingProfileTemplates(includeInactive = false): Promise<BillingProfileTemplate[]> {
@@ -3559,36 +3777,65 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(billingProfileTemplates).where(and(eq(billingProfileTemplates.orgId, this.orgId), eq(billingProfileTemplates.isActive, true))).orderBy(asc(billingProfileTemplates.sortOrder), asc(billingProfileTemplates.name));
   }
 
-  async createBillingProfileTemplate(data: InsertBillingProfileTemplate): Promise<BillingProfileTemplate> {
-    const [template] = await db.insert(billingProfileTemplates).values({ ...data, orgId: this.orgId }).returning();
-    return template;
+  // Pass 32 (C5.1a, decided): the org template joins the log beside the
+  // instance - the row says "billing profile", and the template is the org
+  // default C5.2 will read at customer creation. Org-wide, no location: its
+  // rows are read by GET /api/audit-logs?entityType=billing_profile_template
+  // &entityId= (a Settings surface later), never on a location's History tab.
+  async createBillingProfileTemplate(data: InsertBillingProfileTemplate, actor?: AuditActor | null): Promise<BillingProfileTemplate> {
+    return db.transaction(async (tx) => {
+      const [template] = await tx.insert(billingProfileTemplates).values({ ...data, orgId: this.orgId }).returning();
+      await this.auditCreatedTx(tx, "billing_profile_template", template.id, template, actor);
+      return template;
+    });
   }
 
-  async updateBillingProfileTemplate(id: string, data: Partial<InsertBillingProfileTemplate>): Promise<BillingProfileTemplate | undefined> {
-    const [template] = await db
-      .update(billingProfileTemplates)
-      .set({ ...data, updatedAt: new Date() })
-      .where(and(eq(billingProfileTemplates.orgId, this.orgId), eq(billingProfileTemplates.id, id)))
-      .returning();
-    return template;
+  async updateBillingProfileTemplate(id: string, data: Partial<InsertBillingProfileTemplate>, actor?: AuditActor | null): Promise<BillingProfileTemplate | undefined> {
+    return db.transaction(async (tx) => {
+      const [existing] = await tx.select().from(billingProfileTemplates).where(and(eq(billingProfileTemplates.orgId, this.orgId), eq(billingProfileTemplates.id, id)));
+      if (!existing) {
+        return undefined;
+      }
+      const [template] = await tx
+        .update(billingProfileTemplates)
+        .set({ ...data, updatedAt: new Date() })
+        .where(and(eq(billingProfileTemplates.orgId, this.orgId), eq(billingProfileTemplates.id, id)))
+        .returning();
+      if (template) {
+        await this.auditChangeTx(tx, "billing_profile_template", template.id, existing, template, actor);
+      }
+      return template;
+    });
   }
 
   async getBillingProfilesForAccount(accountId: string): Promise<BillingProfile[]> {
     return db.select().from(billingProfiles).where(and(eq(billingProfiles.orgId, this.orgId), eq(billingProfiles.accountId, accountId)));
   }
 
-  async createBillingProfile(data: InsertBillingProfile): Promise<BillingProfile> {
-    const [bp] = await db.insert(billingProfiles).values({ ...data, orgId: this.orgId }).returning();
-    return bp;
+  async createBillingProfile(data: InsertBillingProfile, actor?: AuditActor | null): Promise<BillingProfile> {
+    return db.transaction(async (tx) => {
+      const [bp] = await tx.insert(billingProfiles).values({ ...data, orgId: this.orgId }).returning();
+      await this.auditCreatedTx(tx, "billing_profile", bp.id, bp, actor);
+      return bp;
+    });
   }
 
-  async updateBillingProfile(id: string, data: Partial<InsertBillingProfile>): Promise<BillingProfile | undefined> {
-    const [bp] = await db
-      .update(billingProfiles)
-      .set({ ...data, updatedAt: new Date() })
-      .where(and(eq(billingProfiles.orgId, this.orgId), eq(billingProfiles.id, id)))
-      .returning();
-    return bp;
+  async updateBillingProfile(id: string, data: Partial<InsertBillingProfile>, actor?: AuditActor | null): Promise<BillingProfile | undefined> {
+    return db.transaction(async (tx) => {
+      const [existing] = await tx.select().from(billingProfiles).where(and(eq(billingProfiles.orgId, this.orgId), eq(billingProfiles.id, id)));
+      if (!existing) {
+        return undefined;
+      }
+      const [bp] = await tx
+        .update(billingProfiles)
+        .set({ ...data, updatedAt: new Date() })
+        .where(and(eq(billingProfiles.orgId, this.orgId), eq(billingProfiles.id, id)))
+        .returning();
+      if (bp) {
+        await this.auditChangeTx(tx, "billing_profile", bp.id, existing, bp, actor);
+      }
+      return bp;
+    });
   }
 
   // Per CANONICAL_DOMAIN_RULES_V1.md §4: a location-level profile (locationId
@@ -3879,6 +4126,7 @@ export class DatabaseStorage implements IStorage {
       });
       const [service] = await tx.insert(services).values({ ...payload, workKind: kind.workKind, answersServiceId: kind.answersServiceId, orgId: this.orgId }).returning();
 
+      let createdService: Service = service;
       if (service.appointmentId) {
         const [appointment] = await tx.select().from(appointments).where(and(eq(appointments.orgId, this.orgId), eq(appointments.id, service.appointmentId)));
         if (appointment) {
@@ -3892,16 +4140,32 @@ export class DatabaseStorage implements IStorage {
             .where(and(eq(services.orgId, this.orgId), eq(services.id, service.id)));
 
           if (!appointment.serviceId) {
-            await tx.update(appointments).set({ serviceId: service.id }).where(and(eq(appointments.orgId, this.orgId), eq(appointments.id, appointment.id)));
+            await this.setAppointmentRepresentativeTx(tx, appointment, service.id, context?.actor);
           }
 
           const [updatedService] = await tx.select().from(services).where(and(eq(services.orgId, this.orgId), eq(services.id, service.id)));
-          return updatedService || service;
+          createdService = updatedService || service;
         }
       }
 
-      return service;
+      // Pass 32 (C5.1a): the service's `created` row, as the creation left it
+      // (SCHEDULED with the visit's technician when it was born onto a visit).
+      await this.auditCreatedTx(tx, "service", createdService.id, serviceAuditSnapshot(createdService), context?.actor);
+      return createdService;
     });
+  }
+
+  // Pass 32: a visit with no representative service takes the one being
+  // written (the legacy appointments.serviceId column) - the visit's `update`.
+  private async setAppointmentRepresentativeTx(tx: DbTransaction, appointment: Appointment, serviceId: string, actor?: AuditActor | null): Promise<void> {
+    const [updatedAppointment] = await tx
+      .update(appointments)
+      .set({ serviceId })
+      .where(and(eq(appointments.orgId, this.orgId), eq(appointments.id, appointment.id)))
+      .returning();
+    if (updatedAppointment) {
+      await this.auditChangeTx(tx, "appointment", appointment.id, appointmentRowAuditSnapshot(appointment), appointmentRowAuditSnapshot(updatedAppointment), actor);
+    }
   }
 
   async updateService(id: string, data: Partial<InsertService>, context?: ServiceWriteContext): Promise<Service | undefined> {
@@ -4000,17 +4264,33 @@ export class DatabaseStorage implements IStorage {
             .where(and(eq(services.orgId, this.orgId), eq(services.id, service.id)));
 
           if (!appointment.serviceId) {
-            await tx.update(appointments).set({ serviceId: service.id }).where(and(eq(appointments.orgId, this.orgId), eq(appointments.id, appointment.id)));
+            await this.setAppointmentRepresentativeTx(tx, appointment, service.id, context?.actor);
           }
         }
       }
 
       const [updatedService] = await tx.select().from(services).where(and(eq(services.orgId, this.orgId), eq(services.id, id)));
+      // Pass 32 (C5.1a): the generic row for whatever else the PATCH moved
+      // (type, price, duration, dates, notes, the visit it was placed on and
+      // the status / technician that placement set). When the kind moved,
+      // work_kind_changed above has those two fields - they are taken out
+      // of this diff so one save writes one row per fact, not two.
+      if (updatedService) {
+        if (kindChange) {
+          await this.auditChangeTx(tx, "service", id, serviceAuditSnapshotWithoutKind(existing), serviceAuditSnapshotWithoutKind(updatedService), context?.actor);
+        } else {
+          await this.auditChangeTx(tx, "service", id, serviceAuditSnapshot(existing), serviceAuditSnapshot(updatedService), context?.actor);
+        }
+      }
       return updatedService;
     });
   }
 
-  async deleteService(id: string): Promise<boolean> {
+  // Pass 32 (C5.1a): the hard delete is recorded with the before snapshot -
+  // `deleted` on the service and, when it was the visit's last service, on
+  // the visit that went with it; a visit that lost one of several gets an
+  // `update` (its representative and its services list).
+  async deleteService(id: string, actor?: AuditActor | null): Promise<boolean> {
     return db.transaction(async (tx) => {
       const [service] = await tx.select().from(services).where(and(eq(services.orgId, this.orgId), eq(services.id, id)));
       if (!service) {
@@ -4028,21 +4308,39 @@ export class DatabaseStorage implements IStorage {
       }
 
       if (service.appointmentId) {
+        const [appointment] = await tx.select().from(appointments).where(and(eq(appointments.orgId, this.orgId), eq(appointments.id, service.appointmentId)));
         const siblingServices = await tx.select().from(services).where(and(eq(services.orgId, this.orgId), eq(services.appointmentId, service.appointmentId)));
         const remainingSiblings = siblingServices.filter((sibling) => sibling.id !== id);
         await tx.delete(services).where(and(eq(services.orgId, this.orgId), eq(services.id, id)));
+        await this.auditDeletedTx(tx, "service", service.id, serviceAuditSnapshot(service), actor);
 
         if (remainingSiblings.length === 0) {
+          // Pass 32: the visit's crew rows (appointment_technicians, Pass 30)
+          // reference the visit, so they go first - since Pass 30 this delete
+          // had failed on that foreign key (400) whenever the visit had a
+          // technician, which is every placed visit.
+          await tx.delete(appointmentTechnicians).where(and(eq(appointmentTechnicians.orgId, this.orgId), eq(appointmentTechnicians.appointmentId, service.appointmentId)));
           await tx.delete(appointments).where(and(eq(appointments.orgId, this.orgId), eq(appointments.id, service.appointmentId)));
+          if (appointment) {
+            await this.auditDeletedTx(tx, "appointment", appointment.id, appointmentAuditSnapshot(appointment, siblingServices), actor);
+          }
         } else {
           const [representative] = remainingSiblings;
-          await tx.update(appointments).set({ serviceId: representative.id }).where(and(eq(appointments.orgId, this.orgId), eq(appointments.id, service.appointmentId)));
+          const [updatedAppointment] = await tx
+            .update(appointments)
+            .set({ serviceId: representative.id })
+            .where(and(eq(appointments.orgId, this.orgId), eq(appointments.id, service.appointmentId)))
+            .returning();
+          if (appointment && updatedAppointment) {
+            await this.auditChangeTx(tx, "appointment", appointment.id, appointmentAuditSnapshot(appointment, siblingServices), appointmentAuditSnapshot(updatedAppointment, remainingSiblings), actor);
+          }
         }
 
         return true;
       }
 
       await tx.delete(services).where(and(eq(services.orgId, this.orgId), eq(services.id, id)));
+      await this.auditDeletedTx(tx, "service", service.id, serviceAuditSnapshot(service), actor);
       return true;
     });
   }
@@ -4844,6 +5142,12 @@ export class DatabaseStorage implements IStorage {
             notes: opportunity.notes || `Converted from opportunity: ${opportunity.opportunityType || serviceType?.name || "Opportunity"}`,
           }).returning())[0];
 
+      // Pass 32 (C5.1a): a conversion that made a new service records it; one
+      // that reused the agreement's generated service made nothing.
+      if (linkedGeneratedService?.source !== "AGREEMENT_GENERATED") {
+        await this.auditCreatedTx(tx, "service", service.id, serviceAuditSnapshot(service), actor);
+      }
+
       const [updatedOpportunity] = await tx
         .update(opportunities)
         .set({
@@ -4957,16 +5261,31 @@ export class DatabaseStorage implements IStorage {
     return template;
   }
 
-  async createAgreementTemplate(data: InsertAgreementTemplate): Promise<AgreementTemplate> {
+  // Pass 32 (C5.1a): org-wide, no location - the template's rows are read by
+  // GET /api/audit-logs?entityType=agreement_template&entityId= (a Settings
+  // surface later), never on a location's History tab.
+  async createAgreementTemplate(data: InsertAgreementTemplate, actor?: AuditActor | null): Promise<AgreementTemplate> {
     const payload = this.normalizeAgreementTemplateInsert(data);
-    const [template] = await db.insert(agreementTemplates).values({ ...payload, orgId: this.orgId }).returning();
-    return template;
+    return db.transaction(async (tx) => {
+      const [template] = await tx.insert(agreementTemplates).values({ ...payload, orgId: this.orgId }).returning();
+      await this.auditCreatedTx(tx, "agreement_template", template.id, template, actor);
+      return template;
+    });
   }
 
-  async updateAgreementTemplate(id: string, data: Partial<InsertAgreementTemplate>): Promise<AgreementTemplate | undefined> {
+  async updateAgreementTemplate(id: string, data: Partial<InsertAgreementTemplate>, actor?: AuditActor | null): Promise<AgreementTemplate | undefined> {
     const payload = this.normalizeAgreementTemplateUpdate(data);
-    const [template] = await db.update(agreementTemplates).set({ ...payload, updatedAt: new Date() }).where(and(eq(agreementTemplates.orgId, this.orgId), eq(agreementTemplates.id, id))).returning();
-    return template;
+    return db.transaction(async (tx) => {
+      const [existing] = await tx.select().from(agreementTemplates).where(and(eq(agreementTemplates.orgId, this.orgId), eq(agreementTemplates.id, id)));
+      if (!existing) {
+        return undefined;
+      }
+      const [template] = await tx.update(agreementTemplates).set({ ...payload, updatedAt: new Date() }).where(and(eq(agreementTemplates.orgId, this.orgId), eq(agreementTemplates.id, id))).returning();
+      if (template) {
+        await this.auditChangeTx(tx, "agreement_template", template.id, existing, template, actor);
+      }
+      return template;
+    });
   }
 
   async getAgreementsByLocation(locationId: string): Promise<Agreement[]> {
@@ -4991,15 +5310,8 @@ export class DatabaseStorage implements IStorage {
 
       let finalAgreement = createdAgreement;
       if (createdAgreement.initialAppointmentId && createdAgreement.startDateSource === "INITIAL_APPOINTMENT") {
-        await tx
-          .update(appointments)
-          .set({
-            agreementId: createdAgreement.id,
-            source: "AGREEMENT_INITIAL",
-          })
-          .where(and(eq(appointments.orgId, this.orgId), eq(appointments.id, createdAgreement.initialAppointmentId)));
-
-        finalAgreement = (await this.syncAgreementInitialAppointmentDates(tx, createdAgreement.id, actor)) || createdAgreement;
+        await this.attachInitialAppointmentTx(tx, createdAgreement.initialAppointmentId, createdAgreement.id, actor);
+        finalAgreement = (await this.syncAgreementInitialAppointmentDates(tx, createdAgreement.id, actor, { audit: false })) || createdAgreement;
       }
 
       // Pass 11d (owner review 2026-09-21, D4 item 2a): nothing is invoiced
@@ -5010,6 +5322,9 @@ export class DatabaseStorage implements IStorage {
       // charge types. What the office is prompted to collect at signing is
       // getInitialChargeDueForAgreement, read by the route after this returns.
 
+      // Pass 32 (C5.1a): the agreement's `created` row, as the creation left
+      // it (the dates synced from the initial appointment when there is one).
+      await this.auditCreatedTx(tx, "agreement", finalAgreement.id, await this.agreementAuditSnapshotTx(tx, finalAgreement), actor);
       return finalAgreement;
     });
 
@@ -5035,35 +5350,28 @@ export class DatabaseStorage implements IStorage {
       if (!updatedAgreement) {
         return undefined;
       }
-      // Pass 12: a sale-credit change is comp basis moving, so it is the one
-      // agreement edit the audit log records today (the rest joins with
-      // C5.1a): an `update` with the sold-by field before and after, the
-      // users named so the History tab reads as people rather than ids. An
-      // unchanged sold-by - the form sends the whole row - writes nothing.
-      if ((existingAgreement.soldByUserId ?? null) !== (updatedAgreement.soldByUserId ?? null)) {
-        await this.recordAuditLogTx(tx, {
-          entityType: "agreement",
-          entityId: updatedAgreement.id,
-          action: "update",
-          actor,
-          before: { soldByUserId: existingAgreement.soldByUserId ?? null, soldBy: await this.describeUserTx(tx, existingAgreement.soldByUserId) },
-          after: { soldByUserId: updatedAgreement.soldByUserId ?? null, soldBy: await this.describeUserTx(tx, updatedAgreement.soldByUserId) },
-        });
-      }
 
+      let finalAgreement = updatedAgreement;
       if (updatedAgreement.initialAppointmentId && updatedAgreement.startDateSource === "INITIAL_APPOINTMENT") {
-        await tx
-          .update(appointments)
-          .set({
-            agreementId: updatedAgreement.id,
-            source: "AGREEMENT_INITIAL",
-          })
-          .where(and(eq(appointments.orgId, this.orgId), eq(appointments.id, updatedAgreement.initialAppointmentId)));
-
-        return (await this.syncAgreementInitialAppointmentDates(tx, updatedAgreement.id, actor)) || updatedAgreement;
+        await this.attachInitialAppointmentTx(tx, updatedAgreement.initialAppointmentId, updatedAgreement.id, actor);
+        finalAgreement = (await this.syncAgreementInitialAppointmentDates(tx, updatedAgreement.id, actor, { audit: false })) || updatedAgreement;
       }
 
-      return updatedAgreement;
+      // Pass 12 recorded only the sale-credit change here ({ soldByUserId,
+      // soldBy } before and after, the users named). Pass 32 (C5.1a) widened
+      // it to the whole row with the sold-by user still named on both sides:
+      // one `update` (or `status_changed`) when anything moved, nothing when
+      // the form sent the row back unchanged (the Pass 12 guard, generalized).
+      await this.auditChangeTx(
+        tx,
+        "agreement",
+        finalAgreement.id,
+        await this.agreementAuditSnapshotTx(tx, existingAgreement),
+        await this.agreementAuditSnapshotTx(tx, finalAgreement),
+        actor,
+      );
+
+      return finalAgreement;
     });
     if (!agreement) {
       return undefined;
@@ -5120,18 +5428,35 @@ export class DatabaseStorage implements IStorage {
         .where(and(eq(agreements.orgId, this.orgId), eq(agreements.id, agreement.id)))
         .returning();
 
+      // Pass 32 (C5.1a): the agreement's CANCELLED was unaudited (Pass 30's
+      // leftover) - one status_changed with the whole row before and after,
+      // the reason, the policy snapshot and the override stamps in the diff.
+      await this.auditChangeTx(
+        tx,
+        "agreement",
+        agreement.id,
+        await this.agreementAuditSnapshotTx(tx, agreement),
+        await this.agreementAuditSnapshotTx(tx, updatedAgreement),
+        input.actor,
+      );
+
       const agreementServices = await tx.select().from(services).where(and(eq(services.orgId, this.orgId), eq(services.agreementId, agreement.id)));
 
       if (cancelPendingServices) {
-        await tx
-          .update(services)
-          .set({ status: "CANCELLED", updatedAt: cancelledAt })
-          .where(and(
-            eq(services.orgId, this.orgId),
-            eq(services.agreementId, agreement.id),
-            eq(services.source, "AGREEMENT_GENERATED"),
-            eq(services.status, "PENDING_SCHEDULING"),
-          ));
+        // The same set the old one-statement update took (this agreement's
+        // AGREEMENT_GENERATED services still PENDING_SCHEDULING), written one
+        // by one so each gets its status_changed row.
+        for (const service of agreementServices) {
+          if (service.source !== "AGREEMENT_GENERATED" || service.status !== "PENDING_SCHEDULING") continue;
+          const [cancelledService] = await tx
+            .update(services)
+            .set({ status: "CANCELLED", updatedAt: cancelledAt })
+            .where(and(eq(services.orgId, this.orgId), eq(services.id, service.id)))
+            .returning();
+          if (cancelledService) {
+            await this.auditChangeTx(tx, "service", service.id, serviceAuditSnapshot(service), serviceAuditSnapshot(cancelledService), input.actor);
+          }
+        }
       }
 
       if (cancelScheduledAppointments) {
@@ -5152,15 +5477,51 @@ export class DatabaseStorage implements IStorage {
         }
         await this.resolveDraftInvoicesOnCancelTx(tx, Array.from(cancellingAppointmentIds), input.voidDraftInvoices, input.actor ?? null);
 
-        for (const appointment of scheduledAppointments) {
-          if (appointment.status === "COMPLETED" || appointment.status === "CANCELED") continue;
-          await tx.update(appointments).set({ status: "CANCELED" }).where(and(eq(appointments.orgId, this.orgId), eq(appointments.id, appointment.id)));
+        // Pass 32 (C5.1a, decided): the visits this cancellation takes down
+        // used to be set CANCELED directly - no reason, no row (Pass 30's
+        // leftover). Each now carries the disposition's cancel fields (the
+        // agreement's reason, a note naming the agreement, when and by whom)
+        // and writes one status_changed with its services, so the Services
+        // tab and the History tab read it like any other cancelled visit.
+        // Not routed through dispositionAppointment: that path recycles an
+        // agreement's services back to the queue with a reset window, the
+        // opposite of what a cancellation asks. A visit already CANCELED or
+        // COMPLETED is left as it is; each id is written once (the two old
+        // loops could hit the same visit twice).
+        const appointmentsById = new Map(scheduledAppointments.map((appointment) => [appointment.id, appointment] as const));
+        for (const appointmentId of Array.from(cancellingAppointmentIds)) {
+          let appointmentBefore = appointmentsById.get(appointmentId);
+          if (!appointmentBefore) {
+            [appointmentBefore] = await tx.select().from(appointments).where(and(eq(appointments.orgId, this.orgId), eq(appointments.id, appointmentId)));
+          }
+          if (!appointmentBefore || appointmentBefore.status === "COMPLETED" || appointmentBefore.status === "CANCELED") continue;
+          const linkedServices = await this.getLinkedServicesForAppointmentTx(tx, appointmentBefore.id, appointmentBefore.serviceId);
+          const [appointmentAfter] = await tx
+            .update(appointments)
+            .set({
+              status: "CANCELED",
+              cancelReason: input.reason.trim(),
+              cancelNotes: `Agreement cancelled: ${agreement.agreementName}`,
+              cancelRequestedAt: cancelledAt,
+              cancelRequestedByLabel: input.actor?.actorLabel || null,
+            })
+            .where(and(eq(appointments.orgId, this.orgId), eq(appointments.id, appointmentBefore.id)))
+            .returning();
+          if (appointmentAfter) {
+            await this.auditChangeTx(tx, "appointment", appointmentAfter.id, appointmentAuditSnapshot(appointmentBefore, linkedServices), appointmentAuditSnapshot(appointmentAfter, linkedServices), input.actor);
+          }
         }
 
         for (const service of agreementServices) {
           if (!service.appointmentId || service.status === "COMPLETED" || service.status === "CANCELLED") continue;
-          await tx.update(appointments).set({ status: "CANCELED" }).where(and(eq(appointments.orgId, this.orgId), eq(appointments.id, service.appointmentId)));
-          await tx.update(services).set({ status: "CANCELLED", updatedAt: cancelledAt }).where(and(eq(services.orgId, this.orgId), eq(services.id, service.id)));
+          const [cancelledService] = await tx
+            .update(services)
+            .set({ status: "CANCELLED", updatedAt: cancelledAt })
+            .where(and(eq(services.orgId, this.orgId), eq(services.id, service.id)))
+            .returning();
+          if (cancelledService) {
+            await this.auditChangeTx(tx, "service", service.id, serviceAuditSnapshot(service), serviceAuditSnapshot(cancelledService), input.actor);
+          }
         }
       }
 
@@ -5250,13 +5611,7 @@ export class DatabaseStorage implements IStorage {
         throw new Error("Selected appointment cannot be linked as the agreement's initial service");
       }
 
-      await tx
-        .update(appointments)
-        .set({
-          agreementId: existingAgreement.id,
-          source: "AGREEMENT_INITIAL",
-        })
-        .where(and(eq(appointments.orgId, this.orgId), eq(appointments.id, appointment.id)));
+      await this.attachInitialAppointmentTx(tx, appointment.id, existingAgreement.id, input.actor);
 
       await tx
         .update(agreements)
@@ -5268,7 +5623,18 @@ export class DatabaseStorage implements IStorage {
         })
         .where(and(eq(agreements.orgId, this.orgId), eq(agreements.id, existingAgreement.id)));
 
-      return await this.syncAgreementInitialAppointmentDates(tx, existingAgreement.id, input.actor);
+      const linkedAgreement = (await this.syncAgreementInitialAppointmentDates(tx, existingAgreement.id, input.actor, { audit: false })) ?? existingAgreement;
+      // Pass 32 (C5.1a): one `update` for the link - the initial appointment
+      // taken and the dates derived from it.
+      await this.auditChangeTx(
+        tx,
+        "agreement",
+        existingAgreement.id,
+        await this.agreementAuditSnapshotTx(tx, existingAgreement),
+        await this.agreementAuditSnapshotTx(tx, linkedAgreement),
+        input.actor,
+      );
+      return linkedAgreement;
     });
 
     if (!agreement) {
@@ -5344,6 +5710,7 @@ export class DatabaseStorage implements IStorage {
       }
 
       if (appt.agreementId && appt.source === "AGREEMENT_INITIAL") {
+        const [agreementBefore] = await tx.select().from(agreements).where(and(eq(agreements.orgId, this.orgId), eq(agreements.id, appt.agreementId)));
         await tx
           .update(agreements)
           .set({
@@ -5353,10 +5720,22 @@ export class DatabaseStorage implements IStorage {
           })
           .where(and(eq(agreements.orgId, this.orgId), eq(agreements.id, appt.agreementId)));
 
-        await this.syncAgreementInitialAppointmentDates(tx, appt.agreementId);
+        // Pass 32: the agreement taking this visit as its initial one and the
+        // dates derived from it - one `update`, signed by the placer.
+        const agreementAfter = await this.syncAgreementInitialAppointmentDates(tx, appt.agreementId, options.actor, { audit: false });
+        if (agreementBefore && agreementAfter) {
+          await this.auditChangeTx(tx, "agreement", agreementBefore.id, await this.agreementAuditSnapshotTx(tx, agreementBefore), await this.agreementAuditSnapshotTx(tx, agreementAfter), options.actor);
+        }
       }
 
       await this.recordPlacementChecksTx(tx, { appointment: appt, checks, via: "CREATE", previousTechnicianId: null, actor: options.actor });
+
+      // Pass 32 (C5.1a): the visit's `created` row with its services as the
+      // placement left them (SCHEDULED, the technician). The services' own
+      // status move rides here - the way a disposition's or a composition
+      // change's does - rather than as a row per service.
+      const linkedServices = await this.getLinkedServicesForAppointmentTx(tx, appt.id, appt.serviceId);
+      await this.auditCreatedTx(tx, "appointment", appt.id, appointmentAuditSnapshot(appt, linkedServices), options.actor);
 
       return appt;
     });
@@ -5431,12 +5810,12 @@ export class DatabaseStorage implements IStorage {
       // Pass 28 (C4.3a; B13): the visit's instructions to the technician -
       // appointments.notes, "Scheduling Notes" on the sheet - are edited
       // through this PATCH, and a change writes appointment_composition_changed
-      // with the visit and its services before and after. The scheduling
-      // fields (technician, time, status, locks) stay unaudited until C5.1a.
+      // with the visit and its services before and after. Pass 32 (C5.1a):
+      // every other change - technician, time, status, locks - writes the
+      // visit's `update` / `status_changed` below with the same snapshot, so
+      // the services are read before and after either way.
       const notesChanged = data.notes !== undefined && (data.notes ?? null) !== (existingAppointment.notes ?? null);
-      const linkedBefore = notesChanged
-        ? await this.getLinkedServicesForAppointmentTx(tx, existingAppointment.id, existingAppointment.serviceId)
-        : [];
+      const linkedBefore = await this.getLinkedServicesForAppointmentTx(tx, existingAppointment.id, existingAppointment.serviceId);
 
       // Pass 30 (C4.4; B14): a change of technician to one the customer
       // EXCLUDED at the visit's location is refused before anything is
@@ -5468,11 +5847,11 @@ export class DatabaseStorage implements IStorage {
 
       const [linkedAgreement] = await tx.select().from(agreements).where(and(eq(agreements.orgId, this.orgId), eq(agreements.initialAppointmentId, updatedAppointment.id)));
       if (linkedAgreement?.startDateSource === "INITIAL_APPOINTMENT") {
-        await this.syncAgreementInitialAppointmentDates(tx, linkedAgreement.id);
+        await this.syncAgreementInitialAppointmentDates(tx, linkedAgreement.id, actor);
       }
 
+      const linkedAfter = await this.getLinkedServicesForAppointmentTx(tx, updatedAppointment.id, updatedAppointment.serviceId);
       if (notesChanged) {
-        const linkedAfter = await this.getLinkedServicesForAppointmentTx(tx, updatedAppointment.id, updatedAppointment.serviceId);
         await this.recordCompositionChangeTx(tx, {
           actor,
           appointmentBefore: existingAppointment,
@@ -5481,6 +5860,12 @@ export class DatabaseStorage implements IStorage {
           servicesAfter: linkedAfter,
           composition: { action: "NOTES" },
         });
+      } else {
+        // Pass 32 (C5.1a): the scheduling fields and anything else the PATCH
+        // moved, the services as the placement left them; one row, and none
+        // when the sheet saved the row back unchanged. A notes change keeps
+        // its composition row above, whose snapshot carries the same fields.
+        await this.auditChangeTx(tx, "appointment", updatedAppointment.id, appointmentAuditSnapshot(existingAppointment, linkedBefore), appointmentAuditSnapshot(updatedAppointment, linkedAfter), actor);
       }
 
       if (checks) {
@@ -7026,7 +7411,10 @@ export class DatabaseStorage implements IStorage {
     });
   }
 
-  async timeInAppointment(id: string): Promise<Appointment | undefined> {
+  // Pass 32 (C5.1a): the technician's time-in is the visit's SCHEDULED ->
+  // IN_PROGRESS (status_changed); the time-out moves the stamps (update). A
+  // second press of either changes nothing and writes nothing.
+  async timeInAppointment(id: string, actor?: AuditActor | null): Promise<Appointment | undefined> {
     return db.transaction(async (tx) => {
       const [existingAppointment] = await tx.select().from(appointments).where(and(eq(appointments.orgId, this.orgId), eq(appointments.id, id)));
       if (!existingAppointment) return undefined;
@@ -7039,11 +7427,14 @@ export class DatabaseStorage implements IStorage {
         })
         .where(and(eq(appointments.orgId, this.orgId), eq(appointments.id, id)))
         .returning();
+      if (appointment) {
+        await this.auditChangeTx(tx, "appointment", id, appointmentRowAuditSnapshot(existingAppointment), appointmentRowAuditSnapshot(appointment), actor);
+      }
       return appointment;
     });
   }
 
-  async timeOutAppointment(id: string): Promise<Appointment | undefined> {
+  async timeOutAppointment(id: string, actor?: AuditActor | null): Promise<Appointment | undefined> {
     return db.transaction(async (tx) => {
       const [existingAppointment] = await tx.select().from(appointments).where(and(eq(appointments.orgId, this.orgId), eq(appointments.id, id)));
       if (!existingAppointment) return undefined;
@@ -7058,6 +7449,9 @@ export class DatabaseStorage implements IStorage {
         })
         .where(and(eq(appointments.orgId, this.orgId), eq(appointments.id, id)))
         .returning();
+      if (appointment) {
+        await this.auditChangeTx(tx, "appointment", id, appointmentRowAuditSnapshot(existingAppointment), appointmentRowAuditSnapshot(appointment), actor);
+      }
       return appointment;
     });
   }
@@ -7132,7 +7526,10 @@ export class DatabaseStorage implements IStorage {
     return sr;
   }
 
-  async createServiceRecord(data: InsertServiceRecord): Promise<ServiceRecord> {
+  // Pass 32 (C5.1a): the ticket itself is service_records' (D9, excluded from
+  // this row); the Service's status / technician write it makes is recorded
+  // when it moved something, signed by the poster.
+  async createServiceRecord(data: InsertServiceRecord, actor?: AuditActor | null): Promise<ServiceRecord> {
     return db.transaction(async (tx) => {
       const technicianSnapshot = await this.resolveServiceRecordTechnicianSnapshot(tx, data);
       const [insertedRecord] = await tx.insert(serviceRecords).values({
@@ -7146,7 +7543,8 @@ export class DatabaseStorage implements IStorage {
       const sr = await this.flagTicketIfVisitAlreadyInvoicedTx(tx, insertedRecord);
 
       if (sr.serviceId) {
-        await tx
+        const [serviceBefore] = await tx.select().from(services).where(and(eq(services.orgId, this.orgId), eq(services.id, sr.serviceId)));
+        const [serviceAfter] = await tx
           .update(services)
           .set({
             status: "SCHEDULED",
@@ -7154,12 +7552,16 @@ export class DatabaseStorage implements IStorage {
             updatedAt: new Date(),
           })
           .where(and(eq(services.orgId, this.orgId), eq(services.id, sr.serviceId)))
+          .returning();
+        if (serviceBefore && serviceAfter) {
+          await this.auditChangeTx(tx, "service", sr.serviceId, serviceAuditSnapshot(serviceBefore), serviceAuditSnapshot(serviceAfter), actor);
+        }
       }
 
       if (sr.appointmentId) {
         const [linkedAgreement] = await tx.select().from(agreements).where(and(eq(agreements.orgId, this.orgId), eq(agreements.initialAppointmentId, sr.appointmentId)));
         if (linkedAgreement?.startDateSource === "INITIAL_APPOINTMENT") {
-          await this.syncAgreementInitialAppointmentDates(tx, linkedAgreement.id);
+          await this.syncAgreementInitialAppointmentDates(tx, linkedAgreement.id, actor);
         }
       }
 
@@ -7607,6 +8009,13 @@ export class DatabaseStorage implements IStorage {
         })
         .where(and(eq(services.orgId, this.orgId), eq(services.id, service.id)))
         .returning();
+      // Pass 32 (C5.1a): the post's write to the Service (status, the visit,
+      // the technician) - usually a no-op, recorded when it moved something;
+      // the price is price_overridden's above (effectiveService is the row
+      // after that override, so a priced post does not diff the price twice).
+      if (postedService) {
+        await this.auditChangeTx(tx, "service", service.id, serviceAuditSnapshot(effectiveService), serviceAuditSnapshot(postedService), input.actor ?? null);
+      }
 
       let updatedAppointment: Appointment | undefined | null = appointment ?? null;
       if (appointment) {
@@ -7624,10 +8033,15 @@ export class DatabaseStorage implements IStorage {
           })
           .where(and(eq(appointments.orgId, this.orgId), eq(appointments.id, appointment.id)))
           .returning();
+        // Pass 32: the post's write to the visit (IN_PROGRESS, the auto
+        // time-out) - status_changed or update when it moved something.
+        if (updatedAppointment) {
+          await this.auditChangeTx(tx, "appointment", appointment.id, appointmentRowAuditSnapshot(appointment), appointmentRowAuditSnapshot(updatedAppointment), input.actor ?? null);
+        }
 
         const [linkedAgreement] = await tx.select().from(agreements).where(and(eq(agreements.orgId, this.orgId), eq(agreements.initialAppointmentId, appointment.id)));
         if (linkedAgreement?.startDateSource === "INITIAL_APPOINTMENT") {
-          await this.syncAgreementInitialAppointmentDates(tx, linkedAgreement.id);
+          await this.syncAgreementInitialAppointmentDates(tx, linkedAgreement.id, input.actor ?? null);
         }
       }
 
@@ -7675,6 +8089,7 @@ export class DatabaseStorage implements IStorage {
 
       let completedService: Service | undefined;
       if (record.serviceId) {
+        const [serviceBefore] = await tx.select().from(services).where(and(eq(services.orgId, this.orgId), eq(services.id, record.serviceId)));
         [completedService] = await tx
           .update(services)
           .set({
@@ -7684,6 +8099,12 @@ export class DatabaseStorage implements IStorage {
           })
           .where(and(eq(services.orgId, this.orgId), eq(services.id, record.serviceId)))
           .returning();
+        // Pass 32 (C5.1a): the Service's COMPLETED (status_changed), signed by
+        // the finalizer; the ticket's own finalization stamps stay on the
+        // ticket (service_records is D9's, excluded here).
+        if (serviceBefore && completedService) {
+          await this.auditChangeTx(tx, "service", record.serviceId, serviceAuditSnapshot(serviceBefore), serviceAuditSnapshot(completedService), actor);
+        }
 
         if (completedService && !existingRecord.confirmed) {
           await this.advanceAgreementForCompletedService(tx, completedService);
@@ -7713,11 +8134,15 @@ export class DatabaseStorage implements IStorage {
           const allFinalized = serviceIds.length > 0 && serviceIds.every((serviceId) => finalizedServiceIds.has(serviceId));
           if (allFinalized) {
             const timeOutAt = appointment.timeOutAt ?? now;
-            await tx.update(appointments).set({
+            const [completedAppointment] = await tx.update(appointments).set({
               status: "COMPLETED",
               timeOutAt,
               durationMinutes: calculateDurationMinutes(appointment.timeInAt, timeOutAt) ?? appointment.durationMinutes ?? null,
-            }).where(and(eq(appointments.orgId, this.orgId), eq(appointments.id, appointment.id)));
+            }).where(and(eq(appointments.orgId, this.orgId), eq(appointments.id, appointment.id))).returning();
+            // Pass 32 (C5.1a): the visit's COMPLETED (status_changed).
+            if (completedAppointment) {
+              await this.auditChangeTx(tx, "appointment", appointment.id, appointmentRowAuditSnapshot(appointment), appointmentRowAuditSnapshot(completedAppointment), actor);
+            }
 
             // D2: the finalization that completes the visit is the invoicing
             // moment. Same transaction, so an AUTO_DRAFT lands with the
@@ -7860,20 +8285,35 @@ export class DatabaseStorage implements IStorage {
         after: record,
       });
 
+      // Pass 32 (C5.1a): the reopen's resets of the Service (COMPLETED ->
+      // SCHEDULED) and of the visit (COMPLETED -> IN_PROGRESS / SCHEDULED) are
+      // status_changed rows beside the ticket's ticket_reopened above.
       if (record.serviceId) {
-        await tx
+        const [serviceBefore] = await tx.select().from(services).where(and(eq(services.orgId, this.orgId), eq(services.id, record.serviceId)));
+        const [reopenedService] = await tx
           .update(services)
           .set({
             status: "SCHEDULED",
             updatedAt: new Date(),
           })
-          .where(and(eq(services.orgId, this.orgId), eq(services.id, record.serviceId)));
+          .where(and(eq(services.orgId, this.orgId), eq(services.id, record.serviceId)))
+          .returning();
+        if (serviceBefore && reopenedService) {
+          await this.auditChangeTx(tx, "service", record.serviceId, serviceAuditSnapshot(serviceBefore), serviceAuditSnapshot(reopenedService), actor);
+        }
       }
 
       if (record.appointmentId) {
         const [appointment] = await tx.select().from(appointments).where(and(eq(appointments.orgId, this.orgId), eq(appointments.id, record.appointmentId)));
         if (appointment?.status === "COMPLETED") {
-          await tx.update(appointments).set({ status: appointment.timeInAt ? "IN_PROGRESS" : "SCHEDULED" }).where(and(eq(appointments.orgId, this.orgId), eq(appointments.id, appointment.id)));
+          const [reopenedAppointment] = await tx
+            .update(appointments)
+            .set({ status: appointment.timeInAt ? "IN_PROGRESS" : "SCHEDULED" })
+            .where(and(eq(appointments.orgId, this.orgId), eq(appointments.id, appointment.id)))
+            .returning();
+          if (reopenedAppointment) {
+            await this.auditChangeTx(tx, "appointment", appointment.id, appointmentRowAuditSnapshot(appointment), appointmentRowAuditSnapshot(reopenedAppointment), actor);
+          }
         }
       }
 
@@ -10455,10 +10895,14 @@ export class DatabaseStorage implements IStorage {
           // anyway (a manual re-trigger, a bug elsewhere), the agreement must
           // not get stuck re-attempting an already-billed period forever.
           if (agreement.nextBillingDate !== input.nextBillingDate) {
-            await tx
+            const [advancedAgreement] = await tx
               .update(agreements)
               .set({ nextBillingDate: input.nextBillingDate as any, updatedAt: new Date() })
-              .where(and(eq(agreements.orgId, this.orgId), eq(agreements.id, agreement.id)));
+              .where(and(eq(agreements.orgId, this.orgId), eq(agreements.id, agreement.id)))
+              .returning();
+            if (advancedAgreement) {
+              await this.auditAgreementAdvanceTx(tx, agreement, advancedAgreement);
+            }
           }
           return existingInvoice;
         }
@@ -10545,10 +10989,17 @@ export class DatabaseStorage implements IStorage {
         sortOrder: 0,
       });
 
-      await tx
+      // Pass 32 (C5.1a): the billing run advancing nextBillingDate is the
+      // agreement's schedule executing - its `update`, System (the invoice
+      // row beside it is audited already).
+      const [advancedAgreement] = await tx
         .update(agreements)
         .set({ nextBillingDate: input.nextBillingDate as any, updatedAt: new Date() })
-        .where(and(eq(agreements.orgId, this.orgId), eq(agreements.id, agreement.id)));
+        .where(and(eq(agreements.orgId, this.orgId), eq(agreements.id, agreement.id)))
+        .returning();
+      if (advancedAgreement) {
+        await this.auditAgreementAdvanceTx(tx, agreement, advancedAgreement);
+      }
 
       return invoice;
     });

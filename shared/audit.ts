@@ -3,10 +3,11 @@
 //
 // `entity_type` and `action` are plain text columns, so nothing in the database
 // stops them drifting the way `appointments.status` did before D1a. These
-// unions are the guard: `recordAuditLog()` accepts only these values, so a
-// typo or a near-miss synonym is a compile error rather than a row that never
-// matches a later query. Passes 3-8 add members here as they write new
-// financial mutations - that edit is the point, not a nuisance.
+// unions are the guard: the writer (server/storage.ts recordAuditLogTx) accepts
+// only these values, so a typo or a near-miss synonym is a compile error rather
+// than a row that never matches a later query. Passes 3-8 added members here as
+// they wrote new financial mutations, Pass 32 the non-financial ones - that
+// edit is the point, not a nuisance.
 
 /** Entities that carry an audit trail. Seeded with the two the legacy call site
  *  already writes plus the financial entities named in D7's Phase 1 scope.
@@ -14,16 +15,28 @@
  *  own `priceCents` (the ticket only reads it), so that is the row the
  *  before/after snapshot has to be of. `agreement` joined in Pass 12 for
  *  sale-credit changes (`soldByUserId`, an `update`); the rest of an
- *  agreement's mutations join with C5.1a's non-financial coverage.
+ *  agreement's mutations joined in Pass 32 (C5.1a).
  *  `opportunity` joined in Pass 25 (C4.1) for the assignee, category and
  *  work-type changes the PATCH makes - an `update` naming the users before
  *  and after; dispositions and conversion keep their own activity trail.
  *  `appointment` joined in Pass 27 (C4.2) for the cancel / reschedule
  *  disposition: one row per disposition with the appointment and its
- *  services before and after and what was done about follow-up. */
+ *  services before and after and what was done about follow-up.
+ *  `contact`, `billing_profile`, `billing_profile_template` and
+ *  `agreement_template` joined in Pass 32 (C5.1a, D7's non-financial
+ *  follow-up), when every create / update / status change of a customer,
+ *  location, contact, billing profile (the instance and the org template),
+ *  agreement, agreement template, appointment and service started writing a
+ *  row. There is no `account` member (decided): canon has no account
+ *  history; what the account carries moves with the location invariant
+ *  (primaryLocationId is the primary flag on the locations, logged there)
+ *  or sits on the customer (Pass 30's account-scoped preferences). */
 export type AuditEntityType =
   | "customer"
   | "location"
+  | "contact"
+  | "billing_profile"
+  | "billing_profile_template"
   | "invoice"
   | "invoice_line_item"
   | "service"
@@ -31,6 +44,7 @@ export type AuditEntityType =
   | "payment"
   | "credit_memo"
   | "agreement"
+  | "agreement_template"
   | "opportunity"
   | "appointment";
 
@@ -105,17 +119,36 @@ export type AuditEntityType =
  *  removed from a visit's crew (appointment_technicians). On the
  *  `appointment`; the crew before and after, the after carrying `change`
  *  (ADD | REMOVE, the technician, the role). The LEAD follows the visit's
- *  technician silently, as the technician change itself is unaudited until
- *  C5.1a.
+ *  technician silently; the technician change itself is the appointment's
+ *  `update` row since Pass 32.
  *  `placement_preference_bypassed` (Pass 30b, owner 2026-10-03): a visit was
  *  placed or re-assigned to someone other than the customer's PREFERRED
  *  technician after the user confirmed the prompt (`acknowledgePreference`).
  *  On the `appointment`; the after carries the technician chosen, `via`
  *  (CREATE | UPDATE) and the preferred technicians passed over. A crew ADD
  *  confirmed over a schedule conflict records `conflictsAcknowledged` in its
- *  appointment_crew_changed row. */
+ *  appointment_crew_changed row.
+ *  `created` / `status_changed` / `deleted` (Pass 32, C5.1a): the three
+ *  generic rows every non-financial entity writes, the entity type carrying
+ *  the noun. A create has no before; a delete (deleteService's hard delete,
+ *  and the visit it takes with its last service) has no after. A change
+ *  writes `status_changed` when the row's `status` moved and the existing
+ *  `update` otherwise (one member for "updated", not a second spelling of
+ *  it), and nothing at all when the diff below would be empty - a form that
+ *  sends the row back unchanged leaves no trace (auditChangeAction). The
+ *  snapshots are the whole row for the simple entities (customer, location,
+ *  contact, the billing profiles, the templates, the agreement with its
+ *  sold-by user named) and the curated serviceAuditSnapshot /
+ *  appointmentAuditSnapshot for the two scheduling entities. A write the
+ *  server derives from an agreement's own schedule - the generated service,
+ *  the recurrence advancing nextServiceDate, the billing run's
+ *  nextBillingDate - is signed by the system actor ("System"); everything a
+ *  request causes is signed by that request's user. */
 export type AuditAction =
   | "update"
+  | "created"
+  | "status_changed"
+  | "deleted"
   | "invoice_drafted"
   | "invoice_issued"
   | "invoice_voided"
@@ -151,6 +184,9 @@ export type AuditAction =
 const ENTITY_TYPE_LABELS: Record<AuditEntityType, string> = {
   customer: "Customer",
   location: "Location",
+  contact: "Contact",
+  billing_profile: "Billing profile",
+  billing_profile_template: "Billing profile template",
   invoice: "Invoice",
   invoice_line_item: "Invoice line",
   service: "Service",
@@ -158,12 +194,16 @@ const ENTITY_TYPE_LABELS: Record<AuditEntityType, string> = {
   payment: "Payment",
   credit_memo: "Credit memo",
   agreement: "Agreement",
+  agreement_template: "Agreement template",
   opportunity: "Opportunity",
   appointment: "Appointment",
 };
 
 const ACTION_LABELS: Record<AuditAction, string> = {
   update: "Updated",
+  created: "Created",
+  status_changed: "Status changed",
+  deleted: "Deleted",
   invoice_drafted: "Draft invoice created",
   invoice_issued: "Invoice issued",
   invoice_voided: "Invoice voided",
@@ -221,16 +261,20 @@ export interface AuditFieldChange {
 // Fields excluded from the rendered diff: `id`/`org_id` never change on an
 // update, and `updated_at` changes on every one - it would be the only entry on
 // a no-op edit and pure noise on a real one, given the row already carries its
-// own timestamp.
-const DIFF_IGNORED_FIELDS = new Set(["id", "orgId", "org_id", "updatedAt", "updated_at"]);
+// own timestamp. Pass 32: `updatedByUserId` likewise - the agreement writers
+// stamp it with the session user on every save (D7: "single last-actor stamps
+// remain for display; the log is the truth"), so it would turn a no-op save by
+// a different user into a row of its own.
+const DIFF_IGNORED_FIELDS = new Set(["id", "orgId", "org_id", "updatedAt", "updated_at", "updatedByUserId", "updated_by_user_id"]);
 
 /**
  * Field-level diff of an audit row's before/after snapshots. `beforeJson` and
  * `afterJson` hold whole rows, so rendering them raw buries the one field that
  * actually changed; this returns just the changed fields, in the order they
  * appear on the record. Returns an empty array when either side isn't a plain
- * object (a create, a delete, or a non-row payload) - the caller falls back to
- * showing the snapshots.
+ * object (a create, a delete, or a non-row payload); the card then prints
+ * "Recorded with no field-level differences" - rendering a one-sided row's
+ * snapshot is C5.1b's, with the rest of the History surface.
  */
 export function diffAuditSnapshots(before: unknown, after: unknown): AuditFieldChange[] {
   if (!isPlainRecord(before) || !isPlainRecord(after)) {
@@ -242,6 +286,24 @@ export function diffAuditSnapshots(before: unknown, after: unknown): AuditFieldC
     .filter((field) => !DIFF_IGNORED_FIELDS.has(field))
     .filter((field) => !valuesEqual(before[field], after[field]))
     .map((field) => ({ field, before: before[field], after: after[field] }));
+}
+
+/**
+ * Pass 32 (C5.1a): what a generic change row's action is - `status_changed`
+ * when the row's `status` moved, `update` when anything else the diff shows
+ * did, null when nothing did (the writer then writes no row at all). The
+ * diff's own ignore list applies, so a save that only re-stamped updatedAt or
+ * updatedByUserId is nothing. Shared with the server so the writer and the
+ * History tab agree on what counts as a change.
+ */
+export function auditChangeAction(before: unknown, after: unknown): "update" | "status_changed" | null {
+  const changes = diffAuditSnapshots(before, after);
+  if (!changes.length) return null;
+  return changes.some((change) => change.field === "status") ? "status_changed" : "update";
+}
+
+export function auditSnapshotsDiffer(before: unknown, after: unknown): boolean {
+  return diffAuditSnapshots(before, after).length > 0;
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {

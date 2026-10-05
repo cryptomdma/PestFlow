@@ -45,7 +45,7 @@ are calibrated to Phase 1's: Pass 6 (four tables, routes, three dialogs) is the 
 | Location balance below location notes | DONE — Pass 14 (2026-09-24); placement revised in Pass 15b (2026-09-25, owner's note) | `LocationAgingSummaryRow` inside `LocationNotesPanel`, one row directly below the notes (Current always, other buckets only when owed, on account / pending, no invoice links); the full `LocationAgingStrip` with the invoices behind each bucket moved to the Invoices tab under the ledger panel. Was: the strip as a second card under the notes panel in the profile grid's right column. The Ledger panel's Balance card and the switcher's Open / on-account line (`getLocationBalancesByCustomer`) are unchanged and agree with it (verified) |
 | Preferred technician (location + customer level) | DONE — Pass 30 (2026-10-03) | `technician_preferences` (`shared/technician-preferences.ts`): PREFERRED (a hint) or EXCLUDED (B14's EXCLUDE_TECH - a hard block on placement with a manager's override), per location or for all of the account's locations ("Apply to all locations" on the primary location's Edit Location); chips on the customer header card (all locations) and the location profile card (what applies here); the dispatch queue row's "Prefers <tech>" / "Never <tech>" and the sheet's select. See "Shipped in Pass 30" at the end of Part D. Was: no column, no UI anywhere |
 | "Make Primary" inside the contact modal | PARTIAL | inline button on the contact card (`customer-detail.tsx:3824-3835`); the add/edit dialog already has an `isPrimary` checkbox (`ContactForm`, `:340-360`) |
-| Customer/account history log for all changes | PARTIAL | `audit_logs` + History tab exist (Pass 2). Only `updateLocationProfile()` writes `customer` / `location` `update` rows (`storage.ts:2186-2222`). No `contact` / `account` / `agreement` / `appointment` entity in `shared/audit.ts`. No revert. |
+| Customer/account history log for all changes | DONE — Pass 32 (2026-10-04), the rows; the customer-level view and Revert are C5.1b (Pass 33) | Every create / update / status change of a customer, location, contact, billing profile (instance and org template), agreement, agreement template, appointment and service writes `audit_logs` inside its transaction (`server/storage.ts` `auditCreatedTx` / `auditChangeTx` / `auditDeletedTx` :1956-1971, called from `createCustomer` :3391 through `generateScheduleDrivenInvoice` :10877); `shared/audit.ts` gained `contact`, `billing_profile`, `billing_profile_template`, `agreement_template` and the actions `created` / `status_changed` / `deleted` (:34-48, :147-183); an unchanged save writes nothing (`auditChangeAction` :299); the location History read (`getAuditLogsForLocation` :2002) lists the contacts' and billing profiles' rows too. No `account` entity by decision (the primary flip is logged on the locations). See "Shipped in Pass 32" at the end of Part D. Was: only `updateLocationProfile()` wrote `customer` / `location` `update` rows, on every save. **No revert** and no per-customer rollup yet - C5.1b. |
 | Payment without an invoice (cash/check) | DONE | `record-payment-dialog.tsx:96` sends `applyToInvoiceId: null` when no invoice; opens from the ledger panel (location-level and per-invoice) and the Invoices screen |
 | Pre-payments / deposits (half-down at scheduling) | DONE | an unapplied payment designated to the agreement (`payments.designatedAgreementId`, `schema.ts:738`, D4); offered first by the D4 prompt and the field's "COA available" |
 | Payment application (+ release) UI | DONE | `ApplySourceDialog` (`location-ledger-panel.tsx:102-175`) applies one payment or credit memo to a chosen invoice; Release exists on applications; the D4 "Apply location balance" prompt fires after Generate and from open rows |
@@ -316,7 +316,10 @@ account is shown beside, never netted.
 
 **B21. "Customer/account history log for all changes."** The History tab and the append-only log exist
 (Pass 2); only the profile edit writes customer/location rows. D7 named this follow-up. "Revert" = a
-new forward change that records what it reverted. **Owner:** agreed, old notes. C5.1.
+new forward change that records what it reverted. **Owner:** agreed, old notes. C5.1. **Built:** the
+rows in Pass 32 (C5.1a - every non-financial create / update / status change, no `account` entity: the
+account's facts are logged on the location whose primary flag moved or on the customer); the
+customer-level view and Revert are C5.1b (Pass 33).
 
 **B22. "Invoices are not being created upon finalization."** Resolved in Pass 5. Under the default
 `PROMPT`, "Later" creates nothing on purpose; `OFF` creates nothing at all. **Owner:** confirmed.
@@ -395,7 +398,7 @@ zones from C4.1b, and only the last exists by then.
 
 | # | Unit | Notes covered | Depends on | Open decision |
 |---|---|---|---|---|
-| C5.1a (**Pass 32**) | **Non-financial audit coverage (D7 follow-up).** Every mutation of customer, location, contact, billing profile, agreement, agreement template, appointment, and service (create / update / status) writes the log through the existing helper, with new entity members in `shared/audit.ts`. Excludes `service_records` (C3.1's `ticket_edited`) and price overrides (Pass 8). | Customer/account history log | — | — |
+| C5.1a (**Pass 32**) — **done** (`feature/phase-5-audit-coverage`, 2026-10-04; see "Shipped in Pass 32" at the end of Part D) | **Non-financial audit coverage (D7 follow-up).** Every mutation of customer, location, contact, billing profile, agreement, agreement template, appointment, and service (create / update / status) writes the log through the existing helper, with new entity members in `shared/audit.ts`. Excludes `service_records` (C3.1's `ticket_edited`) and price overrides (Pass 8). As built: `contact`, `billing_profile`, `billing_profile_template`, `agreement_template` join `AuditEntityType` (no `account` - the primary flip is logged on the locations, the account's facts sit on the customer); `created` / `status_changed` / `deleted` join `AuditAction` beside the existing `update` (one member for "updated"); three private writers (`auditCreatedTx` / `auditChangeTx` / `auditDeletedTx`) write inside each method's transaction, a change only when the History tab's own diff would show something (`auditChangeAction`; `updateLocationProfile`'s always-write fixed), `status_changed` when `status` moved; whole-row snapshots for the simple entities (the agreement's with its sold-by user named), the curated `serviceAuditSnapshot` / `appointmentAuditSnapshot` grown for the two scheduling entities; the fourteen actor-less storage methods take `actor` and every route passes `getAuditActor(req)`; an agreement's own schedule executing - the generated service (also from the three write-on-GET routes), the recurrence advance, the billing run's `nextBillingDate` - signs as `SYSTEM_AUDIT_ACTOR`; `cancelAgreement`'s visits carry the disposition's cancel fields and a `status_changed` each; `deleteService` writes `deleted` (and no longer fails on the crew FK); the location History read lists the contacts' and the billing profiles' rows, the templates are read by `entityType` + `entityId`; `audit_logs_entity_idx` on (org_id, entity_type, entity_id); the dead public `recordAuditLog` removed; the client's five dead `["/api/audit-logs"]` invalidations replaced by `invalidateAuditViews()` and every mutation that now writes a row calls it. | Customer/account history log | — | — |
 | C5.1b (**Pass 33**) | **Customer-level History + Revert.** A History view on the customer that rolls up every location plus account-level rows; **Revert** on a row = a new forward update through the entity's normal write path, logged as `reverted` naming the source row; manager+ until C5.6 makes it a configurable permission (owner). | History for all changes; revert | C5.1a | — |
 | C5.2 (**Pass 34**) | **Billing profile on the customer screen.** Selector in edit/add location (inherit account default / override), account default on the customer edit modal, org default template in Settings (`default_billing_profile_template_id`) used at customer creation; the "Billing: Per-location / Default" chip reads real data. | Billing profile from customer screen; add-location setup; default in settings | — | — |
 | C5.3 (**Pass 35**) | **Agreement vocabulary.** A settings-managed **Agreement types** list (seeded Pest control / Termite / Mosquito / Wildlife / Evaluation) with dropdowns on template and agreement; the existing free text migrated into entries the office can rename or merge; no hardcoded structure list (B8). `CUSTOM` recurrence → explicit DAY / WEEK with the `CUSTOM(N)` → `DAY(N)` migration (7 agreements, 2 templates). | Agreement Type dropdown; CUSTOM recurrence | — | — |
@@ -3728,6 +3731,113 @@ which exist only when something is in view) are the last section of the page
 (`section-board-analytics`, "In view"); the selection box (`card-selection-banner`) sits between the
 board and the pending queue. Client only - no route, no data, no setting. Verified: `npm run check`
 clean, one boot, Vite 200 on the page with the new test ids. **Not rendered in a browser.**
+
+**Shipped in Pass 32** (`feature/phase-5-audit-coverage`, 2026-10-04) — the C5.1a row as built, the
+first Phase 5 row. One additive migration: `CREATE INDEX IF NOT EXISTS audit_logs_entity_idx ON
+audit_logs (org_id, entity_type, entity_id)` (`server/audit-bootstrap.ts`, after the tenancy
+bootstrap; declared on the table in `shared/schema.ts` too). No table, no column, no seed row.
+
+```ts
+// shared/audit.ts                             AuditEntityType + contact | billing_profile | billing_profile_template | agreement_template (15 members; no account - decided);
+//                                             AuditAction + created | status_changed | deleted (35 members; `update` stays the one member for "updated"); the labels;
+//                                             DIFF_IGNORED_FIELDS + updatedByUserId / updated_by_user_id (a last-actor stamp, D7); auditChangeAction(before, after) ->
+//                                             "update" | "status_changed" | null (null = nothing the diff shows moved - the writer then writes no row); auditSnapshotsDiffer(before, after)
+// shared/schema.ts                            auditLogs: index audit_logs_entity_idx (orgId, entityType, entityId)
+// server/audit-bootstrap.ts                   bootstrapAudit() - the index, CREATE INDEX IF NOT EXISTS (server/index.ts, after bootstrapTenancy)
+// server/storage.ts                           private auditCreatedTx(tx, entityType, entityId, after, actor) / auditChangeTx(tx, entityType, entityId, before, after, actor): Promise<boolean>
+//                                             (writes only when auditChangeAction is non-null) / auditDeletedTx(tx, entityType, entityId, before, actor); agreementAuditSnapshotTx(reader, agreement)
+//                                             ({ ...row, soldBy }); serviceAuditSnapshot grown (customerId, locationId, source, answersServiceId, generatedForDate, timeWindow, schedulingMode,
+//                                             fieldReviewedByUserId / Label) + serviceAuditSnapshotWithoutKind (an update beside work_kind_changed); appointmentRowAuditSnapshot (the row part:
+//                                             + customerId, locationId, agreementId, source, generatedForDate, timeInAt, timeOutAt, durationMinutes, lockTime, lockTechnician, assignedTo) and
+//                                             appointmentAuditSnapshot = row + services; the public recordAuditLog REMOVED (IStorage too - no caller; recordAuditLogTx is the writer, canon §17);
+//                                             actor?: AuditActor | null added to createCustomer, updateCustomer, createContact, updateContact, setPrimaryContact, createLocation, updateLocation,
+//                                             setPrimaryLocation, createBillingProfileTemplate, updateBillingProfileTemplate, createBillingProfile, updateBillingProfile, createAgreementTemplate,
+//                                             updateAgreementTemplate, deleteService, timeInAppointment, timeOutAppointment, createServiceRecord, and to the inputs of
+//                                             createCustomerWithPrimaryLocation / createLocationWithPrimaryContact; ensurePrimaryLocationInvariant(tx, accountId, preferred?, actor?) now runs
+//                                             INSIDE the caller's transaction (createLocation, createLocationWithPrimaryContact, updateLocation, setPrimaryLocation each wrap one) and writes
+//                                             a location `update` per primary flag it flipped (the request's actor, else System); syncAgreementInitialAppointmentDates(tx, id, actor?, { audit? })
+//                                             writes the agreement's `update` itself unless audit: false (the agreement writers pass false and record the final row once);
+//                                             attachInitialAppointmentTx (the initial visit taking the agreement: an appointment `update`); auditAgreementAdvanceTx (System);
+//                                             setAppointmentRepresentativeTx; auditDemotedContactsTx (one `update` per sibling a primary change demoted);
+//                                             getAuditLogsForLocation: allRefs + contact (by location) + billing_profile (the location's override and the account's profiles);
+//                                             cancelAgreement: the agreement's status_changed; each visit written once with cancelReason (the agreement's reason), cancelNotes
+//                                             ("Agreement cancelled: <name>"), cancelRequestedAt / ByLabel and a status_changed with its services (a COMPLETED visit is left alone);
+//                                             each service a status_changed; deleteService: `deleted` (service; the visit too when it was the last) and the crew rows deleted first
+// server/routes.ts                            getAuditActor(req) passed to every method above; GET /api/audit-logs unchanged (locationId | entityType + entityId)
+// client/src/lib/invalidate-audit-views.ts    invalidateAuditViews() - predicate startsWith("/api/audit-logs"); called from the five fixed sites (schedule.tsx crew, technician-work.tsx
+//                                             refreshWork, technician-preferences.tsx, field-added-badge.tsx, service-cancel-dialog.tsx), opportunities.tsx, and every customer-detail.tsx /
+//                                             schedule.tsx mutation that now writes a row (add / edit location, contacts, set-primary, agreements, cancel, services, delete, finalize, reopen,
+//                                             placement, move, composition, disposition)
+```
+
+**Decided (1), the vocabulary.** Four entity members, no `account`: canon has no account history, Pass
+30 put account-scoped rows on the customer, and `accounts.status` / `primaryLocationId` move with the
+location invariant - so the primary flip is logged as each location's `update` (isPrimary before /
+after) and the account's own row is not logged. `billing_profile_template` joined (the row says
+"billing profile"; the template is the org default C5.2 will read). Three actions: `created`,
+`status_changed`, `deleted`; updates reuse the existing `update` rather than adding a second spelling
+of it (35 rows already carry `update`, its label is "Updated"). **Decided (2), the snapshot.** Whole
+rows for customer, location, contact, the two billing profile tables, the two templates and the
+agreement (plus `soldBy`, the user named - Pass 12's row widened into the one row an edit writes);
+the curated snapshots for service and appointment, grown. A change row is written only when
+`auditChangeAction` finds something the History tab's own diff would show - the same ignore list
+(`id`, `orgId`, `updatedAt`, now `updatedByUserId`), so a form that sends the row back unchanged
+leaves no trace; `updateLocationProfile`'s always-write is fixed the same way. The action is
+`status_changed` when `status` moved, else `update`. A service's status move made by a placement, a
+disposition or a composition change rides the visit's row (its `services` list), as since Pass 27 -
+not a row per service. A visit's notes change keeps its `appointment_composition_changed` row; every
+other PATCH field (technician, time, status, locks) writes `update`. A `work_kind_changed` beside a
+service `update` in one save: the two kind fields are taken out of the `update`'s diff.
+**Decided (3), the actor.** Every request signs what it causes, derived writes included - the
+invariant's primary flip, the agreement dates a placement re-derives, a finalization's service and
+visit status moves. `SYSTEM_AUDIT_ACTOR` (explicit `{ userId: null, actorLabel: "System" }`) signs an
+agreement's own schedule executing: the service `generateServiceForAgreement` creates (whichever
+request ran it), `advanceAgreementForCompletedAppointment` / `...Service` moving `nextServiceDate`,
+`generateScheduleDrivenInvoice` moving `nextBillingDate` (the billing run), and the invariant when no
+request is behind it. `getAuditActor`'s no-user branch is unreachable behind `requireAuth`.
+**Decided (4), the writes on GET.** Logged: `generateServiceForAgreement` writes `created` under
+System - it IS a creation, once per cycle, so a page load that generates nothing writes nothing; the
+cycle's backfill of an existing service writes a System `update` only when it filled something in.
+Three GET routes generate on read, not two: `/api/location-counts/:id`,
+`/api/appointments/by-location/:id` and `/api/agreements/location/:id`. Not moved. **Decided (5),
+the read side.** `getAuditLogsForLocation` collects the location's contacts and the billing profiles
+that apply to it (its override and the account's). The templates have no location: their rows are
+read by `GET /api/audit-logs?entityType=agreement_template|billing_profile_template&entityId=` for a
+later Settings surface; nothing on the History tab. The five client invalidations keyed
+`["/api/audit-logs"]` / `["/api/audit-logs/location", id]` never matched the tab's string key
+(`queryClient` compares key elements; `staleTime` is Infinity): one predicate helper
+(`invalidateAuditViews`, the `invalidateInvoiceViews` pattern) replaces them, and - beyond the five -
+every mutation on the customer page and the board that now writes a row calls it, or the tab would
+keep its first read until a reload. **Decided (6), the leftovers.** `cancelAgreement`'s visits are
+not routed through `dispositionAppointment` (it recycles agreement services back to the queue with a
+reset window - the opposite of a cancellation); they carry the disposition's cancel fields (the
+agreement's reason, a note naming the agreement, when, by whom) and a `status_changed` each, written
+once per visit (the two old loops could hit one twice) and never on a COMPLETED visit. The Services
+tab's Reopen `{ reason }` defect and the ungated technician CRUD routes stay noted. **Decided (7),
+the index:** `audit_logs_entity_idx` (org_id, entity_type, entity_id) - both reads filter on it.
+**Decided (8), the writer.** The public `recordAuditLog` had no caller and is gone from `IStorage`;
+canon §17 now names `recordAuditLogTx` and the explicit system actor. **Found and fixed on the way:**
+`deleteService` of a visit's last service had failed with a 400 on the crew table's foreign key since
+Pass 30 (every placed visit has a LEAD row) - the crew rows are deleted first now. **Verified**
+(PORT=5001 against the shared dev DB; the index is additive): `npm run check` clean; 88 smoke
+assertions on the third run (the first two lost one each to the test harness - a stale keep-alive
+connection, and the cleanup not finding a hard-deleted service's rows - and one to the crew FK above,
+fixed): the shared helpers; a fixture customer with two locations, a contact, a billing profile
+template and profile, an agreement template and agreement through the real routes as all four roles -
+one row per create, `update` with the right diff per change, NO row for the same request repeated
+(customer, profile edit, contact, template, agreement, appointment, time-in, set-primary), the
+invariant's two flips, the demoted contact, the generated service under System, the write-on-GET
+routes writing nothing for a generated cycle, the sold-by change naming both users, the visit's
+`created` carrying its services, time-in `status_changed` by the technician, the post writing nothing
+on the Service or the visit, finalize and reopen moving both, `deleted` with the before snapshot (alone
+and with the visit), the cancel's three rows with the reason on the visit, the History read listing
+the contacts' and the profile's rows and not the templates' or the other location's, the templates by
+entityType + entityId, all five actor labels; the fixture deleted in FK order with its rows, counts
+back at baseline (+4 session rows). Boot 1 and boot 2 print only "serving on port 5001"; every table
+count unchanged. Vite 200 on the eight touched client modules and `shared/audit.ts`. **Not rendered
+in a browser:** the History tab's new rows (a `created` or `deleted` row prints "Recorded with no
+field-level differences" - the card renders only a two-sided diff; rendering a one-sided row's
+snapshot is C5.1b's, with the per-customer rollup and Revert).
 
 ---
 

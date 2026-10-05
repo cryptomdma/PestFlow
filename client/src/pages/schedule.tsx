@@ -18,6 +18,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth";
 import { ApiError, apiRequest, getApiErrorCode, getApiErrorMessage, queryClient } from "@/lib/queryClient";
+import { invalidateAuditViews } from "@/lib/invalidate-audit-views";
 import { can, PERMISSIONS } from "@shared/permissions";
 import { ServiceCancelDialog } from "@/components/service-cancel-dialog";
 import { DraftInvoiceVoidPrompt, getDraftInvoiceDecisionRequired, type DraftInvoiceRef } from "@/components/draft-invoice-void-prompt";
@@ -285,7 +286,7 @@ function AppointmentCrewBlock({
   }, [appointment.id]);
   const invalidateCrew = () => {
     queryClient.invalidateQueries({ queryKey: crewQueryKey });
-    queryClient.invalidateQueries({ queryKey: ["/api/audit-logs"] });
+    invalidateAuditViews();
     invalidateSupportAssignments();
   };
   const describeCrewError = (error: unknown) => describeCrewRefusal(getApiErrorCode(error)) ?? getApiErrorMessage(error);
@@ -1560,6 +1561,8 @@ export default function Schedule() {
       queryClient.invalidateQueries({ queryKey: ["/api/appointments"] });
       queryClient.invalidateQueries({ queryKey: ["/api/services"] });
       queryClient.invalidateQueries({ queryKey: ["/api/services/pending"] });
+      // Pass 32: a placement writes the visit's `created` row.
+      invalidateAuditViews();
       if (selectedService?.locationId) {
         queryClient.invalidateQueries({ queryKey: getLocationServicesQueryKey(selectedService.locationId) });
         queryClient.invalidateQueries({ queryKey: getLocationAppointmentsQueryKey(selectedService.locationId) });
@@ -1605,6 +1608,7 @@ export default function Schedule() {
     queryClient.invalidateQueries({ queryKey: ["/api/services/pending"] });
     queryClient.invalidateQueries({ queryKey: ["/api/opportunities"] });
     queryClient.invalidateQueries({ queryKey: ["/api/opportunities/by-location"] });
+    invalidateAuditViews();
     if (locationId) {
       queryClient.invalidateQueries({ queryKey: getLocationServicesQueryKey(locationId) });
       queryClient.invalidateQueries({ queryKey: getLocationAppointmentsQueryKey(locationId) });
@@ -1707,6 +1711,8 @@ export default function Schedule() {
       queryClient.invalidateQueries({ queryKey: ["/api/services"] });
       queryClient.invalidateQueries({ queryKey: ["/api/services/pending"] });
       queryClient.invalidateQueries({ queryKey: ["/api/invoices"] });
+      // Pass 32: a move or re-assignment writes the visit's `update` row.
+      invalidateAuditViews();
       // Pass 30b: a new lead who was a support technician leaves the support cards.
       invalidateSupportAssignments();
       queryClient.invalidateQueries({ queryKey: getLocationAppointmentsQueryKey(appointment.locationId) });
@@ -1737,6 +1743,7 @@ export default function Schedule() {
       queryClient.invalidateQueries({ queryKey: ["/api/invoices"] });
       queryClient.invalidateQueries({ queryKey: ["/api/opportunities"] });
       queryClient.invalidateQueries({ queryKey: ["/api/opportunities/by-location"] });
+      invalidateAuditViews();
       queryClient.invalidateQueries({ queryKey: getLocationAppointmentsQueryKey(result.appointment.locationId) });
       queryClient.invalidateQueries({ queryKey: getLocationServicesQueryKey(result.appointment.locationId) });
       setDispositionDraftPrompt(null);

@@ -8,6 +8,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useAuth } from "@/hooks/use-auth";
 import { useToast } from "@/hooks/use-toast";
 import { ApiError, apiRequest, getApiErrorCode, getApiErrorMessage, queryClient } from "@/lib/queryClient";
+import { invalidateAuditViews } from "@/lib/invalidate-audit-views";
 import { cn } from "@/lib/utils";
 import { can, PERMISSIONS } from "@shared/permissions";
 import type { Technician } from "@shared/schema";
@@ -58,7 +59,7 @@ export function invalidateTechnicianPreferences() {
       return typeof head === "string" && head.startsWith("/api/technician-preferences/effective");
     },
   });
-  queryClient.invalidateQueries({ queryKey: ["/api/audit-logs"] });
+  invalidateAuditViews();
 }
 
 type ChipEntry = {

@@ -28,6 +28,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, getApiErrorMessage, queryClient } from "@/lib/queryClient";
+import { invalidateAuditViews } from "@/lib/invalidate-audit-views";
 import { cn } from "@/lib/utils";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { OpportunityDispositionDialog } from "@/components/opportunity-disposition-dialog";
@@ -547,11 +548,16 @@ function NoteHistorySheet({
   );
 }
 
-// The location's slice of the system-wide audit history (PLAN_BILLING_V1_1 D7).
-// Today the only writer is the location/customer profile edit; as the billing
-// passes land, invoice, payment, and credit-memo events appear here through the
-// same route with no change on this side. Read-only by design - audit_logs is
-// append-only, so this panel never offers an edit or delete control.
+// The location's slice of the system-wide audit history (PLAN_BILLING_V1_1 D7):
+// the location and its customer, contacts, billing profiles, agreements,
+// services, appointments, tickets, invoices, payments, credit memos and
+// opportunities - since Pass 32 (C5.1a) every create / update / status change
+// of the non-financial entities too, through the same route with no change on
+// this side. Read-only by design - audit_logs is append-only, so this panel
+// never offers an edit or delete control. The per-customer rollup and Revert
+// are C5.1b's. Every mutation on this page that writes a row calls
+// invalidateAuditViews(), or the tab keeps its first read (staleTime is
+// Infinity).
 function LocationHistoryTab({ locationId }: { locationId: string }) {
   const { data: entries, isLoading, error } = useQuery<AuditLog[]>({
     queryKey: [`/api/audit-logs?locationId=${locationId}`],
@@ -729,6 +735,7 @@ function AddLocationDialog({
         predicate: (query) => typeof query.queryKey[0] === "string" && query.queryKey[0].startsWith(`/api/customer-detail-compat/${customerId}`),
       });
       queryClient.invalidateQueries({ queryKey: ["/api/contacts/by-location"] });
+      invalidateAuditViews();
       if (preferenceDrafts.length) {
         invalidateTechnicianPreferences();
       }
@@ -956,6 +963,7 @@ function EditLocationDialog({
       queryClient.invalidateQueries({
         predicate: (query) => typeof query.queryKey[0] === "string" && query.queryKey[0].startsWith(`/api/customer-detail-compat/${customer.id}`),
       });
+      invalidateAuditViews();
       toast({ title: "Location updated" });
       onClose();
     },
@@ -1163,6 +1171,7 @@ function ContactDialogForm({
 
       await queryClient.invalidateQueries({ queryKey: ["/api/contacts/by-location", locationId] });
       await queryClient.invalidateQueries({ queryKey: ["/api/location-counts", locationId] });
+      invalidateAuditViews();
       toast({ title: isEditMode ? "Contact updated" : "Contact added" });
       onClose();
     },
@@ -1692,6 +1701,7 @@ function AgreementForm({
     queryClient.invalidateQueries({ queryKey: ["/api/services/by-location", locationId] });
     queryClient.invalidateQueries({ queryKey: ["/api/services/pending"] });
     queryClient.invalidateQueries({ queryKey: ["/api/location-counts", locationId] });
+    invalidateAuditViews();
   };
 
   const persistAgreement = async (data: typeof form) => {
@@ -2223,6 +2233,7 @@ function CancelAgreementDialog({
       queryClient.invalidateQueries({ queryKey: ["/api/location-counts", locationId] });
       queryClient.invalidateQueries({ queryKey: ["/api/invoices/by-location", locationId] });
       queryClient.invalidateQueries({ queryKey: ["/api/invoices"] });
+      invalidateAuditViews();
       setDraftPrompt(null);
       toast({ title: "Agreement cancelled" });
       onOpenChange(false);
@@ -2719,6 +2730,7 @@ function ServiceForm({
       await queryClient.invalidateQueries({ queryKey: ["/api/services/pending"] });
       await queryClient.invalidateQueries({ queryKey: ["/api/appointments/by-location", locationId] });
       await queryClient.invalidateQueries({ queryKey: ["/api/location-counts", locationId] });
+      invalidateAuditViews();
       toast({ title: "Service deleted" });
       onClose();
     },
@@ -2781,6 +2793,7 @@ function ServiceForm({
       queryClient.invalidateQueries({ queryKey: ["/api/services/pending"] });
       queryClient.invalidateQueries({ queryKey: ["/api/appointments/by-location", locationId] });
       queryClient.invalidateQueries({ queryKey: ["/api/location-counts", locationId] });
+      invalidateAuditViews();
 
       if (submitMode === "schedule") {
         const [primaryService, ...additionalServices] = savedServices;
@@ -3309,6 +3322,7 @@ function ServicesTab({
       queryClient.invalidateQueries({ queryKey: ["/api/appointments"] });
       queryClient.invalidateQueries({ queryKey: ["/api/opportunities/by-location", locationId] });
       queryClient.invalidateQueries({ queryKey: ["/api/opportunities"] });
+      invalidateAuditViews();
       // D2: the finalization that completes the visit reports its invoicing
       // outcome - a prompt under PROMPT, a toast otherwise.
       if (result.invoicing) invalidateInvoiceViews();
@@ -3336,6 +3350,7 @@ function ServicesTab({
       queryClient.invalidateQueries({ queryKey: ["/api/services"] });
       queryClient.invalidateQueries({ queryKey: ["/api/appointments/by-location", locationId] });
       queryClient.invalidateQueries({ queryKey: ["/api/appointments"] });
+      invalidateAuditViews();
       toast({ title: "Service ticket reopened" });
     },
     onError: (error: Error) => toast({ title: "Unable to reopen ticket", description: error.message, variant: "destructive" }),
@@ -3877,6 +3892,7 @@ export default function CustomerDetail() {
     mutationFn: (contactId: string) => apiRequest("POST", `/api/contacts/${contactId}/set-primary`, {}),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/contacts/by-location", activeLocationId] });
+      invalidateAuditViews();
       toast({ title: "Primary contact updated" });
     },
     onError: (err: Error) => {

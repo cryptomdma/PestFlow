@@ -293,7 +293,10 @@ one legacy path and has no read endpoint. Note-revisions is the only real histor
   log itself.
 - Single last-actor stamps (`finalizedByUserId` etc.) remain for display; the log is the truth.
 - Non-financial entities (customer/location field changes, agreements, scheduling) join the log in a
-  follow-up pass — same table, same pattern, no new infrastructure.
+  follow-up pass — same table, same pattern, no new infrastructure. **Built in Pass 32** (C5.1a,
+  2026-10-04): customer, location, contact, billing profile, agreement, agreement template, appointment
+  and service, with one index added (`audit_logs_entity_idx`); the customer-level view and Revert are
+  C5.1b.
 
 ## D8. Deferred to their own passes (explicitly NOT Phase 1 billing)
 
