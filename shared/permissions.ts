@@ -60,6 +60,15 @@ export const PERMISSIONS = {
   // typed reason, recorded as placement_exclusion_overridden. Setting the
   // preferences themselves is customer data, open to every role.
   OVERRIDE_TECHNICIAN_EXCLUSION: "override_technician_exclusion",
+  // PLAN_ROADMAP_V2.md C5.1b (Pass 33; D7, B21, Part E answer 8): revert a
+  // History row - put the fields an earlier change moved back to what they
+  // were, as a NEW forward change through the entity's own write path,
+  // recorded as `reverted` naming the source row (POST
+  // /api/history/:auditLogId/revert; shared/audit.ts decides which rows).
+  // Manager+ as the interim answer; C5.6's role profiles make it a
+  // configurable permission like the rest of this list. Reading history
+  // stays open to every role, as every read is.
+  REVERT_HISTORY: "revert_history",
   // PLAN_BILLING_V1_1.md D5, the payments ledger. TAKE_PAYMENT_FIELD records
   // a payment (it posts PENDING); the rest are office actions on the ledger.
   TAKE_PAYMENT_FIELD: "take_payment_field",
@@ -125,6 +134,7 @@ const ROLE_PERMISSIONS: Record<UserRole, ReadonlySet<Permission>> = {
     PERMISSIONS.ASSIGN_SALE_CREDIT,
     PERMISSIONS.ASSIGN_OPPORTUNITY,
     PERMISSIONS.OVERRIDE_TECHNICIAN_EXCLUSION,
+    PERMISSIONS.REVERT_HISTORY,
     PERMISSIONS.TAKE_PAYMENT_FIELD,
     PERMISSIONS.APPLY_PAYMENT,
     PERMISSIONS.CONFIRM_PAYMENT,

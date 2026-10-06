@@ -290,7 +290,10 @@ one legacy path and has no read endpoint. Note-revisions is the only real histor
 - Add a read endpoint + the customer-screen history view from the notes (user, timestamp,
   before/after). Append-only: no update/delete route may exist for this table.
 - "Revert to previous state" = a **new forward change** recorded in the log, never a rollback of the
-  log itself.
+  log itself. **Built in Pass 33** (C5.1b, 2026-10-05): `POST /api/history/:auditLogId/revert`
+  (manager+, `REVERT_HISTORY`) puts the fields a row changed back through the entity's own write path,
+  which records one `reverted` row naming the source; the customer-level History (every location plus
+  the account-level rows) ships with it. Financial rows are never reverted - a void and a re-entry.
 - Single last-actor stamps (`finalizedByUserId` etc.) remain for display; the log is the truth.
 - Non-financial entities (customer/location field changes, agreements, scheduling) join the log in a
   follow-up pass — same table, same pattern, no new infrastructure. **Built in Pass 32** (C5.1a,

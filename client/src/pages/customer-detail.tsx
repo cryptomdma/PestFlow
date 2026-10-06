@@ -56,7 +56,8 @@ import { formatApplicationAreas, formatTargetPests } from "@shared/material-list
 import { selectableUsers, userDisplayName } from "@shared/users";
 import type { UserSummary } from "@shared/schema";
 import { formatPhoneDisplay } from "@shared/phone";
-import { AuditLogEntryCard } from "@/components/audit-log-entry-card";
+import { AuditLogEntryCard, useAuditLogRevert } from "@/components/audit-log-entry-card";
+import { CustomerHistorySheet } from "@/components/customer-history-sheet";
 import { dollarsToCents, centsToDollars, centsToDollarString, formatCents } from "@shared/money";
 import { describeSurcharge } from "@shared/field-surcharge";
 import { SERVICE_WORK_KINDS, canAnswerService, defaultWorkKindForService, describeAnswersLink, describeServiceWorkKind, formatServiceWorkKind, normalizeServiceWorkKind, workKindOverridePermission } from "@shared/service-kind";
@@ -553,12 +554,17 @@ function NoteHistorySheet({
 // services, appointments, tickets, invoices, payments, credit memos and
 // opportunities - since Pass 32 (C5.1a) every create / update / status change
 // of the non-financial entities too, through the same route with no change on
-// this side. Read-only by design - audit_logs is append-only, so this panel
-// never offers an edit or delete control. The per-customer rollup and Revert
-// are C5.1b's. Every mutation on this page that writes a row calls
-// invalidateAuditViews(), or the tab keeps its first read (staleTime is
-// Infinity).
+// this side. audit_logs is append-only, so this panel never offers an edit or
+// delete control; since Pass 33 (C5.1b) a revertable row offers Revert to a
+// manager+ (REVERT_HISTORY) - a new forward change through the entity's own
+// write path, recorded as `reverted`, never a rollback of the log. The
+// per-customer rollup is the toolbar's History sheet (CustomerHistorySheet).
+// Every mutation on this page that writes a row calls invalidateAuditViews(),
+// or the tab keeps its first read (staleTime is Infinity).
 function LocationHistoryTab({ locationId }: { locationId: string }) {
+  const { user } = useAuth();
+  const canRevert = can(user?.role ?? "", PERMISSIONS.REVERT_HISTORY);
+  const revert = useAuditLogRevert();
   const { data: entries, isLoading, error } = useQuery<AuditLog[]>({
     queryKey: [`/api/audit-logs?locationId=${locationId}`],
     enabled: !!locationId,
@@ -600,7 +606,13 @@ function LocationHistoryTab({ locationId }: { locationId: string }) {
   return (
     <>
       {entries.map((entry) => (
-        <AuditLogEntryCard key={entry.id} entry={entry} />
+        <AuditLogEntryCard
+          key={entry.id}
+          entry={entry}
+          canRevert={canRevert}
+          onRevert={(row) => revert.mutate(row)}
+          revertPending={revert.isPending && revert.variables?.id === entry.id}
+        />
       ))}
     </>
   );
@@ -3732,14 +3744,20 @@ export default function CustomerDetail() {
   // Pass 15 (C2.5): the account statement across every location, from the
   // header - gated as the location's Statement button is (GENERATE_INVOICE).
   const [statementOpen, setStatementOpen] = useState(false);
+  // Pass 33 (C5.1b): the customer-level History - every location plus the
+  // account-level rows - from the same toolbar, open to every role (a read).
+  const [historyOpen, setHistoryOpen] = useState(false);
   const { user: sessionUser } = useAuth();
   const canStatement = can(sessionUser?.role ?? "", PERMISSIONS.GENERATE_INVOICE);
   const [activeTab, setActiveTab] = useState("contacts");
   const requestedTab = searchParams.get("tab");
 
   useEffect(() => {
-    if (requestedTab && ["contacts", "agreements", "services", "invoices", "communications", "opportunities", "history"].includes(requestedTab)) {
-      setActiveTab(requestedTab);
+    // The Comms trigger's value is "comms"; links written as ?tab=communications
+    // selected nothing before Pass 33 - both spellings land on the tab now.
+    const tab = requestedTab === "communications" ? "comms" : requestedTab;
+    if (tab && ["contacts", "agreements", "services", "invoices", "comms", "opportunities", "history"].includes(tab)) {
+      setActiveTab(tab);
     }
   }, [requestedTab]);
 
@@ -4098,6 +4116,22 @@ export default function CustomerDetail() {
             customerId={customerId}
             customerLabel={customerDisplayName}
             scope={{ kind: "account", locationCount: allLocations?.length ?? 0 }}
+          />
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setHistoryOpen(true)}
+            title="Every recorded change across this customer's locations and the account, newest first"
+            data-testid="button-account-history"
+          >
+            <History className="h-3 w-3 mr-1" /> History
+          </Button>
+          <CustomerHistorySheet
+            open={historyOpen}
+            onOpenChange={setHistoryOpen}
+            customerId={customerId}
+            customerLabel={customerDisplayName}
+            locations={(allLocations ?? []).map((location) => ({ id: location.id, name: location.name }))}
           />
         </div>
 

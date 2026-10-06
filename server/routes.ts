@@ -23,7 +23,8 @@ import { MAX_ZONE_NAME_LENGTH } from "@shared/zones";
 import { ZodError, z } from "zod";
 import type { Request } from "express";
 import { requirePermission } from "./auth";
-import { AppointmentCrewError, AppointmentDispositionError, DispatchBoardSettingsError, DraftInvoiceDecisionRequiredError, OpportunityAssignmentError, PlacementRefusedError, PrefinalizationIssueError, ServiceCompositionError, ServiceKindError, StatementRefusedError, TechnicianPreferenceError, TicketEditError, TicketLockedError, TicketReopenError, VisitBillingDraftError } from "./storage";
+import { AppointmentCrewError, AppointmentDispositionError, DispatchBoardSettingsError, DraftInvoiceDecisionRequiredError, HistoryRevertError, OpportunityAssignmentError, PlacementRefusedError, PrefinalizationIssueError, ServiceCompositionError, ServiceKindError, StatementRefusedError, TechnicianPreferenceError, TicketEditError, TicketLockedError, TicketReopenError, VisitBillingDraftError } from "./storage";
+import { HISTORY_REVERT_CODES, type RevertableAuditEntityType } from "@shared/audit";
 import {
   MAX_EXCLUSION_OVERRIDE_REASON_LENGTH,
   MAX_TECHNICIAN_PREFERENCE_NOTE_LENGTH,
@@ -146,33 +147,37 @@ export async function registerRoutes(
       });
     }
   });
-  // Two ways to ask, one route: `locationId` for the location screen's rollup,
-  // `entityType`+`entityId` for one record's own trail (what passes 3-8 need
-  // for an invoice or a payment). entityType stays a free string rather than
-  // the AuditEntityType union - it filters rows that predate the union and may
+  // Three ways to ask, one route: `locationId` for the location screen's
+  // rollup, `customerId` (Pass 33, C5.1b) for the customer screen's - every
+  // location of the account plus the account-level rows, each row annotated
+  // with its location - and `entityType`+`entityId` for one record's own
+  // trail (what passes 3-8 need for an invoice or a payment). Exactly one
+  // form per request. entityType stays a free string rather than the
+  // AuditEntityType union - it filters rows that predate the union and may
   // hold anything.
   const auditLogQuerySchema = z
     .object({
       locationId: z.string().min(1).optional(),
+      customerId: z.string().min(1).optional(),
       entityType: z.string().min(1).optional(),
       entityId: z.string().min(1).optional(),
       limit: z.coerce.number().int().positive().optional(),
     })
     .superRefine((value, ctx) => {
       const byEntity = !!value.entityType && !!value.entityId;
-      if (!value.locationId && !byEntity) {
+      const forms = [!!value.locationId, !!value.customerId, byEntity].filter(Boolean).length;
+      if (forms === 0) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: ["locationId"],
-          message: "Provide either locationId, or both entityType and entityId",
+          message: "Provide locationId, customerId, or both entityType and entityId",
         });
       }
-
-      if (value.locationId && (value.entityType || value.entityId)) {
+      if (forms > 1) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: ["locationId"],
-          message: "locationId cannot be combined with entityType/entityId",
+          message: "locationId, customerId and entityType/entityId cannot be combined",
         });
       }
     });
@@ -1368,7 +1373,11 @@ export async function registerRoutes(
   // request body. Pass 32 (C5.1a): the org-wide templates have no location,
   // so their rows are read here by entityType (agreement_template,
   // billing_profile_template) + entityId; everything else a location owns is
-  // in the locationId read.
+  // in the locationId read. Pass 33 (C5.1b): the customerId read is the
+  // customer screen's rollup - every location of the account plus the
+  // account-level rows, each row carrying locationId / locationName (null =
+  // the account). Revert lives under /api/history below, not here: it never
+  // writes this table directly.
   //
   // Not permission-gated, matching every other read route in this file (only
   // mutations carry requirePermission). Who may read financial history is a
@@ -1379,10 +1388,66 @@ export async function registerRoutes(
       const query = auditLogQuerySchema.parse(req.query);
       const data = query.locationId
         ? await req.storage.getAuditLogsForLocation(query.locationId, query.limit)
-        : await req.storage.getAuditLogsForEntity(query.entityType!, query.entityId!, query.limit);
+        : query.customerId
+          ? await req.storage.getAuditLogsForCustomer(query.customerId, query.limit)
+          : await req.storage.getAuditLogsForEntity(query.entityType!, query.entityId!, query.limit);
       res.json(data);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  // Pass 33 (C5.1b; PLAN_BILLING_V1_1.md D7, B21): Revert a History row. Not
+  // under /api/audit-logs - the table's API stays read-only, and this writes
+  // nothing to it directly: the storage replays the row's `before` for the
+  // fields the row changed through the entity's own update method, and that
+  // method records the `reverted` row the way any edit records its `update`.
+  // The storage plans it first (shared/audit.ts describeAuditRevertability
+  // says which rows may be reverted; the entity must still exist and those
+  // fields must still hold the row's after values - 409 HISTORY_STALE with
+  // the current row otherwise). This route then validates the planned
+  // payload with the SAME zod schema the entity's PATCH uses, so a rule added
+  // since the row was written refuses the replay as a 400 the way the PATCH
+  // would, and applies the PATCH's own permission rule (an agreement's sale
+  // credit needs ASSIGN_SALE_CREDIT). The write path's refusals pass through
+  // unchanged (the agreement's CANCELLED, the plan requirement, the sold-by
+  // user check). Manager+ (REVERT_HISTORY; Part E answer 8) until C5.6 makes
+  // it a profile permission; the client shows Revert only to those roles.
+  const revertPayloadSchemas: Record<RevertableAuditEntityType, z.ZodTypeAny> = {
+    customer: insertCustomerSchema.partial(),
+    location: insertLocationSchema.partial(),
+    contact: updateContactSchema,
+    billing_profile: updateBillingProfileSchema,
+    billing_profile_template: updateBillingProfileTemplateSchema,
+    agreement_template: updateAgreementTemplateSchema,
+    agreement: updateAgreementSchema,
+  };
+  const respondHistoryRevertError = (res: any, err: HistoryRevertError) =>
+    res.status(err.status).json({
+      message: err.message,
+      code: err.code,
+      ...(err.code === HISTORY_REVERT_CODES.STALE ? { current: err.current, drift: err.drift } : {}),
+    });
+  app.post("/api/history/:auditLogId/revert", requirePermission(PERMISSIONS.REVERT_HISTORY), async (req, res) => {
+    try {
+      const plan = await req.storage.planAuditLogRevert(req.params.auditLogId);
+      const payload = revertPayloadSchemas[plan.entityType].parse(plan.payload) as Record<string, unknown>;
+      if (plan.entityType === "agreement" && payload.soldByUserId !== undefined) {
+        const currentSoldBy = (plan.current as { soldByUserId?: string | null }).soldByUserId ?? null;
+        if ((payload.soldByUserId ?? null) !== currentSoldBy && !can(req.user!.role, PERMISSIONS.ASSIGN_SALE_CREDIT)) {
+          return res.status(403).json({ message: "Only a manager or admin can change who gets credit for this sale" });
+        }
+      }
+      const result = await req.storage.revertAuditLogEntry({
+        auditLogId: req.params.auditLogId,
+        payload,
+        actor: getAuditActor(req),
+      });
+      res.json(result);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      if (e instanceof HistoryRevertError) return respondHistoryRevertError(res, e);
       res.status(400).json({ message: e.message });
     }
   });

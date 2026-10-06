@@ -70,7 +70,21 @@ import {
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, or, inArray, notInArray, sql, gt, gte, lte, lt, asc, desc, ne, isNull, isNotNull, ilike, like, count, sum, max, type SQL } from "drizzle-orm";
-import { auditChangeAction, type AuditAction, type AuditEntityType } from "@shared/audit";
+import {
+  AUDIT_LOG_DEFAULT_LIMIT,
+  AUDIT_LOG_MAX_LIMIT,
+  AUDIT_REVERTED_MARKER,
+  auditChangeAction,
+  auditSnapshotDrift,
+  describeAuditEntityType,
+  describeAuditRevertability,
+  HISTORY_REVERT_CODES,
+  type AuditAction,
+  type AuditEntityType,
+  type AuditRevertedRef,
+  type HistoryRevertCode,
+  type RevertableAuditEntityType,
+} from "@shared/audit";
 import { PLACEHOLDER_LOCATION_NAME, PLACEHOLDER_LOCATION_NOTE } from "./account-bootstrap";
 import { createHash } from "crypto";
 import type { InvoiceDocumentBranding, InvoiceDocumentContext, ServiceReportDocumentContext, ServiceReportMaterialLine, StatementDocumentContext, StatementDocumentParty } from "./documents/types";
@@ -397,10 +411,105 @@ export interface AuditLogEntry {
 // mutation it describes.
 type AuditLogWriter = Pick<typeof db, "insert">;
 
+// Pass 33 (C5.1b): what a revert asks of an entity's write path - write the
+// change as `reverted` naming the source row instead of the generic `update`
+// / `status_changed` (one row per revert), and refuse inside the transaction
+// when the fields it puts back no longer hold the source row's after values
+// (409 HISTORY_STALE; the update rolls back with the throw). Every update
+// method a revert replays through takes this as its last, optional argument
+// and hands it to auditChangeTx; an ordinary edit never passes it.
+export interface AuditChangeOptions {
+  action?: "reverted";
+  reverted?: AuditRevertedRef;
+  /** The source row's after values for the fields being put back, checked against the row the update replaced. */
+  expectFields?: Record<string, unknown>;
+}
+
+// One entity's trail in the log, with the location it belongs to (null =
+// account level). The two History reads collect refs through one helper.
+interface AuditRef {
+  entityType: AuditEntityType;
+  entityId: string;
+  locationId: string | null;
+}
+
+// Pass 33: a row of the customer-level History (getAuditLogsForCustomer),
+// annotated with the location it belongs to - null for the account-level
+// rows (the customer's own, the account-default billing profiles, a contact
+// with no location).
+export type AuditLogWithLocation = AuditLog & { locationId: string | null; locationName: string | null };
+
+export interface RevertAuditLogInput {
+  auditLogId: string;
+  /** The plan's payload after the route validated it with the entity's own schema; the plan's own when absent. */
+  payload?: Record<string, unknown>;
+  actor?: AuditActor | null;
+}
+
+export interface AuditLogRevertPlan {
+  row: AuditLog;
+  entityType: RevertableAuditEntityType;
+  entityId: string;
+  /** The fields the source row changed that the revert puts back. */
+  fields: string[];
+  /** before's values for those fields, coerced for the write path (timestamps back to Dates). */
+  payload: Record<string, unknown>;
+  /** after's values for those fields - what the entity must still hold. */
+  expectFields: Record<string, unknown>;
+  /** The entity's row now. */
+  current: Record<string, unknown>;
+  source: AuditRevertedRef;
+}
+
+export interface AuditLogRevertResult {
+  entityType: RevertableAuditEntityType;
+  entityId: string;
+  entity: unknown;
+  source: AuditRevertedRef;
+  /** The `reverted` row the write path wrote. */
+  revertedAuditLogId: string | null;
+}
+
+// Pass 33: what a revert never puts back, whatever the row's diff shows.
+// Base: the identity, the timestamps and the actor stamps (the write path
+// stamps them afresh) and the `reverted` marker itself. Per entity: the
+// ownership keys (a revert is a field change, not a transfer - canon rule 10
+// is its own workflow; updateLocation re-resolves accountId anyway) and the
+// agreement's derived fields: billingPlanSnapshot and nextBillingDate are
+// rebuilt by resolveBillingPlanChangeTx when the plan moves and belong to
+// the billing run otherwise, contractUploadedAt follows contractUrl,
+// expectedServiceCount is snapshotted once at creation and never recomputed,
+// soldBy is the snapshot's label for soldByUserId.
+const REVERT_STRIPPED_FIELDS = ["id", "orgId", "createdAt", "updatedAt", "updatedByUserId", "createdByUserId", AUDIT_REVERTED_MARKER];
+const REVERT_ENTITY_STRIPPED_FIELDS: Record<RevertableAuditEntityType, string[]> = {
+  customer: [],
+  location: ["customerId", "accountId"],
+  contact: ["customerId", "locationId"],
+  billing_profile: ["accountId"],
+  billing_profile_template: [],
+  agreement_template: [],
+  agreement: ["customerId", "locationId", "soldBy", "billingPlanSnapshot", "nextBillingDate", "contractUploadedAt", "expectedServiceCount"],
+};
+// jsonb turned these Dates into ISO strings; the write path (and the route's
+// zod) wants Dates back.
+const REVERT_TIMESTAMP_FIELDS: Partial<Record<RevertableAuditEntityType, string[]>> = {
+  agreement: ["contractSignedAt", "cancelledAt", "cancellationOverrideAt"],
+};
+// The agreement's initial charge is one block: the type decides what the
+// other fields mean (the route refuses an amount-only patch), so a revert
+// touching any of them puts back all of them.
+const AGREEMENT_INITIAL_CHARGE_FIELDS = ["initialChargeType", "initialChargeAmountMode", "initialChargeCents", "initialChargePercentBasisPoints", "initialChargeCollectedBy", "initialChargeInAdditionToPrice"];
+
+function coerceRevertValue(entityType: RevertableAuditEntityType, field: string, value: unknown): unknown {
+  if ((REVERT_TIMESTAMP_FIELDS[entityType] ?? []).includes(field)) {
+    return value == null || value === "" ? null : new Date(String(value));
+  }
+  return value;
+}
+
 // Callers may ask for more, but a history panel that renders thousands of rows
 // helps nobody and the table only grows from here.
-const AUDIT_LOG_DEFAULT_LIMIT = 100;
-const AUDIT_LOG_MAX_LIMIT = 500;
+
 
 export interface CreateCustomerWithPrimaryLocationInput {
   customer: InsertCustomer;
@@ -906,6 +1015,19 @@ export class PlacementRefusedError extends Error {
   }
 }
 
+// Pass 33 (C5.1b): a revert the row, the entity or its state refuses - 404
+// HISTORY_ROW_NOT_FOUND, 409 with a code from shared/audit.ts
+// (HISTORY_REVERT_CODES); HISTORY_STALE carries the entity's current row and
+// the fields that moved since the source row. Thrown before anything is
+// written, or inside the entity's transaction (the re-check) so the update
+// rolls back with it. The route answers { code, message, current?, drift? }.
+export class HistoryRevertError extends Error {
+  constructor(readonly status: 404 | 409, readonly code: HistoryRevertCode, message: string, readonly current: unknown = null, readonly drift: string[] = []) {
+    super(message);
+    this.name = "HistoryRevertError";
+  }
+}
+
 // Pass 30: a preference write the location forbids (an account-wide row off
 // the primary location, a location with no account) or names nothing.
 export class TechnicianPreferenceError extends Error {
@@ -1362,7 +1484,7 @@ export interface IStorage {
   // audit_logs inside its transaction, signed by the actor the route passes
   // (routes.ts getAuditActor); the methods that took no actor gained one.
   createCustomer(data: InsertCustomer, actor?: AuditActor | null): Promise<Customer>;
-  updateCustomer(id: string, data: Partial<InsertCustomer>, actor?: AuditActor | null): Promise<Customer | undefined>;
+  updateCustomer(id: string, data: Partial<InsertCustomer>, actor?: AuditActor | null, audit?: AuditChangeOptions): Promise<Customer | undefined>;
   getCustomerDetailCompat(legacyCustomerId: string, selectedLocationId?: string): Promise<CustomerDetailCompatProjection | undefined>;
   getAccountInvariantSummary(): Promise<AccountInvariantSummary>;
   createCustomerWithPrimaryLocation(input: CreateCustomerWithPrimaryLocationInput): Promise<Customer>;
@@ -1371,7 +1493,7 @@ export interface IStorage {
   getContacts(customerId: string): Promise<Contact[]>;
   getContactsByLocation(locationId: string): Promise<Contact[]>;
   createContact(data: InsertContact, actor?: AuditActor | null): Promise<Contact>;
-  updateContact(id: string, data: Partial<InsertContact>, actor?: AuditActor | null): Promise<Contact | undefined>;
+  updateContact(id: string, data: Partial<InsertContact>, actor?: AuditActor | null, audit?: AuditChangeOptions): Promise<Contact | undefined>;
   setPrimaryContact(contactId: string, actor?: AuditActor | null): Promise<Contact | undefined>;
 
   getLocations(customerId: string): Promise<Location[]>;
@@ -1379,16 +1501,16 @@ export interface IStorage {
   getLocation(id: string): Promise<Location | undefined>;
   createLocation(data: InsertLocation, actor?: AuditActor | null): Promise<Location>;
   createLocationWithPrimaryContact(input: CreateLocationWithPrimaryContactInput): Promise<Location>;
-  updateLocation(id: string, data: Partial<InsertLocation>, actor?: AuditActor | null): Promise<Location | undefined>;
+  updateLocation(id: string, data: Partial<InsertLocation>, actor?: AuditActor | null, audit?: AuditChangeOptions): Promise<Location | undefined>;
   setPrimaryLocation(customerId: string, locationId: string, actor?: AuditActor | null): Promise<void>;
 
   getBillingProfileTemplates(includeInactive?: boolean): Promise<BillingProfileTemplate[]>;
   createBillingProfileTemplate(data: InsertBillingProfileTemplate, actor?: AuditActor | null): Promise<BillingProfileTemplate>;
-  updateBillingProfileTemplate(id: string, data: Partial<InsertBillingProfileTemplate>, actor?: AuditActor | null): Promise<BillingProfileTemplate | undefined>;
+  updateBillingProfileTemplate(id: string, data: Partial<InsertBillingProfileTemplate>, actor?: AuditActor | null, audit?: AuditChangeOptions): Promise<BillingProfileTemplate | undefined>;
 
   getBillingProfilesForAccount(accountId: string): Promise<BillingProfile[]>;
   createBillingProfile(data: InsertBillingProfile, actor?: AuditActor | null): Promise<BillingProfile>;
-  updateBillingProfile(id: string, data: Partial<InsertBillingProfile>, actor?: AuditActor | null): Promise<BillingProfile | undefined>;
+  updateBillingProfile(id: string, data: Partial<InsertBillingProfile>, actor?: AuditActor | null, audit?: AuditChangeOptions): Promise<BillingProfile | undefined>;
   resolveBillingProfileForLocation(locationId: string): Promise<BillingProfile | undefined>;
 
   getNotesByLocation(locationId: string): Promise<CustomerNote[]>;
@@ -1451,13 +1573,13 @@ export interface IStorage {
   getAgreementTemplates(): Promise<AgreementTemplate[]>;
   getAgreementTemplate(id: string): Promise<AgreementTemplate | undefined>;
   createAgreementTemplate(data: InsertAgreementTemplate, actor?: AuditActor | null): Promise<AgreementTemplate>;
-  updateAgreementTemplate(id: string, data: Partial<InsertAgreementTemplate>, actor?: AuditActor | null): Promise<AgreementTemplate | undefined>;
+  updateAgreementTemplate(id: string, data: Partial<InsertAgreementTemplate>, actor?: AuditActor | null, audit?: AuditChangeOptions): Promise<AgreementTemplate | undefined>;
 
   getAgreementsByLocation(locationId: string): Promise<Agreement[]>;
   getAgreement(id: string): Promise<Agreement | undefined>;
   createAgreementFromTemplate(input: CreateAgreementFromTemplateInput): Promise<Agreement>;
   createAgreement(data: InsertAgreement, actor?: AuditActor): Promise<Agreement>;
-  updateAgreement(id: string, data: Partial<InsertAgreement>, actor?: AuditActor): Promise<Agreement | undefined>;
+  updateAgreement(id: string, data: Partial<InsertAgreement>, actor?: AuditActor, audit?: AuditChangeOptions): Promise<Agreement | undefined>;
   cancelAgreement(input: CancelAgreementInput): Promise<Agreement | undefined>;
   linkAgreementInitialAppointment(input: LinkAgreementInitialAppointmentInput): Promise<Agreement | undefined>;
   generateAgreementServicesForLocation(locationId: string): Promise<GenerateAgreementServicesResult>;
@@ -1672,13 +1794,19 @@ export interface IStorage {
 
   getLocationScopedCounts(locationId: string): Promise<{ contacts: number; appointments: number; agreements: number; services: number; invoices: number; communications: number; opportunities: number }>;
 
-  // Append-only by decision (D7): two reads and no write on this interface -
+  // Append-only by decision (D7): three reads and no write on this interface -
   // every row is written inside a storage method's transaction by the
   // private recordAuditLogTx (canon §17); deliberately no update or delete
   // counterpart here or on any route. (The public recordAuditLog that sat
-  // here had no caller and left in Pass 32.)
+  // here had no caller and left in Pass 32.) Pass 33 (C5.1b): the
+  // per-customer rollup, and Revert - which writes nothing to the table
+  // itself: it replays the source row's before through the entity's own
+  // update method, and that method writes the `reverted` row.
   getAuditLogsForEntity(entityType: string, entityId: string, limit?: number): Promise<AuditLog[]>;
   getAuditLogsForLocation(locationId: string, limit?: number): Promise<AuditLog[]>;
+  getAuditLogsForCustomer(customerId: string, limit?: number): Promise<AuditLogWithLocation[]>;
+  planAuditLogRevert(auditLogId: string): Promise<AuditLogRevertPlan>;
+  revertAuditLogEntry(input: RevertAuditLogInput): Promise<AuditLogRevertResult>;
 }
 
 function clampAuditLogLimit(limit: number | undefined): number {
@@ -1930,8 +2058,8 @@ export class DatabaseStorage implements IStorage {
   // write passes SYSTEM_AUDIT_ACTOR explicitly (userId null, "System");
   // don't invent a placeholder user for it. A null label renders as "System"
   // on the History tab either way.
-  private async recordAuditLogTx(tx: AuditLogWriter, entry: AuditLogEntry): Promise<void> {
-    await tx.insert(auditLogs).values({
+  private async recordAuditLogTx(tx: AuditLogWriter, entry: AuditLogEntry): Promise<string> {
+    const [row] = await tx.insert(auditLogs).values({
       orgId: this.orgId,
       entityType: entry.entityType,
       entityId: entry.entityId,
@@ -1940,7 +2068,8 @@ export class DatabaseStorage implements IStorage {
       actorLabel: entry.actor?.actorLabel || null,
       beforeJson: entry.before ?? null,
       afterJson: entry.after ?? null,
-    });
+    }).returning({ id: auditLogs.id });
+    return row.id;
   }
 
   // Pass 32 (C5.1a): the three generic rows every entity in D7's follow-up
@@ -1957,10 +2086,25 @@ export class DatabaseStorage implements IStorage {
     await this.recordAuditLogTx(tx, { entityType, entityId, action: "created", actor: actor ?? null, after });
   }
 
-  private async auditChangeTx(tx: AuditLogWriter, entityType: AuditEntityType, entityId: string, before: unknown, after: unknown, actor: AuditActor | null | undefined): Promise<boolean> {
-    const action = auditChangeAction(before, after);
-    if (!action) return false;
-    await this.recordAuditLogTx(tx, { entityType, entityId, action, actor: actor ?? null, before, after });
+  // Pass 33 (C5.1b): with `options` (a revert) the row is written as
+  // `reverted`, its after carrying the source row under AUDIT_REVERTED_MARKER,
+  // after the fields being put back are checked against the row this update
+  // replaced - inside the caller's transaction, so a concurrent edit rolls
+  // the revert back as 409 HISTORY_STALE rather than overwriting it.
+  private async auditChangeTx(tx: AuditLogWriter, entityType: AuditEntityType, entityId: string, before: unknown, after: unknown, actor: AuditActor | null | undefined, options?: AuditChangeOptions): Promise<boolean> {
+    if (options?.expectFields) {
+      const drift = auditSnapshotDrift(options.expectFields, before);
+      if (drift.length) {
+        throw new HistoryRevertError(409, HISTORY_REVERT_CODES.STALE, `The record changed while the revert ran (${drift.join(", ")}). Revert the newer change first.`, before, drift);
+      }
+    }
+    const generic = auditChangeAction(before, after);
+    if (!generic) return false;
+    const action: AuditAction = options?.action ?? generic;
+    const snapshot = options?.action === "reverted" && options.reverted && typeof after === "object" && after !== null && !Array.isArray(after)
+      ? { ...(after as Record<string, unknown>), [AUDIT_REVERTED_MARKER]: options.reverted }
+      : after;
+    await this.recordAuditLogTx(tx, { entityType, entityId, action, actor: actor ?? null, before, after: snapshot });
     return true;
   }
 
@@ -1989,16 +2133,71 @@ export class DatabaseStorage implements IStorage {
       .limit(clampAuditLogLimit(limit));
   }
 
-  // What the location screen's History panel renders: the location row plus the
+  // Pass 33 (C5.1b): the per-location refs the two History reads share - every
+  // record anchored to one of the given locations, each ref carrying its
+  // location. Collected as ids rather than joined, because audit_logs.entity_id
+  // is plain text with no FK - the entity type is what gives it meaning.
+  // Extend this list rather than adding a second rollup query.
+  private async collectLocationAuditRefs(locationIds: string[]): Promise<AuditRef[]> {
+    if (!locationIds.length) return [];
+    const refs: AuditRef[] = [];
+    const push = (entityType: AuditEntityType, rows: Array<{ id: string; locationId: string | null }>) => {
+      for (const row of rows) refs.push({ entityType, entityId: row.id, locationId: row.locationId });
+    };
+    // Pass 32: the locations' contacts.
+    push("contact", await db.select({ id: contacts.id, locationId: contacts.locationId }).from(contacts).where(and(eq(contacts.orgId, this.orgId), inArray(contacts.locationId, locationIds))));
+    // Invoices anchored to the location (D1).
+    push("invoice", await db.select({ id: invoices.id, locationId: invoices.locationId }).from(invoices).where(and(eq(invoices.orgId, this.orgId), inArray(invoices.locationId, locationIds))));
+    // Service tickets, for the D3 review flag (prefinalization_issue_override)
+    // and, since Pass 8, ticket_reopened.
+    push("service_record", await db.select({ id: serviceRecords.id, locationId: serviceRecords.locationId }).from(serviceRecords).where(and(eq(serviceRecords.orgId, this.orgId), inArray(serviceRecords.locationId, locationIds))));
+    // Services, for the field price override (price_overridden) - the price
+    // lives on the Service, not the ticket - and Pass 32's rows.
+    push("service", await db.select({ id: services.id, locationId: services.locationId }).from(services).where(and(eq(services.orgId, this.orgId), inArray(services.locationId, locationIds))));
+    // The ledger (D5): payments and credit memos live at the location.
+    push("payment", await db.select({ id: payments.id, locationId: payments.locationId }).from(payments).where(and(eq(payments.orgId, this.orgId), inArray(payments.locationId, locationIds))));
+    push("credit_memo", await db.select({ id: creditMemos.id, locationId: creditMemos.locationId }).from(creditMemos).where(and(eq(creditMemos.orgId, this.orgId), inArray(creditMemos.locationId, locationIds))));
+    // Agreements (Pass 12's sale credit, Pass 32's rows).
+    push("agreement", await db.select({ id: agreements.id, locationId: agreements.locationId }).from(agreements).where(and(eq(agreements.orgId, this.orgId), inArray(agreements.locationId, locationIds))));
+    // Opportunities (Pass 25's assignee / category / work-type changes).
+    push("opportunity", await db.select({ id: opportunities.id, locationId: opportunities.locationId }).from(opportunities).where(and(eq(opportunities.orgId, this.orgId), inArray(opportunities.locationId, locationIds))));
+    // Appointments (Pass 27's dispositions, Pass 32's rows).
+    push("appointment", await db.select({ id: appointments.id, locationId: appointments.locationId }).from(appointments).where(and(eq(appointments.orgId, this.orgId), inArray(appointments.locationId, locationIds))));
+    return refs;
+  }
+
+  // Newest first; `createdAt` is transaction-start time, so id is the
+  // tiebreaker that keeps the order stable (as getAuditLogsForEntity).
+  private async queryAuditLogsForRefs(refs: AuditRef[], limit: number | undefined): Promise<AuditLog[]> {
+    const idsByType = new Map<AuditEntityType, Set<string>>();
+    for (const ref of refs) {
+      const ids = idsByType.get(ref.entityType) ?? new Set<string>();
+      ids.add(ref.entityId);
+      idsByType.set(ref.entityType, ids);
+    }
+    const groups = Array.from(idsByType.entries()).filter(([, ids]) => ids.size > 0);
+    if (!groups.length) return [];
+    return db
+      .select()
+      .from(auditLogs)
+      .where(
+        and(
+          eq(auditLogs.orgId, this.orgId),
+          or(...groups.map(([entityType, ids]) => and(eq(auditLogs.entityType, entityType), inArray(auditLogs.entityId, Array.from(ids))))),
+        ),
+      )
+      .orderBy(desc(auditLogs.createdAt), desc(auditLogs.id))
+      .limit(clampAuditLogLimit(limit));
+  }
+
+  // What the location screen's History tab renders: the location row plus the
   // legacy customer record that owns it (one profile edit writes both, and
   // Pass 30's account-scoped preferences sit on the customer), plus every
-  // record anchored to this location - invoices (D1), tickets, services,
-  // the ledger (D5), agreements, opportunities, appointments and, since Pass
-  // 32 (C5.1a), its contacts and the billing profiles that apply to it (its
-  // own override and the account's default). The org-wide templates
-  // (agreement_template, billing_profile_template) have no location and are
-  // read by entityType + entityId only. Extend this list rather than adding a
-  // second rollup query; the per-customer rollup is C5.1b's.
+  // record anchored to this location (collectLocationAuditRefs) and, since
+  // Pass 32 (C5.1a), the billing profiles that apply to it (its own override
+  // and the account's). The org-wide templates (agreement_template,
+  // billing_profile_template) have no location and are read by entityType +
+  // entityId only. The per-customer rollup is getAuditLogsForCustomer.
   async getAuditLogsForLocation(locationId: string, limit?: number): Promise<AuditLog[]> {
     const [location] = await db
       .select({ customerId: locations.customerId, accountId: locations.accountId })
@@ -2009,14 +2208,8 @@ export class DatabaseStorage implements IStorage {
       return [];
     }
 
-    // Pass 32: the location's contacts, and the billing profiles that apply
-    // here - the location's own override and the account's default.
-    const locationContacts = await db
-      .select({ id: contacts.id })
-      .from(contacts)
-      .where(and(eq(contacts.orgId, this.orgId), eq(contacts.locationId, locationId)));
     const locationBillingProfiles = await db
-      .select({ id: billingProfiles.id })
+      .select({ id: billingProfiles.id, locationId: billingProfiles.locationId })
       .from(billingProfiles)
       .where(and(
         eq(billingProfiles.orgId, this.orgId),
@@ -2025,77 +2218,172 @@ export class DatabaseStorage implements IStorage {
           : eq(billingProfiles.locationId, locationId),
       ));
 
-    // Invoices anchored to this location (D1). Collected as ids rather than
-    // joined, because audit_logs.entity_id is plain text with no FK - the
-    // entity type is what gives it meaning.
-    const locationInvoices = await db
-      .select({ id: invoices.id })
-      .from(invoices)
-      .where(and(eq(invoices.orgId, this.orgId), eq(invoices.locationId, locationId)));
-    // Service tickets, for the D3 review flag (prefinalization_issue_override)
-    // and, since Pass 8, ticket_reopened.
-    const locationTickets = await db
-      .select({ id: serviceRecords.id })
-      .from(serviceRecords)
-      .where(and(eq(serviceRecords.orgId, this.orgId), eq(serviceRecords.locationId, locationId)));
-    // Services, for the field price override (price_overridden) - the price
-    // lives on the Service, not the ticket.
-    const locationServices = await db
-      .select({ id: services.id })
-      .from(services)
-      .where(and(eq(services.orgId, this.orgId), eq(services.locationId, locationId)));
-    // The ledger (D5): payments and credit memos live at the location.
-    const locationPayments = await db
-      .select({ id: payments.id })
-      .from(payments)
-      .where(and(eq(payments.orgId, this.orgId), eq(payments.locationId, locationId)));
-    const locationCredits = await db
-      .select({ id: creditMemos.id })
-      .from(creditMemos)
-      .where(and(eq(creditMemos.orgId, this.orgId), eq(creditMemos.locationId, locationId)));
-    // Agreements, for sale-credit changes (Pass 12's `update` on soldByUserId).
-    const locationAgreements = await db
-      .select({ id: agreements.id })
-      .from(agreements)
-      .where(and(eq(agreements.orgId, this.orgId), eq(agreements.locationId, locationId)));
-    // Opportunities, for the assignee / category / work-type changes (Pass 25's `update`).
-    const locationOpportunities = await db
-      .select({ id: opportunities.id })
-      .from(opportunities)
-      .where(and(eq(opportunities.orgId, this.orgId), eq(opportunities.locationId, locationId)));
-    // Appointments, for the cancel / reschedule dispositions (Pass 27).
-    const locationAppointments = await db
-      .select({ id: appointments.id })
-      .from(appointments)
-      .where(and(eq(appointments.orgId, this.orgId), eq(appointments.locationId, locationId)));
-
-    const allRefs: Array<{ entityType: AuditEntityType; entityIds: string[] }> = [
-      { entityType: "location", entityIds: [locationId] },
-      { entityType: "customer", entityIds: [location.customerId] },
-      { entityType: "contact", entityIds: locationContacts.map((contact) => contact.id) },
-      { entityType: "billing_profile", entityIds: locationBillingProfiles.map((profile) => profile.id) },
-      { entityType: "invoice", entityIds: locationInvoices.map((invoice) => invoice.id) },
-      { entityType: "service_record", entityIds: locationTickets.map((ticket) => ticket.id) },
-      { entityType: "service", entityIds: locationServices.map((service) => service.id) },
-      { entityType: "payment", entityIds: locationPayments.map((payment) => payment.id) },
-      { entityType: "credit_memo", entityIds: locationCredits.map((memo) => memo.id) },
-      { entityType: "agreement", entityIds: locationAgreements.map((agreement) => agreement.id) },
-      { entityType: "opportunity", entityIds: locationOpportunities.map((opportunity) => opportunity.id) },
-      { entityType: "appointment", entityIds: locationAppointments.map((appointment) => appointment.id) },
+    const refs: AuditRef[] = [
+      { entityType: "location", entityId: locationId, locationId },
+      { entityType: "customer", entityId: location.customerId, locationId: null },
+      ...locationBillingProfiles.map((profile): AuditRef => ({ entityType: "billing_profile", entityId: profile.id, locationId: profile.locationId })),
+      ...(await this.collectLocationAuditRefs([locationId])),
     ];
-    const refs = allRefs.filter((ref) => ref.entityIds.length > 0);
+    return this.queryAuditLogsForRefs(refs, limit);
+  }
 
-    return db
-      .select()
+  // Pass 33 (C5.1b): the customer screen's History - every location of the
+  // customer's account rolled up with the account-level rows, newest first,
+  // each row annotated with the location it belongs to (null = the account).
+  // Keyed on the ACCOUNT (canon §2: the account groups the locations, and the
+  // screen itself lists them by accountId in getCustomerDetailCompat), falling
+  // back to locations.customerId only for a legacy customer with no account
+  // row yet - none on the dev data, and this read never creates one (a read
+  // should not write, unlike the compat read's resolver). Account level: the
+  // customer's own rows (its field changes, Pass 30's account-scoped
+  // preferences), the account's billing profiles with no location (the
+  // default) and any contact with no location; a location's profile override
+  // sits with its location. The org templates have no customer and stay out,
+  // as on the location tab. The clamp applies (AUDIT_LOG_MAX_LIMIT): the
+  // client asks for the maximum and says when it got exactly that many;
+  // paging is a later pass.
+  async getAuditLogsForCustomer(customerId: string, limit?: number): Promise<AuditLogWithLocation[]> {
+    const [customer] = await db.select({ id: customers.id }).from(customers).where(and(eq(customers.orgId, this.orgId), eq(customers.id, customerId)));
+    if (!customer) {
+      return [];
+    }
+    const [account] = await db.select({ id: accounts.id }).from(accounts).where(and(eq(accounts.orgId, this.orgId), eq(accounts.legacyCustomerId, customerId)));
+    const customerLocations = await db
+      .select({ id: locations.id, name: locations.name })
+      .from(locations)
+      .where(and(eq(locations.orgId, this.orgId), account ? eq(locations.accountId, account.id) : eq(locations.customerId, customerId)));
+    const nameById = new Map<string, string>(customerLocations.map((location): [string, string] => [location.id, location.name]));
+    const accountContacts = await db
+      .select({ id: contacts.id })
+      .from(contacts)
+      .where(and(eq(contacts.orgId, this.orgId), eq(contacts.customerId, customerId), isNull(contacts.locationId)));
+    const accountProfiles = account
+      ? await db.select({ id: billingProfiles.id, locationId: billingProfiles.locationId }).from(billingProfiles).where(and(eq(billingProfiles.orgId, this.orgId), eq(billingProfiles.accountId, account.id)))
+      : [];
+
+    const refs: AuditRef[] = [
+      { entityType: "customer", entityId: customerId, locationId: null },
+      ...customerLocations.map((location): AuditRef => ({ entityType: "location", entityId: location.id, locationId: location.id })),
+      ...accountContacts.map((contact): AuditRef => ({ entityType: "contact", entityId: contact.id, locationId: null })),
+      ...accountProfiles.map((profile): AuditRef => ({ entityType: "billing_profile", entityId: profile.id, locationId: profile.locationId && nameById.has(profile.locationId) ? profile.locationId : null })),
+      ...(await this.collectLocationAuditRefs(Array.from(nameById.keys()))),
+    ];
+    const locationByRef = new Map<string, string | null>(refs.map((ref): [string, string | null] => [`${ref.entityType}:${ref.entityId}`, ref.locationId]));
+    const rows = await this.queryAuditLogsForRefs(refs, limit);
+    return rows.map((row) => {
+      const locationId = locationByRef.get(`${row.entityType}:${row.entityId}`) ?? null;
+      return { ...row, locationId, locationName: locationId ? nameById.get(locationId) ?? null : null };
+    });
+  }
+
+  // Pass 33 (C5.1b; PLAN_BILLING_V1_1.md D7, B21): Revert, in two halves.
+  // planAuditLogRevert reads the row and the entity and decides without
+  // writing: the pure test (shared/audit.ts describeAuditRevertability), the
+  // entity still exists, and the fields the row changed still hold its after
+  // values (else 409 HISTORY_STALE naming them and the current row, so the
+  // user reverts the newer change first). It builds the payload: before's
+  // values for exactly those fields - not the whole row, so an unrelated edit
+  // since (someone else's, the billing run's) neither blocks the revert nor
+  // is clobbered by it - intersected with what the entity's write path
+  // accepts (REVERT_STRIPPED_FIELDS), timestamps back to Dates. The route
+  // validates that payload with the entity's own zod schema and applies the
+  // PATCH's own permission rule (the agreement's sale credit), then
+  // revertAuditLogEntry replays it through the entity's existing update
+  // method - which writes ONE row, `reverted` naming the source instead of
+  // its generic `update`, after re-checking the fields inside its transaction
+  // (AuditChangeOptions). The write path's own refusals pass through
+  // unchanged: updateAgreement's CANCELLED, requireBillingPlanId,
+  // assertOrgUserTx, the location invariant, the contact's demotions; a plan
+  // change on an agreement re-derives billingPlanSnapshot and nextBillingDate
+  // as any plan change does, so that one replay is not pure.
+  async planAuditLogRevert(auditLogId: string): Promise<AuditLogRevertPlan> {
+    const [row] = await db.select().from(auditLogs).where(and(eq(auditLogs.orgId, this.orgId), eq(auditLogs.id, auditLogId)));
+    if (!row) {
+      throw new HistoryRevertError(404, HISTORY_REVERT_CODES.ROW_NOT_FOUND, "History row not found");
+    }
+    const verdict = describeAuditRevertability(row);
+    if (!verdict.revertable) {
+      throw new HistoryRevertError(409, verdict.code, verdict.reason);
+    }
+    const current = await this.readRevertableEntity(verdict.entityType, row.entityId);
+    if (!current) {
+      throw new HistoryRevertError(409, HISTORY_REVERT_CODES.ENTITY_GONE, `The ${describeAuditEntityType(verdict.entityType).toLowerCase()} this row describes no longer exists`);
+    }
+    const before = row.beforeJson as Record<string, unknown>;
+    const after = row.afterJson as Record<string, unknown>;
+    const stripped = new Set<string>([...REVERT_STRIPPED_FIELDS, ...REVERT_ENTITY_STRIPPED_FIELDS[verdict.entityType]]);
+    let fields = verdict.fields.filter((field) => !stripped.has(field));
+    if (verdict.entityType === "agreement" && fields.some((field) => AGREEMENT_INITIAL_CHARGE_FIELDS.includes(field))) {
+      fields = Array.from(new Set([...fields, ...AGREEMENT_INITIAL_CHARGE_FIELDS.filter((field) => field in before)]));
+    }
+    if (!fields.length) {
+      throw new HistoryRevertError(409, HISTORY_REVERT_CODES.NOTHING_TO_REVERT, "This row changed nothing the record's write path accepts");
+    }
+    const expectFields: Record<string, unknown> = {};
+    const payload: Record<string, unknown> = {};
+    for (const field of fields) {
+      expectFields[field] = after[field] ?? null;
+      payload[field] = coerceRevertValue(verdict.entityType, field, before[field] ?? null);
+    }
+    const drift = auditSnapshotDrift(expectFields, current);
+    if (drift.length) {
+      throw new HistoryRevertError(409, HISTORY_REVERT_CODES.STALE, `The record has changed since this row (${drift.join(", ")}). Revert the newer change first.`, current, drift);
+    }
+    return {
+      row,
+      entityType: verdict.entityType,
+      entityId: row.entityId,
+      fields,
+      payload,
+      expectFields,
+      current,
+      source: { auditLogId: row.id, action: row.action, createdAt: row.createdAt.toISOString(), actorLabel: row.actorLabel ?? null },
+    };
+  }
+
+  // The entity's row now, org-scoped - the agreement's with its sold-by user
+  // named, the shape its audit snapshots have.
+  private async readRevertableEntity(entityType: RevertableAuditEntityType, entityId: string): Promise<Record<string, unknown> | undefined> {
+    switch (entityType) {
+      case "customer": return (await db.select().from(customers).where(and(eq(customers.orgId, this.orgId), eq(customers.id, entityId))))[0];
+      case "location": return (await db.select().from(locations).where(and(eq(locations.orgId, this.orgId), eq(locations.id, entityId))))[0];
+      case "contact": return (await db.select().from(contacts).where(and(eq(contacts.orgId, this.orgId), eq(contacts.id, entityId))))[0];
+      case "billing_profile": return (await db.select().from(billingProfiles).where(and(eq(billingProfiles.orgId, this.orgId), eq(billingProfiles.id, entityId))))[0];
+      case "billing_profile_template": return (await db.select().from(billingProfileTemplates).where(and(eq(billingProfileTemplates.orgId, this.orgId), eq(billingProfileTemplates.id, entityId))))[0];
+      case "agreement_template": return (await db.select().from(agreementTemplates).where(and(eq(agreementTemplates.orgId, this.orgId), eq(agreementTemplates.id, entityId))))[0];
+      case "agreement": {
+        const [agreement] = await db.select().from(agreements).where(and(eq(agreements.orgId, this.orgId), eq(agreements.id, entityId)));
+        return agreement ? await this.agreementAuditSnapshotTx(db, agreement) : undefined;
+      }
+    }
+  }
+
+  async revertAuditLogEntry(input: RevertAuditLogInput): Promise<AuditLogRevertResult> {
+    const plan = await this.planAuditLogRevert(input.auditLogId);
+    const payload = input.payload ?? plan.payload;
+    const options: AuditChangeOptions = { action: "reverted", reverted: plan.source, expectFields: plan.expectFields };
+    const actor = input.actor ?? null;
+    const typed = <T>() => payload as unknown as T;
+    let entity: unknown;
+    switch (plan.entityType) {
+      case "customer": entity = await this.updateCustomer(plan.entityId, typed<Partial<InsertCustomer>>(), actor, options); break;
+      case "location": entity = await this.updateLocation(plan.entityId, typed<Partial<InsertLocation>>(), actor, options); break;
+      case "contact": entity = await this.updateContact(plan.entityId, typed<Partial<InsertContact>>(), actor, options); break;
+      case "billing_profile": entity = await this.updateBillingProfile(plan.entityId, typed<Partial<InsertBillingProfile>>(), actor, options); break;
+      case "billing_profile_template": entity = await this.updateBillingProfileTemplate(plan.entityId, typed<Partial<InsertBillingProfileTemplate>>(), actor, options); break;
+      case "agreement_template": entity = await this.updateAgreementTemplate(plan.entityId, typed<Partial<InsertAgreementTemplate>>(), actor, options); break;
+      case "agreement": entity = await this.updateAgreement(plan.entityId, typed<Partial<InsertAgreement>>(), actor ?? undefined, options); break;
+    }
+    if (!entity) {
+      throw new HistoryRevertError(409, HISTORY_REVERT_CODES.ENTITY_GONE, `The ${describeAuditEntityType(plan.entityType).toLowerCase()} this row describes no longer exists`);
+    }
+    const [written] = await db
+      .select({ id: auditLogs.id })
       .from(auditLogs)
-      .where(
-        and(
-          eq(auditLogs.orgId, this.orgId),
-          or(...refs.map((ref) => and(eq(auditLogs.entityType, ref.entityType), inArray(auditLogs.entityId, ref.entityIds)))),
-        ),
-      )
+      .where(and(eq(auditLogs.orgId, this.orgId), eq(auditLogs.entityType, plan.entityType), eq(auditLogs.entityId, plan.entityId), eq(auditLogs.action, "reverted")))
       .orderBy(desc(auditLogs.createdAt), desc(auditLogs.id))
-      .limit(clampAuditLogLimit(limit));
+      .limit(1);
+    return { entityType: plan.entityType, entityId: plan.entityId, entity, source: plan.source, revertedAuditLogId: written?.id ?? null };
   }
 
   private isPlaceholderLocation(location: { name: string; notes: string | null }) {
@@ -3398,7 +3686,7 @@ export class DatabaseStorage implements IStorage {
     return customer;
   }
 
-  async updateCustomer(id: string, data: Partial<InsertCustomer>, actor?: AuditActor | null): Promise<Customer | undefined> {
+  async updateCustomer(id: string, data: Partial<InsertCustomer>, actor?: AuditActor | null, audit?: AuditChangeOptions): Promise<Customer | undefined> {
     return db.transaction(async (tx) => {
       const [existing] = await tx.select().from(customers).where(and(eq(customers.orgId, this.orgId), eq(customers.id, id)));
       if (!existing) {
@@ -3406,7 +3694,7 @@ export class DatabaseStorage implements IStorage {
       }
       const [customer] = await tx.update(customers).set(data).where(and(eq(customers.orgId, this.orgId), eq(customers.id, id))).returning();
       if (customer) {
-        await this.auditChangeTx(tx, "customer", customer.id, existing, customer, actor);
+        await this.auditChangeTx(tx, "customer", customer.id, existing, customer, actor, audit);
       }
       return customer;
     });
@@ -3624,7 +3912,7 @@ export class DatabaseStorage implements IStorage {
     }
   }
 
-  async updateContact(id: string, data: Partial<InsertContact>, actor?: AuditActor | null): Promise<Contact | undefined> {
+  async updateContact(id: string, data: Partial<InsertContact>, actor?: AuditActor | null, audit?: AuditChangeOptions): Promise<Contact | undefined> {
     return db.transaction(async (tx) => {
       // Pass 32: the existing row is read inside the transaction (it was read
       // outside it) so the before snapshot is the row the update replaced.
@@ -3649,7 +3937,7 @@ export class DatabaseStorage implements IStorage {
         .returning();
 
       if (updatedContact) {
-        await this.auditChangeTx(tx, "contact", updatedContact.id, existing, updatedContact, actor);
+        await this.auditChangeTx(tx, "contact", updatedContact.id, existing, updatedContact, actor, audit);
       }
       return updatedContact;
     });
@@ -3730,7 +4018,7 @@ export class DatabaseStorage implements IStorage {
     });
   }
 
-  async updateLocation(id: string, data: Partial<InsertLocation>, actor?: AuditActor | null): Promise<Location | undefined> {
+  async updateLocation(id: string, data: Partial<InsertLocation>, actor?: AuditActor | null, audit?: AuditChangeOptions): Promise<Location | undefined> {
     const [existing] = await db.select().from(locations).where(and(eq(locations.orgId, this.orgId), eq(locations.id, id)));
     if (!existing) {
       return undefined;
@@ -3745,7 +4033,7 @@ export class DatabaseStorage implements IStorage {
       if (!loc) {
         return undefined;
       }
-      await this.auditChangeTx(tx, "location", loc.id, existing, loc, actor);
+      await this.auditChangeTx(tx, "location", loc.id, existing, loc, actor, audit);
       if (!loc.accountId) {
         return loc;
       }
@@ -3790,7 +4078,7 @@ export class DatabaseStorage implements IStorage {
     });
   }
 
-  async updateBillingProfileTemplate(id: string, data: Partial<InsertBillingProfileTemplate>, actor?: AuditActor | null): Promise<BillingProfileTemplate | undefined> {
+  async updateBillingProfileTemplate(id: string, data: Partial<InsertBillingProfileTemplate>, actor?: AuditActor | null, audit?: AuditChangeOptions): Promise<BillingProfileTemplate | undefined> {
     return db.transaction(async (tx) => {
       const [existing] = await tx.select().from(billingProfileTemplates).where(and(eq(billingProfileTemplates.orgId, this.orgId), eq(billingProfileTemplates.id, id)));
       if (!existing) {
@@ -3802,7 +4090,7 @@ export class DatabaseStorage implements IStorage {
         .where(and(eq(billingProfileTemplates.orgId, this.orgId), eq(billingProfileTemplates.id, id)))
         .returning();
       if (template) {
-        await this.auditChangeTx(tx, "billing_profile_template", template.id, existing, template, actor);
+        await this.auditChangeTx(tx, "billing_profile_template", template.id, existing, template, actor, audit);
       }
       return template;
     });
@@ -3820,7 +4108,7 @@ export class DatabaseStorage implements IStorage {
     });
   }
 
-  async updateBillingProfile(id: string, data: Partial<InsertBillingProfile>, actor?: AuditActor | null): Promise<BillingProfile | undefined> {
+  async updateBillingProfile(id: string, data: Partial<InsertBillingProfile>, actor?: AuditActor | null, audit?: AuditChangeOptions): Promise<BillingProfile | undefined> {
     return db.transaction(async (tx) => {
       const [existing] = await tx.select().from(billingProfiles).where(and(eq(billingProfiles.orgId, this.orgId), eq(billingProfiles.id, id)));
       if (!existing) {
@@ -3832,7 +4120,7 @@ export class DatabaseStorage implements IStorage {
         .where(and(eq(billingProfiles.orgId, this.orgId), eq(billingProfiles.id, id)))
         .returning();
       if (bp) {
-        await this.auditChangeTx(tx, "billing_profile", bp.id, existing, bp, actor);
+        await this.auditChangeTx(tx, "billing_profile", bp.id, existing, bp, actor, audit);
       }
       return bp;
     });
@@ -5273,7 +5561,7 @@ export class DatabaseStorage implements IStorage {
     });
   }
 
-  async updateAgreementTemplate(id: string, data: Partial<InsertAgreementTemplate>, actor?: AuditActor | null): Promise<AgreementTemplate | undefined> {
+  async updateAgreementTemplate(id: string, data: Partial<InsertAgreementTemplate>, actor?: AuditActor | null, audit?: AuditChangeOptions): Promise<AgreementTemplate | undefined> {
     const payload = this.normalizeAgreementTemplateUpdate(data);
     return db.transaction(async (tx) => {
       const [existing] = await tx.select().from(agreementTemplates).where(and(eq(agreementTemplates.orgId, this.orgId), eq(agreementTemplates.id, id)));
@@ -5282,7 +5570,7 @@ export class DatabaseStorage implements IStorage {
       }
       const [template] = await tx.update(agreementTemplates).set({ ...payload, updatedAt: new Date() }).where(and(eq(agreementTemplates.orgId, this.orgId), eq(agreementTemplates.id, id))).returning();
       if (template) {
-        await this.auditChangeTx(tx, "agreement_template", template.id, existing, template, actor);
+        await this.auditChangeTx(tx, "agreement_template", template.id, existing, template, actor, audit);
       }
       return template;
     });
@@ -5332,7 +5620,7 @@ export class DatabaseStorage implements IStorage {
     return agreement;
   }
 
-  async updateAgreement(id: string, data: Partial<InsertAgreement>, actor?: AuditActor): Promise<Agreement | undefined> {
+  async updateAgreement(id: string, data: Partial<InsertAgreement>, actor?: AuditActor, audit?: AuditChangeOptions): Promise<Agreement | undefined> {
     const agreement = await db.transaction(async (tx) => {
       const [existingAgreement] = await tx.select().from(agreements).where(and(eq(agreements.orgId, this.orgId), eq(agreements.id, id)));
       if (!existingAgreement) {
@@ -5369,6 +5657,7 @@ export class DatabaseStorage implements IStorage {
         await this.agreementAuditSnapshotTx(tx, existingAgreement),
         await this.agreementAuditSnapshotTx(tx, finalAgreement),
         actor,
+        audit,
       );
 
       return finalAgreement;
