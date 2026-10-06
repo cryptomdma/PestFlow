@@ -313,6 +313,17 @@ import {
   type DispatchBoardSettings,
 } from "@shared/dispatch-board";
 import {
+  BILLING_DEFAULTS_INVALID,
+  BILLING_PROFILE_ERROR_CODES,
+  DEFAULT_BILLING_PROFILE_TEMPLATE_SETTING_KEY,
+  normalizeBillingDefaults,
+  projectLocationBilling,
+  type BillingDefaults,
+  type BillingProfileErrorCode,
+  type BillingProfileSummary,
+  type LocationBillingProjection,
+} from "@shared/billing-profile-defaults";
+import {
   agingAsOf,
   agingFiguresOf,
   compareLocationAging,
@@ -354,7 +365,24 @@ export interface CustomerDetailCompatProjection {
   primaryLocation: Location;
   selectedLocation: Location;
   relatedLocations: Location[];
-  hasBillingOverride: boolean;
+  /** Pass 34 (C5.2): the selected location's resolved billing - the resolver's own answer, so the header chip reads real data. */
+  billing: LocationBillingProjection;
+  /** The active account-level default the resolver falls back to; null when the account has none. */
+  accountDefault: BillingProfileSummary | null;
+  /** Every location of the account with an active override row (the forward pointer, billing_profiles.location_id). */
+  billingOverrideLocationIds: string[];
+}
+
+// The resolver's account-level choice: the active default, else the first
+// active account-level row (the order resolveBillingProfileForLocation has
+// always used).
+function pickAccountDefaultProfile(profiles: BillingProfile[]): BillingProfile | undefined {
+  const accountLevel = profiles.filter((profile) => !profile.locationId && profile.status === "active");
+  return accountLevel.find((profile) => profile.isDefault) ?? accountLevel[0];
+}
+
+function summarizeBillingProfile(profile: BillingProfile): BillingProfileSummary {
+  return { profileId: profile.id, label: profile.label, billingType: profile.billingType, invoiceTerms: profile.invoiceTerms };
 }
 
 export interface AccountInvariantSummary {
@@ -483,9 +511,12 @@ export interface AuditLogRevertResult {
 const REVERT_STRIPPED_FIELDS = ["id", "orgId", "createdAt", "updatedAt", "updatedByUserId", "createdByUserId", AUDIT_REVERTED_MARKER];
 const REVERT_ENTITY_STRIPPED_FIELDS: Record<RevertableAuditEntityType, string[]> = {
   customer: [],
-  location: ["customerId", "accountId"],
+  // Pass 34 (C5.2): a location's legacy billing pointer is a mirror the
+  // profile write path keeps (never a field a revert puts back); a profile's
+  // card / ACH tokens and last four are Phase 6's capture, never a replay.
+  location: ["customerId", "accountId", "billingProfileId"],
   contact: ["customerId", "locationId"],
-  billing_profile: ["accountId"],
+  billing_profile: ["accountId", "cardOnFileToken", "achToken", "lastFour"],
   billing_profile_template: [],
   agreement_template: [],
   agreement: ["customerId", "locationId", "soldBy", "billingPlanSnapshot", "nextBillingDate", "contractUploadedAt", "expectedServiceCount"],
@@ -1045,6 +1076,25 @@ export class DispatchBoardSettingsError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "DispatchBoardSettingsError";
+  }
+}
+
+// Pass 34 (C5.2): a billing-defaults PATCH naming a template that does not
+// exist in the org or is inactive (400).
+export class BillingDefaultsError extends Error {
+  readonly code = BILLING_DEFAULTS_INVALID;
+  constructor(message: string) {
+    super(message);
+    this.name = "BillingDefaultsError";
+  }
+}
+
+// Pass 34 (C5.2): a billing profile write the rules refuse (400 with the
+// code from shared/billing-profile-defaults.ts).
+export class BillingProfileError extends Error {
+  constructor(readonly code: BillingProfileErrorCode, message: string) {
+    super(message);
+    this.name = "BillingProfileError";
   }
 }
 
@@ -1662,6 +1712,12 @@ export interface IStorage {
   // together and upserts only the values given.
   getDispatchBoardSettings(): Promise<DispatchBoardSettings>;
   setDispatchBoardSettings(patch: Partial<DispatchBoardSettings>): Promise<DispatchBoardSettings>;
+  // Pass 34 (C5.2): the org default template a new customer's account-default
+  // billing profile is created from - one app_settings row, no seed row
+  // (null = none). The write refuses an unknown or inactive template; null
+  // deletes the row.
+  getBillingDefaults(): Promise<BillingDefaults>;
+  setBillingDefaults(next: BillingDefaults): Promise<BillingDefaults>;
 
   getMaterialProducts(includeInactive?: boolean): Promise<MaterialProduct[]>;
   createMaterialProduct(data: InsertMaterialProduct): Promise<MaterialProduct>;
@@ -2208,13 +2264,19 @@ export class DatabaseStorage implements IStorage {
       return [];
     }
 
+    // Pass 34 (C5.2): the location's own override rows (any status - a
+    // retired override's history is still this location's) and the
+    // account's location-less rows (the default), never a sibling location's
+    // override - that sits with its own location, on its tab and on the
+    // customer-level History (Pass 33). Before this pass every profile of
+    // the account rode along here.
     const locationBillingProfiles = await db
       .select({ id: billingProfiles.id, locationId: billingProfiles.locationId })
       .from(billingProfiles)
       .where(and(
         eq(billingProfiles.orgId, this.orgId),
         location.accountId
-          ? or(eq(billingProfiles.locationId, locationId), eq(billingProfiles.accountId, location.accountId))
+          ? or(eq(billingProfiles.locationId, locationId), and(eq(billingProfiles.accountId, location.accountId), isNull(billingProfiles.locationId)))
           : eq(billingProfiles.locationId, locationId),
       ));
 
@@ -3731,6 +3793,15 @@ export class DatabaseStorage implements IStorage {
         .where(and(eq(accounts.orgId, this.orgId), eq(accounts.id, account.id)));
       await this.auditCreatedTx(tx, "location", location.id, location, input.actor);
 
+      // Pass 34 (C5.2): the account-default billing profile from the org
+      // default template when one is set - in this transaction, audited
+      // `created`. No template set, or the setting naming a template that is
+      // gone or inactive: no profile (the resolver answers nothing, as before
+      // this pass); a stale setting never fails a customer's creation. The
+      // legacy POST /api/customers path (createCustomer) creates none - its
+      // account is made after the fact and the customers screen posts here.
+      await this.createAccountDefaultProfileFromOrgDefaultTx(tx, account.id, input.actor);
+
       if (input.initialContact) {
         const [contact] = await tx.insert(contacts).values({
           ...input.initialContact,
@@ -3745,6 +3816,36 @@ export class DatabaseStorage implements IStorage {
     });
 
     return createdCustomer;
+  }
+
+  private async createAccountDefaultProfileFromOrgDefaultTx(tx: DbTransaction, accountId: string, actor: AuditActor | null | undefined): Promise<BillingProfile | undefined> {
+    const defaults = await this.readBillingDefaultsTx(tx);
+    if (!defaults.defaultBillingProfileTemplateId) {
+      return undefined;
+    }
+    const [template] = await tx
+      .select()
+      .from(billingProfileTemplates)
+      .where(and(eq(billingProfileTemplates.orgId, this.orgId), eq(billingProfileTemplates.id, defaults.defaultBillingProfileTemplateId), eq(billingProfileTemplates.isActive, true)));
+    if (!template) {
+      return undefined;
+    }
+    const [profile] = await tx
+      .insert(billingProfiles)
+      .values({
+        orgId: this.orgId,
+        accountId,
+        locationId: null,
+        templateId: template.id,
+        label: template.name,
+        billingType: template.billingType,
+        invoiceTerms: template.billingType === "invoice_terms" ? template.defaultInvoiceTerms : null,
+        isDefault: true,
+        status: "active",
+      })
+      .returning();
+    await this.auditCreatedTx(tx, "billing_profile", profile.id, profile, actor);
+    return profile;
   }
 
   async updateLocationProfile(input: UpdateLocationProfileInput): Promise<{ customer?: Customer; location: Location } | undefined> {
@@ -3818,13 +3919,30 @@ export class DatabaseStorage implements IStorage {
       (selectedLocationId && relatedLocations.find((location) => location.id === selectedLocationId)) ||
       primaryLocation;
 
+    // Pass 34 (C5.2): the selected location's billing by the same resolver
+    // the invoices use, plus the account's active rows for the default and
+    // the overrides - the forward pointer (billing_profiles.location_id)
+    // only; locations.billing_profile_id has no reader since this pass.
+    const resolvedProfile = await this.resolveBillingProfileForLocationTx(db, selectedLocation);
+    const activeProfiles = await db
+      .select()
+      .from(billingProfiles)
+      .where(and(eq(billingProfiles.orgId, this.orgId), eq(billingProfiles.accountId, account.id), eq(billingProfiles.status, "active")));
+    const accountDefault = pickAccountDefaultProfile(activeProfiles);
+    const locationIds = new Set(relatedLocations.map((location) => location.id));
+    const billingOverrideLocationIds = activeProfiles
+      .map((profile) => profile.locationId)
+      .filter((locationId): locationId is string => !!locationId && locationIds.has(locationId));
+
     return {
       legacyCustomer,
       account,
       primaryLocation,
       selectedLocation,
       relatedLocations,
-      hasBillingOverride: relatedLocations.some((location) => !!location.billingProfileId),
+      billing: projectLocationBilling(selectedLocation.id, resolvedProfile),
+      accountDefault: accountDefault ? summarizeBillingProfile(accountDefault) : null,
+      billingOverrideLocationIds: Array.from(new Set(billingOverrideLocationIds)),
     };
   }
 
@@ -4066,8 +4184,9 @@ export class DatabaseStorage implements IStorage {
   }
 
   // Pass 32 (C5.1a, decided): the org template joins the log beside the
-  // instance - the row says "billing profile", and the template is the org
-  // default C5.2 will read at customer creation. Org-wide, no location: its
+  // instance - the row says "billing profile", and since Pass 34 (C5.2) the
+  // template named by Settings -> Billing defaults is what a new customer's
+  // account-default profile is created from. Org-wide, no location: its
   // rows are read by GET /api/audit-logs?entityType=billing_profile_template
   // &entityId= (a Settings surface later), never on a location's History tab.
   async createBillingProfileTemplate(data: InsertBillingProfileTemplate, actor?: AuditActor | null): Promise<BillingProfileTemplate> {
@@ -4100,10 +4219,80 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(billingProfiles).where(and(eq(billingProfiles.orgId, this.orgId), eq(billingProfiles.accountId, accountId)));
   }
 
+  // Pass 34 (C5.2): the rules a profile row must satisfy, checked inside the
+  // writer's transaction against the row as it will be (the existing row
+  // with the change laid over it): the account exists in the org; an
+  // override's location belongs to that account; one ACTIVE override per
+  // location (the resolver takes the first it finds, so a second would be
+  // silent); one active default per account (isDefault on an account-level
+  // row - the resolver's first choice). Status `inactive` retires a row and
+  // is never a delete: invoices carry profileId in their snapshot and the
+  // resolver already filters on active.
+  private async assertBillingProfileRulesTx(
+    tx: DbTransaction,
+    next: { id?: string; accountId: string; locationId: string | null; isDefault: boolean; status: string },
+  ): Promise<void> {
+    const [account] = await tx.select({ id: accounts.id }).from(accounts).where(and(eq(accounts.orgId, this.orgId), eq(accounts.id, next.accountId)));
+    if (!account) {
+      throw new BillingProfileError(BILLING_PROFILE_ERROR_CODES.ACCOUNT_NOT_FOUND, "Billing profile account not found");
+    }
+    if (next.locationId) {
+      const [location] = await tx
+        .select({ id: locations.id, accountId: locations.accountId })
+        .from(locations)
+        .where(and(eq(locations.orgId, this.orgId), eq(locations.id, next.locationId)));
+      if (!location || location.accountId !== next.accountId) {
+        throw new BillingProfileError(BILLING_PROFILE_ERROR_CODES.LOCATION_MISMATCH, "The location does not belong to this billing profile's account");
+      }
+    }
+    if (next.status !== "active") {
+      return;
+    }
+    const siblings = await tx
+      .select({ id: billingProfiles.id, locationId: billingProfiles.locationId, isDefault: billingProfiles.isDefault })
+      .from(billingProfiles)
+      .where(and(eq(billingProfiles.orgId, this.orgId), eq(billingProfiles.accountId, next.accountId), eq(billingProfiles.status, "active")));
+    const others = siblings.filter((row) => row.id !== next.id);
+    if (next.locationId && others.some((row) => row.locationId === next.locationId)) {
+      throw new BillingProfileError(BILLING_PROFILE_ERROR_CODES.OVERRIDE_EXISTS, "This location already has an active billing profile override - edit it or retire it first");
+    }
+    if (!next.locationId && next.isDefault && others.some((row) => !row.locationId && row.isDefault)) {
+      throw new BillingProfileError(BILLING_PROFILE_ERROR_CODES.DEFAULT_EXISTS, "This account already has an active default billing profile - retire or demote it first");
+    }
+  }
+
+  // The legacy reverse pointer (locations.billing_profile_id), kept as a
+  // mirror of the forward pointer: the active override's id on its location,
+  // cleared when that override is retired or moved. No reader since Pass 34
+  // (C5.2), and no location audit row - the profile's own row is the record,
+  // and a location `update` naming the mirror would invite a Revert that
+  // desyncs the two. The column is dropped in a later hygiene pass.
+  private async syncLegacyLocationPointerTx(tx: DbTransaction, before: BillingProfile | null, after: BillingProfile): Promise<void> {
+    if (before?.locationId && (before.locationId !== after.locationId || after.status !== "active")) {
+      await tx
+        .update(locations)
+        .set({ billingProfileId: null })
+        .where(and(eq(locations.orgId, this.orgId), eq(locations.id, before.locationId), eq(locations.billingProfileId, after.id)));
+    }
+    if (after.locationId && after.status === "active") {
+      await tx
+        .update(locations)
+        .set({ billingProfileId: after.id })
+        .where(and(eq(locations.orgId, this.orgId), eq(locations.id, after.locationId)));
+    }
+  }
+
   async createBillingProfile(data: InsertBillingProfile, actor?: AuditActor | null): Promise<BillingProfile> {
     return db.transaction(async (tx) => {
+      await this.assertBillingProfileRulesTx(tx, {
+        accountId: data.accountId,
+        locationId: data.locationId ?? null,
+        isDefault: data.isDefault ?? false,
+        status: data.status ?? "active",
+      });
       const [bp] = await tx.insert(billingProfiles).values({ ...data, orgId: this.orgId }).returning();
       await this.auditCreatedTx(tx, "billing_profile", bp.id, bp, actor);
+      await this.syncLegacyLocationPointerTx(tx, null, bp);
       return bp;
     });
   }
@@ -4114,6 +4303,13 @@ export class DatabaseStorage implements IStorage {
       if (!existing) {
         return undefined;
       }
+      await this.assertBillingProfileRulesTx(tx, {
+        id: existing.id,
+        accountId: data.accountId ?? existing.accountId,
+        locationId: data.locationId === undefined ? existing.locationId : data.locationId,
+        isDefault: data.isDefault ?? existing.isDefault,
+        status: data.status ?? existing.status,
+      });
       const [bp] = await tx
         .update(billingProfiles)
         .set({ ...data, updatedAt: new Date() })
@@ -4121,6 +4317,7 @@ export class DatabaseStorage implements IStorage {
         .returning();
       if (bp) {
         await this.auditChangeTx(tx, "billing_profile", bp.id, existing, bp, actor, audit);
+        await this.syncLegacyLocationPointerTx(tx, existing, bp);
       }
       return bp;
     });
@@ -4129,25 +4326,37 @@ export class DatabaseStorage implements IStorage {
   // Per CANONICAL_DOMAIN_RULES_V1.md §4: a location-level profile (locationId
   // = this location) wins if one exists; otherwise fall back to the
   // account-level default (locationId IS NULL) for that location's account.
+  // The forward pointer is the only one read (Pass 34, C5.2).
   async resolveBillingProfileForLocation(locationId: string): Promise<BillingProfile | undefined> {
     const [location] = await db.select().from(locations).where(and(eq(locations.orgId, this.orgId), eq(locations.id, locationId)));
-    if (!location?.accountId) {
+    if (!location) {
+      return undefined;
+    }
+    return this.resolveBillingProfileForLocationTx(db, location);
+  }
+
+  // The same resolution through the caller's reader, so an invoice's terms
+  // (resolveInvoiceTermsForLocationTx) and a statement's Bill To read the
+  // profile inside their own transaction (before Pass 34 they read through
+  // `db`), and the compat read answers from the same code as the invoices.
+  private async resolveBillingProfileForLocationTx(reader: DbReader, location: Location): Promise<BillingProfile | undefined> {
+    if (!location.accountId) {
       return undefined;
     }
 
-    const [locationOverride] = await db
+    const [locationOverride] = await reader
       .select()
       .from(billingProfiles)
-      .where(and(eq(billingProfiles.orgId, this.orgId), eq(billingProfiles.locationId, locationId), eq(billingProfiles.status, "active")));
+      .where(and(eq(billingProfiles.orgId, this.orgId), eq(billingProfiles.locationId, location.id), eq(billingProfiles.status, "active")));
     if (locationOverride) {
       return locationOverride;
     }
 
-    const accountProfiles = await db
+    const accountProfiles = await reader
       .select()
       .from(billingProfiles)
       .where(and(eq(billingProfiles.orgId, this.orgId), eq(billingProfiles.accountId, location.accountId), isNull(billingProfiles.locationId), eq(billingProfiles.status, "active")));
-    return accountProfiles.find((profile) => profile.isDefault) ?? accountProfiles[0];
+    return pickAccountDefaultProfile(accountProfiles);
   }
 
   async getNotesByLocation(locationId: string): Promise<CustomerNote[]> {
@@ -8889,6 +9098,52 @@ export class DatabaseStorage implements IStorage {
     });
   }
 
+  // Pass 34 (C5.2): the org default template - Pass 31's one-key pattern
+  // (no seed row: no row reads as null, no default).
+  async getBillingDefaults(): Promise<BillingDefaults> {
+    return this.readBillingDefaultsTx(db);
+  }
+
+  private async readBillingDefaultsTx(reader: DbReader): Promise<BillingDefaults> {
+    const [row] = await reader
+      .select()
+      .from(appSettings)
+      .where(and(eq(appSettings.orgId, this.orgId), eq(appSettings.key, DEFAULT_BILLING_PROFILE_TEMPLATE_SETTING_KEY)));
+    return normalizeBillingDefaults({ defaultBillingProfileTemplateId: row?.value });
+  }
+
+  // An id must name an ACTIVE template of the org (BillingDefaultsError, 400
+  // BILLING_DEFAULTS_INVALID); null clears the default by deleting the row,
+  // so "no row" stays the one representation of "none". The stored id is
+  // answered as stored even if the template is later deactivated - the
+  // creation path checks again and creates nothing then, and Settings says
+  // so. Not audited: no set* app_settings writer is and there is no
+  // `app_setting` audit entity; a Settings-wide audit is its own pass.
+  async setBillingDefaults(next: BillingDefaults): Promise<BillingDefaults> {
+    return db.transaction(async (tx) => {
+      const normalized = normalizeBillingDefaults(next);
+      const templateId = normalized.defaultBillingProfileTemplateId;
+      if (templateId) {
+        const [template] = await tx
+          .select({ id: billingProfileTemplates.id, isActive: billingProfileTemplates.isActive })
+          .from(billingProfileTemplates)
+          .where(and(eq(billingProfileTemplates.orgId, this.orgId), eq(billingProfileTemplates.id, templateId)));
+        if (!template) throw new BillingDefaultsError("The default billing profile template was not found");
+        if (!template.isActive) throw new BillingDefaultsError("The default billing profile template must be active");
+        await tx
+          .insert(appSettings)
+          .values({ orgId: this.orgId, key: DEFAULT_BILLING_PROFILE_TEMPLATE_SETTING_KEY, value: templateId })
+          .onConflictDoUpdate({
+            target: [appSettings.orgId, appSettings.key],
+            set: { value: templateId, updatedAt: new Date() },
+          });
+      } else {
+        await tx.delete(appSettings).where(and(eq(appSettings.orgId, this.orgId), eq(appSettings.key, DEFAULT_BILLING_PROFILE_TEMPLATE_SETTING_KEY)));
+      }
+      return normalized;
+    });
+  }
+
   async getProductApplicationsByServiceRecord(serviceRecordId: string): Promise<ProductApplication[]> {
     return db.select().from(productApplications).where(and(eq(productApplications.orgId, this.orgId), eq(productApplications.serviceRecordId, serviceRecordId)));
   }
@@ -10465,7 +10720,7 @@ export class DatabaseStorage implements IStorage {
     if (!location) {
       return { accountId: null, billingProfileSnapshot: null, dueDate: null };
     }
-    const resolvedProfile = (await this.resolveBillingProfileForLocation(locationId)) ?? null;
+    const resolvedProfile = (await this.resolveBillingProfileForLocationTx(tx, location)) ?? null;
     const parties = await this.resolveInvoicePartiesTx(tx, location, resolvedProfile);
 
     return {
@@ -13586,7 +13841,7 @@ export class DatabaseStorage implements IStorage {
   // frozen earlier, since a statement is generated on request from the
   // ledger as it stands.
   private async statementBillToTx(reader: DbReader, location: Location): Promise<StatementDocumentParty> {
-    const profile = (await this.resolveBillingProfileForLocation(location.id)) ?? null;
+    const profile = (await this.resolveBillingProfileForLocationTx(reader, location)) ?? null;
     const parties = await this.resolveInvoicePartiesTx(reader, location, profile);
     return { name: parties.billTo.name, address: parties.billTo.address };
   }

@@ -23,7 +23,7 @@ import { MAX_ZONE_NAME_LENGTH } from "@shared/zones";
 import { ZodError, z } from "zod";
 import type { Request } from "express";
 import { requirePermission } from "./auth";
-import { AppointmentCrewError, AppointmentDispositionError, DispatchBoardSettingsError, DraftInvoiceDecisionRequiredError, HistoryRevertError, OpportunityAssignmentError, PlacementRefusedError, PrefinalizationIssueError, ServiceCompositionError, ServiceKindError, StatementRefusedError, TechnicianPreferenceError, TicketEditError, TicketLockedError, TicketReopenError, VisitBillingDraftError } from "./storage";
+import { AppointmentCrewError, AppointmentDispositionError, BillingDefaultsError, BillingProfileError, DispatchBoardSettingsError, DraftInvoiceDecisionRequiredError, HistoryRevertError, OpportunityAssignmentError, PlacementRefusedError, PrefinalizationIssueError, ServiceCompositionError, ServiceKindError, StatementRefusedError, TechnicianPreferenceError, TicketEditError, TicketLockedError, TicketReopenError, VisitBillingDraftError } from "./storage";
 import { HISTORY_REVERT_CODES, type RevertableAuditEntityType } from "@shared/audit";
 import {
   MAX_EXCLUSION_OVERRIDE_REASON_LENGTH,
@@ -47,6 +47,7 @@ import {
   isDispatchViewInterval,
   type DispatchBoardSettings,
 } from "@shared/dispatch-board";
+import { BILLING_PROFILE_STATUSES, BILLING_TYPES, INVOICE_TERMS } from "@shared/billing-profile-defaults";
 import { MAX_SURCHARGE_LABEL_LENGTH } from "@shared/field-surcharge";
 import {
   INITIAL_CHARGE_AMOUNT_MODES,
@@ -96,9 +97,12 @@ export async function registerRoutes(
   httpServer: Server,
   app: Express
 ): Promise<Server> {
+  // Pass 34 (C5.2): `billingProfileId` leaves every location body - the
+  // legacy reverse pointer is written by the billing profile path only, as
+  // a mirror of billing_profiles.location_id (the pointer that is read).
   const createCustomerWithLocationSchema = z.object({
     customer: insertCustomerSchema,
-    location: insertLocationSchema.omit({ customerId: true, accountId: true, isPrimary: true }),
+    location: insertLocationSchema.omit({ customerId: true, accountId: true, isPrimary: true, billingProfileId: true }),
     initialContact: insertContactSchema
       .omit({ customerId: true, locationId: true })
       .optional(),
@@ -111,7 +115,7 @@ export async function registerRoutes(
   });
   const updateLocationProfileSchema = z.object({
     location: insertLocationSchema
-      .omit({ customerId: true, accountId: true, isPrimary: true })
+      .omit({ customerId: true, accountId: true, isPrimary: true, billingProfileId: true })
       .partial(),
     customer: insertCustomerSchema
       .pick({
@@ -433,7 +437,22 @@ export async function registerRoutes(
   });
   const updateTargetPestSchema = targetPestSchema.partial();
   const updateBillingProfileTemplateSchema = insertBillingProfileTemplateSchema.partial();
-  const updateBillingProfileSchema = insertBillingProfileSchema.partial();
+  // Pass 34 (C5.2): a billing profile instance as a screen writes it - the
+  // vocabulary checked (shared/billing-profile-defaults.ts), the card / ACH
+  // tokens and the last four never typed (Phase 6's capture, C6.1), unknown
+  // keys refused. The rules that span rows (one active override per
+  // location, one active default per account, the location in the account)
+  // are storage's, inside the write's transaction.
+  const billingProfileWriteSchema = insertBillingProfileSchema
+    .omit({ cardOnFileToken: true, achToken: true, lastFour: true })
+    .extend({
+      label: z.string().trim().min(1, "Label is required"),
+      billingType: z.enum(BILLING_TYPES).optional(),
+      invoiceTerms: z.enum(INVOICE_TERMS).nullable().optional(),
+      status: z.enum(BILLING_PROFILE_STATUSES).optional(),
+    })
+    .strict();
+  const updateBillingProfileSchema = billingProfileWriteSchema.partial();
   const serviceTimeTrackingModeSchema = z.object({
     mode: z.enum(["AUTO_TIMEOUT_ON_TICKET_POST", "PROMPT_FOR_TIMEOUT", "MANUAL_TIMEOUT"]),
   });
@@ -1157,7 +1176,7 @@ export async function registerRoutes(
 
   app.patch("/api/locations/:id", async (req, res) => {
     try {
-      const validated = insertLocationSchema.partial().parse(req.body);
+      const validated = insertLocationSchema.omit({ billingProfileId: true }).partial().parse(req.body);
       const data = await req.storage.updateLocation(req.params.id, validated, getAuditActor(req));
       if (!data) return res.status(404).json({ message: "Location not found" });
       res.json(data);
@@ -1278,7 +1297,12 @@ export async function registerRoutes(
     res.json(data);
   });
 
-  app.post("/api/billing-profile-templates", async (req, res) => {
+  // Pass 34 (C5.2): the templates are Settings reference data, so their
+  // writes are MANAGE_SETTINGS like every other settings write (the card's
+  // Add / Edit disable for everyone else). The instances below stay open to
+  // every role, like the location PATCH they sit beside - they are customer
+  // data; who may edit customer data is C5.6's role profiles.
+  app.post("/api/billing-profile-templates", requirePermission(PERMISSIONS.MANAGE_SETTINGS), async (req, res) => {
     try {
       const validated = insertBillingProfileTemplateSchema.parse(req.body);
       const data = await req.storage.createBillingProfileTemplate(validated, getAuditActor(req));
@@ -1289,7 +1313,7 @@ export async function registerRoutes(
     }
   });
 
-  app.patch("/api/billing-profile-templates/:id", async (req, res) => {
+  app.patch("/api/billing-profile-templates/:id", requirePermission(PERMISSIONS.MANAGE_SETTINGS), async (req, res) => {
     try {
       const validated = updateBillingProfileTemplateSchema.parse(req.body);
       const data = await req.storage.updateBillingProfileTemplate(req.params.id, validated, getAuditActor(req));
@@ -1315,15 +1339,19 @@ export async function registerRoutes(
 
   app.post("/api/billing-profiles", async (req, res) => {
     try {
-      const validated = insertBillingProfileSchema.parse(req.body);
+      const validated = billingProfileWriteSchema.parse(req.body);
       const data = await req.storage.createBillingProfile(validated, getAuditActor(req));
       res.status(201).json(data);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
+      if (e instanceof BillingProfileError) return res.status(400).json({ code: e.code, message: e.message });
       res.status(400).json({ message: e.message });
     }
   });
 
+  // Retiring an override is PATCH { status: "inactive" } - never a DELETE:
+  // invoices carry the profile's id in their snapshot, and the resolver
+  // already filters on active.
   app.patch("/api/billing-profiles/:id", async (req, res) => {
     try {
       const validated = updateBillingProfileSchema.parse(req.body);
@@ -1332,6 +1360,7 @@ export async function registerRoutes(
       res.json(data);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
+      if (e instanceof BillingProfileError) return res.status(400).json({ code: e.code, message: e.message });
       res.status(400).json({ message: e.message });
     }
   });
@@ -2843,6 +2872,34 @@ export async function registerRoutes(
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
       if (e instanceof DispatchBoardSettingsError) return res.status(400).json({ code: e.code, message: e.message });
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  // Pass 34 (C5.2): the org default billing profile template
+  // (shared/billing-profile-defaults.ts) - the template a new customer's
+  // account-default profile is created from. Read by anyone (the location
+  // dialogs say what a new account starts with); the PATCH is MANAGE_SETTINGS
+  // like every settings write. The body is the whole setting, one value: the
+  // id of an active template, or null for none (400 BILLING_DEFAULTS_INVALID
+  // for an unknown or inactive template).
+  const billingDefaultsSchema = z.object({
+    defaultBillingProfileTemplateId: z.string().trim().min(1).nullable(),
+  }).strict();
+
+  app.get("/api/settings/billing-defaults", async (req, res) => {
+    const settings = await req.storage.getBillingDefaults();
+    res.json(settings);
+  });
+
+  app.patch("/api/settings/billing-defaults", requirePermission(PERMISSIONS.MANAGE_SETTINGS), async (req, res) => {
+    try {
+      const validated = billingDefaultsSchema.parse(req.body);
+      const settings = await req.storage.setBillingDefaults(validated);
+      res.json(settings);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      if (e instanceof BillingDefaultsError) return res.status(400).json({ code: e.code, message: e.message });
       res.status(400).json({ message: e.message });
     }
   });

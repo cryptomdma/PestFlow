@@ -21,7 +21,9 @@ import { describeTicketLifecycle } from "@shared/ticket-status";
 import { applicationAreasOf, deriveTicketTargetPests, formatApplicationAreas, formatTargetPests, matchListEntry, targetPestsOf } from "@shared/material-lists";
 import { ListMultiSelect } from "@/components/list-multi-select";
 import { DEFAULT_SURCHARGE_LABEL, MAX_SURCHARGE_LABEL_LENGTH, resolveFieldSurchargeGate, surchargeOf } from "@shared/field-surcharge";
-import type { Agreement, AgreementTemplate, Appointment, CustomerNote, MaterialProduct, ProductApplication, Service, ServiceRecord, ServiceType, TargetPest, Technician } from "@shared/schema";
+import { describeBillingProfileTerms } from "@shared/billing-profile-defaults";
+import { describeInvoiceTerms } from "@shared/invoice-detail";
+import type { Agreement, AgreementTemplate, Appointment, BillingProfile, CustomerNote, MaterialProduct, ProductApplication, Service, ServiceRecord, ServiceType, TargetPest, Technician } from "@shared/schema";
 
 // A material row as the dialog edits it. Pass 20 (C3.4a): `unit` picks from
 // the org's unit list and `applicationAreas` from the product's allowed areas
@@ -268,8 +270,18 @@ export function ServiceCompletionDialog({
     [agreement?.agreementTemplateId, agreementTemplates],
   );
   // Pass 19 (C3.3): D6's billing-plan pill on the ticket header for an
-  // agreement service (the billing-profile display waits for C5.2).
+  // agreement service.
   const { planById: billingPlanById, isLoading: billingPlansLoading } = useBillingPlanById(open && !!service?.agreementId);
+  // Pass 34 (C5.2): the location's resolved billing profile beside the pill
+  // - the label, type and terms the visit's invoice will carry, from the
+  // same resolver the invoices use (GET /api/locations/:id/billing-profile;
+  // a 404 means none resolves, and the line says so).
+  const { data: ticketBillingProfile, isError: noTicketBillingProfile } = useQuery<BillingProfile>({
+    queryKey: ["/api/locations", service?.locationId, "billing-profile"],
+    enabled: open && !!service?.locationId,
+    retry: false,
+  });
+  const ticketBillingProfileTerms = describeBillingProfileTerms(ticketBillingProfile, describeInvoiceTerms);
   // The location's notes for the instructions block (Pass 19): the canonical
   // LOCATION-scope rows in customer_notes, through the read the customer
   // screen's notes panel uses (same query key, so its cache and invalidations
@@ -736,6 +748,14 @@ export function ServiceCompletionDialog({
                   {/* Pass 19: D6's billing-plan pill - plans attach to agreements, so only an agreement service shows one. */}
                   {agreement && !billingPlansLoading && (
                     <BillingPlanPill agreement={agreement} plan={agreement.billingPlanId ? billingPlanById.get(agreement.billingPlanId) : null} />
+                  )}
+                  {/* Pass 34 (C5.2): the resolved billing profile - one line, real data or "none". */}
+                  {service.locationId && (ticketBillingProfile || noTicketBillingProfile) && (
+                    <p className="text-xs text-muted-foreground text-right" data-testid="text-ticket-billing-profile">
+                      {ticketBillingProfile
+                        ? `Billing profile: ${ticketBillingProfile.label}${ticketBillingProfileTerms ? ` · ${ticketBillingProfileTerms}` : ""} (${ticketBillingProfile.locationId === service.locationId ? "this location" : "account default"})`
+                        : "No billing profile resolves for this location"}
+                    </p>
                   )}
                 </div>
               </div>

@@ -180,7 +180,11 @@ a real issued invoice at agreement start. Three tools, three jobs:
 > - **1c. Already scheduled.** The "unless another billing profile exists for the service location"
 >   half is C5.2 (Pass 34): no screen can create a billing profile or give one an address today, so
 >   the override branch — which the resolver already honours — cannot be exercised by the office until
->   then.
+>   then. **Built as Pass 34** (`feature/phase-5-billing-profile-customer-screen`, 2026-10-05): the
+>   Add / Edit Location dialogs create, address and retire a location's override and the primary
+>   location's dialog edits the account default; Settings -> Billing Defaults names the template a new
+>   customer's default is created from. The as-built record is "Shipped in Pass 34" at the end of
+>   `PLAN_ROADMAP_V2.md` Part D.
 >
 > **Item 2 — a down payment set for technician collection is its own invoice at agreement creation,
 > and the technician is shown $0.00 due today.**
@@ -277,7 +281,9 @@ Stripe remains Phase 2. Phase 1 builds the ledger with manual instruments:
   pill — plan name + periodic amount (e.g. `Monthly · $50`) — on the agreement card and location
   screen. Customers/locations are never "COD" or "monthly" as a whole; **plans attach to agreements.**
   Since Pass 19 (`PLAN_ROADMAP_V2.md` C3.3, 2026-09-25) the same pill sits in the technician's
-  ticket header for an agreement service; the billing-profile display waits for C5.2.
+  ticket header for an agreement service; since Pass 34 (C5.2, 2026-10-05) the location's resolved
+  billing profile - its label, type and terms, and whether it is the account default or the
+  location's own - prints under it.
 
 ## D7. Audit: promote `audit_logs` to the system-wide immutable history
 
