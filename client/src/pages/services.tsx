@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -31,8 +31,11 @@ import {
   CheckCircle,
   Beaker,
   AlertTriangle,
+  MapPin,
 } from "lucide-react";
 import { Link } from "wouter";
+import { describeCustomerLabel, describeLocationLabel } from "@shared/customer-label";
+import { customerPath, locationPath } from "@/lib/customer-links";
 import { describeTicketLifecycle, isTicketFinalized } from "@shared/ticket-status";
 import { formatApplicationAreas, formatTargetPests } from "@shared/material-lists";
 import type { Appointment, Customer, Service, ServiceRecord, ProductApplication, ServiceType, Location, Technician } from "@shared/schema";
@@ -324,7 +327,11 @@ export default function Services() {
 
   const { data: services, isLoading } = useQuery<ServiceRecord[]>({ queryKey: ["/api/service-records"] });
   const { data: customers } = useQuery<Customer[]>({ queryKey: ["/api/customers"] });
+  // Pass 36 (C5.4; B23): the page showed no location at all - each card now names its location
+  // and links to it (the same read ServiceRecordForm already uses), and the search covers it.
+  const { data: locations } = useQuery<Location[]>({ queryKey: ["/api/all-locations"] });
   const { data: productApps } = useQuery<ProductApplication[]>({ queryKey: ["/api/product-applications"] });
+  const locationById = useMemo(() => new Map((locations ?? []).map((location) => [location.id, location])), [locations]);
 
   // D9 (Pass 16): the "Confirm" that lived here (PATCH { confirmed: true })
   // was the pre-Phase-1 completion - it marked a Service COMPLETED with no
@@ -334,7 +341,8 @@ export default function Services() {
 
   const filtered = services?.filter((s) => {
     const cust = customers?.find((c) => c.id === s.customerId);
-    const text = `${cust?.firstName || ""} ${cust?.lastName || ""} ${s.technicianName || ""} ${s.areasServiced || ""}`.toLowerCase();
+    const location = s.locationId ? locationById.get(s.locationId) : undefined;
+    const text = `${cust?.firstName || ""} ${cust?.lastName || ""} ${cust?.companyName || ""} ${location?.name || ""} ${location?.address || ""} ${s.technicianName || ""} ${s.areasServiced || ""}`.toLowerCase();
     return text.includes(search.toLowerCase());
   }) || [];
 
@@ -381,6 +389,7 @@ export default function Services() {
             .sort((a, b) => new Date(b.serviceDate).getTime() - new Date(a.serviceDate).getTime())
             .map((svc) => {
               const cust = customers?.find((c) => c.id === svc.customerId);
+              const location = svc.locationId ? locationById.get(svc.locationId) : undefined;
               const apps = productApps?.filter((p) => p.serviceRecordId === svc.id) || [];
               return (
                 <Card key={svc.id} data-testid={`card-service-${svc.id}`}>
@@ -388,7 +397,9 @@ export default function Services() {
                     <div className="flex items-start justify-between gap-3">
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 flex-wrap">
-                          <span className="font-semibold text-sm">{cust ? `${cust.firstName} ${cust.lastName}` : "Unknown"}</span>
+                          {/* Pass 36 (C5.4; B23): the customer (the company name counts now - the old span
+                              printed the person's name only) and, below, the location are links. */}
+                          <Link href={customerPath(svc.customerId)} className="font-semibold text-sm hover:underline" data-testid={`link-service-customer-${svc.id}`}>{describeCustomerLabel(cust, location, "Unknown")}</Link>
                           <Badge variant="secondary" className="text-xs">
                             {new Date(svc.serviceDate).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
                           </Badge>
@@ -402,6 +413,14 @@ export default function Services() {
                             </Badge>
                           )}
                         </div>
+                        {location ? (
+                          <Link href={locationPath(svc.customerId, location.id)} className="mt-1 inline-flex items-center gap-1 text-xs text-muted-foreground hover:underline" data-testid={`link-service-location-${svc.id}`}>
+                            <MapPin className="h-3 w-3" />
+                            {describeLocationLabel(location)}{location.city ? `, ${location.city}` : ""}
+                          </Link>
+                        ) : (
+                          <p className="mt-1 text-xs text-muted-foreground" data-testid={`text-service-no-location-${svc.id}`}>{svc.locationId ? "Location unavailable" : "No location on this record"}</p>
+                        )}
                         <div className="mt-2 text-xs text-muted-foreground space-y-0.5">
                           {svc.technicianName && <p>Technician: {svc.technicianName}</p>}
                           {svc.areasServiced && <p>Areas: {svc.areasServiced}</p>}

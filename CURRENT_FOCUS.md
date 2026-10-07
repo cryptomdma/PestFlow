@@ -36,7 +36,8 @@ Pass 31 (dispatch board settings, C4.5 - the last Phase 4 row, with the owner's 
 Pass 31b on the same PR) is merged (PR #103); Pass 32 (non-financial audit coverage, C5.1a - the first
 Phase 5 row) is merged (PR #104); Pass 33 (customer-level History + Revert, C5.1b) is merged (PR #105);
 Pass 34 (billing profile on the customer screen, C5.2) is merged (PR #106); Pass 35 (agreement vocabulary,
-C5.3) is pushed, awaiting merge; **next pass: 36, UI hygiene** (C5.4). The roadmap
+C5.3) is merged (PR #107); Pass 36 (UI hygiene, C5.4) is pushed, awaiting merge; **next pass: 37, role
+profiles in Settings** (C5.6). The roadmap
 sequences every remaining item below; this file keeps the status pointer and, as its last
 section, the handoff prompt that starts the next session.
 
@@ -732,7 +733,7 @@ and History tabs keep the record - and (4) both dialogs must close when the disp
 (2) an agreement service returning to the queue on CANCEL and (3) its opportunity reading
 CONVERTED once the recycled service was placed again both pass as the agreement path's rules;
 (5) cancelling a `PENDING_SCHEDULING` service without placing it first is added to C4.3a
-(Pass 28), the queue's details link stays C5.4 (Pass 36).
+(Pass 28), the queue's details link shipped in C5.4 (Pass 36).
 
 Pass 27b (`feature/phase-4-cancel-reschedule-review`, 2026-09-25, C4.2b) merged as PR #86.
 **Cancel and Reschedule, owner review: the two defects.** (1) A CANCELED placement leaves the
@@ -759,7 +760,7 @@ disposition (filterable under CONVERTED); the one-time service's WINBACK row is 
 nothing. The rule: placement converts the open reschedule / cancel-review opportunities of the
 service it places; nothing else does. No schema change, no migration, no server code. Not
 touched: the disposition, the technician alias, the Services tab, cancelling a pending service
-outright (C4.3a, Pass 28), the queue's details link (C5.4). **No restart of `npm run dev:full` is
+outright (C4.3a, Pass 28), the queue's details link (C5.4, built in Pass 36). **No restart of `npm run dev:full` is
 needed - no server code changed, and Vite serves the new board module to the running client - but
 the board without its red cards, the two dialogs closing on completion and the deep-link toast have
 not been rendered by anyone: the repo has no browser automation and the session had no browser.**
@@ -1652,7 +1653,7 @@ the profile card's billing line, the ticket header's line - restart `npm run dev
 them. Signatures and behavior under "Shipped in Pass 34" at the end of `PLAN_ROADMAP_V2.md` Part D. **The
 owner's restart after the merge prints nothing** (no migration).
 
-Pass 35 (`feature/phase-5-agreement-vocabulary`, 2026-10-06, C5.3) pushed, awaiting merge. **Agreement
+Pass 35 (`feature/phase-5-agreement-vocabulary`, 2026-10-06, C5.3) merged as PR #107. **Agreement
 vocabulary** - the fourth Phase 5 row. **Decided (1), the list:** a new `agreement_types` table on Pass 25's
 `opportunity_categories` pattern (org-scoped, unique (org_id, key)), seeded per org with Pest control /
 Termite / Mosquito / Wildlife / Evaluation (`shared/agreement-types.ts`); `agreements.agreementType` and
@@ -1694,14 +1695,62 @@ card's "Type:" line - restart `npm run dev:full` before trying them. Signatures 
 Pass 35" at the end of `PLAN_ROADMAP_V2.md` Part D. **The owner's restart after the merge prints the
 migration once** (the five seed rows, the 17 "Annual" rows, the 11 CUSTOM rows) and nothing after.
 
-Next up: **Pass 36** — UI hygiene (`PLAN_ROADMAP_V2.md` Phase 5 table, C5.4): hyperlinks on the dispatch
-sheet, hover card, Service Details dialog, pending-queue rows, the Ticket Review list and modal and the Service
-History page (with the location the page does not show today); a details link from the pending queue (the
-dispatch Service Details dialog + the location); the `schedulingMode` badge humanized through a shared
-labeler, no auto-schedule promise (dev rule 6); the inline Make Primary removed (the contact dialog already
-has the checkbox - plus the zero-primary guard the inventory found missing); the New Service modal
-`max-w-2xl` (FB-010). No migration. Branch from `origin/main` after confirming it contains Pass 35's merge.
-The handoff prompt for Pass 36 is the last section of this file; the Pass 36 session writes the next one.
+Pass 36 (`feature/phase-5-ui-hygiene`, 2026-10-07, C5.4) pushed, awaiting merge. **UI hygiene** - the fifth
+Phase 5 row; no migration, no table, no column, no new route. **Decided (1), the link convention:** a wouter
+`<Link>` with `hover:underline` and a `link-*` test id (the Pass 11a / 14 precedent), the targets built by one
+new client module `client/src/lib/customer-links.ts` (`customerPath`, `locationPath(customerId, locationId,
+tab?)`, `stopLinkPropagation`); a service name links to the location's Services tab (`&tab=services`) - no
+`serviceId` deep link (decided against); one shared labeler, `shared/customer-label.ts`
+(`describeCustomerLabel` / `describeLocationLabel`), with `schedule.tsx`'s and `service-ticket-review.tsx`'s
+copies delegating with their own fallback words (Pass 35's precedent) and `services.tsx` reading it (its inline
+ignored `companyName`); `batch-invoice-dialog.tsx`'s copy left. **Decided (2), the surfaces:** the board card's
+name a real `<Link>` (it was a `setLocation()` button - A1 :38's "DONE"), the hover card's and the support
+card's names (stopping the slot's / the card's click), the sheet header's customer / service type / location
+(the composition rows stay plain - the edit surface), the dispatch Service Details dialog's three (its
+description reworded), the queue row's customer / location, the Ticket Review list row restructured from one
+`<button>` to a `div[role=button]` with Enter / Space so its customer / address links can nest, the modal's
+customer / service type / address block with "Open Location" a link-styled button (disabled with a title when
+no location), the Service History page's customer link and a location line it never had (plus the search).
+**Decided (3), the queue's Details:** `button-queue-details-*` opens the board's `ServiceDetailDialog` through
+`setDetailServiceId` (it resolves from `GET /api/services` - no new read); `customer-detail.tsx`'s
+`ServiceDetailModal` stays file-local, not exported. **Decided (4), the badge:** `SCHEDULING_MODES` /
+`SCHEDULING_MODE_LABELS` / `SCHEDULING_MODE_DESCRIPTIONS` / `describeSchedulingMode` ("Scheduling:
+auto-eligible") / `describeSchedulingModeLabel` / `describeSchedulingModeDetail` in `shared/agreement-types.ts`;
+the queue badge (its title = what the mode means today), the agreement card and the Settings template row read
+it, the two form selects read the labels ("Auto Eligible" → "Auto-eligible"), `routes.ts`' enum reads the list;
+no text promises auto-scheduling (the smoke asserts it; canon §9 says so). **Decided (5), Make Primary:** the
+inline button and `setPrimaryContactMutation` removed; the dialog's checkbox disabled on the current primary
+with a note; the zero-primary guard - `ContactError` 400 `CONTACT_PRIMARY_REQUIRED` (`shared/contacts.ts`) from
+`updateContact` when the location's only primary would be made non-primary (or moved - unreachable through the
+routes, whose schemas drop `locationId`), mapped by the contact PATCH and the revert route (a promotion row's
+revert is refused; the demotion row is the one to revert, and that revert promotes back); both dialog mutations
+invalidate `["/api/contacts", customerId]` (the switcher's label was stale); `POST /api/contacts/:id/set-primary`
+kept (promotes only; API callers; the same audit rows); canon §3 gained the rule. **Decided (6), the modal:**
+`max-w-2xl` (`dialog-service-form`), Edit Service too - FB-010 DONE and archived. **Decided (7), what stays:**
+FB-002 reviewed QUALIFIED (new roadmap row C3.8), FB-013 / -014 / -015 ACCEPTED (new row C4.7) - none built, by
+the owner's word; `batch-invoice-dialog.tsx` :252-253 and `opportunities.tsx` :395 noted; the queue's raw
+`status` badge (C4.7); the selection box and the move confirm. **Found and fixed:** A1 :38-42, :47, :54 and A3
+:120, :123 (drifted lines, a "DONE" that was a button, "invoice rows ABSENT" stale since Pass 11a, `sm:max-w-lg`
+for `max-w-lg`), B23, Part E item 5. Verified against the shared dev DB on PORT=5001: `npm run check` clean,
+double boot printing only the serving line with every count unchanged, **59 smoke assertions on the second run**
+(the first lost two to the test - the contact schema drops `locationId`, and psql prints a `||`-joined boolean as
+`true` - none to the code), Vite 200 on the five pages, the client lib and the three shared modules. **Not
+rendered in a browser:** every link, the Details button, the badge and its title, the review rows' keyboard
+handling, the disabled checkbox and its note, the modal width, the selects' labels - restart `npm run dev:full`
+before trying them (the server changed). Signatures and behavior under "Shipped in Pass 36" at the end of
+`PLAN_ROADMAP_V2.md` Part D. **The owner's restart after the merge prints nothing** (no migration).
+
+Next up: **Pass 37** — Role profiles in Settings (`PLAN_ROADMAP_V2.md` Phase 5 table, C5.6; B16): org-defined
+roles as permission sets - `role_profiles` + `role_profile_permissions`, the four built-in roles seeded as
+editable, cloneable profiles, users assigned a profile, `can()` reading the profile, the admin unable to remove
+`MANAGE_SETTINGS` from their own profile, every change audited. The Pass 37 inventory found the row's premise
+short: there is no users write route and no Users card in Settings (a role changes only by SQL today), the
+"no call site changes" claim does not hold as written (`can(role, p)` is keyed by the role string at 62
+`requirePermission` + 10 inline server sites, 7 storage and 2 shared sites, and 46 client lines), and one
+direct role check sits in `storage.ts` (`actorRole === "technician"`) - the handoff lays out the design choice
+and recommends one. New tables and a bootstrap seed - the copy-database recipe. Branch from `origin/main` after
+confirming it contains Pass 36's merge. The handoff prompt for Pass 37 is the last section of this file; the
+Pass 37 session writes the next one.
 
 Phase 1's ordered plan, impact analysis, conflict resolutions, and per-pass verification steps live in
 `PLAN_BILLING_V1_1_EXECUTION.md` — read it when a pass builds on a Phase 1 helper (its "Shipped in
@@ -1959,209 +2008,265 @@ pointer and that prompt.
 
 Replaced at the end of every pass (`AGENT_WORKING_AGREEMENT.md`, the end-of-pass step). The owner
 pastes it verbatim to start the next session; it is also the last thing in the finishing session's
-final message. Written 2026-10-06, after Pass 35 was pushed as
-`feature/phase-5-agreement-vocabulary`. Its ground truth came from a read-only Explore subagent's
-inventory of the working tree at the start of Pass 35 (origin/main after PR #106), plus the SQL it
-ran, with the line numbers of the two client files Pass 35 edited (customer-detail.tsx, settings.tsx)
-re-grepped after its edits; schedule.tsx, service-ticket-review.tsx and services.tsx were not touched.
-They are that tree's, so run the SQL and grep the names before trusting any claim.
+final message. Written 2026-10-07, after Pass 36 was pushed as `feature/phase-5-ui-hygiene`. Its
+ground truth came from a read-only Explore subagent's inventory of the working tree at the start of
+Pass 36 (origin/main after PR #107), plus the SQL it ran, with server/routes.ts and server/storage.ts
+re-grepped after Pass 36's edits; shared/permissions.ts, server/auth.ts, server/index.ts, the schema,
+the bootstraps and the client files it cites were not touched by Pass 36 except the five pages named in
+its record. They are that tree's, so run the SQL and grep the names before trusting any claim.
 
 ```text
-Start Pass 36 — UI hygiene (C5.4)
-(PLAN_ROADMAP_V2.md Phase 5 table, row C5.4 :412 "Hyperlinks on the dispatch sheet, hover card, Service
-Details dialog, pending-queue rows, the Ticket Review list and modal, and the Service History page; a details
-link from the pending queue (service details + location); the `schedulingMode` badge humanized ("Scheduling:
-auto-eligible") with no auto-schedule promise (dev rule 6); Make Primary moves into the contact dialog (inline
-button removed); New Service modal `max-w-2xl`. May be split across other passes that touch the same files.";
-B23 :334-337 (every name and address a hyperlink - folded into C2.1a for invoices, C5.4 for the rest); A1
-:38-42, :47, :54 and A3 :120, :123 (the inventory rows - every line citation in them has drifted, see below);
-Part E :4216 item 5 (the queue's details link is C5.4); CURRENT_FOCUS.md :735 / :762 (Pass 27 / 27b: the
-queue's details link stays C5.4); dev rule 6 AGENT_WORKING_AGREEMENT.md :60-61 ("Never add a visible button,
-tab, modal, card, or widget that is dead or misleading"). Phase order: Pass 35 (C5.3) was the fourth Phase 5
-row; this is the fifth; after it C5.6 (role profiles, Pass 37). OWNER_FEEDBACK.md: FB-010 (widen the New
-Service modal viewport) IS this row's last item - review it DONE and archive it; FB-002 (widen the Ticket
-Review viewport), FB-013 (tag tech-canceled appointments on the PENDING_SCHEDULING line), FB-014 (lock
-technician / time on Appointment Details) and FB-015 (an Add Service button on the sheet) touch the same files
-but are not this row - build only FB-010 unless I say so.) Read the CLAUDE.md docs in order first, and
-OWNER_FEEDBACK.md (its review process applies at the start and end of the session); CURRENT_FOCUS.md's last
-entries (Pass 34, Pass 35 and "Next up") are the ones that matter.
+Start Pass 37 — Role profiles in Settings (C5.6)
+(PLAN_ROADMAP_V2.md Phase 5 table, row C5.6 (grep `C5.6 (**Pass 37**)`, :424 after Pass 36's doc edits -
+the new rows C3.8 / C4.7 and B23's five added lines):"`role_profiles` + `role_profile_permissions` (org-scoped); the four built-in roles seeded as
+editable, cloneable profiles; users assigned a profile; `can()` reads the profile instead of the fixed matrix
+(`shared/permissions.ts`), so no call site changes; an admin cannot remove `MANAGE_SETTINGS` from their own
+profile; every profile change audit-logged. Interim 'manager+' answers elsewhere in this roadmap become profile
+permissions."; B16 :295-298 (the owner: "role profiles must be configurable in Settings for the production-ready
+product - org-defined roles as permission sets, not four fixed ones"; "manager+" is the interim answer until
+then); A3 :141 "Role profiles configurable in Settings | ABSENT | four fixed roles, matrix in
+shared/permissions.ts:44-86, one can() helper" (its lines have drifted - see below); Part E answer 8 (the revert
+is manager+ interim); PLAN_BILLING_V1_1.md D7 :300 (REVERT_HISTORY manager+ until C5.6) and D9 :397; canon :611
+(who may cancel is C5.6), :712, :884, :1061, :1436, :1740 ("configurable once C5.6"); dev rules 2, 6 and 10
+(AGENT_WORKING_AGREEMENT.md :57, :60-61, :66). Phase order: Pass 36 (C5.4) was the fifth Phase 5 row; this is
+the sixth; after it C5.7 (technicians are users, Pass 38 - it depends on C5.6). OWNER_FEEDBACK.md: no open item
+is this row (FB-001 / -003 / -004 / -005 / -006 / -007 / -008 / -009 / -011 / -012 / -016 / -017 are other
+surfaces; FB-002 is C3.8 and FB-013 / -014 / -015 are C4.7, reviewed in Pass 36) - review any new item at the
+start and end, build none unless I say so. Read the CLAUDE.md docs in order first, and OWNER_FEEDBACK.md (its
+review process applies at the start and end of the session); CURRENT_FOCUS.md's last entries (Pass 35, Pass 36
+and "Next up") are the ones that matter.
 
-Branch feature/phase-5-ui-hygiene from origin/main. Confirm main contains the Pass 35 merge
-(feature/phase-5-agreement-vocabulary) before branching.
+Branch feature/phase-5-role-profiles from origin/main. Confirm main contains the Pass 36 merge
+(feature/phase-5-ui-hygiene) before branching.
 
 Decide and state, in the pass:
-(1) the link convention - a wouter `<Link>` with `hover:underline` and a `data-testid="link-..."`
-(invoice-detail-dialog.tsx :334 customer / :338 location with a MapPin, payments.tsx :359, reports.tsx :104,
-invoices.tsx :277-293); the targets are `/customers/${customerId}` for a customer and
-`/customers/${customerId}?locationId=${locationId}` for a location (App.tsx :31-45 has no per-service or
-per-location route; the customer screen reads only locationId, tab and invoiceId - customer-detail.tsx :4124,
-:4142, :4127 - and `tab` is one of contacts|agreements|services|invoices|comms|opportunities|history); a
-service name links to the location's Services tab (`&tab=services`) because no serviceId deep link exists -
-recommend NOT adding one this pass; the three copies of getCustomerLabel (schedule.tsx :183-190,
-service-ticket-review.tsx :49-52, batch-invoice-dialog.tsx :52; dev rule 10) - recommend one shared labeler
-only if every surface you touch already uses one of them, else leave them and note it;
-(2) the surfaces - schedule.tsx: the board card's name is a `<button>` calling setLocation(locationHref)
-(:2134-2150; the A1 :38 "DONE" row - a navigation, not a link: no middle-click, no new tab) - recommend a
-`<Link>` while there; the hover card (:2172-2176 plain `<p>`), the support card (:2210), the dispatch sheet
-AppointmentSheet (:426; :629 customer, :630 service type, :634 location, :668 composition rows - its props
-are strings, customerId / locationId are on `appointment`), ServiceDetailDialog (:1130-1207; :1162-1163; its
-description :1156 "tied to the selected dispatch card" needs rewording once the queue opens it too), the
-pending queue row (:2305 customer, :2327 location; the row is a `div role="button"` :2289-2302, so links
-need stopPropagation like the Cancel button :2332-2342 has); service-ticket-review.tsx: the list row is ONE
-`<button>` (:632) - an `<a>` cannot nest in it; restructure to a `div role="button"` with keyboard handling
-(the queue's :2289-2302 is the pattern) before adding links at :634-635; the modal's customer :687 and
-address block :691-703, the "Open Location" Button :811 (setLocation) - a Link, or kept beside the new links
-(say which); services.tsx: the card prints `${cust.firstName} ${cust.lastName}` (:391, ignores companyName)
-and shows NO location at all - `Services()` (:321-327) fetches no locations although `/api/all-locations` is
-already used by ServiceRecordForm :124; add the location and its link;
-(3) the pending queue's details link - reuse ServiceDetailDialog via setDetailServiceId (state :1226; it
-resolves from serviceById :1400 built from GET /api/services = every service, so a pending service resolves
-with no new query) with a "Details" button that stops propagation, plus the location Link to
-`...&tab=services`; the richer ServiceDetailModal in customer-detail.tsx :3350 is file-local and not exported
-- recommend not exporting it (say so);
-(4) the schedulingMode badge - no shared labeler exists (schema.ts :230 / :445 / :499 are plain text; the
-enum is routes.ts :218 `z.enum(["AUTO_ELIGIBLE","CONTACT_REQUIRED","MANUAL"])`); recommend
-`SCHEDULING_MODES` / `describeSchedulingMode()` in shared/agreement-types.ts (Pass 35's agreement vocabulary
-module; the nearest precedent is SERVICE_SCHEDULE_STATE_LABELS in shared/appointment-disposition.ts :135-152)
-with "Scheduling: auto-eligible" / "Scheduling: contact required" / "Scheduling: manual" - no auto-schedule
-promise (canon :482: a future pool, pending until placed; no client text promises one today; the server acts
-only on CONTACT_REQUIRED, storage.ts ensureAgreementContactRequiredOpportunityTx); the raw surfaces: the queue
-badge schedule.tsx :2308, the agreement card customer-detail.tsx :2921, the Settings template row
-settings.tsx :2979; the two form selects (customer-detail.tsx :2476, settings.tsx :1340) keep "Auto Eligible /
-Contact Required / Manual" or read the shared labels (say which);
-(5) Make Primary - the contact dialog ALREADY has the checkbox (ContactDialogForm :1507; "Make primary
-contact" :1585; buildContactFormState :595 seeds isPrimary; saves via PATCH /api/contacts/:id routes.ts :1078
-/ POST :1056); the inline button :4734 calls setPrimaryContactMutation :4303 -> POST
-/api/contacts/:id/set-primary (routes.ts :1101; storage.ts setPrimaryContact :4064 - the route's only client
-caller) - remove the button; recommend keeping the route (the dialog's PATCH path demotes siblings the same
-way, storage.ts updateContact :4033) and noting it, or deleting it (say which); two risks the inventory found
-that this pass should close: (a) unchecking the current primary's box sends isPrimary:false through
-updateContact, which touches no siblings - a location with ZERO primary contacts (nothing enforces exactly
-one; a History revert of a promotion row would do the same) - recommend disabling the checkbox for the
-current primary in the dialog AND refusing the demotion server-side with a 400 code unless another contact
-of the location is primary (the revert then 400s too, which is right); (b) neither mutation invalidates
-`["/api/contacts", customerId]` (the accountContacts query :4170 feeding primaryContactNameByLocationId
-:4248), so the switcher's contact label goes stale after a primary change - invalidate it; the audit stays
-Pass 32's (auditDemotedContactsTx :4025-4030 writes one `update` per demoted former primary; the promoted
-contact gets its own `update`);
-(6) the New Service modal - customer-detail.tsx :3780 (ServicesTab :3512): the bare `<DialogContent>` on
-the next line gets ui/dialog.tsx :41's default `max-w-lg` (no `sm:` prefix - the A1 :54 row says `sm:max-w-lg`,
-wrong); `className="max-w-2xl"` like the customer-screen Service Details dialog and services.tsx :355; the
-same dialog serves Edit Service - say so; FB-010 DONE;
-(7) what stays - FB-002 / -013 / -014 / -015 (same files, not this row), the three getCustomerLabel copies if
-untouched, batch-invoice-dialog.tsx :252-253 and opportunities.tsx :395 (name-printing surfaces the row does
-not name - note them), the selection box :2238-2260 and the move confirm :2485-2502 (they name nothing).
+(1) how `can()` reads a profile - the row's "so no call site changes" does not hold as written: `can(role:
+string, permission)` (shared/permissions.ts :151-153) is synchronous and keyed by the ROLE STRING, and that
+string is passed at 62 `requirePermission(...)` route guards (server/auth.ts :109-117 runs `can(req.user.role,
+p)`), 10 inline `can(req.user!.role, …)` sites in routes.ts (:1515, :1956, :2279, :2307, :2330, :3228, :3238,
+:3532, :3553, :3574), 7 `can(actorRole, …)` sites in storage.ts (`actorRole: UserRole` typed in 11
+declarations, passed from routes.ts twelve times as `actorRole: req.user!.role as UserRole`), 2 in shared
+(field-surcharge.ts :114, service-kind.ts :207) and 46 client lines in 21 files (`can(user?.role ?? "", …)`;
+the only wrapper is `useCanOverrideExclusion()` technician-preferences.tsx :367). Two designs: (A) **the role
+string IS the profile key** - `users.role` holds the profile's key (the four built-ins keep "admin" /
+"manager" / "support" / "technician" as their keys, so no user row moves), `shared/permissions.ts` keeps
+`ROLE_PERMISSIONS` as the BUILT-IN DEFAULTS and gains a registry (`setPermissionMatrix(matrix)` /
+`getPermissionMatrix()`) that `can()` and `rolesWithPermission()` read: the server fills it at boot from the
+org's profiles and after every profile write, the client fills it from a new open read (`GET
+/api/role-profiles/matrix`, or `/api/auth/me` answering `{ ...user, matrix }`) at app start and on
+invalidation - ZERO call-site changes, as the row intends; the caveat: a process-level registry is per
+process, not per org, so with one org today it is exact and under multi-tenancy (Phase 9) the registry
+must be keyed by org and `can()` must learn the org - state it as the known limit; (B) **the user carries its
+permissions** - `req.user` and `/api/auth/me` gain `permissions: Permission[]` resolved in `deserializeUser`
+(server/auth.ts :51-62 re-reads the users row on EVERY request, so a profile change takes effect on the next
+request), `can(subject: string | { permissions }, p)` accepts either, and the ~125 call sites move to the
+subject form (mechanical, but a wide diff and the storage `actorRole` plumbing changes shape). Recommend (A)
+with the registry and the org caveat stated; if you pick (B), say so and I split the call-site sweep into
+its own commit;
+(2) the schema - the row names two tables: `role_profiles` (id, orgId, key - upper snake like
+agreement_types.key, unique (org_id, key) -, name, description, isBuiltIn, isActive, sortOrder, createdAt,
+updatedAt) and `role_profile_permissions` (profileId FK, permission text - one of `PERMISSIONS`' values,
+unique (profile_id, permission)); recommend both as the row says (a join row per permission keeps the usage
+and audit shape simple; a `text[]` column is the alternative - say if you take it); under design (A)
+`users.role` is the pointer and NO `users.role_profile_id` column is added (the key is the assignment; the
+row's "users assigned a profile" is a PATCH of `role`) - recommend that; under (B) add the FK column
+backfilled from `role`; the migration on Pass 35's `bootstrapAgreementVocabulary` pattern
+(server/agreement-bootstrap.ts :742-776: CREATE TABLE IF NOT EXISTS, the unique index, a per-org seed printed
+when inserted; register both tables in server/tenancy-bootstrap.ts TABLES_REQUIRING_ORG_ID :18-52) - seed the
+four built-in profiles per org from `ROLE_PERMISSIONS` (technician 4 / support 12 / manager 27 / admin 28
+permissions - the counts to assert), `isBuiltIn` true, and refuse deleting a built-in (rename and edit
+allowed); recommend a new `server/role-profile-bootstrap.ts` called from index.ts between auth (:90) and
+agreements (:99) so the registry is filled before any route is served;
+(3) the Settings card and the routes - **Roles** card in Settings (MANAGE_SETTINGS; the read open like every
+list): rows with name / key / built-in / active / permission count / users on it; Add (the key derived from
+the name as agreement types derive theirs - `deriveAgreementTypeKey`'s shape), Edit (name, description, the
+permission checklist with human labels - there are NONE today: add `PERMISSION_LABELS` and
+`describePermission()` to shared/permissions.ts, 28 entries), **Clone** (a copy with a new name - the row's
+"cloneable"), Deactivate (refused while users hold it - 409 `ROLE_PROFILE_IN_USE`, Pass 35's in-use rule);
+routes `GET /api/role-profiles[?includeInactive=true]` (open, each with `userCount` and its permissions),
+`POST`, `PATCH /:id`, `POST /:id/clone`, no DELETE (405) - MANAGE_SETTINGS, strict bodies, 400 codes for an
+unknown permission / a taken key / a blank name, 404 NOT_FOUND; and the **users write route the row
+presupposes and the code lacks**: `PATCH /api/users/:id { role }` (MANAGE_SETTINGS; the role must be an
+ACTIVE profile key of the org; today only `GET /api/users` exists, routes.ts :1604, open to every role -
+keep it open, the switcher and the assignee select read it) with a **Users** card (or a Users column on the
+Roles card) assigning a profile - recommend a small Users card listing name / email / profile select /
+status, no create / password flows (those are the auth bootstrap's, server/auth-bootstrap.ts, and not this
+row);
+(4) the two guards - (a) the row's: an admin cannot remove `MANAGE_SETTINGS` from their OWN profile (the
+profile `req.user.role` names) - 409 `ROLE_PROFILE_SELF_LOCKOUT` on the PATCH, and the same code on `PATCH
+/api/users/:id` when the acting user moves THEMSELVES to a profile without MANAGE_SETTINGS; (b) recommend
+also refusing to leave the org with NO active profile holding MANAGE_SETTINGS at all (409
+`ROLE_PROFILE_LAST_SETTINGS_MANAGER`) - without it one admin can lock the org out through another admin's
+profile; say if you decline (b);
+(5) audit - `role_profile` joins AuditEntityType (shared/audit.ts :41-57, 16 members) with `created` /
+`update` (the permission set as a sorted array in the snapshots, so the History diff names what moved) and a
+dedicated `role_profile_cloned` action (the clone's `created` row naming the source) or plain `created` (say
+which; recommend plain `created` with `clonedFrom` in the after), and `user` joins it for the assignment
+(`update` with `role` before / after on the users row - the first `user` entity rows ever; there is no
+`account` precedent to copy, the entity is new); neither revertable (recommend - a permission change is undone
+by hand with the card; add neither to REVERTABLE_AUDIT_ENTITY_TYPES :416-424);
+(6) the one direct role check - storage.ts :4801 `context?.actorRole === "technician"` (Pass 29's
+`SERVICE_INSTRUCTIONS_LOCKED`: a technician may edit only the instructions of a service they added) must
+become a permission or every custom profile is "not a technician" and skips the lock: recommend a new
+`EDIT_ANY_SERVICE_INSTRUCTIONS` held by support / manager / admin in the seed (the matrix gains a 29th
+permission; the technician profile does not hold it), checked with `can()`, so a cloned field profile
+inherits the lock;
+(7) the refusal copy that names roles - `rolesWithPermission()` (:156-158) prints role NAMES in refusal text
+at 8 server / shared sites and 2 client sites, and 17 "Admins manage … / Only an admin can change …" strings
+sit in settings.tsx (:2122, 2151, 2215, 2239, 2640, 2666, 2697, 2738, 2895; :2283, 2439, 2469, 2498, 2529,
+3048, 3147, 3174 - re-grep) with 6 "a manager or (an) admin" strings elsewhere (customer-detail.tsx :2387,
+:3078, :3082; schedule.tsx :658; payments.tsx :198; collect-payment-dialog.tsx :260): under profiles those
+go stale the moment a profile is renamed or a custom one holds the permission. Recommend: `rolesWithPermission`
+reads the registry and returns profile NAMES (so the existing refusal sentences stay true), and the 23 fixed
+strings become one shared phrase from it ("Roles that may: Admin" / "a role with Manage Settings") - a
+mechanical sweep; or leave the strings and note them (say which);
+(8) the client's permission read - with design (A) the client needs the matrix before the first `can()`:
+recommend `useAuth()` (client/src/hooks/use-auth.ts :5-13, the `/api/auth/me` query) to call
+`setPermissionMatrix()` from the `/api/auth/me` payload (the server attaches the org's matrix to the user
+there - one read, no race), invalidated by the Roles card's mutations through the existing
+`invalidate*Views` pattern; `can()` with an EMPTY registry falls back to the built-in defaults so nothing is
+blank during the first render;
+(9) what the pass does NOT do - the "manager+ until C5.6" surfaces (REVERT_HISTORY, CONFIRM_CASH_PAYMENT,
+ISSUE_INVOICE_PREFINALIZATION, REOPEN_TICKET_OTHER, ASSIGN_SALE_CREDIT, ADJUST_PRICE_AGREEMENT, EDIT_TICKET…)
+need NO code change: they are already permissions, and a profile that holds one gets it - the pass updates the
+docs' "manager+ until C5.6" wording to "a profile holding X" (the list is in the Pass 37 inventory §6);
+the ungated writes the roadmap defers to C5.6 (the service / appointment cancel and disposition routes.ts
+~:2027 / :2487-2637, the opportunity categories ~:1788, the agreement templates POST / PATCH, the customer-data
+edits, the money reads ~:927) are NOT gated in this pass unless you say so - gating is a product decision per
+route (recommend: leave them, list them under C5.8 as the roadmap already does, and say so); `technicians.userId`
+stays the C5.7 bridge; no password / invite flows; PLAN_BILLING_V1.md §0.3's "own only" production value and
+"partial" Manage Settings are not modeled (say so).
 
-Ground truth today (line numbers from the working tree at the end of Pass 35; they drift, the names do not;
-the inventory came from a read-only Explore subagent at the start of Pass 35 on origin/main after PR #106,
-with customer-detail.tsx and settings.tsx re-grepped after Pass 35's edits; schedule.tsx,
-service-ticket-review.tsx and services.tsx were not touched by Pass 35):
-- client/src/App.tsx :31-45 the routes (`/customers`, `/customers/:id`, `/schedule`, `/tech`,
-  `/service-ticket-review`, `/services`, `/opportunities`, `/invoices`, `/payments`, `/communications`,
-  `/reports`, `/settings`). Deep links elsewhere: `/schedule?appointmentId=&date=` (payments.tsx :382,
-  invoice-detail-dialog.tsx :401-407), `/schedule?serviceId=` selects a pending service (schedule.tsx :1223),
-  `/service-ticket-review?recordId=` (services.tsx :435, invoice-detail-dialog.tsx :446-452).
-- customer-detail.tsx (4810 lines): urlLocationId :4124, openInvoiceId :4127, requestedTab :4142;
-  buildContactFormState :595; ContactDialogForm :1507 (checkbox :1585); the contact dialog :4668 ("Edit
-  Contact" / "Add Contact"); accountContacts :4170; primaryContactNameByLocationId :4248;
-  setPrimaryContactMutation :4303; the Make Primary button :4734; the agreement card's raw schedulingMode
-  :2921; the AgreementForm scheduling select :2476; ServiceDetailModal :3350; ServicesTab :3512; the New
-  Service DialogTrigger :3780 (the bare DialogContent follows); a "Service Details" <h3> inside AgreementForm
-  :2499 (unrelated).
-- schedule.tsx (2516 lines): getCustomerLabel :183, getLocationLabel :192, AppointmentSheet :426 (Sheet
-  :613-971; :629 / :630 / :634 / :668; technician select :830-864, Scheduled Start / End :870-896, Lock
-  switches :915-930 - FB-014's surface; the add block `sheet-add-service` :751-822 - FB-015's),
-  ServiceDetailDialog :1130 (DialogContent `sm:max-w-lg` :1152; description :1156; :1162-1163),
-  detailServiceId state :1226, `/api/services/pending` query :1250, serviceById :1400, the board card
-  :2134-2153, the hover card :2172-2176, the support card :2210, the selection box :2238-2260, the Pending
-  Dispatch Queue card :2262-2350 (row :2289-2302; :2305 customer / :2306 raw status badge / :2308 raw
-  schedulingMode badge / :2327 location / Cancel :2332-2342), the move confirm :2485-2502, ServiceDetailDialog
-  mounted :2504-2513; wouter import :3 (useLocation, useSearch - no Link). Server: routes.ts :1665 ->
-  storage.getPendingServices (PENDING_SCHEDULING only).
-- service-ticket-review.tsx (903 lines): getCustomerLabel :49-52; page container `p-4 sm:p-6 space-y-5` :557;
-  list rows :624-654 (the `<button>` :632 with `md:grid-cols-[1.3fr_1fr_1fr_1fr_auto]`; customer :634; address
-  :635; type :638); modal :658-846 (DialogContent :659 `sm:max-w-3xl`; customer :687; type :688;
-  block-review-address :691-703; Open Location :811); wouter import :3 (no Link).
-- services.tsx (448 lines): Services() :321-327 (no locations query); the card :381-443 (customer :391; the
-  ticket Link :435); ServiceRecordForm uses /api/all-locations :124; the New Service Record dialog :355
-  (`max-w-2xl`); Link imported :35.
-- settings.tsx (3205 lines): the template form scheduling select :1340 (default :1154); the template row's
-  raw defaultSchedulingMode :2979.
-- shared: no schedulingMode labeler anywhere (schema.ts :230 services.scheduling_mode nullable, :445
-  agreements NOT NULL default MANUAL, :499 templates' default); shared/appointment-disposition.ts :135-152
-  SERVICE_SCHEDULE_STATE_LABELS / resolveServiceScheduleState (the precedent); shared/agreement-types.ts
-  (Pass 35) holds the agreement vocabulary (units, types) and is where a scheduling-mode labeler belongs.
-  Generated services copy the agreement's mode (storage.ts generateServiceForAgreement).
-- Contacts: routes.ts POST /api/contacts :1056, PATCH :1078, set-primary :1101-1109; storage.ts createContact
-  :4002 (primary when asked or when the location's first), auditDemotedContactsTx :4025, updateContact :4033
-  (demotes siblings when isPrimary true; touches none when false), setPrimaryContact :4064; `contact` is
-  revertable (shared/audit.ts REVERTABLE_AUDIT_ENTITY_TYPES) with no primary guard (locations have one in
-  describeAuditRevertability: "A location is not made non-primary by a revert").
-- ui/dialog.tsx :41 default `max-w-lg`.
-- UI_STANDARDIZATION_BRIEF.md has no link / badge / width convention (:14-15 location-first clarity, :23-24
-  truthful states, :62-71 one visual language for lists, :78 "Quick links are okay if they are real.", :97
-  "Do not introduce buttons or tabs that are not wired."); the code precedent in (1) is the convention.
-- DB today (run the SQL, never trust a doc's data claim): services 110 (COMPLETED 70, SCHEDULED 25,
-  CANCELLED 15, PENDING_SCHEDULING 0 - the queue is EMPTY, so the row, the badge and the details link need a
-  fixture: POST /api/services with status PENDING_SCHEDULING and source MANUAL on a fixture location);
-  services.scheduling_mode AUTO_ELIGIBLE 21 / MANUAL 12 / NULL 77; appointments 126 (SCHEDULED 34,
-  IN_PROGRESS 3, COMPLETED 55, CANCELED 34); agreements 25 (17 ACTIVE / 8 CANCELLED; scheduling_mode
-  AUTO_ELIGIBLE 17, MANUAL 8, no CONTACT_REQUIRED); agreement_templates 3 (default_scheduling_mode
-  AUTO_ELIGIBLE on all three); contacts 16 (11 primary, 5 not; 14 locations: 11 with exactly one primary, 3
-  with no contacts at all - none with contacts but no primary); audit_logs 240 before Pass 35's smoke (its
-  rows were deleted; the contact rows are one contact's created / update / reverted; the owner's own use
-  since may have added rows - count by entity_type, action). After Pass 35 merges and the owner restarts:
-  agreement_types has 6 rows (the five seeds and ANNUAL), agreements.agreement_type is ANNUAL ×16 / NULL ×9,
-  and no agreement or template row carries CUSTOM.
-- Docs versus code, found by the inventory and left for you: A1 :38 cites schedule.tsx:998-1012 and says DONE
-  (it is :2134-2150 and a `<button>`, not a Link); A1 :39 cites :220-225, 370-371, 1036 (sheet :629-634,
-  hover card :2172-2173, dialog :1162-1163); A1 :40 cites service-ticket-review.tsx:486, 538, 546 and Open
-  Location :648 (list :634-635, modal :687-703, :811) and "batch rows plain at :695" (they left that file in
-  Pass 13 - batch-invoice-dialog.tsx :252-253); A1 :41 cites services.tsx:386 (:391) and ServicesTab
-  customer-detail.tsx:3123 (:3512); A1 :42 "invoice rows ABSENT" is stale (Pass 11a: invoices.tsx :277-293,
-  invoice-detail-dialog.tsx :334-338); A1 :47 cites :4338 and ContactDialogForm :1146 (:4734; :1507, the
-  checkbox :1585); A1 :54 cites :3045 and `sm:max-w-lg` (:3780; `max-w-lg`); A3 :123 cites schedule.tsx:1097
-  (:2308); row :412 names a "Service Details dialog" without a file (two exist: schedule.tsx :1130 and
-  customer-detail.tsx :3350's modal, already on the customer screen); row :412's "Make Primary moves into
-  the contact dialog" - the checkbox is already there, the work is the inline button's removal plus the
-  zero-primary guard. Fix the ones your pass touches; list the rest.
-- Docs to carry: the C5.4 row (mark done with the as-built); A1 :38-42, :47, :54 and A3 :120, :123; B23
-  :334-337; Part E :4216 item 5; CURRENT_FOCUS.md :735 / :762 and the head status paragraph; OWNER_FEEDBACK.md
-  FB-010 (DONE, archived) and a review line on any other item whose surface you touched; a "Shipped in Pass
-  36" record; CURRENT_FOCUS's Pass 36 entry and "Next up" (phase order: Pass 37, C5.6 role profiles - its spec
-  is its row in the Phase 5 table :413 and B16; say so and write that handoff unless I say otherwise).
+Ground truth today (line numbers from the working tree at the end of Pass 36; they drift, the names do not;
+the inventory came from a read-only Explore subagent at the start of Pass 36 on origin/main after PR #107, with
+server/routes.ts and server/storage.ts re-grepped after Pass 36's edits; shared/permissions.ts, server/auth.ts,
+server/index.ts, shared/schema.ts, shared/users.ts, shared/audit.ts, the bootstraps and the client files below
+were not touched by Pass 36 except the pages named in its record):
+- shared/permissions.ts (158 lines): `UserRole` :1 ("admin" | "manager" | "support" | "technician");
+  `PERMISSIONS` :3-89 - 28 permissions (POST_SERVICE_TICKET :4, FINALIZE_TICKET :5, REOPEN_TICKET :6,
+  EDIT_TICKET :13, REOPEN_TICKET_OTHER :19, ADJUST_PRICE_NON_AGREEMENT :20, ADJUST_PRICE_AGREEMENT :21,
+  ADD_FIELD_SURCHARGE :27, GENERATE_INVOICE :28, ISSUE_INVOICE_PREFINALIZATION :32, SEND_INVOICE :33,
+  VOID_INVOICE :34, ISSUE_CREDIT_MEMO :35, ASSIGN_INVOICE_LOCATION :40, ASSIGN_SALE_CREDIT :46,
+  ASSIGN_OPPORTUNITY :56, OVERRIDE_TECHNICIAN_EXCLUSION :62, REVERT_HISTORY :71, TAKE_PAYMENT_FIELD :74,
+  APPLY_PAYMENT :77, CONFIRM_PAYMENT :79, CONFIRM_CASH_PAYMENT :81, VOID_PAYMENT :83, REFUND_PAYMENT :84,
+  WAIVE_CANCELLATION_FEE :85, VIEW_COST_MARGIN_LTV :86, VIEW_PRODUCTION_VALUE :87, MANAGE_SETTINGS :88);
+  `Permission` :91; `ROLE_PERMISSIONS` :98-149 (not exported; technician :99-104 = 4, support :105-118 = 12,
+  manager :119-147 = 27 - everything but MANAGE_SETTINGS -, admin :148 = all 28); `can()` :151-153
+  (`ROLE_PERMISSIONS[role]?.has(p) ?? false`); `rolesWithPermission()` :156-158. Never checked anywhere:
+  POST_SERVICE_TICKET, VIEW_COST_MARGIN_LTV. Server / shared only: REOPEN_TICKET, ADJUST_PRICE_NON_AGREEMENT,
+  ADD_FIELD_SURCHARGE, ISSUE_INVOICE_PREFINALIZATION, WAIVE_CANCELLATION_FEE, VIEW_PRODUCTION_VALUE.
+- server/auth.ts: `serializeUser` :47-49 stores the user id only; `deserializeUser` :51-62 re-reads the users
+  row through `userStorage.getUser` on every request (a role change is live on the next request; status is
+  NOT re-checked, so an inactive user's live session survives); `requireAuth` :85; `attachOrgStorage` :97-105
+  (reads `req.user.orgId`); `requirePermission(permission)` :109-117 (`can(req.user.role, p)` else 403);
+  `POST /api/auth/login` :120-135 (passport LocalStrategy :27-45 rejects status != active); `GET /api/auth/me`
+  :147-153 returns `req.user` (the users row minus passwordHash :15, :22-25: id, orgId, names, email, role,
+  status). server/index.ts :93 `app.use("/api", requireAuth, attachOrgStorage)`; boot order: orgs :85, tenancy
+  :89, `bootstrapAuth` :90, `setupAuth` :91, agreements :99, tenancy again :110, audit :112, seed :116.
+- server/routes.ts (post-Pass 36): `requirePermission` imported :33, 62 uses (MANAGE_SETTINGS 29,
+  GENERATE_INVOICE 10, APPLY_PAYMENT 5, CONFIRM_PAYMENT / FINALIZE_TICKET / ISSUE_CREDIT_MEMO / SEND_INVOICE /
+  VIEW_PRODUCTION_VALUE 2 each, ASSIGN_INVOICE_LOCATION / EDIT_TICKET / REFUND_PAYMENT / REOPEN_TICKET /
+  REVERT_HISTORY (:1509) / TAKE_PAYMENT_FIELD / VOID_INVOICE / VOID_PAYMENT 1 each); `getAuditActor` :84-94
+  records `{ userId, actorLabel }` and no role; the inline `can()` sites above; `GET /api/users` :1604 (the ONLY
+  users route; `storage.getUsers()` storage.ts :4651 returns role and status); "C5.6 decides who may" comments
+  at ~:927-928 (money reads), ~:1343, ~:1483, ~:1788 (opportunity categories), ~:1991 / ~:2027 (service cancel),
+  ~:2487 / ~:2549 / ~:2559 / ~:2637 (appointment cancel), ~:3498 (aging read) - re-grep "C5.6".
+- server/storage.ts (post-Pass 36): `type DbReader` :356; `AuditActor` :419; `recordAuditLogTx` :2201,
+  `auditCreatedTx` :2225, `auditChangeTx` :2234, `auditDeletedTx` :2251 (all private); the direct role check
+  :4801 (`context?.actorRole === "technician"`); `createAgreementType` :5941 (the CRUD + audit precedent for
+  a settings table; `updateAgreementType` / `mergeAgreementTypes` follow); `userStorage` :14384 (getUser,
+  getUserByEmail, createUser - the last has no caller); `actorRole` appears 32 times.
+- shared/schema.ts: `users` :1320-1331 (id, orgId, firstName, lastName, email `.unique()`, passwordHash, `role`
+  text NOT NULL default "admin" :1327, status, createdAt, updatedAt; NO roleProfileId); `insertUserSchema`
+  :1424; `User` / `InsertUser` / `UserSummary` ~:1514-1517. shared/users.ts: `ROLE_LABELS` :20-25,
+  `describeUserRole` :27-29 (the only role labels; read by settings.tsx's technician "Linked user" select
+  ~:1003 and the assignment-rule assignee select ~:1770). shared/audit.ts: `AuditEntityType` :41-57 (16; no
+  `user`, no `role_profile`), `AuditAction` :174-211 (37, last `agreement_type_merged`),
+  `REVERTABLE_AUDIT_ENTITY_TYPES` :416-424 (7), :166 "manager+ until C5.6".
+- server/auth-bootstrap.ts: the four seeded logins - admin@heritage.local created :39-47 when the table is
+  empty, manager@ / support@ / tech@ :8-12 and :51-58 with ON CONFLICT DO NOTHING, password `ChangeMe123!`
+  :6; server/seed.ts seeds no users. Precedents: server/agreement-bootstrap.ts `bootstrapAgreementVocabulary`
+  :742 (CREATE TABLE :744-755, unique index :756, per-org seed :758-776), server/service-scheduling-bootstrap.ts
+  `bootstrapOpportunityTaxonomy` :656 (called :357); server/tenancy-bootstrap.ts `TABLES_REQUIRING_ORG_ID`
+  :18-52 (33 tables; agreement_types :33, users :50).
+- Client: client/src/hooks/use-auth.ts (43 lines) queries `/api/auth/me` :5-13 and returns `user` - no
+  permission helper, no `useCan`; `can(` lines per file: invoice-detail-dialog 7, location-ledger-panel 10,
+  customer-detail 7, service-ticket-review 4, invoice-on-finalize-prompt 2, and 1 each in
+  apply-location-balance-prompt, batch-invoice-dialog, collect-payment-dialog, customer-history-sheet,
+  field-added-badge, initial-charge-due-prompt, invoice-document-actions, record-payment-dialog,
+  service-completion-dialog (:331 also passes `actorRole: user?.role` to `resolveFieldSurchargeGate`),
+  technician-preferences, invoices, opportunities, payments, schedule, settings (`canManageSettings` :1891,
+  37 uses - Pass 35's "admin-only" Agreement Types card is this, with the fallback copy
+  `text-agreement-types-admin-only` :2895), technician-work; `rolesWithPermission` text at
+  service-completion-dialog.tsx ~:318 and service-ticket-review.tsx ~:283; no `role === "admin"` / `isAdmin`
+  anywhere on the client; app-sidebar and App.tsx gate nothing on role; the five admin-only test ids
+  (`text-service-types-admin-only`, `text-billing-profile-templates-admin-only`, `text-zones-admin-only`,
+  `text-assignment-admin-only`, `text-agreement-types-admin-only`).
+- DB today (run the SQL, never trust a doc's data claim): users 4 - admin / manager / support / technician one
+  each, all active, org 71e445ab… (the only organization); `users` columns id, first_name, last_name, email,
+  password_hash, role (default 'admin'), status, created_at, updated_at, org_id NOT NULL; indexes users_pkey,
+  `users_email_uidx` on lower(email) (the schema's `.unique()` is not what the DB has), users_org_id_idx; 49
+  public tables, no role_profiles / role_* table; technicians 2 (Austin Lowe, John Doe), 0 with user_id;
+  audit_logs 241 with no `user` or `role_profile` rows; session 34 (the smoke logins; shared with the owner).
+  After Pass 36 merges and the owner restarts: nothing changes in the DB (no migration).
+- Docs versus code, found by the inventory and left for you: A3 :141 cites "matrix in
+  shared/permissions.ts:44-86, one can() helper" (the matrix is :98-149, `PERMISSIONS` :3-89, `can()` :151-153,
+  and `rolesWithPermission` :156-158 is a second helper with 10 call sites); the C5.6 row's "so no call site
+  changes" (see decision 1) and its unlisted precondition (no users write route, no Users card); the row does
+  not mention the direct role check storage.ts :4801; CURRENT_FOCUS.md's Pass 35 handoff cited the C5.6 row as
+  ":413" (it was :417, and is :424 after Pass 36's doc edits); PLAN_BILLING_V1.md §0.3 :98-126 lists
+  "own only" (technician production value) and "partial" (manager Manage Settings) that the matrix does not
+  represent; shared/schema.ts :1325 declares `email .unique()` but the DB has only the lower(email) index.
+  Fix the ones your pass touches; list the rest.
+- Docs to carry: the C5.6 row (mark done with the as-built); A3 :141; B16 :295-298 (record the build); every
+  "manager+ until C5.6" / "C5.6 makes it a profile permission" line (the inventory §6 lists them: roadmap
+  :194, :331, :656, :1022, :1259, :1376, :1481, :1544, :2808, :3039, :3093, :3158, :3204, :3365, :3375,
+  :3555-3556, :3568, :3976 (was :3969), :4102, :4264 (was :4257), :4313, :4319 and Part E answer 8 at :4455 -
+  the unmarked ones are pre-Pass-36 lines, re-grep; CURRENT_FOCUS :76,
+  :117, :236, :375, :500, :638, :723, :929, :1200, :1428, :1723; canon :611, :712, :884, :1061, :1436, :1740;
+  PLAN_BILLING_V1_1.md :58, :300, :397, :421) - reword to "a profile holding X (the built-in manager and admin
+  profiles do)"; canon §16 User (the role field and the profile); PROJECT_MAP.md if a new bootstrap file lands;
+  a "Shipped in Pass 37" record; CURRENT_FOCUS's Pass 37 entry and "Next up" (phase order: Pass 38, C5.7
+  technicians are users - its spec is its row in the Phase 5 table and canon §16's note; say so and write that
+  handoff unless I say otherwise).
 
-Build per C5.4: (1) shared - the schedulingMode list and labeler; (2) client - the links on the named
-surfaces (the board card to a Link, the hover card, the support card, the dispatch sheet, ServiceDetailDialog,
-the pending-queue rows, the Ticket Review list and modal, Service History with the location added), the
-queue's Details button, the badge humanized on the three raw surfaces, the inline Make Primary removed with
-the zero-primary guard (the dialog's checkbox disabled for the current primary) and the switcher
-invalidation, the New Service modal `max-w-2xl`; (3) server - the demotion refusal only (no new route, no
-table, no column, no migration); (4) docs as above. Not touched: FB-002 / -013 / -014 / -015 beyond their
-shared surfaces, batch-invoice-dialog.tsx and opportunities.tsx (note only), a serviceId deep link, exporting
-ServiceDetailModal, the set-primary route's removal unless you decide it.
+Build per C5.6: (1) shared - `PERMISSION_LABELS` / `describePermission()`, the registry (or the subject form)
+in shared/permissions.ts, `shared/role-profiles.ts` (the key derivation, the error codes, the seed from
+ROLE_PERMISSIONS), the audit entity members; (2) schema + bootstrap - the two tables, the per-org seed of the
+four built-ins, tenancy registration, the registry filled at boot; (3) server - the role-profile routes
+(list / create / edit / clone / no delete), `PATCH /api/users/:id { role }`, the self-lockout and the
+in-use / last-settings-manager refusals, the audit rows, the direct role check converted, the registry refreshed
+on every write; (4) client - the Roles card (rows, Add / Edit with the permission checklist, Clone, Deactivate),
+the Users card with the profile select, `useAuth` filling the registry, the role-name copy sweep as decided;
+(5) docs as above. Not touched: the deferred ungated routes (unless you say so), password / invite flows, the
+technicians merge (C5.7), PLAN_BILLING_V1.md §0.3's unmodeled nuances.
 
 Environment: Node 24.21.0, npm run dev:full (restart it before manually testing), DEV_NOTES.md for the DB
-backup / restore, the copy-database recipe and the PowerShell traps, gh logged in so the session can open
-the PR. Verify on PORT=5001 as the previous passes did: this pass has NO migration (no table, no column, no
-seed row) - verify against the shared dev DB under the owner's port-5000 server (Passes 31-34 did; USE_COPY
-unset in boot.sh); the previous session's scratchpad (C:/Users/Austin/AppData/Local/Temp/claude/c--Dev-PestFlow/
-<session>/scratchpad - the newest holds patch.cjs (absolute === FILE paths), boot.sh (re-point its S= line),
-stop.sh, counts.sql (rebuilt from pg_tables in Pass 35, agreement_types included), smoke35.mts,
-replace-handoff.cjs, pass36-inventory.md) is the starting kit. In a smoke test send `Connection: close` on
-every fetch, derive the cleanup from the DB by the fixture email, and clean a hard-deleted entity's audit
-rows by the customerId its snapshots carry. npm run check; double boot (both boots print only "serving on
-port 5001" with every table count unchanged); the pass's API smoke test as all four roles (a
-PENDING_SCHEDULING fixture service on a fixture location appearing in GET /api/services/pending with its
-schedulingMode; the demotion refusal - PATCH /api/contacts/:id { isPrimary: false } on a location's only
-primary 400 with a code, nothing written; a promotion through the dialog's PATCH demoting the sibling with
-Pass 32's rows; the set-primary route's fate as decided; the labeler's pure checks through `await
-import(pathToFileURL(...))`; the fixture deleted in FK order with its rows, counts back at baseline) and a
-Vite 200 on every touched client module; state plainly what was not rendered - every link, the badge text,
-the Details button, the contact dialog's disabled checkbox and the modal width cannot be judged without a
-browser.
+backup / restore, the copy-database recipe and the PowerShell traps, gh logged in so the session can open the
+PR. Verify on PORT=5001 as the previous passes did: this pass ADDS TABLES and a per-org seed (and a users
+column under design B) - use the copy-database recipe (USE_COPY=1 in boot.sh: pg_dump, CREATE DATABASE
+pestflow_verify, restore, boot, PGDB=pestflow_verify for the smoke, DROP afterwards; rebuild counts.sql from
+pg_tables on the COPY after boot 1 so the new tables are counted); the previous session's scratchpad
+(C:/Users/Austin/AppData/Local/Temp/claude/c--Dev-PestFlow/<session>/scratchpad - find the kit with `grep -l
+smoke36 */scratchpad/*`, not by mtime; it holds patch.cjs (absolute === FILE paths), boot.sh (re-point its S=
+line), stop.sh, counts.sql, smoke36.mts, replace-handoff.cjs, pass37-inventory.md) is the starting kit. In a
+smoke test send `Connection: close` on every fetch, derive the cleanup from the DB by the fixture email, and
+clean a hard-deleted entity's audit rows by the customerId its snapshots carry. npm run check; double boot
+(boot 1 prints the two tables and the four seed rows per org, boot 2 prints only "serving on port 5001" with
+every table count unchanged); the pass's API smoke test as all four roles (the seeded matrix equal to
+ROLE_PERMISSIONS for every permission and role - a parity check through `await import(pathToFileURL(...))` of
+shared/permissions.ts against GET /api/role-profiles; the list open to every role, the writes 403 for tech /
+support / manager; a clone of the support profile with REVERT_HISTORY added, a fixture user (insert by SQL with
+a known password hash, or reuse tech@heritage.local and restore its role in the finally) assigned to it, the
+revert route 403 → 200 on the NEXT request without re-login; the self-lockout 409 on the admin's own profile
+and on the admin's own assignment; the in-use 409 and, if built, the last-settings-manager 409; a built-in's
+delete 405 / rename 200; the audit rows (`role_profile` created / update with the permission arrays, `user`
+update with role before / after); the converted instructions lock still 403 for the technician profile and
+for a clone of it; the fixture profile and user rows deleted, counts back at baseline) and a Vite 200 on every
+touched client module; state plainly what was not rendered - the Roles and Users cards, the permission
+checklist, the clone form and every refusal toast cannot be judged without a browser.
 
 Working agreement as always: one pass, one branch, update CURRENT_FOCUS and the roadmap's pass table at the
 end, replace the handoff prompt at the end of CURRENT_FOCUS.md with the one for the next pass (phase order:
-Pass 37, C5.6, unless I say otherwise), push, open the PR and stop. I merge.
+Pass 38, C5.7, unless I say otherwise), push, open the PR and stop. I merge.
 ```

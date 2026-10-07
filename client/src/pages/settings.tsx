@@ -49,7 +49,7 @@ import {
   type DispatchViewInterval,
 } from "@shared/dispatch-board";
 import { DEFAULT_BILLING_DEFAULTS, describeBillingType, type BillingDefaults } from "@shared/billing-profile-defaults";
-import { AGREEMENT_UNITS, AGREEMENT_UNIT_LABELS, describeAgreementCadence, describeAgreementTerm, describeAgreementTypeUsage, deriveAgreementTypeKey, type AgreementTypeUsage } from "@shared/agreement-types";
+import { AGREEMENT_UNITS, AGREEMENT_UNIT_LABELS, SCHEDULING_MODES, SCHEDULING_MODE_LABELS, describeAgreementCadence, describeAgreementTerm, describeAgreementTypeUsage, describeSchedulingMode, deriveAgreementTypeKey, type AgreementTypeUsage } from "@shared/agreement-types";
 import { invalidateAuditViews } from "@/lib/invalidate-audit-views";
 import { describeInvoiceTerms } from "@shared/invoice-detail";
 import { isOnList, matchListEntry } from "@shared/material-lists";
@@ -1335,11 +1335,9 @@ function AgreementTemplateForm({
       <div className="space-y-1.5">
         <Label>Scheduling Mode</Label>
         <Select value={form.defaultSchedulingMode} onValueChange={(value) => setForm((prev) => ({ ...prev, defaultSchedulingMode: value }))}>
-          <SelectTrigger><SelectValue /></SelectTrigger>
+          <SelectTrigger data-testid="select-template-scheduling-mode"><SelectValue /></SelectTrigger>
           <SelectContent>
-            <SelectItem value="AUTO_ELIGIBLE">Auto Eligible</SelectItem>
-            <SelectItem value="CONTACT_REQUIRED">Contact Required</SelectItem>
-            <SelectItem value="MANUAL">Manual</SelectItem>
+            {SCHEDULING_MODES.map((mode) => <SelectItem key={mode} value={mode}>{SCHEDULING_MODE_LABELS[mode]}</SelectItem>)}
           </SelectContent>
         </Select>
       </div>
@@ -2976,7 +2974,7 @@ export default function Settings() {
                           {template.internalCode && <Badge variant="outline" className="text-xs">{template.internalCode}</Badge>}
                         </div>
                         <p className="text-xs text-muted-foreground mt-0.5">
-                          {formatTemplateRecurrence(template)} | {formatTemplateTerm(template)} | {template.defaultSchedulingMode || "MANUAL"} | {billingPlan?.name || "No billing plan"} | {serviceType?.name || "No service type"}
+                          {formatTemplateRecurrence(template)} | {formatTemplateTerm(template)} | <span data-testid={`text-template-scheduling-${template.id}`}>{describeSchedulingMode(template.defaultSchedulingMode || "MANUAL")}</span> | {billingPlan?.name || "No billing plan"} | {serviceType?.name || "No service type"}
                         </p>
                         <p className="text-xs text-muted-foreground mt-0.5">
                           Cancellation: {cancellationPolicy ? `${cancellationPolicy.name} (${formatCancellationFee(cancellationPolicy)})` : "No policy assigned"}

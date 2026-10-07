@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { useLocation, useSearch } from "wouter";
+import { Link, useLocation, useSearch } from "wouter";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -29,6 +29,8 @@ import { ServiceReportActions } from "@/components/service-report-actions";
 import { FieldAddedBadge, MarkFieldReviewedButton } from "@/components/field-added-badge";
 import { resolveReviewNav, type ReviewNavStep } from "@/lib/review-queue-nav";
 import { formatCents } from "@shared/money";
+import { describeCustomerLabel } from "@shared/customer-label";
+import { customerPath, locationPath, stopLinkPropagation } from "@/lib/customer-links";
 import { describeSurcharge } from "@shared/field-surcharge";
 import { can, PERMISSIONS, rolesWithPermission } from "@shared/permissions";
 import { REOPEN_REASON_OTHER, REOPEN_REASON_OTHER_LABEL, describeReopenReason, isOtherReopenReason, type ReopenTicketRequest } from "@shared/ticket-reopen";
@@ -46,9 +48,9 @@ function formatDateInputValue(date: Date) {
   return `${year}-${month}-${day}`;
 }
 
+// Pass 36 (C5.4): delegates to the shared labeler (development rule 10) with this page's fallback.
 function getCustomerLabel(customer?: Customer, location?: Location) {
-  const fullName = `${customer?.firstName || ""} ${customer?.lastName || ""}`.trim();
-  return fullName || customer?.companyName || location?.name || "Location";
+  return describeCustomerLabel(customer, location, "Location");
 }
 
 function formatDuration(minutes: number | null | undefined) {
@@ -629,10 +631,31 @@ export default function ServiceTicketReview() {
             const serviceType = serviceTypeById.get(record.serviceTypeId || service?.serviceTypeId || "");
             const technician = record.technicianId ? technicianById.get(record.technicianId) : undefined;
             return (
-              <button key={record.id} type="button" onClick={() => openRecordFromQueue(record.id)} className="grid w-full gap-3 rounded-md border px-3 py-3 text-left transition-colors hover:bg-muted/20 md:grid-cols-[1.3fr_1fr_1fr_1fr_auto]">
-                <div>
-                  <p className="font-medium">{getCustomerLabel(customer, location)}</p>
-                  <p className="text-xs text-muted-foreground">{location ? [location.address, location.city, location.state].filter(Boolean).join(", ") : "Location unavailable"}</p>
+              // Pass 36 (C5.4; B23): the row carries links now, so it is a div with the button role
+              // (an <a> cannot nest in a <button>) - the pending queue row's shape (schedule.tsx,
+              // Pass 28); Enter / Space open the ticket as the click does, and the links stop the
+              // row's click.
+              <div
+                key={record.id}
+                role="button"
+                tabIndex={0}
+                onClick={() => openRecordFromQueue(record.id)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    openRecordFromQueue(record.id);
+                  }
+                }}
+                className="grid w-full cursor-pointer gap-3 rounded-md border px-3 py-3 text-left transition-colors hover:bg-muted/20 md:grid-cols-[1.3fr_1fr_1fr_1fr_auto]"
+                data-testid={`row-review-ticket-${record.id}`}
+              >
+                <div className="min-w-0">
+                  <Link href={customerPath(record.customerId)} className="block font-medium hover:underline" onClick={stopLinkPropagation} data-testid={`link-review-customer-${record.id}`}>{getCustomerLabel(customer, location)}</Link>
+                  {location ? (
+                    <Link href={locationPath(record.customerId, location.id)} className="block text-xs text-muted-foreground hover:underline" onClick={stopLinkPropagation} data-testid={`link-review-location-${record.id}`}>{[location.address, location.city, location.state].filter(Boolean).join(", ")}</Link>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">Location unavailable</p>
+                  )}
                 </div>
                 <div>
                   <p className="text-sm">{serviceType?.name || "Service"}</p>
@@ -649,7 +672,7 @@ export default function ServiceTicketReview() {
                 </div>
                 <Badge variant={statusBadgeVariant(record)}>{statusLabel(record)}</Badge>
                 {record.followUpRequired ? <Badge className="bg-red-600 text-white hover:bg-red-600">Follow-up</Badge> : null}
-              </button>
+              </div>
             );
           })}
         </CardContent>
@@ -683,21 +706,23 @@ export default function ServiceTicketReview() {
                     sits beside the identity rather than under it, so the card
                     is three columns of content instead of one column and a badge. */}
                 <div className="grid gap-3 sm:grid-cols-[1.2fr_1fr_auto] sm:items-start">
-                  <div>
-                    <p className="font-medium">{getCustomerLabel(selectedCustomer ?? undefined, selectedLocation ?? undefined)}</p>
-                    <p className="text-sm text-muted-foreground">{serviceTypeById.get(selectedRecord.serviceTypeId || selectedService?.serviceTypeId || "")?.name || "Service"}</p>
+                  {/* Pass 36 (C5.4; B23): the customer, the service type (to the location's Services tab -
+                      no per-service deep link exists) and the address block are links. */}
+                  <div className="min-w-0">
+                    <Link href={customerPath(selectedRecord.customerId)} className="block font-medium hover:underline" data-testid="link-review-modal-customer">{getCustomerLabel(selectedCustomer ?? undefined, selectedLocation ?? undefined)}</Link>
+                    <Link href={locationPath(selectedRecord.customerId, selectedLocation?.id, "services")} className="block text-sm text-muted-foreground hover:underline" data-testid="link-review-modal-service">{serviceTypeById.get(selectedRecord.serviceTypeId || selectedService?.serviceTypeId || "")?.name || "Service"}</Link>
                     <p className="text-xs text-muted-foreground">{selectedService?.agreementId ? "Agreement service" : "Non-agreement service"}</p>
                   </div>
                   <div className="flex items-start gap-2 text-sm" data-testid="block-review-address">
                     <MapPin className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
                     {selectedLocation ? (
-                      <div>
+                      <Link href={locationPath(selectedRecord.customerId, selectedLocation.id)} className="block hover:underline" data-testid="link-review-modal-location">
                         {selectedLocation.name && selectedLocation.name !== getCustomerLabel(selectedCustomer ?? undefined, selectedLocation) ? (
                           <p className="font-medium">{selectedLocation.name}</p>
                         ) : null}
                         <p>{selectedLocation.address}</p>
                         <p className="text-muted-foreground">{[selectedLocation.city, selectedLocation.state].filter(Boolean).join(", ")} {selectedLocation.zip}</p>
-                      </div>
+                      </Link>
                     ) : (
                       <p className="text-muted-foreground">Location unavailable</p>
                     )}
@@ -808,7 +833,16 @@ export default function ServiceTicketReview() {
               ) : null}
               <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-between">
                 <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center">
-                  <Button type="button" variant="outline" onClick={() => selectedLocation && setLocation(`/customers/${selectedRecord.customerId}?locationId=${selectedLocation.id}`)}>Open Location</Button>
+                  {/* Pass 36 (C5.4): a real link (middle-click, a new tab) rather than a button calling
+                      setLocation, kept as the footer's action beside the header's links; disabled, and
+                      saying why, when the ticket has no location. */}
+                  {selectedLocation ? (
+                    <Button variant="outline" asChild>
+                      <Link href={locationPath(selectedRecord.customerId, selectedLocation.id)} data-testid="link-review-open-location">Open Location</Link>
+                    </Button>
+                  ) : (
+                    <Button type="button" variant="outline" disabled title="This ticket has no location">Open Location</Button>
+                  )}
                   {/* Pass 22 (C3.5): the customer-facing report of this ticket -
                       Open / Download, rendered on the first request and stored
                       until the ticket's content is written again. */}
