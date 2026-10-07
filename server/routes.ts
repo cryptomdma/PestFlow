@@ -20,10 +20,17 @@ import {
 import { normalizePhone } from "@shared/phone";
 import { OPPORTUNITY_ASSIGNEE_ME, OPPORTUNITY_ASSIGNEE_UNASSIGNED, OPPORTUNITY_SOURCES, OPPORTUNITY_WORK_TYPES } from "@shared/opportunities";
 import { MAX_ZONE_NAME_LENGTH } from "@shared/zones";
+import {
+  AGREEMENT_TYPE_DESCRIPTION_MAX_LENGTH,
+  AGREEMENT_TYPE_ERROR_CODES,
+  AGREEMENT_TYPE_KEY_MAX_LENGTH,
+  AGREEMENT_TYPE_LABEL_MAX_LENGTH,
+  AGREEMENT_UNITS,
+} from "@shared/agreement-types";
 import { ZodError, z } from "zod";
 import type { Request } from "express";
 import { requirePermission } from "./auth";
-import { AppointmentCrewError, AppointmentDispositionError, BillingDefaultsError, BillingProfileError, DispatchBoardSettingsError, DraftInvoiceDecisionRequiredError, HistoryRevertError, OpportunityAssignmentError, PlacementRefusedError, PrefinalizationIssueError, ServiceCompositionError, ServiceKindError, StatementRefusedError, TechnicianPreferenceError, TicketEditError, TicketLockedError, TicketReopenError, VisitBillingDraftError } from "./storage";
+import { AgreementTypeError, AppointmentCrewError, AppointmentDispositionError, BillingDefaultsError, BillingProfileError, DispatchBoardSettingsError, DraftInvoiceDecisionRequiredError, HistoryRevertError, OpportunityAssignmentError, PlacementRefusedError, PrefinalizationIssueError, ServiceCompositionError, ServiceKindError, StatementRefusedError, TechnicianPreferenceError, TicketEditError, TicketLockedError, TicketReopenError, VisitBillingDraftError } from "./storage";
 import { HISTORY_REVERT_CODES, type RevertableAuditEntityType } from "@shared/audit";
 import {
   MAX_EXCLUSION_OVERRIDE_REASON_LENGTH,
@@ -562,7 +569,37 @@ export async function registerRoutes(
     notes: z.string().nullable().optional(),
   });
   const agreementStatusSchema = z.enum(["ACTIVE", "PAUSED", "CANCELLED"]);
-  const recurrenceUnitSchema = z.enum(["MONTH", "QUARTER", "YEAR", "CUSTOM"]);
+  // Pass 35 (C5.3): one unit vocabulary for the term and the recurrence on
+  // agreements and templates - DAY | WEEK | MONTH | QUARTER | YEAR
+  // (shared/agreement-types.ts). CUSTOM, which meant days, is refused since
+  // the bootstrap rewrote every row carrying it to DAY.
+  const recurrenceUnitSchema = z.enum(AGREEMENT_UNITS);
+  // Pass 35: the agreement type on an agreement / template is a KEY of the
+  // org's settings-managed list - a string here (the list is the office's,
+  // not an enum), checked against the ACTIVE types by the storage writers
+  // (400 AGREEMENT_TYPE_UNKNOWN). Null is "no type". The list's own schemas
+  // are strict: a `key` on a PATCH (fixed once created) or anything unknown
+  // is refused rather than dropped.
+  const agreementTypeKeySchema = z.string().trim().min(1).max(AGREEMENT_TYPE_KEY_MAX_LENGTH).nullable().optional();
+  const agreementTypeCreateSchema = z.object({
+    label: z.string().trim().min(1).max(AGREEMENT_TYPE_LABEL_MAX_LENGTH),
+    key: z.string().trim().min(1).max(AGREEMENT_TYPE_KEY_MAX_LENGTH).optional(),
+    description: z.string().trim().max(AGREEMENT_TYPE_DESCRIPTION_MAX_LENGTH).nullable().optional(),
+    isActive: z.boolean().optional(),
+    sortOrder: z.number().int().optional(),
+  }).strict();
+  const agreementTypeUpdateSchema = z.object({
+    label: z.string().trim().min(1).max(AGREEMENT_TYPE_LABEL_MAX_LENGTH).optional(),
+    description: z.string().trim().max(AGREEMENT_TYPE_DESCRIPTION_MAX_LENGTH).nullable().optional(),
+    isActive: z.boolean().optional(),
+    sortOrder: z.number().int().optional(),
+  }).strict();
+  const agreementTypeMergeSchema = z.object({ intoId: z.string().trim().min(1) }).strict();
+  const respondAgreementTypeError = (res: any, e: unknown): boolean => {
+    if (!(e instanceof AgreementTypeError)) return false;
+    res.status(e.status).json({ code: e.code, message: e.message });
+    return true;
+  };
   const cancellationFeeTypeSchema = z.enum(["NONE", "FLAT", "PERCENT_CONTRACT", "PERCENT_REMAINING", "MANUAL"]);
   const cancellationEffectiveDateModeSchema = z.enum(["IMMEDIATE", "END_OF_TERM", "CUSTOM"]);
   const agreementCancellationPolicySchema = insertAgreementCancellationPolicySchema.omit({
@@ -715,6 +752,7 @@ export async function registerRoutes(
     }
   };
   const agreementTemplateBaseSchema = insertAgreementTemplateSchema.extend({
+    defaultAgreementType: agreementTypeKeySchema,
     defaultInitialChargeType: initialChargeTypeSchema,
     defaultInitialChargeAmountMode: initialChargeAmountModeSchema,
     defaultInitialChargeCents: initialChargeIntSchema,
@@ -751,6 +789,7 @@ export async function registerRoutes(
   }).partial().superRefine(refineTemplateInitialCharge);
   const agreementBaseSchema = insertAgreementSchema.extend({
     status: agreementStatusSchema,
+    agreementType: agreementTypeKeySchema,
     termUnit: recurrenceUnitSchema,
     recurrenceUnit: recurrenceUnitSchema,
     schedulingMode: agreementSchedulingModeSchema,
@@ -1477,6 +1516,7 @@ export async function registerRoutes(
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
       if (e instanceof HistoryRevertError) return respondHistoryRevertError(res, e);
+      if (respondAgreementTypeError(res, e)) return;
       res.status(400).json({ message: e.message });
     }
   });
@@ -2119,6 +2159,61 @@ export async function registerRoutes(
     res.json(data);
   });
 
+  // Pass 35 (C5.3): agreement types - Settings reference data
+  // (shared/agreement-types.ts). The read is open (the two dropdowns and the
+  // agreement card read it, inactive included so a row carrying a retired key
+  // still names itself); the writes are MANAGE_SETTINGS like every other
+  // settings write (the card's controls hide for everyone else). No DELETE:
+  // retire (PATCH isActive false - 409 AGREEMENT_TYPE_IN_USE while any
+  // agreement or template carries the key) or merge (every agreement and
+  // template on the source moves to the target, each with its own audit row,
+  // the source retired).
+  app.get("/api/agreement-types", async (req, res) => {
+    const includeInactive = req.query.includeInactive === "true";
+    res.json(await req.storage.getAgreementTypes(includeInactive));
+  });
+
+  app.post("/api/agreement-types", requirePermission(PERMISSIONS.MANAGE_SETTINGS), async (req, res) => {
+    try {
+      const validated = agreementTypeCreateSchema.parse(req.body);
+      const data = await req.storage.createAgreementType(validated, getAuditActor(req));
+      res.status(201).json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      if (respondAgreementTypeError(res, e)) return;
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.patch("/api/agreement-types/:id", requirePermission(PERMISSIONS.MANAGE_SETTINGS), async (req, res) => {
+    try {
+      const validated = agreementTypeUpdateSchema.parse(req.body);
+      const data = await req.storage.updateAgreementType(req.params.id, validated, getAuditActor(req));
+      if (!data) return res.status(404).json({ code: AGREEMENT_TYPE_ERROR_CODES.NOT_FOUND, message: "Agreement type not found" });
+      res.json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      if (respondAgreementTypeError(res, e)) return;
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/agreement-types/:id/merge", requirePermission(PERMISSIONS.MANAGE_SETTINGS), async (req, res) => {
+    try {
+      const validated = agreementTypeMergeSchema.parse(req.body);
+      const data = await req.storage.mergeAgreementTypes(req.params.id, validated.intoId, getAuditActor(req));
+      res.json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      if (respondAgreementTypeError(res, e)) return;
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.delete("/api/agreement-types/:id", (_req, res) => {
+    res.status(405).json({ message: "Agreement types are not deleted; retire the type, or merge it into another" });
+  });
+
   // Agreement Templates
   app.get("/api/agreement-templates", async (req, res) => {
     const data = await req.storage.getAgreementTemplates();
@@ -2132,6 +2227,7 @@ export async function registerRoutes(
       res.status(201).json(data);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
+      if (respondAgreementTypeError(res, e)) return;
       res.status(400).json({ message: e.message });
     }
   });
@@ -2144,6 +2240,7 @@ export async function registerRoutes(
       res.json(data);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
+      if (respondAgreementTypeError(res, e)) return;
       res.status(400).json({ message: e.message });
     }
   });
@@ -2182,6 +2279,7 @@ export async function registerRoutes(
       res.status(201).json({ ...data, initialChargeDue });
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
+      if (respondAgreementTypeError(res, e)) return;
       res.status(400).json({ message: e.message });
     }
   });
@@ -2204,6 +2302,7 @@ export async function registerRoutes(
       res.json(data);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
+      if (respondAgreementTypeError(res, e)) return;
       res.status(400).json({ message: e.message });
     }
   });

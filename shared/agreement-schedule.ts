@@ -22,14 +22,19 @@ export function addMonths(dateOnly: string, months: number) {
 // arithmetic for service generation, expectedServiceCount and the billing
 // cadence, rather than a second, potentially-diverging implementation.
 //
-// Two vocabularies feed this. Service recurrence (agreements.recurrenceUnit)
-// offers MONTH | QUARTER | YEAR | CUSTOM. Billing cadence
-// (billingPlans.intervalUnit) offers DAY | WEEK | MONTH | QUARTER | YEAR - a
-// superset. DAY and WEEK had no case here and fell through to `default`,
-// silently advancing by a MONTH: a daily plan on a one-year term billed 12
-// periods instead of 365, so computeExpectedServiceCount() divided the
-// contract price by 12 and every charge was ~30x the correct amount. That was
-// unreachable until agreements could carry a plan at all (Pass 3.5).
+// One vocabulary feeds this since Pass 35 (PLAN_ROADMAP_V2.md C5.3): the
+// agreement's term and service recurrence (agreements.termUnit /
+// recurrenceUnit and the templates' defaults) and the billing cadence
+// (billingPlans.intervalUnit) all offer DAY | WEEK | MONTH | QUARTER | YEAR
+// (shared/agreement-types.ts AGREEMENT_UNITS). History: DAY and WEEK once
+// had no case here and fell through to `default`, silently advancing by a
+// MONTH - a daily plan on a one-year term billed 12 periods instead of 365,
+// so computeExpectedServiceCount() divided the contract price by 12 and
+// every charge was ~30x the correct amount; Pass 3.5 added the two cases.
+// The agreement side then offered MONTH | QUARTER | YEAR | CUSTOM, with
+// CUSTOM stepping by days here and nothing in the UI saying so; the Pass 35
+// bootstrap rewrote every CUSTOM(N) row as DAY(N) and the routes refuse
+// CUSTOM since, so there is no CUSTOM case: an unknown unit is a MONTH.
 export function advanceAgreementDate(dateOnly: string, recurrenceUnit: string, recurrenceInterval: number) {
   const step = Math.max(recurrenceInterval || 1, 1);
 
@@ -42,8 +47,6 @@ export function advanceAgreementDate(dateOnly: string, recurrenceUnit: string, r
       return addMonths(dateOnly, step * 3);
     case "YEAR":
       return addMonths(dateOnly, step * 12);
-    case "CUSTOM":
-      return addDays(dateOnly, step);
     case "MONTH":
     default:
       return addMonths(dateOnly, step);

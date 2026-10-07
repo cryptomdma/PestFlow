@@ -14,6 +14,7 @@ import {
   appointmentTechnicians,
   agreements,
   agreementTemplates,
+  agreementTypes,
   agreementCancellationPolicies,
   billingPlans,
   appSettings,
@@ -39,6 +40,7 @@ import {
   type BillingPlan, type InsertBillingPlan,
   type Agreement, type InsertAgreement,
   type AgreementTemplate, type InsertAgreementTemplate,
+  type AgreementType, type InsertAgreementType,
   type ServiceRecord, type InsertServiceRecord,
   type AppSetting,
   type Opportunity, type InsertOpportunity,
@@ -85,6 +87,17 @@ import {
   type HistoryRevertCode,
   type RevertableAuditEntityType,
 } from "@shared/audit";
+import {
+  AGREEMENT_TYPE_ERROR_CODES,
+  AGREEMENT_TYPE_LABEL_MAX_LENGTH,
+  NO_AGREEMENT_TYPE_USAGE,
+  deriveAgreementTypeKey,
+  describeAgreementTypeUsage,
+  isValidAgreementTypeKey,
+  normalizeLegacyAgreementUnit,
+  type AgreementTypeErrorCode,
+  type AgreementTypeUsage,
+} from "@shared/agreement-types";
 import { PLACEHOLDER_LOCATION_NAME, PLACEHOLDER_LOCATION_NOTE } from "./account-bootstrap";
 import { createHash } from "crypto";
 import type { InvoiceDocumentBranding, InvoiceDocumentContext, ServiceReportDocumentContext, ServiceReportMaterialLine, StatementDocumentContext, StatementDocumentParty } from "./documents/types";
@@ -531,9 +544,23 @@ const REVERT_TIMESTAMP_FIELDS: Partial<Record<RevertableAuditEntityType, string[
 // touching any of them puts back all of them.
 const AGREEMENT_INITIAL_CHARGE_FIELDS = ["initialChargeType", "initialChargeAmountMode", "initialChargeCents", "initialChargePercentBasisPoints", "initialChargeCollectedBy", "initialChargeInAdditionToPrice"];
 
+// Pass 35 (C5.3): a History row written before the unit migration may hold
+// the retired CUSTOM unit in its before; the route's enum would refuse the
+// replay as a 400, so the payload maps it the way the migration mapped the
+// rows (CUSTOM -> DAY, the same number of days). The stale check is
+// untouched: a row whose AFTER holds CUSTOM is stale anyway once the
+// migration rewrote the current row to DAY.
+const REVERT_UNIT_FIELDS: Partial<Record<RevertableAuditEntityType, string[]>> = {
+  agreement: ["termUnit", "recurrenceUnit"],
+  agreement_template: ["defaultTermUnit", "defaultRecurrenceUnit"],
+};
+
 function coerceRevertValue(entityType: RevertableAuditEntityType, field: string, value: unknown): unknown {
   if ((REVERT_TIMESTAMP_FIELDS[entityType] ?? []).includes(field)) {
     return value == null || value === "" ? null : new Date(String(value));
+  }
+  if ((REVERT_UNIT_FIELDS[entityType] ?? []).includes(field)) {
+    return normalizeLegacyAgreementUnit(value);
   }
   return value;
 }
@@ -1089,6 +1116,18 @@ export class BillingDefaultsError extends Error {
   }
 }
 
+// Pass 35 (C5.3): an agreement-type write the rules refuse - 404 an unknown
+// id, 400 a blank label / a bad or taken key / a bad merge target / a key on
+// an agreement or template that is not an active type, 409 retiring a type
+// in use (shared/agreement-types.ts AGREEMENT_TYPE_ERROR_CODES). The route
+// answers { code, message }.
+export class AgreementTypeError extends Error {
+  constructor(readonly status: 400 | 404 | 409, readonly code: AgreementTypeErrorCode, message: string) {
+    super(message);
+    this.name = "AgreementTypeError";
+  }
+}
+
 // Pass 34 (C5.2): a billing profile write the rules refuse (400 with the
 // code from shared/billing-profile-defaults.ts).
 export class BillingProfileError extends Error {
@@ -1332,6 +1371,34 @@ export interface OpportunityCategoryUpdateInput {
   label?: string;
   isActive?: boolean;
   sortOrder?: number;
+}
+
+// Pass 35 (C5.3): the agreement types' writes (shared/agreement-types.ts).
+export interface AgreementTypeInput {
+  label: string;
+  /** Upper snake case; derived from the label when absent. Fixed once created (the PATCH has no key). */
+  key?: string | null;
+  description?: string | null;
+  isActive?: boolean;
+  sortOrder?: number;
+}
+
+export interface AgreementTypeUpdateInput {
+  label?: string;
+  description?: string | null;
+  isActive?: boolean;
+  sortOrder?: number;
+}
+
+/** A list row with how many agreements and templates carry its key. */
+export type AgreementTypeWithUsage = AgreementType & AgreementTypeUsage;
+
+export interface AgreementTypeMergeResult {
+  /** The source, retired. */
+  source: AgreementType;
+  target: AgreementType;
+  agreementsMoved: number;
+  templatesMoved: number;
 }
 
 // Pass 26 (C4.1b): zones and assignment rules - Settings reference data on
@@ -1619,6 +1686,11 @@ export interface IStorage {
   createBillingPlan(data: InsertBillingPlan): Promise<BillingPlan>;
   updateBillingPlan(id: string, data: Partial<InsertBillingPlan>): Promise<BillingPlan | undefined>;
   resolveAgreementBillingPlanSnapshot(agreementId: string): Promise<Record<string, unknown> | null>;
+
+  getAgreementTypes(includeInactive?: boolean): Promise<AgreementTypeWithUsage[]>;
+  createAgreementType(data: AgreementTypeInput, actor?: AuditActor | null): Promise<AgreementType>;
+  updateAgreementType(id: string, data: AgreementTypeUpdateInput, actor?: AuditActor | null): Promise<AgreementType | undefined>;
+  mergeAgreementTypes(sourceId: string, targetId: string, actor?: AuditActor | null): Promise<AgreementTypeMergeResult>;
 
   getAgreementTemplates(): Promise<AgreementTemplate[]>;
   getAgreementTemplate(id: string): Promise<AgreementTemplate | undefined>;
@@ -5758,12 +5830,237 @@ export class DatabaseStorage implements IStorage {
     return template;
   }
 
+  // Pass 35 (PLAN_ROADMAP_V2.md C5.3; B8 / D8): the agreement types - the
+  // settings-managed "what kind of program" list (shared/agreement-types.ts).
+  // On the opportunity-category precedent (assertActiveOpportunityCategoryTx
+  // / getOpportunityCategories / updateOpportunityCategory) plus what that
+  // precedent lacks: a create (the key derived from the label, upper snake,
+  // unless the caller names one), a merge, an audit trail (`agreement_type`
+  // rows - created / update / agreement_type_merged) and the in-use rule: a
+  // type carried by any agreement (whatever its status - a cancelled one
+  // still names it) or any template cannot be retired (409
+  // AGREEMENT_TYPE_IN_USE); merge it first. Nothing deletes a row. The read
+  // answers each row with its usage so the Settings card and the merge form
+  // can say "16 agreements and 1 template" without a second read. The routes
+  // gate the writes MANAGE_SETTINGS; the read is open (the dropdowns).
+  private async agreementTypeUsageTx(reader: Pick<typeof db, "select">): Promise<Map<string, AgreementTypeUsage>> {
+    const usage = new Map<string, AgreementTypeUsage>();
+    const agreementRows = await reader
+      .select({ key: agreements.agreementType, total: count() })
+      .from(agreements)
+      .where(and(eq(agreements.orgId, this.orgId), isNotNull(agreements.agreementType)))
+      .groupBy(agreements.agreementType);
+    for (const row of agreementRows) {
+      if (!row.key) continue;
+      usage.set(row.key, { agreementCount: Number(row.total), templateCount: 0 });
+    }
+    const templateRows = await reader
+      .select({ key: agreementTemplates.defaultAgreementType, total: count() })
+      .from(agreementTemplates)
+      .where(and(eq(agreementTemplates.orgId, this.orgId), isNotNull(agreementTemplates.defaultAgreementType)))
+      .groupBy(agreementTemplates.defaultAgreementType);
+    for (const row of templateRows) {
+      if (!row.key) continue;
+      const current = usage.get(row.key) ?? { agreementCount: 0, templateCount: 0 };
+      usage.set(row.key, { ...current, templateCount: Number(row.total) });
+    }
+    return usage;
+  }
+
+  private async readAgreementTypeTx(reader: Pick<typeof db, "select">, id: string): Promise<AgreementType | undefined> {
+    const [row] = await reader.select().from(agreementTypes).where(and(eq(agreementTypes.orgId, this.orgId), eq(agreementTypes.id, id)));
+    return row;
+  }
+
+  private async nextAgreementTypeSortOrderTx(reader: Pick<typeof db, "select">): Promise<number> {
+    const [row] = await reader.select({ maxSort: max(agreementTypes.sortOrder) }).from(agreementTypes).where(eq(agreementTypes.orgId, this.orgId));
+    return Number(row?.maxSort ?? 0) + 10;
+  }
+
+  // A key named on an agreement or a template must be one of this org's
+  // ACTIVE types (400 AGREEMENT_TYPE_UNKNOWN). Runs on an insert and on a
+  // change; a row already carrying a key keeps it - and since a type in use
+  // cannot be retired, an inactive key on a row is a race, not a state. Null
+  // is "no type" and always allowed.
+  private async assertActiveAgreementTypeTx(reader: Pick<typeof db, "select">, key: string | null | undefined): Promise<void> {
+    if (!key) return;
+    const [type] = await reader
+      .select({ id: agreementTypes.id, label: agreementTypes.label, isActive: agreementTypes.isActive })
+      .from(agreementTypes)
+      .where(and(eq(agreementTypes.orgId, this.orgId), eq(agreementTypes.key, key)));
+    if (!type) {
+      throw new AgreementTypeError(400, AGREEMENT_TYPE_ERROR_CODES.UNKNOWN, `Agreement type "${key}" is not on the Settings list`);
+    }
+    if (!type.isActive) {
+      throw new AgreementTypeError(400, AGREEMENT_TYPE_ERROR_CODES.UNKNOWN, `Agreement type "${type.label}" is retired - pick an active type`);
+    }
+  }
+
+  async getAgreementTypes(includeInactive = false): Promise<AgreementTypeWithUsage[]> {
+    const rows = await db
+      .select()
+      .from(agreementTypes)
+      .where(eq(agreementTypes.orgId, this.orgId))
+      .orderBy(asc(agreementTypes.sortOrder), asc(agreementTypes.label));
+    const usage = await this.agreementTypeUsageTx(db);
+    return rows
+      .filter((row) => includeInactive || row.isActive)
+      .map((row) => ({ ...row, ...(usage.get(row.key) ?? NO_AGREEMENT_TYPE_USAGE) }));
+  }
+
+  async createAgreementType(data: AgreementTypeInput, actor?: AuditActor | null): Promise<AgreementType> {
+    const label = data.label?.trim() ?? "";
+    if (!label) {
+      throw new AgreementTypeError(400, AGREEMENT_TYPE_ERROR_CODES.LABEL_REQUIRED, "A label is required");
+    }
+    if (label.length > AGREEMENT_TYPE_LABEL_MAX_LENGTH) {
+      throw new AgreementTypeError(400, AGREEMENT_TYPE_ERROR_CODES.LABEL_REQUIRED, `A label is at most ${AGREEMENT_TYPE_LABEL_MAX_LENGTH} characters`);
+    }
+    const givenKey = data.key?.trim() ?? "";
+    const key = givenKey ? givenKey.toUpperCase() : deriveAgreementTypeKey(label);
+    if (!isValidAgreementTypeKey(key)) {
+      throw new AgreementTypeError(
+        400,
+        AGREEMENT_TYPE_ERROR_CODES.KEY_INVALID,
+        givenKey
+          ? `Key "${givenKey}" must be upper snake case - letters, digits and underscores, at most ${AGREEMENT_TYPE_LABEL_MAX_LENGTH} characters`
+          : `"${label}" derives no key - a label needs at least one letter or digit`,
+      );
+    }
+    return db.transaction(async (tx) => {
+      const [taken] = await tx
+        .select({ id: agreementTypes.id, label: agreementTypes.label })
+        .from(agreementTypes)
+        .where(and(eq(agreementTypes.orgId, this.orgId), eq(agreementTypes.key, key)));
+      if (taken) {
+        throw new AgreementTypeError(400, AGREEMENT_TYPE_ERROR_CODES.KEY_TAKEN, `Key ${key} is already taken by "${taken.label}"`);
+      }
+      const sortOrder = data.sortOrder ?? (await this.nextAgreementTypeSortOrderTx(tx));
+      const [row] = await tx
+        .insert(agreementTypes)
+        .values({ orgId: this.orgId, key, label, description: data.description?.trim() || null, isActive: data.isActive ?? true, sortOrder })
+        .returning();
+      await this.auditCreatedTx(tx, "agreement_type", row.id, row, actor);
+      return row;
+    });
+  }
+
+  async updateAgreementType(id: string, data: AgreementTypeUpdateInput, actor?: AuditActor | null): Promise<AgreementType | undefined> {
+    return db.transaction(async (tx) => {
+      const existing = await this.readAgreementTypeTx(tx, id);
+      if (!existing) {
+        return undefined;
+      }
+      const payload: Partial<InsertAgreementType> = {};
+      if (data.label !== undefined) {
+        const label = data.label.trim();
+        if (!label) {
+          throw new AgreementTypeError(400, AGREEMENT_TYPE_ERROR_CODES.LABEL_REQUIRED, "A label is required");
+        }
+        if (label.length > AGREEMENT_TYPE_LABEL_MAX_LENGTH) {
+          throw new AgreementTypeError(400, AGREEMENT_TYPE_ERROR_CODES.LABEL_REQUIRED, `A label is at most ${AGREEMENT_TYPE_LABEL_MAX_LENGTH} characters`);
+        }
+        payload.label = label;
+      }
+      if (data.description !== undefined) payload.description = data.description?.trim() || null;
+      if (data.sortOrder !== undefined) payload.sortOrder = data.sortOrder;
+      if (data.isActive !== undefined) {
+        if (!data.isActive && existing.isActive) {
+          const usage = (await this.agreementTypeUsageTx(tx)).get(existing.key);
+          if (usage && (usage.agreementCount > 0 || usage.templateCount > 0)) {
+            throw new AgreementTypeError(
+              409,
+              AGREEMENT_TYPE_ERROR_CODES.IN_USE,
+              `${describeAgreementTypeUsage(usage)} carry "${existing.label}" - merge it into another type to retire it`,
+            );
+          }
+        }
+        payload.isActive = data.isActive;
+      }
+      const [row] = await tx
+        .update(agreementTypes)
+        .set({ ...payload, updatedAt: new Date() })
+        .where(and(eq(agreementTypes.orgId, this.orgId), eq(agreementTypes.id, id)))
+        .returning();
+      if (row) {
+        await this.auditChangeTx(tx, "agreement_type", row.id, existing, row, actor);
+      }
+      return row;
+    });
+  }
+
+  // One transaction: every agreement and template on the source moves to the
+  // target - each with its own `update` row (the whole row before and after,
+  // the agreement's with its sold-by user named, so the type key reads as a
+  // field change on the agreement's own History) - then the source is
+  // retired and its `agreement_type_merged` row names the target and the
+  // counts. A direct UPDATE per row rather than updateAgreement /
+  // updateAgreementTemplate: those run their own transactions (a merge that
+  // failed half-way would leave half the rows moved), re-derive billing and
+  // regenerate services, none of which a type change touches.
+  async mergeAgreementTypes(sourceId: string, targetId: string, actor?: AuditActor | null): Promise<AgreementTypeMergeResult> {
+    return db.transaction(async (tx) => {
+      const source = await this.readAgreementTypeTx(tx, sourceId);
+      if (!source) {
+        throw new AgreementTypeError(404, AGREEMENT_TYPE_ERROR_CODES.NOT_FOUND, "Agreement type not found");
+      }
+      if (sourceId === targetId) {
+        throw new AgreementTypeError(400, AGREEMENT_TYPE_ERROR_CODES.MERGE_TARGET_INVALID, "A type cannot be merged into itself");
+      }
+      const target = await this.readAgreementTypeTx(tx, targetId);
+      if (!target) {
+        throw new AgreementTypeError(400, AGREEMENT_TYPE_ERROR_CODES.MERGE_TARGET_INVALID, "The type to merge into was not found");
+      }
+      if (!target.isActive) {
+        throw new AgreementTypeError(400, AGREEMENT_TYPE_ERROR_CODES.MERGE_TARGET_INVALID, `"${target.label}" is retired - reactivate it or merge into another type`);
+      }
+
+      const now = new Date();
+      const movedAgreements = await tx.select().from(agreements).where(and(eq(agreements.orgId, this.orgId), eq(agreements.agreementType, source.key)));
+      for (const before of movedAgreements) {
+        const [after] = await tx
+          .update(agreements)
+          .set({ agreementType: target.key, updatedAt: now, updatedByUserId: actor?.userId ?? null })
+          .where(and(eq(agreements.orgId, this.orgId), eq(agreements.id, before.id)))
+          .returning();
+        await this.auditChangeTx(tx, "agreement", before.id, await this.agreementAuditSnapshotTx(tx, before), await this.agreementAuditSnapshotTx(tx, after), actor);
+      }
+      const movedTemplates = await tx.select().from(agreementTemplates).where(and(eq(agreementTemplates.orgId, this.orgId), eq(agreementTemplates.defaultAgreementType, source.key)));
+      for (const before of movedTemplates) {
+        const [after] = await tx
+          .update(agreementTemplates)
+          .set({ defaultAgreementType: target.key, updatedAt: now })
+          .where(and(eq(agreementTemplates.orgId, this.orgId), eq(agreementTemplates.id, before.id)))
+          .returning();
+        await this.auditChangeTx(tx, "agreement_template", before.id, before, after, actor);
+      }
+      const [retired] = await tx
+        .update(agreementTypes)
+        .set({ isActive: false, updatedAt: now })
+        .where(and(eq(agreementTypes.orgId, this.orgId), eq(agreementTypes.id, source.id)))
+        .returning();
+      await this.recordAuditLogTx(tx, {
+        entityType: "agreement_type",
+        entityId: source.id,
+        action: "agreement_type_merged",
+        actor: actor ?? null,
+        before: source,
+        after: {
+          ...retired,
+          merge: { intoId: target.id, intoKey: target.key, intoLabel: target.label, agreementsMoved: movedAgreements.length, templatesMoved: movedTemplates.length },
+        },
+      });
+      return { source: retired, target, agreementsMoved: movedAgreements.length, templatesMoved: movedTemplates.length };
+    });
+  }
+
   // Pass 32 (C5.1a): org-wide, no location - the template's rows are read by
   // GET /api/audit-logs?entityType=agreement_template&entityId= (a Settings
   // surface later), never on a location's History tab.
   async createAgreementTemplate(data: InsertAgreementTemplate, actor?: AuditActor | null): Promise<AgreementTemplate> {
     const payload = this.normalizeAgreementTemplateInsert(data);
     return db.transaction(async (tx) => {
+      await this.assertActiveAgreementTypeTx(tx, payload.defaultAgreementType);
       const [template] = await tx.insert(agreementTemplates).values({ ...payload, orgId: this.orgId }).returning();
       await this.auditCreatedTx(tx, "agreement_template", template.id, template, actor);
       return template;
@@ -5776,6 +6073,9 @@ export class DatabaseStorage implements IStorage {
       const [existing] = await tx.select().from(agreementTemplates).where(and(eq(agreementTemplates.orgId, this.orgId), eq(agreementTemplates.id, id)));
       if (!existing) {
         return undefined;
+      }
+      if (payload.defaultAgreementType !== undefined && payload.defaultAgreementType !== existing.defaultAgreementType) {
+        await this.assertActiveAgreementTypeTx(tx, payload.defaultAgreementType);
       }
       const [template] = await tx.update(agreementTemplates).set({ ...payload, updatedAt: new Date() }).where(and(eq(agreementTemplates.orgId, this.orgId), eq(agreementTemplates.id, id))).returning();
       if (template) {
@@ -5803,6 +6103,7 @@ export class DatabaseStorage implements IStorage {
     const agreement = await db.transaction(async (tx) => {
       const payload = this.normalizeAgreementInsert(data, actor);
       await this.assertOrgUserTx(tx, payload.soldByUserId, "Sold-by user");
+      await this.assertActiveAgreementTypeTx(tx, payload.agreementType);
       const [createdAgreement] = await tx.insert(agreements).values({ ...payload, orgId: this.orgId }).returning();
 
       let finalAgreement = createdAgreement;
@@ -5842,6 +6143,9 @@ export class DatabaseStorage implements IStorage {
       await this.resolveBillingPlanChangeTx(tx, existingAgreement, payload);
       if (payload.soldByUserId !== undefined) {
         await this.assertOrgUserTx(tx, payload.soldByUserId, "Sold-by user");
+      }
+      if (payload.agreementType !== undefined && payload.agreementType !== existingAgreement.agreementType) {
+        await this.assertActiveAgreementTypeTx(tx, payload.agreementType);
       }
       const [updatedAgreement] = await tx.update(agreements).set({ ...payload, updatedAt: new Date() }).where(and(eq(agreements.orgId, this.orgId), eq(agreements.id, id))).returning();
       if (!updatedAgreement) {

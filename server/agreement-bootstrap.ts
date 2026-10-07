@@ -2,6 +2,7 @@ import { sql } from "drizzle-orm";
 import { db } from "./db";
 import { initialChargeSkipsFirstPeriod, resolveInitialChargeCents } from "@shared/initial-charge";
 import { advanceAgreementDate } from "@shared/agreement-schedule";
+import { AGREEMENT_TYPE_SEED, LEGACY_AGREEMENT_UNIT, deriveAgreementTypeKey } from "@shared/agreement-types";
 import { buildBillingPlanSnapshot, isScheduleBilledPlan, type BillingPlanSnapshotFields } from "@shared/billing-plan";
 
 async function columnExists(table: string, column: string): Promise<boolean> {
@@ -698,6 +699,206 @@ export async function bootstrapAgreements(): Promise<void> {
   await db.execute(sql`ALTER TABLE appointments ADD COLUMN IF NOT EXISTS source text DEFAULT 'MANUAL'`);
   await db.execute(sql`ALTER TABLE appointments ADD COLUMN IF NOT EXISTS generated_for_date date`);
   await db.execute(sql`UPDATE appointments SET source = 'MANUAL' WHERE source IS NULL`);
+
+  // Pass 35 (C5.3): the agreement vocabulary - after the tables above exist
+  // and the plan attach has run, so the per-row prints name settled rows.
+  await bootstrapAgreementVocabulary();
+}
+
+// Pass 35 (PLAN_ROADMAP_V2.md C5.3; B8 / PLAN_BILLING_V1_1.md D8): the
+// agreement vocabulary. Three guarded steps, each quiet once done, so the
+// second boot prints nothing:
+//   1. agreement_types - the settings-managed "what kind of program" list,
+//      on the opportunity_categories pattern (org-scoped, unique on
+//      (org_id, key)), seeded per org with the five keys in
+//      shared/agreement-types.ts (owner, Part E answer 9). The rows a boot
+//      inserts are printed. Unlike that fixed list, Settings adds, renames,
+//      retires and merges types afterwards.
+//   2. free text -> key (migrateLegacyAgreementTypes). agreements.
+//      agreement_type and agreement_templates.default_agreement_type were
+//      free text ("Annual" on 16 agreements and one template on the dev DB;
+//      NULL on the other 9 and 2). Every distinct value that is not already a
+//      key of the org's list becomes an entry - label = the text as typed,
+//      key derived the way Settings derives one ("Annual" -> ANNUAL) - that
+//      the office can rename or merge (the owner's answer; never silently
+//      "Pest control"), and the rows are rewritten to the key, each printed
+//      before its write. A value whose derived key already exists ("Termite"
+//      -> TERMITE) maps to that entry. NULL stays NULL: the dropdowns offer
+//      "None", and an "Untyped" entry would be a lie. Guarded by the NOT IN
+//      (keys) predicate - once rewritten, nothing matches.
+//   3. CUSTOM -> DAY (migrateCustomAgreementUnits) on the four unit columns
+//      (recurrence_unit, term_unit, default_recurrence_unit,
+//      default_term_unit). CUSTOM had always stepped by days
+//      (shared/agreement-schedule.ts advanceAgreementDate), so CUSTOM(N)
+//      becomes DAY(N) with the same interval - exact, never WEEK(1) for a 7;
+//      the office may pick WEEK afterwards. Next-service, renewal and billing
+//      dates are untouched: the arithmetic did not change. The dev DB: 9
+//      agreements (recurrence CUSTOM/1 on all nine; term CUSTOM/7 on six and
+//      CUSTOM/10 on three) and 2 templates (CUSTOM/1; CUSTOM/7). Guarded by
+//      the WHERE.
+// None of these writes goes through the storage writers, so none writes
+// audit_logs (Pass 25's mapping did not either); the printed report at the
+// owner's restart is the record.
+async function bootstrapAgreementVocabulary(): Promise<void> {
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS agreement_types (
+      id varchar PRIMARY KEY DEFAULT gen_random_uuid(),
+      org_id varchar NOT NULL,
+      key text NOT NULL,
+      label text NOT NULL,
+      description text,
+      is_active boolean NOT NULL DEFAULT true,
+      sort_order integer NOT NULL DEFAULT 0,
+      created_at timestamp NOT NULL DEFAULT now(),
+      updated_at timestamp NOT NULL DEFAULT now()
+    )
+  `);
+  await db.execute(sql`CREATE UNIQUE INDEX IF NOT EXISTS agreement_types_org_key_uidx ON agreement_types (org_id, key)`);
+
+  const orgRows = await db.execute(sql`SELECT id, name FROM organizations ORDER BY created_at, id`);
+  for (const org of orgRows.rows as Array<{ id: string; name: string }>) {
+    const inserted: string[] = [];
+    for (const seed of AGREEMENT_TYPE_SEED) {
+      const result = await db.execute(sql`
+        INSERT INTO agreement_types (org_id, key, label, sort_order)
+        VALUES (${org.id}, ${seed.key}, ${seed.label}, ${seed.sortOrder})
+        ON CONFLICT (org_id, key) DO NOTHING
+        RETURNING key
+      `);
+      if (result.rows.length) inserted.push(`${seed.key} "${seed.label}"`);
+    }
+    if (inserted.length) {
+      console.log(
+        `[agreement-bootstrap] Pass 35: agreement_types seeded for org "${org.name}" (${org.id}) - ${inserted.length} row(s): ` +
+          `${inserted.join(", ")}. Settings -> Agreement Types adds, renames, retires and merges types from here.`,
+      );
+    }
+    await migrateLegacyAgreementTypes(org);
+  }
+
+  await migrateCustomAgreementUnits();
+}
+
+interface LegacyAgreementTypeRow {
+  id: string;
+  name: string;
+  status: string | null;
+  legacy_type: string;
+}
+
+async function migrateLegacyAgreementTypes(org: { id: string; name: string }): Promise<void> {
+  const legacyAgreements = await db.execute(sql`
+    SELECT id, agreement_name AS name, status, agreement_type AS legacy_type
+    FROM agreements
+    WHERE org_id = ${org.id} AND agreement_type IS NOT NULL
+      AND agreement_type NOT IN (SELECT key FROM agreement_types WHERE org_id = ${org.id})
+    ORDER BY agreement_type, agreement_name, id
+  `);
+  const legacyTemplates = await db.execute(sql`
+    SELECT id, name, NULL AS status, default_agreement_type AS legacy_type
+    FROM agreement_templates
+    WHERE org_id = ${org.id} AND default_agreement_type IS NOT NULL
+      AND default_agreement_type NOT IN (SELECT key FROM agreement_types WHERE org_id = ${org.id})
+    ORDER BY default_agreement_type, name, id
+  `);
+  const agreementRows = legacyAgreements.rows as unknown as LegacyAgreementTypeRow[];
+  const templateRows = legacyTemplates.rows as unknown as LegacyAgreementTypeRow[];
+  if (!agreementRows.length && !templateRows.length) return;
+
+  const distinct = Array.from(new Set([...agreementRows, ...templateRows].map((row) => row.legacy_type))).sort();
+  console.log(
+    `[agreement-bootstrap] Pass 35 pre-migration report for org "${org.name}": ${agreementRows.length} agreement(s) and ${templateRows.length} template(s) carry a free-text agreement type ` +
+      `(${distinct.length} distinct value(s): ${distinct.map((value) => `"${value}"`).join(", ")}). Each distinct value becomes an entry on the Agreement Types list ` +
+      `(label as typed, key derived as Settings derives one) that the office can rename or merge; the rows are rewritten to the entry's key below, each printed before its write. NULL stays NULL.`,
+  );
+
+  const existing = await db.execute(sql`SELECT key FROM agreement_types WHERE org_id = ${org.id}`);
+  const keys = new Set((existing.rows as Array<{ key: string }>).map((row) => row.key));
+  const maxRow = (await db.execute(sql`SELECT coalesce(max(sort_order), 0) AS max_sort FROM agreement_types WHERE org_id = ${org.id}`)).rows[0] as { max_sort: number | string };
+  let nextSort = Number(maxRow?.max_sort ?? 0) + 10;
+  const keyByText = new Map<string, string>();
+  for (const text of distinct) {
+    const derived = deriveAgreementTypeKey(text) || "LEGACY";
+    if (keys.has(derived)) {
+      console.log(`[agreement-bootstrap]   "${text}" -> ${derived} (an existing entry)`);
+    } else {
+      await db.execute(sql`
+        INSERT INTO agreement_types (org_id, key, label, sort_order)
+        VALUES (${org.id}, ${derived}, ${text}, ${nextSort})
+        ON CONFLICT (org_id, key) DO NOTHING
+      `);
+      keys.add(derived);
+      console.log(`[agreement-bootstrap]   "${text}" -> ${derived} (new entry "${text}", sort ${nextSort} - rename or merge it in Settings -> Agreement Types)`);
+      nextSort += 10;
+    }
+    keyByText.set(text, derived);
+  }
+  for (const row of agreementRows) {
+    const key = keyByText.get(row.legacy_type) ?? row.legacy_type;
+    console.log(`[agreement-bootstrap]   agreement ${row.id}  "${row.name}"  ${row.status ?? ""}  "${row.legacy_type}" -> ${key}`);
+    await db.execute(sql`UPDATE agreements SET agreement_type = ${key} WHERE id = ${row.id}`);
+  }
+  for (const row of templateRows) {
+    const key = keyByText.get(row.legacy_type) ?? row.legacy_type;
+    console.log(`[agreement-bootstrap]   template ${row.id}  "${row.name}"  default "${row.legacy_type}" -> ${key}`);
+    await db.execute(sql`UPDATE agreement_templates SET default_agreement_type = ${key} WHERE id = ${row.id}`);
+  }
+}
+
+interface CustomUnitRow {
+  id: string;
+  name: string;
+  status: string | null;
+  recurrence_unit: string;
+  recurrence_interval: number;
+  term_unit: string;
+  term_interval: number;
+  next_service_date: string | null;
+}
+
+async function migrateCustomAgreementUnits(): Promise<void> {
+  const agreementRows = (await db.execute(sql`
+    SELECT id, agreement_name AS name, status, recurrence_unit, recurrence_interval, term_unit, term_interval,
+           next_service_date::text AS next_service_date
+    FROM agreements
+    WHERE recurrence_unit = ${LEGACY_AGREEMENT_UNIT} OR term_unit = ${LEGACY_AGREEMENT_UNIT}
+    ORDER BY agreement_name, id
+  `)).rows as unknown as CustomUnitRow[];
+  const templateRows = (await db.execute(sql`
+    SELECT id, name, NULL AS status, default_recurrence_unit AS recurrence_unit, default_recurrence_interval AS recurrence_interval,
+           default_term_unit AS term_unit, default_term_interval AS term_interval, NULL AS next_service_date
+    FROM agreement_templates
+    WHERE default_recurrence_unit = ${LEGACY_AGREEMENT_UNIT} OR default_term_unit = ${LEGACY_AGREEMENT_UNIT}
+    ORDER BY name, id
+  `)).rows as unknown as CustomUnitRow[];
+  if (!agreementRows.length && !templateRows.length) return;
+
+  const describeUnit = (unit: string, interval: number) =>
+    unit === LEGACY_AGREEMENT_UNIT ? `${unit}/${interval} -> DAY/${interval}` : `${unit}/${interval} (unchanged)`;
+  const countUnit = (rows: CustomUnitRow[], field: "recurrence_unit" | "term_unit") => rows.filter((row) => row[field] === LEGACY_AGREEMENT_UNIT).length;
+  console.log(
+    `[agreement-bootstrap] Pass 35 pre-migration report: CUSTOM left the agreement unit vocabulary (DAY | WEEK | MONTH | QUARTER | YEAR, shared/agreement-types.ts). ` +
+      `CUSTOM always stepped by days, so CUSTOM(N) becomes DAY(N) with the same interval - exact, never WEEK; the office may pick WEEK afterwards. ` +
+      `Agreements: ${agreementRows.length} (recurrence ${countUnit(agreementRows, "recurrence_unit")}, term ${countUnit(agreementRows, "term_unit")}); ` +
+      `templates: ${templateRows.length} (recurrence ${countUnit(templateRows, "recurrence_unit")}, term ${countUnit(templateRows, "term_unit")}). ` +
+      `Next-service, renewal and billing dates are untouched.`,
+  );
+  for (const row of agreementRows) {
+    console.log(
+      `[agreement-bootstrap]   agreement ${row.id}  "${row.name}"  ${row.status ?? ""}  recurrence ${describeUnit(row.recurrence_unit, row.recurrence_interval)}, ` +
+        `term ${describeUnit(row.term_unit, row.term_interval)}  (next service ${row.next_service_date ?? "none"} unchanged)`,
+    );
+  }
+  for (const row of templateRows) {
+    console.log(
+      `[agreement-bootstrap]   template ${row.id}  "${row.name}"  default recurrence ${describeUnit(row.recurrence_unit, row.recurrence_interval)}, ` +
+        `default term ${describeUnit(row.term_unit, row.term_interval)}`,
+    );
+  }
+  await db.execute(sql`UPDATE agreements SET recurrence_unit = 'DAY' WHERE recurrence_unit = ${LEGACY_AGREEMENT_UNIT}`);
+  await db.execute(sql`UPDATE agreements SET term_unit = 'DAY' WHERE term_unit = ${LEGACY_AGREEMENT_UNIT}`);
+  await db.execute(sql`UPDATE agreement_templates SET default_recurrence_unit = 'DAY' WHERE default_recurrence_unit = ${LEGACY_AGREEMENT_UNIT}`);
+  await db.execute(sql`UPDATE agreement_templates SET default_term_unit = 'DAY' WHERE default_term_unit = ${LEGACY_AGREEMENT_UNIT}`);
 }
 
 // The plan the owner chose for every agreement that predated the constraint

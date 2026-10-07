@@ -35,8 +35,8 @@ crew, C4.4) is merged (PR #100); Pass 30b (the owner's two additions to it, C4.4
 Pass 31 (dispatch board settings, C4.5 - the last Phase 4 row, with the owner's FB-021 board layout as
 Pass 31b on the same PR) is merged (PR #103); Pass 32 (non-financial audit coverage, C5.1a - the first
 Phase 5 row) is merged (PR #104); Pass 33 (customer-level History + Revert, C5.1b) is merged (PR #105);
-Pass 34 (billing profile on the customer screen, C5.2) is pushed, awaiting merge; **next pass: 35,
-Agreement vocabulary** (C5.3). The roadmap
+Pass 34 (billing profile on the customer screen, C5.2) is merged (PR #106); Pass 35 (agreement vocabulary,
+C5.3) is pushed, awaiting merge; **next pass: 36, UI hygiene** (C5.4). The roadmap
 sequences every remaining item below; this file keeps the status pointer and, as its last
 section, the handoff prompt that starts the next session.
 
@@ -1615,7 +1615,7 @@ line - restart `npm run dev:full` before trying them. Signatures and behavior un
 at the end of `PLAN_ROADMAP_V2.md` Part D. **The owner's restart after the merge prints nothing** (no
 migration).
 
-Pass 34 (`feature/phase-5-billing-profile-customer-screen`, 2026-10-05, C5.2) pushed, awaiting merge.
+Pass 34 (`feature/phase-5-billing-profile-customer-screen`, 2026-10-05, C5.2) merged as PR #106.
 **Billing profile on the customer screen** - the third Phase 5 row. **Decided (1), the pointer:**
 `billing_profiles.location_id` is the truth (canon §4, the resolver, Pass 11c); the compat read's
 `hasBillingOverride` and the two "Billing Override" badges stopped reading `locations.billing_profile_id`
@@ -1652,15 +1652,56 @@ the profile card's billing line, the ticket header's line - restart `npm run dev
 them. Signatures and behavior under "Shipped in Pass 34" at the end of `PLAN_ROADMAP_V2.md` Part D. **The
 owner's restart after the merge prints nothing** (no migration).
 
-Next up: **Pass 35** — Agreement vocabulary (`PLAN_ROADMAP_V2.md` Phase 5 table, C5.3): a
-settings-managed Agreement types list (seeded Pest control / Termite / Mosquito / Wildlife / Evaluation)
-with dropdowns on the agreement template and the agreement, the existing free text ("Annual" on 16
-agreements and one template; NULL on the rest) migrated into entries the office can rename or merge, no
-hardcoded structure list (B8); and `CUSTOM` recurrence made explicit DAY / WEEK with the `CUSTOM(N)` ->
-`DAY(N)` migration - the Pass 34 inventory found 9 agreements and 2 templates on CUSTOM, every one with
-recurrence `CUSTOM/1` and the 7 / 10 on the TERM, so the migration covers the term columns too. Branch
-from `origin/main` after confirming it contains Pass 34's merge. The handoff prompt for Pass 35 is the
-last section of this file; the Pass 35 session writes the next one.
+Pass 35 (`feature/phase-5-agreement-vocabulary`, 2026-10-06, C5.3) pushed, awaiting merge. **Agreement
+vocabulary** - the fourth Phase 5 row. **Decided (1), the list:** a new `agreement_types` table on Pass 25's
+`opportunity_categories` pattern (org-scoped, unique (org_id, key)), seeded per org with Pest control /
+Termite / Mosquito / Wildlife / Evaluation (`shared/agreement-types.ts`); `agreements.agreementType` and
+`agreementTemplates.defaultAgreementType` keep their columns and hold the type's KEY, nullable - a type is
+not required (the dropdowns offer "None"; no "Untyped" entry); the bootstrap turned the one free-text value
+"Annual" (16 agreements, the Quarterly Control template) into the entry ANNUAL "Annual" for the office to
+rename or merge - never silently Pest control - and left NULL as NULL (9 agreements, 2 templates), printed per
+row; `server/seed.ts` names the seed keys on its templates. **Decided (2), rename or merge:** Settings →
+Agreement Types with Add (the key derived from the label, upper snake, previewed; fixed once created), Edit
+(label / description / active / sort) and **Merge** (`POST /api/agreement-types/:id/merge { intoId }`: every
+agreement and template on the source moves to the target in one transaction, the source inactive); a type in
+use (any agreement whatever its status, or any template) cannot be made inactive without a merge (409
+`AGREEMENT_TYPE_IN_USE`); no DELETE (405); the writes MANAGE_SETTINGS, the card admin-only, the read open with
+each row's usage counts. **Decided (3), audit:** `agreement_type` joins `AuditEntityType` (`created` /
+`update`, never revertable) and `agreement_type_merged` joins `AuditAction` (the source's row, the after
+naming the target and the counts) PLUS one `update` per moved agreement and template with the writers' own
+snapshots (the key as a field change on the agreement's History) - direct UPDATEs inside the merge's
+transaction, not `updateAgreement`; the migration's mapping is not audited (printed at boot). **Decided (4),
+the dropdowns:** a Select over the active types plus "None" on the template form and the agreement form (the
+template's default preselected; the row's own key kept if since inactive); the type showed nowhere before and
+shows in one place now, "Type: <label>" on the agreement card. **Decided (5), CUSTOM → DAY / WEEK:** one unit
+enum `AGREEMENT_UNITS` = DAY | WEEK | MONTH | QUARTER | YEAR for all four columns; the migration rewrote
+CUSTOM(N) → DAY(N) with the same interval on 9 agreements and 2 templates (recurrence CUSTOM/1 ×9 and ×2; term
+CUSTOM/7 ×6 and ×2, CUSTOM/10 ×3 - the roadmap's "7 agreements" and "CUSTOM/7 recurrence" were wrong), exact,
+never WEEK(1) for a 7, next-service and billing dates untouched; `advanceAgreementDate` dropped its CUSTOM
+case; `addAgreementInterval` gained DAY / WEEK; the three labelers share the shared ones; billing plan
+`anchorMode`, cancellation `effectiveDateMode` and the material "Custom / Unlisted" untouched. **Decided (6),
+Revert:** a pre-migration row whose before holds CUSTOM replays as DAY (`REVERT_UNIT_FIELDS`); the dev DB's two
+`agreement|update` rows carry only `soldBy`. **Decided (7):** POST / PATCH `/api/agreement-templates` and the
+Settings Agreement Templates card stay ungated - recorded on C5.8. **Found and fixed:** the row's counts,
+CURRENT_FOCUS's Wildlife claim, A1 :61's line and seed claim, canon §9's fixed enum and `frequencyRule`, the
+schedule module's header, D8's `serviceCategory` name. Verified on the **copy-database recipe** on PORT=5001:
+`npm run check` clean, boot 1 printed the seed rows and the two per-row reports, boot 2 printed nothing with
+every count unchanged, 100 smoke assertions first run (the migrated rows, every role and refusal code, the
+merge's four audit rows, DAY(7) and WEEK(1) stepping the same seven days through the real post-and-finalize
+path, two reverts, cleanup to baseline), Vite 200 on the five touched modules. **Not rendered in a browser:**
+the Agreement Types card and its two forms, the two type dropdowns, the four unit selects, the agreement
+card's "Type:" line - restart `npm run dev:full` before trying them. Signatures and behavior under "Shipped in
+Pass 35" at the end of `PLAN_ROADMAP_V2.md` Part D. **The owner's restart after the merge prints the
+migration once** (the five seed rows, the 17 "Annual" rows, the 11 CUSTOM rows) and nothing after.
+
+Next up: **Pass 36** — UI hygiene (`PLAN_ROADMAP_V2.md` Phase 5 table, C5.4): hyperlinks on the dispatch
+sheet, hover card, Service Details dialog, pending-queue rows, the Ticket Review list and modal and the Service
+History page (with the location the page does not show today); a details link from the pending queue (the
+dispatch Service Details dialog + the location); the `schedulingMode` badge humanized through a shared
+labeler, no auto-schedule promise (dev rule 6); the inline Make Primary removed (the contact dialog already
+has the checkbox - plus the zero-primary guard the inventory found missing); the New Service modal
+`max-w-2xl` (FB-010). No migration. Branch from `origin/main` after confirming it contains Pass 35's merge.
+The handoff prompt for Pass 36 is the last section of this file; the Pass 36 session writes the next one.
 
 Phase 1's ordered plan, impact analysis, conflict resolutions, and per-pass verification steps live in
 `PLAN_BILLING_V1_1_EXECUTION.md` — read it when a pass builds on a Phase 1 helper (its "Shipped in
@@ -1900,242 +1941,227 @@ pointer and that prompt.
     it is a **historical reference only: do not cite it in new work**, and it stays off `CLAUDE.md`'s
     reading list — a stale plan sitting beside the current one is how a fresh session picks up the
     wrong instructions, which is why it was removed in the first place.
-  - **`CUSTOM` recurrence silently means "days"** `[Roadmap: Pass 35, C5.3]` — small, mechanical, worth doing before it spreads.
-    `billingPlans.intervalUnit` offers `DAY | WEEK | MONTH | QUARTER | YEAR` and (since Pass 3.5) all
-    of them step correctly with any interval count. But the **service recurrence** and **agreement
-    term** dropdowns — on both the agreement form and the agreement-template form — offer only
-    `MONTH | QUARTER | YEAR | CUSTOM`, and `advanceAgreementDate()` maps `CUSTOM` to `addDays()`. So
-    "Custom / 7" means "every 7 days" with nothing in the UI saying so, and `CUSTOM(7)` is
-    indistinguishable in behavior from `WEEK(1)`. Replace `CUSTOM` with explicit `DAY` and `WEEK`
-    options on those two dropdowns and migrate `CUSTOM(N)` → `DAY(N)`. Affects 7 agreements and 2
-    templates today, including the Wildlife Trapping Program rows, which are `CUSTOM/7` term *and*
-    recurrence — i.e. the daily-trap-check case this vocabulary was quietly already serving.
+  - ~~**`CUSTOM` recurrence silently means "days"**~~ `[Roadmap: Pass 35, C5.3]` — **Built in Pass 35**
+    (`feature/phase-5-agreement-vocabulary`, 2026-10-06). The agreement term and service recurrence
+    dropdowns (agreement form and template form) offered `MONTH | QUARTER | YEAR | CUSTOM` while
+    `billingPlans.intervalUnit` offered `DAY | WEEK | MONTH | QUARTER | YEAR`, and `advanceAgreementDate()`
+    mapped `CUSTOM` to `addDays()` - "Custom / 7" meant every 7 days with nothing saying so. Now one unit
+    vocabulary for all four columns (`shared/agreement-types.ts` `AGREEMENT_UNITS`), the route enum refuses
+    `CUSTOM`, the switch has no `CUSTOM` case, and the agreement bootstrap rewrote `CUSTOM(N)` → `DAY(N)` with
+    the same interval. This entry's data claim was wrong in two ways the Pass 34 inventory found: NINE
+    agreements (6 active, 3 cancelled) and 2 templates carried CUSTOM, not 7 and 2, and every one of them had
+    RECURRENCE `CUSTOM/1` (daily) - the 7 and the 10 sat on the TERM (`term_unit`), so the Wildlife rows were
+    not "CUSTOM/7 term *and* recurrence" and the migration covered the term columns too (recurrence
+    CUSTOM/1 → DAY/1 ×9 and ×2; term CUSTOM/7 → DAY/7 ×6 and ×2, CUSTOM/10 → DAY/10 ×3). Exact, never
+    WEEK(1) for a 7; the office may pick WEEK afterwards.
 
 ## Handoff prompt for the next session
 
 Replaced at the end of every pass (`AGENT_WORKING_AGREEMENT.md`, the end-of-pass step). The owner
 pastes it verbatim to start the next session; it is also the last thing in the finishing session's
-final message. Written 2026-10-05, after Pass 34 was pushed as
-`feature/phase-5-billing-profile-customer-screen`. Its ground truth came from a read-only Explore
-subagent's inventory of the working tree at the start of Pass 34 (origin/main after PR #105), plus the
-SQL it ran, with the line numbers of the four files Pass 34 edited (storage.ts, routes.ts,
-customer-detail.tsx, settings.tsx) re-grepped after its edits. They are that tree's, so run the SQL
-and grep the names before trusting any claim.
+final message. Written 2026-10-06, after Pass 35 was pushed as
+`feature/phase-5-agreement-vocabulary`. Its ground truth came from a read-only Explore subagent's
+inventory of the working tree at the start of Pass 35 (origin/main after PR #106), plus the SQL it
+ran, with the line numbers of the two client files Pass 35 edited (customer-detail.tsx, settings.tsx)
+re-grepped after its edits; schedule.tsx, service-ticket-review.tsx and services.tsx were not touched.
+They are that tree's, so run the SQL and grep the names before trusting any claim.
 
 ```text
-Start Pass 35 — Agreement vocabulary (C5.3)
-(PLAN_ROADMAP_V2.md Phase 5 table, row C5.3 :411 "A settings-managed **Agreement types** list (seeded Pest
-control / Termite / Mosquito / Wildlife / Evaluation) with dropdowns on template and agreement; the existing
-free text migrated into entries the office can rename or merge; no hardcoded structure list (B8). `CUSTOM`
-recurrence → explicit DAY / WEEK with the `CUSTOM(N)` → `DAY(N)` migration (7 agreements, 2 templates)";
-B8 :232-239 (D8's two dimensions, bundle is not a type, the owner's seeded list, "rename or merge"); Part E
-answer 9 :4159; A1 :61 ("Agreement Type as a dropdown | ABSENT | free-text Input at settings.tsx:1130"); :926
-(the Wildlife CUSTOM/7 terms); PLAN_BILLING_V1_1.md D8 :329-331 ("Agreement Type: two dimensions -
-`serviceCategory` ... structure ... Bundle is not an agreement type"); CURRENT_FOCUS.md :1903-1913 (the
-"CUSTOM recurrence silently means days" entry) and :1655 ("Next up"); canon §9 ServiceAgreement :454-712 -
-its Required fields :697-712 carry a fixed `agreementType (recurring | one_time | warranty | installment |
-seasonal)` enum at :703 that B8 / D8 reject, and `frequencyRule nullable` :705 where the code has
-recurrenceUnit / recurrenceInterval / termUnit / termInterval; Bundles :631. Phase order: Pass 34 (C5.2) was
-the third Phase 5 row; this is the fourth. OWNER_FEEDBACK.md: no open item covers agreement types or
-recurrence; FB-006 (Schedule Now), FB-007 (cancel reason) and FB-003 touch agreements but are not this row;
-FB-020 is C4.6, unscheduled - build it only if I say so.) Read the CLAUDE.md docs in order first, and
+Start Pass 36 — UI hygiene (C5.4)
+(PLAN_ROADMAP_V2.md Phase 5 table, row C5.4 :412 "Hyperlinks on the dispatch sheet, hover card, Service
+Details dialog, pending-queue rows, the Ticket Review list and modal, and the Service History page; a details
+link from the pending queue (service details + location); the `schedulingMode` badge humanized ("Scheduling:
+auto-eligible") with no auto-schedule promise (dev rule 6); Make Primary moves into the contact dialog (inline
+button removed); New Service modal `max-w-2xl`. May be split across other passes that touch the same files.";
+B23 :334-337 (every name and address a hyperlink - folded into C2.1a for invoices, C5.4 for the rest); A1
+:38-42, :47, :54 and A3 :120, :123 (the inventory rows - every line citation in them has drifted, see below);
+Part E :4216 item 5 (the queue's details link is C5.4); CURRENT_FOCUS.md :735 / :762 (Pass 27 / 27b: the
+queue's details link stays C5.4); dev rule 6 AGENT_WORKING_AGREEMENT.md :60-61 ("Never add a visible button,
+tab, modal, card, or widget that is dead or misleading"). Phase order: Pass 35 (C5.3) was the fourth Phase 5
+row; this is the fifth; after it C5.6 (role profiles, Pass 37). OWNER_FEEDBACK.md: FB-010 (widen the New
+Service modal viewport) IS this row's last item - review it DONE and archive it; FB-002 (widen the Ticket
+Review viewport), FB-013 (tag tech-canceled appointments on the PENDING_SCHEDULING line), FB-014 (lock
+technician / time on Appointment Details) and FB-015 (an Add Service button on the sheet) touch the same files
+but are not this row - build only FB-010 unless I say so.) Read the CLAUDE.md docs in order first, and
 OWNER_FEEDBACK.md (its review process applies at the start and end of the session); CURRENT_FOCUS.md's last
-entries (Pass 33, Pass 34 and "Next up") are the ones that matter.
+entries (Pass 34, Pass 35 and "Next up") are the ones that matter.
 
-Branch feature/phase-5-agreement-vocabulary from origin/main. Confirm main contains the Pass 34 merge
-(feature/phase-5-billing-profile-customer-screen) before branching.
+Branch feature/phase-5-ui-hygiene from origin/main. Confirm main contains the Pass 35 merge
+(feature/phase-5-agreement-vocabulary) before branching.
 
-The row, in two halves, and the fact that shapes the second: the roadmap's "7 agreements, 2 templates" is
-wrong, and the 7 is on the wrong column. The DB has NINE agreements (6 active, 3 cancelled) and 2 templates
-on `CUSTOM`, every one of them with RECURRENCE `CUSTOM/1` (daily); the 7 and the 10 sit on the TERM
-(`term_unit = 'CUSTOM'`, `term_interval` 7 or 10; the templates `default_term_unit` CUSTOM/7). Term and
-recurrence share one zod enum (routes.ts :565 `recurrenceUnitSchema = z.enum(["MONTH", "QUARTER", "YEAR",
-"CUSTOM"])`, used for defaultTermUnit / defaultRecurrenceUnit :717-747 and termUnit / recurrenceUnit
-:752-805), so the migration covers four columns, not two. Decide and state, in the pass:
-(1) the Agreement types list - recommend a new table `agreement_types` (id, orgId, key, label, description?,
-isActive, sortOrder, timestamps; unique (org_id, key)) on Pass 25's opportunity_categories pattern
-(shared/schema.ts :680; the seed in shared/opportunities.ts :38-41; the bootstrap
-server/service-scheduling-bootstrap.ts :656 `bootstrapOpportunityTaxonomy` - CREATE TABLE IF NOT EXISTS, a
-unique index, per-org INSERT ... ON CONFLICT DO NOTHING RETURNING printed, the mapped per-row UPDATE printed
-before each write, SET NOT NULL once no row is left), seeded PEST_CONTROL "Pest control" / TERMITE / MOSQUITO /
-WILDLIFE / EVALUATION (Part E answer 9); `agreements.agreementType` (schema.ts :392, free text) and
-`agreementTemplates.defaultAgreementType` (:490) keep their columns and hold the type's KEY (the
-opportunities.categoryKey shape), nullable - say whether a type becomes required (recommend not in this pass:
-9 agreements and 2 templates have none, and an "Untyped" seed entry would be a lie; the dropdown offers
-"None" and the office fills them in); the migration maps the existing free text: "Annual" (16 agreements -
-11 active, 5 cancelled - and the Quarterly Control template) becomes an entry ANNUAL "Annual" the office can
-rename or merge (NOT silently Pest control - the owner said rename or merge), NULL stays NULL, printed per
-row at boot (the Pass 25 pattern); server/seed.ts :150 / :171 / :192 seed "Residential Recurring" / "Termite
-Renewal" / "Seasonal Mosquito" on templates the dev DB does not have - map them to keys in the seed or leave
-the seed's free text to the migration (say which);
-(2) rename or merge - the Settings card (settings.tsx: the Opportunity Categories card :2418 and
-`OpportunityCategoryForm` :774 are the pattern - label / active / sort only, no create, no merge, its PATCH
-ungated at routes.ts :1756 with the comment that C5.6 decides, unaudited at storage.ts `updateOpportunityCategory`;
-note that precedent falls short of this row) gains Add (key derived from the label, upper snake), Edit (label,
-description, active, sort), and **Merge** (every agreement and template on type A moves to type B, A
-deactivated) - recommend `POST /api/agreement-types`, `PATCH /api/agreement-types/:id`, `POST
-/api/agreement-types/:id/merge { intoId }`, no DELETE (deactivate; a type in use cannot be deactivated
-without a merge - say the rule), all three writes MANAGE_SETTINGS (settings reference data, the billing
-templates' precedent from Pass 34) and the card's controls gated by `canManageSettings` :1733; the reads open;
-(3) audit - recommend `agreement_type` joins `AuditEntityType` (shared/audit.ts :34-49; Pass 32's
-auditCreatedTx / auditChangeTx pattern) with `created` / `update` / `status_changed`, and a merge writes the
-type's own row (the after naming `mergedIntoId` and the counts) PLUS one `update` per moved agreement and
-template through `updateAgreement` :5832 / `updateAgreementTemplate` :5773 (their auditChangeTx is where the
-row comes from; the agreement's snapshot is `agreementAuditSnapshotTx` :2175, the whole row with soldBy, so
-the type key shows as a field change) - or a bulk UPDATE with the type's row only; say which and why (the
-per-row cost is 16 rows for Annual on the dev DB); say whether the migration's own mapping is audited
-(recommend no: a bootstrap UPDATE bypasses the writers, as Pass 25's did, printed at boot instead);
-(4) the dropdowns - the template form (settings.tsx `AgreementTemplateForm` :1130, the "Agreement Type" Input
-:1281) and the agreement form (customer-detail.tsx: the init :551 `agreementType: agreement?.agreementType ??
-template?.defaultAgreementType ?? ""`, the payload :2041, the "Agreement Type Override" Input :2471) become a
-Select over the active types plus "None", the template's default preselected on the agreement
-(`buildAgreementInsertFromTemplate` storage.ts :3256 already copies it once at creation); where the type
-shows - nowhere today (no badge, filter, report or document reads it: say so and recommend one line on the
-agreement card, nothing more);
-(5) CUSTOM → DAY / WEEK - `recurrenceUnitSchema` becomes DAY | WEEK | MONTH | QUARTER | YEAR for all four
-columns; the migration (the agreement bootstrap; Pass 23's self-guarding pattern at
-server/agreement-bootstrap.ts :525-602 - SELECT the rows, a count report, a per-row print, guarded UPDATEs on
-both tables) rewrites `recurrence_unit = 'CUSTOM'` → DAY with the same interval (CUSTOM/1 → DAY/1 on the 9
-agreements and 2 templates) and `term_unit = 'CUSTOM'` → DAY with the same interval (CUSTOM/7 → DAY/7 on
-6 agreements and 2 templates, CUSTOM/10 → DAY/10 on 3) - DAY(N) uniformly, never WEEK(1) for 7 (exact,
-no rounding; the office may pick WEEK afterwards) - and the same for `default_term_unit` /
-`default_recurrence_unit`; `advanceAgreementDate` (shared/agreement-schedule.ts :33; DAY :37, WEEK :39
-already there, CUSTOM :45 = addDays) drops the CUSTOM case after the migration (or keeps it one pass as a
-transitional alias - recommend drop: the enum refuses it and no row carries it) and its header comment
-:25-32 ("billing offers DAY | WEEK...") is corrected; the client: the four selects (settings.tsx :1291 /
-:1309, customer-detail.tsx :2435 / :2450) offer Day / Week / Month / Quarter / Year, the three labelers
-(settings.tsx `formatTemplateRecurrence` :61 / `formatTemplateTerm` :76, customer-detail.tsx
-`formatAgreementRecurrence` :468) drop the CUSTOM→"Day" mapping, and `addAgreementInterval`
-(customer-detail.tsx :494, local-time Dates, no DAY / WEEK case - its default adds days, so WEEK(1) would
-add one day) gains both cases; the OTHER `CUSTOM`s stay - billing plan `anchorMode` (schema.ts :323,
-settings.tsx :619), cancellation `effectiveDateMode` (routes.ts :548 region, settings.tsx :1111,
-agreement-bootstrap.ts, seed.ts), the material "CUSTOM" in service-completion-dialog.tsx;
-(6) Revert - Pass 33's revert replays an agreement / template row through `updateAgreementSchema` :805 /
-`updateAgreementTemplateSchema` :747, so a pre-migration row whose before holds `CUSTOM` would 400 at the
-enum once it changes; the dev DB has 2 `agreement|update` audit rows - check whether either carries a unit
-(recommend: normalize CUSTOM→DAY in the revert's payload, or state the 400 as acceptable; say which).
-REVERT_ENTITY_STRIPPED_FIELDS (storage.ts :512) strips neither agreementType nor the units - a type key
-revert is a legitimate replay once the key is validated;
-(7) the agreement-template routes - POST / PATCH /api/agreement-templates (routes.ts :2128 / :2139) have NO
-permission gate and the Settings Agreement Templates card (:2712) is ungated; not this row (say so, leave
-them, note for C5.6 or a hygiene row) unless I say otherwise.
+Decide and state, in the pass:
+(1) the link convention - a wouter `<Link>` with `hover:underline` and a `data-testid="link-..."`
+(invoice-detail-dialog.tsx :334 customer / :338 location with a MapPin, payments.tsx :359, reports.tsx :104,
+invoices.tsx :277-293); the targets are `/customers/${customerId}` for a customer and
+`/customers/${customerId}?locationId=${locationId}` for a location (App.tsx :31-45 has no per-service or
+per-location route; the customer screen reads only locationId, tab and invoiceId - customer-detail.tsx :4124,
+:4142, :4127 - and `tab` is one of contacts|agreements|services|invoices|comms|opportunities|history); a
+service name links to the location's Services tab (`&tab=services`) because no serviceId deep link exists -
+recommend NOT adding one this pass; the three copies of getCustomerLabel (schedule.tsx :183-190,
+service-ticket-review.tsx :49-52, batch-invoice-dialog.tsx :52; dev rule 10) - recommend one shared labeler
+only if every surface you touch already uses one of them, else leave them and note it;
+(2) the surfaces - schedule.tsx: the board card's name is a `<button>` calling setLocation(locationHref)
+(:2134-2150; the A1 :38 "DONE" row - a navigation, not a link: no middle-click, no new tab) - recommend a
+`<Link>` while there; the hover card (:2172-2176 plain `<p>`), the support card (:2210), the dispatch sheet
+AppointmentSheet (:426; :629 customer, :630 service type, :634 location, :668 composition rows - its props
+are strings, customerId / locationId are on `appointment`), ServiceDetailDialog (:1130-1207; :1162-1163; its
+description :1156 "tied to the selected dispatch card" needs rewording once the queue opens it too), the
+pending queue row (:2305 customer, :2327 location; the row is a `div role="button"` :2289-2302, so links
+need stopPropagation like the Cancel button :2332-2342 has); service-ticket-review.tsx: the list row is ONE
+`<button>` (:632) - an `<a>` cannot nest in it; restructure to a `div role="button"` with keyboard handling
+(the queue's :2289-2302 is the pattern) before adding links at :634-635; the modal's customer :687 and
+address block :691-703, the "Open Location" Button :811 (setLocation) - a Link, or kept beside the new links
+(say which); services.tsx: the card prints `${cust.firstName} ${cust.lastName}` (:391, ignores companyName)
+and shows NO location at all - `Services()` (:321-327) fetches no locations although `/api/all-locations` is
+already used by ServiceRecordForm :124; add the location and its link;
+(3) the pending queue's details link - reuse ServiceDetailDialog via setDetailServiceId (state :1226; it
+resolves from serviceById :1400 built from GET /api/services = every service, so a pending service resolves
+with no new query) with a "Details" button that stops propagation, plus the location Link to
+`...&tab=services`; the richer ServiceDetailModal in customer-detail.tsx :3350 is file-local and not exported
+- recommend not exporting it (say so);
+(4) the schedulingMode badge - no shared labeler exists (schema.ts :230 / :445 / :499 are plain text; the
+enum is routes.ts :218 `z.enum(["AUTO_ELIGIBLE","CONTACT_REQUIRED","MANUAL"])`); recommend
+`SCHEDULING_MODES` / `describeSchedulingMode()` in shared/agreement-types.ts (Pass 35's agreement vocabulary
+module; the nearest precedent is SERVICE_SCHEDULE_STATE_LABELS in shared/appointment-disposition.ts :135-152)
+with "Scheduling: auto-eligible" / "Scheduling: contact required" / "Scheduling: manual" - no auto-schedule
+promise (canon :482: a future pool, pending until placed; no client text promises one today; the server acts
+only on CONTACT_REQUIRED, storage.ts ensureAgreementContactRequiredOpportunityTx); the raw surfaces: the queue
+badge schedule.tsx :2308, the agreement card customer-detail.tsx :2921, the Settings template row
+settings.tsx :2979; the two form selects (customer-detail.tsx :2476, settings.tsx :1340) keep "Auto Eligible /
+Contact Required / Manual" or read the shared labels (say which);
+(5) Make Primary - the contact dialog ALREADY has the checkbox (ContactDialogForm :1507; "Make primary
+contact" :1585; buildContactFormState :595 seeds isPrimary; saves via PATCH /api/contacts/:id routes.ts :1078
+/ POST :1056); the inline button :4734 calls setPrimaryContactMutation :4303 -> POST
+/api/contacts/:id/set-primary (routes.ts :1101; storage.ts setPrimaryContact :4064 - the route's only client
+caller) - remove the button; recommend keeping the route (the dialog's PATCH path demotes siblings the same
+way, storage.ts updateContact :4033) and noting it, or deleting it (say which); two risks the inventory found
+that this pass should close: (a) unchecking the current primary's box sends isPrimary:false through
+updateContact, which touches no siblings - a location with ZERO primary contacts (nothing enforces exactly
+one; a History revert of a promotion row would do the same) - recommend disabling the checkbox for the
+current primary in the dialog AND refusing the demotion server-side with a 400 code unless another contact
+of the location is primary (the revert then 400s too, which is right); (b) neither mutation invalidates
+`["/api/contacts", customerId]` (the accountContacts query :4170 feeding primaryContactNameByLocationId
+:4248), so the switcher's contact label goes stale after a primary change - invalidate it; the audit stays
+Pass 32's (auditDemotedContactsTx :4025-4030 writes one `update` per demoted former primary; the promoted
+contact gets its own `update`);
+(6) the New Service modal - customer-detail.tsx :3780 (ServicesTab :3512): the bare `<DialogContent>` on
+the next line gets ui/dialog.tsx :41's default `max-w-lg` (no `sm:` prefix - the A1 :54 row says `sm:max-w-lg`,
+wrong); `className="max-w-2xl"` like the customer-screen Service Details dialog and services.tsx :355; the
+same dialog serves Edit Service - say so; FB-010 DONE;
+(7) what stays - FB-002 / -013 / -014 / -015 (same files, not this row), the three getCustomerLabel copies if
+untouched, batch-invoice-dialog.tsx :252-253 and opportunities.tsx :395 (name-printing surfaces the row does
+not name - note them), the selection box :2238-2260 and the move confirm :2485-2502 (they name nothing).
 
-Ground truth today (line numbers from the working tree at the end of Pass 34; they drift, the names do not;
-the inventory came from a read-only Explore subagent at the start of Pass 34 on origin/main after PR #105,
-with the four files Pass 34 edited re-grepped after its edits):
-- shared/schema.ts: agreements :373-480 (`agreementType` :392 text nullable no default; `termUnit` :394
-  notNull default YEAR; `recurrenceUnit` :441 notNull default MONTH; the intervals beside them);
-  agreementTemplates :482-? (`defaultAgreementType` :490; `defaultTermUnit` :493; `defaultRecurrenceUnit`
-  :495); opportunityCategories :680 (key, label, isActive, sortOrder; unique (org_id, key));
-  insertAgreementSchema :1352 / insertAgreementTemplateSchema :1353 (createInsertSchema, no refinement on
-  the type - any string passes). No `serviceCategory` symbol exists anywhere (PLAN_BILLING_V1_1.md :329's
-  name); `service_types.category` is a separate free-text column (Termite 2, General 2, Rodent 1, Commercial
-  1 on the dev DB) that overlaps the proposed list - name the overlap, do not merge them.
-- shared/agreement-schedule.ts: the comment :25-32; `advanceAgreementDate(dateOnly, unit, interval)` :33 (DAY
-  :37, WEEK :39, CUSTOM :45 = addDays(step), default MONTH); `computeExpectedServiceCount` :61 (uses it for
-  the term end and the cadence). No exported unit union or list.
-- server/storage.ts (14065 lines): `normalizeAgreementInsert` :2536 (`agreementType?.trim() || null` :2549),
-  `normalizeAgreementUpdate` :2587 (:2604), `normalizeAgreementTemplateInsert` :2645,
-  `normalizeAgreementTemplateUpdate` :2671; `buildAgreementInsertFromTemplate` :3195 (:3256 copies the
-  template's default once); `resolveAgreementStartDateFromValues` :1955; `generateServiceForAgreement` :3415;
-  `advanceAgreementForCompletedService` :3553; `createAgreementTemplate` :5764 / `updateAgreementTemplate`
-  :5773 (auditChangeTx agreement_template); `createAgreement` :5802 / `updateAgreement` :5832
-  (`agreementAuditSnapshotTx` :2175); `generateAgreementServicesForLocation` :6146; the opportunity-category
-  precedent `assertActiveOpportunityCategoryTx` :5193 / `getOpportunityCategories` :5230 /
-  `updateOpportunityCategory` :5241 (label, isActive, sortOrder; no audit); REVERT_ENTITY_STRIPPED_FIELDS
-  :512. server/jobs/billing-run.ts computes the term end with `agreement.termUnit` (CUSTOM = days);
-  server/production-value-backfill.ts and server/agreement-bootstrap.ts's Pass 12 attach do too.
-- server/routes.ts (3797 lines): `recurrenceUnitSchema` :565; `agreementTemplateBaseSchema` :717 /
-  `agreementTemplateSchema` :725 / `updateAgreementTemplateSchema` :747; `agreementBaseSchema` :752 /
-  `agreementSchema` :772 / `updateAgreementSchema` :805; `createAgreementFromTemplateSchema` :820;
-  `opportunityCategoryUpdateSchema` :520 (strict) and `PATCH /api/opportunity-categories/:id` :1756 (ungated;
-  POST / DELETE answer 405); `revertPayloadSchemas` :1446; POST / PATCH /api/agreement-templates :2128 /
-  :2139 (ungated); POST / PATCH /api/agreements :2164 / :2189 (gated only on soldByUserId,
-  ASSIGN_SALE_CREDIT); the settings writes' pattern `requirePermission(PERMISSIONS.MANAGE_SETTINGS)`
-  (service types :1498-ish, zones, the billing templates since Pass 34 :1305).
-- Client: settings.tsx (2979 lines) - `formatTemplateRecurrence` :61 / `formatTemplateTerm` :76 (CUSTOM →
-  "Day"); the billing plan anchorMode CUSTOM :619 (NOT this row); `OpportunityCategoryForm` :774;
-  `AgreementTemplateForm` :1130 (the free-text "Agreement Type" Input :1281; the term / recurrence selects
-  :1283-1310 with CUSTOM at :1291 / :1309); `canManageSettings` :1733; the Opportunity Categories card :2418
-  (Edit ungated); the Agreement Templates card :2712 (Add / Edit ungated). customer-detail.tsx (4776 lines) -
-  `formatAgreementRecurrence` :468; `addAgreementInterval` :494; the agreement form's init :551 and payload
-  :2041; the selects :2435 / :2450; the "Agreement Type Override" Input :2471. opportunities.tsx :111,
-  opportunity-taxonomy-chips.tsx :46 / :55 and the rule matchers read the category list the way a type list
-  would be read.
-- shared/audit.ts :34-49 `AuditEntityType` (customer, location, contact, billing_profile,
-  billing_profile_template, invoice, invoice_line_item, service, service_record, payment, credit_memo,
-  agreement, agreement_template, opportunity, appointment; labels :197-210); no member for any reference
-  list. REVERTABLE_AUDIT_ENTITY_TYPES :398-406.
-- DB today (run the SQL, never trust a doc's data claim): agreements 25 (17 ACTIVE, 8 CANCELLED, one org);
-  `agreement_type`: Annual 16, NULL 9; agreement_templates 3 - Quarterly Control (Annual; QUARTER/1; YEAR/1),
-  Wildlife Trapping Program (NULL; CUSTOM/1; CUSTOM/7), Daily Rodent Trapping (NULL; CUSTOM/1; CUSTOM/7);
-  recurrence: CUSTOM/1 ×9, QUARTER/1 ×16; term: CUSTOM/7 ×6, CUSTOM/10 ×3, YEAR/1 ×16; the 9 CUSTOM
-  agreements: Daily Rodent 2ab3aeae / 0e504ea6 (ACTIVE, term 10), d314e8e7 (CANCELLED, 10), 366356d6
-  (CANCELLED, 7); Wildlife 6e6f03c3 / 1044779c (ACTIVE, 7), 3d2549c6 "Unit 12 Prepaid Test" / 0d5c7fb1
-  (ACTIVE, 7), 44c81fb7 (CANCELLED, 7); audit_logs 237 before Pass 34's smoke (its rows were deleted; the
-  owner's own use since may have added rows - count by entity_type, action; `agreement|update` 2, no
-  agreement_template rows); billing_profiles 2, billing_profile_templates 2, app_settings 7 (no
-  default_billing_profile_template_id row - Pass 34's smoke restored "none").
-- Docs versus code, found by the inventory and left for you: the C5.3 row :411 and CURRENT_FOCUS.md
-  :1910-1912 say "7 agreements, 2 templates" (it is 9 and 2) and that Wildlife is "CUSTOM/7 term *and*
-  recurrence" (the recurrence is CUSTOM/1; only the term is 7); A1 :61 cites settings.tsx:1130 for the Input
-  (it is :1281; :1130 is the form's declaration) and says the seed holds "Residential Recurring" (true of
-  seed.ts, not of the dev DB - the real values are Annual and NULL); canon §9 :703's fixed agreementType enum
-  contradicts B8 / D8 and the free text, and :705 `frequencyRule` is not the code's four columns; the
-  shared/agreement-schedule.ts comment :25-26 and CURRENT_FOCUS :1904-1907 say DAY and WEEK are billing-only
-  while the switch handles them and only the route enum and `addAgreementInterval` do not; PLAN_BILLING_V1_1.md
-  :329 and PLAN_ROADMAP_V2.md :233 name the dimension `serviceCategory`, the row and answer 9 say "Agreement
-  types", no such symbol exists; the opportunity-category precedent is "settings-managed" in name (no create,
-  no merge, ungated PATCH, unaudited). Fix the ones your pass touches; list the rest.
-- Docs to carry: the C5.3 row (mark done with the as-built, the true counts); A1 :61; B8 :232-239 (the
-  owner's answer, now built); :926; Part E answer 9 :4159; PLAN_BILLING_V1_1.md D8 :329-331; CURRENT_FOCUS.md
-  :1903-1913 (the CUSTOM entry - mark built) and the head status paragraph; canon §9 (:703 the enum → the
-  settings-managed list by key; :705 → the four columns; the units DAY | WEEK | MONTH | QUARTER | YEAR);
-  shared/agreement-schedule.ts :25-32; a "Shipped in Pass 35" record; CURRENT_FOCUS's Pass 35 entry and
-  "Next up" (phase order: Pass 36, C5.4 UI hygiene - its spec is its row in the Phase 5 table :412; say so
-  and write that handoff unless I say otherwise).
+Ground truth today (line numbers from the working tree at the end of Pass 35; they drift, the names do not;
+the inventory came from a read-only Explore subagent at the start of Pass 35 on origin/main after PR #106,
+with customer-detail.tsx and settings.tsx re-grepped after Pass 35's edits; schedule.tsx,
+service-ticket-review.tsx and services.tsx were not touched by Pass 35):
+- client/src/App.tsx :31-45 the routes (`/customers`, `/customers/:id`, `/schedule`, `/tech`,
+  `/service-ticket-review`, `/services`, `/opportunities`, `/invoices`, `/payments`, `/communications`,
+  `/reports`, `/settings`). Deep links elsewhere: `/schedule?appointmentId=&date=` (payments.tsx :382,
+  invoice-detail-dialog.tsx :401-407), `/schedule?serviceId=` selects a pending service (schedule.tsx :1223),
+  `/service-ticket-review?recordId=` (services.tsx :435, invoice-detail-dialog.tsx :446-452).
+- customer-detail.tsx (4810 lines): urlLocationId :4124, openInvoiceId :4127, requestedTab :4142;
+  buildContactFormState :595; ContactDialogForm :1507 (checkbox :1585); the contact dialog :4668 ("Edit
+  Contact" / "Add Contact"); accountContacts :4170; primaryContactNameByLocationId :4248;
+  setPrimaryContactMutation :4303; the Make Primary button :4734; the agreement card's raw schedulingMode
+  :2921; the AgreementForm scheduling select :2476; ServiceDetailModal :3350; ServicesTab :3512; the New
+  Service DialogTrigger :3780 (the bare DialogContent follows); a "Service Details" <h3> inside AgreementForm
+  :2499 (unrelated).
+- schedule.tsx (2516 lines): getCustomerLabel :183, getLocationLabel :192, AppointmentSheet :426 (Sheet
+  :613-971; :629 / :630 / :634 / :668; technician select :830-864, Scheduled Start / End :870-896, Lock
+  switches :915-930 - FB-014's surface; the add block `sheet-add-service` :751-822 - FB-015's),
+  ServiceDetailDialog :1130 (DialogContent `sm:max-w-lg` :1152; description :1156; :1162-1163),
+  detailServiceId state :1226, `/api/services/pending` query :1250, serviceById :1400, the board card
+  :2134-2153, the hover card :2172-2176, the support card :2210, the selection box :2238-2260, the Pending
+  Dispatch Queue card :2262-2350 (row :2289-2302; :2305 customer / :2306 raw status badge / :2308 raw
+  schedulingMode badge / :2327 location / Cancel :2332-2342), the move confirm :2485-2502, ServiceDetailDialog
+  mounted :2504-2513; wouter import :3 (useLocation, useSearch - no Link). Server: routes.ts :1665 ->
+  storage.getPendingServices (PENDING_SCHEDULING only).
+- service-ticket-review.tsx (903 lines): getCustomerLabel :49-52; page container `p-4 sm:p-6 space-y-5` :557;
+  list rows :624-654 (the `<button>` :632 with `md:grid-cols-[1.3fr_1fr_1fr_1fr_auto]`; customer :634; address
+  :635; type :638); modal :658-846 (DialogContent :659 `sm:max-w-3xl`; customer :687; type :688;
+  block-review-address :691-703; Open Location :811); wouter import :3 (no Link).
+- services.tsx (448 lines): Services() :321-327 (no locations query); the card :381-443 (customer :391; the
+  ticket Link :435); ServiceRecordForm uses /api/all-locations :124; the New Service Record dialog :355
+  (`max-w-2xl`); Link imported :35.
+- settings.tsx (3205 lines): the template form scheduling select :1340 (default :1154); the template row's
+  raw defaultSchedulingMode :2979.
+- shared: no schedulingMode labeler anywhere (schema.ts :230 services.scheduling_mode nullable, :445
+  agreements NOT NULL default MANUAL, :499 templates' default); shared/appointment-disposition.ts :135-152
+  SERVICE_SCHEDULE_STATE_LABELS / resolveServiceScheduleState (the precedent); shared/agreement-types.ts
+  (Pass 35) holds the agreement vocabulary (units, types) and is where a scheduling-mode labeler belongs.
+  Generated services copy the agreement's mode (storage.ts generateServiceForAgreement).
+- Contacts: routes.ts POST /api/contacts :1056, PATCH :1078, set-primary :1101-1109; storage.ts createContact
+  :4002 (primary when asked or when the location's first), auditDemotedContactsTx :4025, updateContact :4033
+  (demotes siblings when isPrimary true; touches none when false), setPrimaryContact :4064; `contact` is
+  revertable (shared/audit.ts REVERTABLE_AUDIT_ENTITY_TYPES) with no primary guard (locations have one in
+  describeAuditRevertability: "A location is not made non-primary by a revert").
+- ui/dialog.tsx :41 default `max-w-lg`.
+- UI_STANDARDIZATION_BRIEF.md has no link / badge / width convention (:14-15 location-first clarity, :23-24
+  truthful states, :62-71 one visual language for lists, :78 "Quick links are okay if they are real.", :97
+  "Do not introduce buttons or tabs that are not wired."); the code precedent in (1) is the convention.
+- DB today (run the SQL, never trust a doc's data claim): services 110 (COMPLETED 70, SCHEDULED 25,
+  CANCELLED 15, PENDING_SCHEDULING 0 - the queue is EMPTY, so the row, the badge and the details link need a
+  fixture: POST /api/services with status PENDING_SCHEDULING and source MANUAL on a fixture location);
+  services.scheduling_mode AUTO_ELIGIBLE 21 / MANUAL 12 / NULL 77; appointments 126 (SCHEDULED 34,
+  IN_PROGRESS 3, COMPLETED 55, CANCELED 34); agreements 25 (17 ACTIVE / 8 CANCELLED; scheduling_mode
+  AUTO_ELIGIBLE 17, MANUAL 8, no CONTACT_REQUIRED); agreement_templates 3 (default_scheduling_mode
+  AUTO_ELIGIBLE on all three); contacts 16 (11 primary, 5 not; 14 locations: 11 with exactly one primary, 3
+  with no contacts at all - none with contacts but no primary); audit_logs 240 before Pass 35's smoke (its
+  rows were deleted; the contact rows are one contact's created / update / reverted; the owner's own use
+  since may have added rows - count by entity_type, action). After Pass 35 merges and the owner restarts:
+  agreement_types has 6 rows (the five seeds and ANNUAL), agreements.agreement_type is ANNUAL ×16 / NULL ×9,
+  and no agreement or template row carries CUSTOM.
+- Docs versus code, found by the inventory and left for you: A1 :38 cites schedule.tsx:998-1012 and says DONE
+  (it is :2134-2150 and a `<button>`, not a Link); A1 :39 cites :220-225, 370-371, 1036 (sheet :629-634,
+  hover card :2172-2173, dialog :1162-1163); A1 :40 cites service-ticket-review.tsx:486, 538, 546 and Open
+  Location :648 (list :634-635, modal :687-703, :811) and "batch rows plain at :695" (they left that file in
+  Pass 13 - batch-invoice-dialog.tsx :252-253); A1 :41 cites services.tsx:386 (:391) and ServicesTab
+  customer-detail.tsx:3123 (:3512); A1 :42 "invoice rows ABSENT" is stale (Pass 11a: invoices.tsx :277-293,
+  invoice-detail-dialog.tsx :334-338); A1 :47 cites :4338 and ContactDialogForm :1146 (:4734; :1507, the
+  checkbox :1585); A1 :54 cites :3045 and `sm:max-w-lg` (:3780; `max-w-lg`); A3 :123 cites schedule.tsx:1097
+  (:2308); row :412 names a "Service Details dialog" without a file (two exist: schedule.tsx :1130 and
+  customer-detail.tsx :3350's modal, already on the customer screen); row :412's "Make Primary moves into
+  the contact dialog" - the checkbox is already there, the work is the inline button's removal plus the
+  zero-primary guard. Fix the ones your pass touches; list the rest.
+- Docs to carry: the C5.4 row (mark done with the as-built); A1 :38-42, :47, :54 and A3 :120, :123; B23
+  :334-337; Part E :4216 item 5; CURRENT_FOCUS.md :735 / :762 and the head status paragraph; OWNER_FEEDBACK.md
+  FB-010 (DONE, archived) and a review line on any other item whose surface you touched; a "Shipped in Pass
+  36" record; CURRENT_FOCUS's Pass 36 entry and "Next up" (phase order: Pass 37, C5.6 role profiles - its spec
+  is its row in the Phase 5 table :413 and B16; say so and write that handoff unless I say otherwise).
 
-Build per C5.3: (1) shared - the agreement-type vocabulary module (the seed list and keys, the unit list DAY |
-WEEK | MONTH | QUARTER | YEAR with its labels, the key derivation for a new type) and `agreement_type` in
-shared/audit.ts; schema - the `agreement_types` table; (2) the bootstrap - the table, the seed per org, the
-free-text → key migration printed per row, the CUSTOM → DAY migration on the four columns printed per row,
-both self-guarding (boot 2 prints nothing); (3) storage - the list's reads and writes (create / update /
-merge, audited), `normalizeAgreement*` validating the key against the active list
-(`assertActiveOpportunityCategoryTx`'s precedent), `advanceAgreementDate` without CUSTOM; (4) routes - the
-list's routes (MANAGE_SETTINGS on the writes), the unit enum, the type key on the agreement / template
-schemas; (5) client - the Settings "Agreement Types" card (Add / Edit / Merge, gated), the two dropdowns,
-the four unit selects and three labelers, `addAgreementInterval`'s DAY / WEEK; (6) docs as above. Not touched:
-the agreement-template routes' gate (decision 7, note only), `service_types.category`, billing plan
-`anchorMode` / cancellation `effectiveDateMode` / the material "CUSTOM", FB-006 / FB-007 / FB-003, the
-agreement card's layout beyond one type line, a column drop (the type column stays, holding the key).
+Build per C5.4: (1) shared - the schedulingMode list and labeler; (2) client - the links on the named
+surfaces (the board card to a Link, the hover card, the support card, the dispatch sheet, ServiceDetailDialog,
+the pending-queue rows, the Ticket Review list and modal, Service History with the location added), the
+queue's Details button, the badge humanized on the three raw surfaces, the inline Make Primary removed with
+the zero-primary guard (the dialog's checkbox disabled for the current primary) and the switcher
+invalidation, the New Service modal `max-w-2xl`; (3) server - the demotion refusal only (no new route, no
+table, no column, no migration); (4) docs as above. Not touched: FB-002 / -013 / -014 / -015 beyond their
+shared surfaces, batch-invoice-dialog.tsx and opportunities.tsx (note only), a serviceId deep link, exporting
+ServiceDetailModal, the set-primary route's removal unless you decide it.
 
 Environment: Node 24.21.0, npm run dev:full (restart it before manually testing), DEV_NOTES.md for the DB
 backup / restore, the copy-database recipe and the PowerShell traps, gh logged in so the session can open
-the PR. Verify on PORT=5001 as the previous passes did: this pass ADDS a table and runs two data migrations
-(no column drop) - an additive migration verifies against the shared dev DB under the owner's port-5000
-server (Passes 32-34 did; the owner's restart then prints nothing for it) OR on the copy-database recipe so
-the owner's restart prints the per-row effect for them (Pass 23 / 24 did; USE_COPY=1 in boot.sh) - say
-which you chose and why (recommend the copy: the migration rewrites 9 agreements and 2 templates the owner
-uses, and the printed report at their restart is the record); the previous session's scratchpad
-(C:/Users/Austin/AppData/Local/Temp/claude/c--Dev-PestFlow/<session>/scratchpad - the newest holds patch.cjs
-(absolute === FILE paths), boot.sh (re-point its S= line; USE_COPY=1 for the copy), stop.sh, counts.sql
-(rebuild it from pg_tables after boot 1 - the list is fixed and the new table would be missing),
-smoke34.mts, replace-handoff.cjs, pass35-inventory.md) is the starting kit. In a smoke test send
-`Connection: close` on every fetch, derive the cleanup from the DB by the fixture email, and clean a
-hard-deleted entity's audit rows by the customerId its snapshots carry. npm run check; double boot (boot 1
-prints the table, the five seed rows and the per-row migrations; boot 2 prints only "serving on port 5001"
-with every table count unchanged); the pass's API smoke test as all four roles (the list's GET open and its
-writes 403 / 201 / 200 / 400 for a duplicate key or an unknown merge target; a template and an agreement
-created with a type key, an unknown or inactive key refused, the template's default preselected on an
-agreement created from it; a merge moving them with the audit rows you decided on and the source
-deactivated; a deactivation of a type in use refused; a unit of DAY / WEEK accepted on both forms and
-CUSTOM refused; `advanceAgreementDate` DAY(7) and WEEK(1) stepping the same seven days through the real
-generation path; a revert of an agreement row with a unit; the migrated rows read back with DAY and the
-same intervals, their next-service dates unchanged; the fixture deleted in FK order with its rows, counts
-back at baseline) and a Vite 200 on every touched client module; state plainly what was not rendered - the
-Settings card, the dropdowns and the unit selects cannot be judged without a browser.
+the PR. Verify on PORT=5001 as the previous passes did: this pass has NO migration (no table, no column, no
+seed row) - verify against the shared dev DB under the owner's port-5000 server (Passes 31-34 did; USE_COPY
+unset in boot.sh); the previous session's scratchpad (C:/Users/Austin/AppData/Local/Temp/claude/c--Dev-PestFlow/
+<session>/scratchpad - the newest holds patch.cjs (absolute === FILE paths), boot.sh (re-point its S= line),
+stop.sh, counts.sql (rebuilt from pg_tables in Pass 35, agreement_types included), smoke35.mts,
+replace-handoff.cjs, pass36-inventory.md) is the starting kit. In a smoke test send `Connection: close` on
+every fetch, derive the cleanup from the DB by the fixture email, and clean a hard-deleted entity's audit
+rows by the customerId its snapshots carry. npm run check; double boot (both boots print only "serving on
+port 5001" with every table count unchanged); the pass's API smoke test as all four roles (a
+PENDING_SCHEDULING fixture service on a fixture location appearing in GET /api/services/pending with its
+schedulingMode; the demotion refusal - PATCH /api/contacts/:id { isPrimary: false } on a location's only
+primary 400 with a code, nothing written; a promotion through the dialog's PATCH demoting the sibling with
+Pass 32's rows; the set-primary route's fate as decided; the labeler's pure checks through `await
+import(pathToFileURL(...))`; the fixture deleted in FK order with its rows, counts back at baseline) and a
+Vite 200 on every touched client module; state plainly what was not rendered - every link, the badge text,
+the Details button, the contact dialog's disabled checkbox and the modal width cannot be judged without a
+browser.
 
 Working agreement as always: one pass, one branch, update CURRENT_FOCUS and the roadmap's pass table at the
 end, replace the handoff prompt at the end of CURRENT_FOCUS.md with the one for the next pass (phase order:
-Pass 36, C5.4, unless I say otherwise), push, open the PR and stop. I merge.
+Pass 37, C5.6, unless I say otherwise), push, open the PR and stop. I merge.
 ```

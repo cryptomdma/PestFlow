@@ -49,40 +49,33 @@ import {
   type DispatchViewInterval,
 } from "@shared/dispatch-board";
 import { DEFAULT_BILLING_DEFAULTS, describeBillingType, type BillingDefaults } from "@shared/billing-profile-defaults";
+import { AGREEMENT_UNITS, AGREEMENT_UNIT_LABELS, describeAgreementCadence, describeAgreementTerm, describeAgreementTypeUsage, deriveAgreementTypeKey, type AgreementTypeUsage } from "@shared/agreement-types";
+import { invalidateAuditViews } from "@/lib/invalidate-audit-views";
 import { describeInvoiceTerms } from "@shared/invoice-detail";
 import { isOnList, matchListEntry } from "@shared/material-lists";
 import { ListMultiSelect } from "@/components/list-multi-select";
 import { Switch } from "@/components/ui/switch";
 import { ServiceWorkKindBadge } from "@/components/service-work-kind-badge";
 import { SERVICE_WORK_KINDS, describeServiceWorkKind, formatServiceWorkKind, normalizeServiceWorkKind, type ServiceWorkKind } from "@shared/service-kind";
-import { Plus, Settings as SettingsIcon, Wrench, FileText, Users, ShieldCheck, FlaskConical, Bug, CreditCard, CalendarClock, Percent, Scale, Building2, Receipt, MapPin, UserCheck, ArrowUp, ArrowDown, AlertTriangle, LayoutGrid } from "lucide-react";
-import type { AgreementCancellationPolicy, AgreementTemplate, BillingPlan, BillingProfileTemplate, MaterialProduct, OpportunityAssignmentRule, OpportunityCategory, OpportunityDisposition, Organization, ServiceType, TargetPest, TaxRate, TaxRule, Technician, UserSummary, Zone } from "@shared/schema";
+import { Plus, Settings as SettingsIcon, Wrench, FileText, Users, ShieldCheck, FlaskConical, Bug, CreditCard, CalendarClock, Percent, Scale, Building2, Receipt, MapPin, UserCheck, ArrowUp, ArrowDown, AlertTriangle, LayoutGrid, Tag } from "lucide-react";
+import type { AgreementCancellationPolicy, AgreementTemplate, AgreementType, BillingPlan, BillingProfileTemplate, MaterialProduct, OpportunityAssignmentRule, OpportunityCategory, OpportunityDisposition, Organization, ServiceType, TargetPest, TaxRate, TaxRule, Technician, UserSummary, Zone } from "@shared/schema";
 
+// Pass 35 (C5.3): the unit labels live in shared/agreement-types.ts with the
+// unit list itself (DAY | WEEK | MONTH | QUARTER | YEAR - CUSTOM retired), so
+// the template row, the agreement card and the selects cannot disagree.
 function formatTemplateRecurrence(template: AgreementTemplate) {
-  const interval = template.defaultRecurrenceInterval || 1;
-  const unitMap: Record<string, string> = {
-    MONTH: "Month",
-    QUARTER: "Quarter",
-    YEAR: "Year",
-    CUSTOM: "Day",
-  };
-  if (template.defaultRecurrenceUnit === "QUARTER" && interval === 1) {
-    return "Quarterly";
-  }
-  const unitLabel = unitMap[template.defaultRecurrenceUnit] || template.defaultRecurrenceUnit;
-  return `Every ${interval} ${interval === 1 ? unitLabel : `${unitLabel}s`}`;
+  return describeAgreementCadence(template.defaultRecurrenceUnit, template.defaultRecurrenceInterval);
 }
 
 function formatTemplateTerm(template: AgreementTemplate) {
-  const interval = template.defaultTermInterval || 1;
-  const unitMap: Record<string, string> = {
-    MONTH: "month",
-    QUARTER: "quarter",
-    YEAR: "year",
-    CUSTOM: "day",
-  };
-  const unitLabel = unitMap[template.defaultTermUnit] || template.defaultTermUnit.toLowerCase();
-  return `Renews every ${interval} ${interval === 1 ? unitLabel : `${unitLabel}s`}`;
+  return describeAgreementTerm(template.defaultTermUnit, template.defaultTermInterval);
+}
+
+/** A row of GET /api/agreement-types: the type plus how many agreements and templates carry it. */
+type AgreementTypeRow = AgreementType & AgreementTypeUsage;
+
+function invalidateAgreementTypeViews() {
+  queryClient.invalidateQueries({ predicate: (query) => String(query.queryKey[0]).startsWith("/api/agreement-types") });
 }
 
 function formatCancellationFee(policy: AgreementCancellationPolicy) {
@@ -1131,12 +1124,15 @@ function AgreementTemplateForm({
   serviceTypes,
   cancellationPolicies,
   billingPlans,
+  agreementTypes,
   template,
   onClose,
 }: {
   serviceTypes?: ServiceType[];
   cancellationPolicies?: AgreementCancellationPolicy[];
   billingPlans?: BillingPlan[];
+  /** Pass 35 (C5.3): the org's agreement types, inactive included so a template carrying a retired key still names it. */
+  agreementTypes?: AgreementTypeRow[];
   template?: AgreementTemplate | null;
   onClose: () => void;
 }) {
@@ -1176,6 +1172,13 @@ function AgreementTemplateForm({
   const selectedBillingPlan = useMemo(
     () => (billingPlans ?? []).find((plan) => plan.id === form.billingPlanId) ?? null,
     [billingPlans, form.billingPlanId],
+  );
+  // Pass 35 (C5.3): the active types, plus the one this template already
+  // carries if it has since been retired (a merge moves templates, so that is
+  // a race, not a state - but the select must never blank a stored value).
+  const selectableAgreementTypes = useMemo(
+    () => (agreementTypes ?? []).filter((type) => type.isActive || type.key === template?.defaultAgreementType),
+    [agreementTypes, template?.defaultAgreementType],
   );
 
   const mutation = useMutation({
@@ -1278,17 +1281,31 @@ function AgreementTemplateForm({
         <p className="text-xs text-muted-foreground">{describeBillingPlanBehavior(selectedBillingPlan)}</p>
         <p className="text-xs text-muted-foreground">New location agreements start from this plan and snapshot it at creation.</p>
       </div>
-      <div className="space-y-1.5"><Label>Agreement Type</Label><Input value={form.defaultAgreementType} onChange={(e) => setForm((prev) => ({ ...prev, defaultAgreementType: e.target.value }))} /></div>
+      <div className="space-y-1.5">
+        <Label>Agreement Type</Label>
+        <Select value={form.defaultAgreementType || "NONE"} onValueChange={(value) => setForm((prev) => ({ ...prev, defaultAgreementType: value === "NONE" ? "" : value }))}>
+          <SelectTrigger data-testid="select-template-agreement-type"><SelectValue placeholder="Select an agreement type" /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="NONE">None</SelectItem>
+            {selectableAgreementTypes.map((type) => (
+              <SelectItem key={type.id} value={type.key}>{type.label}{type.isActive ? "" : " (inactive)"}</SelectItem>
+            ))}
+            {form.defaultAgreementType && !selectableAgreementTypes.some((type) => type.key === form.defaultAgreementType) ? (
+              <SelectItem value={form.defaultAgreementType}>{form.defaultAgreementType} (not on the Settings list)</SelectItem>
+            ) : null}
+          </SelectContent>
+        </Select>
+        <p className="text-xs text-muted-foreground">What kind of program this is (Pest control, Termite...). The list is kept under Agreement Types; a new agreement made from this template starts with it.</p>
+      </div>
       <div className="grid gap-3 sm:grid-cols-2">
         <div className="space-y-1.5">
           <Label>Agreement Term Unit</Label>
           <Select value={form.defaultTermUnit} onValueChange={(value) => setForm((prev) => ({ ...prev, defaultTermUnit: value }))}>
-            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectTrigger data-testid="select-template-term-unit"><SelectValue /></SelectTrigger>
             <SelectContent>
-              <SelectItem value="MONTH">Month</SelectItem>
-              <SelectItem value="QUARTER">Quarter</SelectItem>
-              <SelectItem value="YEAR">Year</SelectItem>
-              <SelectItem value="CUSTOM">Custom</SelectItem>
+              {AGREEMENT_UNITS.map((unit) => (
+                <SelectItem key={unit} value={unit}>{AGREEMENT_UNIT_LABELS[unit]}</SelectItem>
+              ))}
             </SelectContent>
           </Select>
         </div>
@@ -1301,12 +1318,11 @@ function AgreementTemplateForm({
         <div className="space-y-1.5">
           <Label>Recurrence Unit</Label>
           <Select value={form.defaultRecurrenceUnit} onValueChange={(value) => setForm((prev) => ({ ...prev, defaultRecurrenceUnit: value }))}>
-            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectTrigger data-testid="select-template-recurrence-unit"><SelectValue /></SelectTrigger>
             <SelectContent>
-              <SelectItem value="MONTH">Month</SelectItem>
-              <SelectItem value="QUARTER">Quarter</SelectItem>
-              <SelectItem value="YEAR">Year</SelectItem>
-              <SelectItem value="CUSTOM">Custom</SelectItem>
+              {AGREEMENT_UNITS.map((unit) => (
+                <SelectItem key={unit} value={unit}>{AGREEMENT_UNIT_LABELS[unit]}</SelectItem>
+              ))}
             </SelectContent>
           </Select>
         </div>
@@ -1377,6 +1393,143 @@ function AgreementTemplateForm({
         <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
         <Button type="submit" disabled={mutation.isPending || !form.name.trim() || !form.defaultServiceTypeId}>
           {mutation.isPending ? "Saving..." : isEditMode ? "Save Template" : "Create Template"}
+        </Button>
+      </div>
+    </form>
+  );
+}
+
+// Pass 35 (PLAN_ROADMAP_V2.md C5.3): an agreement type - "what kind of
+// program" (shared/agreement-types.ts). Add derives the key from the label
+// (upper snake, previewed here; the server derives the same one) and the key
+// is fixed once created; Edit changes the label, description, order and the
+// active flag. A type in use cannot be made inactive - the server answers 409
+// AGREEMENT_TYPE_IN_USE - so the Active select is disabled with the reason and
+// points at Merge instead.
+function AgreementTypeForm({ agreementType, onClose }: { agreementType?: AgreementTypeRow | null; onClose: () => void }) {
+  const { toast } = useToast();
+  const [form, setForm] = useState({
+    label: agreementType?.label ?? "",
+    description: agreementType?.description ?? "",
+    isActive: agreementType?.isActive ?? true,
+    sortOrder: agreementType?.sortOrder !== undefined ? String(agreementType.sortOrder) : "",
+  });
+  const inUse = !!agreementType && (agreementType.agreementCount > 0 || agreementType.templateCount > 0);
+  const derivedKey = useMemo(() => deriveAgreementTypeKey(form.label), [form.label]);
+
+  const mutation = useMutation({
+    mutationFn: async (data: typeof form) => {
+      const payload = {
+        label: data.label.trim(),
+        description: data.description.trim() || null,
+        isActive: data.isActive,
+        ...(data.sortOrder.trim() ? { sortOrder: parseInt(data.sortOrder, 10) } : {}),
+      };
+      const response = agreementType
+        ? await apiRequest("PATCH", `/api/agreement-types/${agreementType.id}`, payload)
+        : await apiRequest("POST", "/api/agreement-types", payload);
+      return response.json();
+    },
+    onSuccess: () => {
+      invalidateAgreementTypeViews();
+      toast({ title: agreementType ? "Agreement type updated" : "Agreement type created" });
+      onClose();
+    },
+    onError: (err: unknown) => toast({ title: "Agreement type not saved", description: getApiErrorMessage(err), variant: "destructive" }),
+  });
+
+  return (
+    <form onSubmit={(e) => { e.preventDefault(); mutation.mutate(form); }} className="space-y-4">
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="space-y-1.5"><Label>Label *</Label><Input value={form.label} onChange={(e) => setForm((prev) => ({ ...prev, label: e.target.value }))} data-testid="input-agreement-type-label" /></div>
+        <div className="space-y-1.5">
+          <Label>Key</Label>
+          <Input value={agreementType ? agreementType.key : derivedKey} disabled title={agreementType ? "Keys are fixed once created" : "Derived from the label"} data-testid="input-agreement-type-key" />
+        </div>
+      </div>
+      <div className="space-y-1.5"><Label>Description</Label><Textarea value={form.description} onChange={(e) => setForm((prev) => ({ ...prev, description: e.target.value }))} className="resize-none" rows={2} /></div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="space-y-1.5">
+          <Label>Active</Label>
+          <Select value={form.isActive ? "ACTIVE" : "INACTIVE"} onValueChange={(value) => setForm((prev) => ({ ...prev, isActive: value === "ACTIVE" }))} disabled={inUse && form.isActive}>
+            <SelectTrigger data-testid="select-agreement-type-active"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="ACTIVE">Active</SelectItem>
+              <SelectItem value="INACTIVE">Inactive</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="space-y-1.5"><Label>Sort Order</Label><Input type="number" value={form.sortOrder} onChange={(e) => setForm((prev) => ({ ...prev, sortOrder: e.target.value }))} data-testid="input-agreement-type-sort" /></div>
+      </div>
+      <p className="text-xs text-muted-foreground" data-testid="text-agreement-type-hint">
+        {inUse && agreementType
+          ? `${describeAgreementTypeUsage(agreementType)} carry this type, so it cannot be made inactive here - merge it into another type instead.`
+          : "An inactive type is no longer offered on a template or an agreement; a type in use cannot be made inactive (merge it first)."}
+      </p>
+      <div className="flex justify-end gap-2">
+        <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
+        <Button type="submit" disabled={mutation.isPending || !form.label.trim() || (!agreementType && !derivedKey)} data-testid="button-save-agreement-type">
+          {mutation.isPending ? "Saving..." : agreementType ? "Save Type" : "Create Type"}
+        </Button>
+      </div>
+    </form>
+  );
+}
+
+// Pass 35 (C5.3): merge one type into another - every agreement and template
+// on the source moves to the target (each with its own History row) and the
+// source is made inactive. The owner's "rename or merge" for the migrated free
+// text ("Annual" became its own entry rather than silently "Pest control").
+function AgreementTypeMergeForm({ source, types, onClose }: { source: AgreementTypeRow; types: AgreementTypeRow[]; onClose: () => void }) {
+  const { toast } = useToast();
+  const [intoId, setIntoId] = useState("");
+  const targets = useMemo(() => types.filter((type) => type.isActive && type.id !== source.id), [types, source.id]);
+  const target = targets.find((type) => type.id === intoId) ?? null;
+
+  const mutation = useMutation({
+    mutationFn: async () => {
+      const response = await apiRequest("POST", `/api/agreement-types/${source.id}/merge`, { intoId });
+      return (await response.json()) as { agreementsMoved: number; templatesMoved: number; target: { label: string } };
+    },
+    onSuccess: (result) => {
+      invalidateAgreementTypeViews();
+      queryClient.invalidateQueries({ predicate: (query) => String(query.queryKey[0]).startsWith("/api/agreement-templates") });
+      queryClient.invalidateQueries({ predicate: (query) => String(query.queryKey[0]).startsWith("/api/agreements") });
+      invalidateAuditViews();
+      toast({
+        title: `Merged "${source.label}" into "${result.target.label}"`,
+        description: `${describeAgreementTypeUsage({ agreementCount: result.agreementsMoved, templateCount: result.templatesMoved })} moved; "${source.label}" is now inactive.`,
+      });
+      onClose();
+    },
+    onError: (err: unknown) => toast({ title: "Agreement types not merged", description: getApiErrorMessage(err), variant: "destructive" }),
+  });
+
+  return (
+    <form onSubmit={(e) => { e.preventDefault(); if (intoId) mutation.mutate(); }} className="space-y-4">
+      <p className="text-sm text-muted-foreground" data-testid="text-agreement-type-merge-summary">
+        {describeAgreementTypeUsage(source)} carry <span className="font-medium text-foreground">{source.label}</span> ({source.key}). They move to the type you pick, each with its own History row, and "{source.label}" becomes inactive. History does not revert a merge - merge back by hand if needed.
+      </p>
+      <div className="space-y-1.5">
+        <Label>Merge into</Label>
+        <Select value={intoId} onValueChange={setIntoId}>
+          <SelectTrigger data-testid="select-agreement-type-merge-target"><SelectValue placeholder={targets.length ? "Pick the type that absorbs it" : "No other active type - add one first"} /></SelectTrigger>
+          <SelectContent>
+            {targets.map((type) => (
+              <SelectItem key={type.id} value={type.id}>{type.label} ({type.key})</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      {target ? (
+        <p className="text-xs text-muted-foreground">
+          "{target.label}" then carries {describeAgreementTypeUsage({ agreementCount: target.agreementCount + source.agreementCount, templateCount: target.templateCount + source.templateCount })}.
+        </p>
+      ) : null}
+      <div className="flex justify-end gap-2">
+        <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
+        <Button type="submit" variant="destructive" disabled={!intoId || mutation.isPending} data-testid="button-confirm-agreement-type-merge">
+          {mutation.isPending ? "Merging..." : target ? `Merge into ${target.label}` : "Merge"}
         </Button>
       </div>
     </form>
@@ -1662,6 +1815,10 @@ export default function Settings() {
   const [editingDisposition, setEditingDisposition] = useState<OpportunityDisposition | null>(null);
   const [categoryDialogOpen, setCategoryDialogOpen] = useState(false);
   const [editingCategory, setEditingCategory] = useState<OpportunityCategory | null>(null);
+  // Pass 35 (C5.3): agreement types - one dialog for Add / Edit / Merge.
+  const [agreementTypeDialogOpen, setAgreementTypeDialogOpen] = useState(false);
+  const [editingAgreementType, setEditingAgreementType] = useState<AgreementTypeRow | null>(null);
+  const [mergingAgreementType, setMergingAgreementType] = useState<AgreementTypeRow | null>(null);
   // Pass 26 (C4.1b): zones and assignment rules.
   const [zoneDialogOpen, setZoneDialogOpen] = useState(false);
   const [editingZone, setEditingZone] = useState<Zone | null>(null);
@@ -1692,6 +1849,9 @@ export default function Settings() {
   const { data: materialProducts, isLoading: materialProductsLoading } = useQuery<MaterialProduct[]>({ queryKey: ["/api/material-products?includeInactive=true"] });
   const { data: targetPests, isLoading: targetPestsLoading } = useQuery<TargetPest[]>({ queryKey: ["/api/target-pests?includeInactive=true"] });
   const { data: agreementTemplates, isLoading: templatesLoading } = useQuery<AgreementTemplate[]>({ queryKey: ["/api/agreement-templates"] });
+  // Pass 35 (C5.3): every agreement type, inactive included - the card shows
+  // what is off, and a template carrying a since-retired key still names it.
+  const { data: agreementTypes, isLoading: agreementTypesLoading } = useQuery<AgreementTypeRow[]>({ queryKey: ["/api/agreement-types?includeInactive=true"] });
   const { data: cancellationPolicies, isLoading: policiesLoading } = useQuery<AgreementCancellationPolicy[]>({ queryKey: ["/api/agreement-cancellation-policies?includeInactive=true"] });
   const { data: opportunityDispositions, isLoading: dispositionsLoading } = useQuery<OpportunityDisposition[]>({ queryKey: ["/api/opportunity-dispositions?includeInactive=true"] });
   const { data: opportunityCategories, isLoading: categoriesLoading } = useQuery<OpportunityCategory[]>({ queryKey: ["/api/opportunity-categories?includeInactive=true"] });
@@ -1921,6 +2081,14 @@ export default function Settings() {
     setTemplateDialogOpen(open);
     if (!open) {
       setEditingTemplate(null);
+    }
+  };
+
+  const closeAgreementTypeDialog = (open: boolean) => {
+    setAgreementTypeDialogOpen(open);
+    if (!open) {
+      setEditingAgreementType(null);
+      setMergingAgreementType(null);
     }
   };
 
@@ -2707,6 +2875,64 @@ export default function Settings() {
         </CardContent>
       </Card>
 
+      {/* Pass 35 (C5.3): agreement types - the "what kind of program" list the
+          template and agreement dropdowns read. Writes are MANAGE_SETTINGS
+          (admin); everyone else reads. */}
+      <Card data-testid="card-agreement-types">
+        <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
+          <CardTitle className="text-base font-semibold flex items-center gap-2"><Tag className="h-4 w-4" /> Agreement Types</CardTitle>
+          {canManageSettings ? (
+            <Dialog open={agreementTypeDialogOpen} onOpenChange={closeAgreementTypeDialog}>
+              <DialogTrigger asChild><Button size="sm" data-testid="button-add-agreement-type" onClick={() => { setEditingAgreementType(null); setMergingAgreementType(null); }}><Plus className="h-3 w-3 mr-1" /> Add Type</Button></DialogTrigger>
+              <DialogContent>
+                <DialogHeader><DialogTitle>{mergingAgreementType ? `Merge "${mergingAgreementType.label}"` : editingAgreementType ? "Edit Agreement Type" : "New Agreement Type"}</DialogTitle></DialogHeader>
+                {mergingAgreementType ? (
+                  <AgreementTypeMergeForm source={mergingAgreementType} types={agreementTypes ?? []} onClose={() => closeAgreementTypeDialog(false)} />
+                ) : (
+                  <AgreementTypeForm agreementType={editingAgreementType} onClose={() => closeAgreementTypeDialog(false)} />
+                )}
+              </DialogContent>
+            </Dialog>
+          ) : (
+            <p className="text-xs text-muted-foreground" data-testid="text-agreement-types-admin-only">Admins manage agreement types.</p>
+          )}
+        </CardHeader>
+        <CardContent>
+          <p className="mb-3 text-xs text-muted-foreground">
+            What kind of program an agreement is - Pest control, Termite, Mosquito... - picked on the agreement template and on the agreement. Add a type, rename it, or merge one into another (every agreement and template on it moves and it becomes inactive). A type in use cannot be made inactive without a merge. The structure (recurring, one-time, installment) is the Billing Plan, not a type.
+          </p>
+          {agreementTypesLoading ? (
+            <div className="space-y-2">{[1, 2, 3].map((i) => <Skeleton key={i} className="h-14" />)}</div>
+          ) : !agreementTypes?.length ? (
+            <div className="text-center py-8">
+              <Tag className="h-8 w-8 mx-auto text-muted-foreground/30 mb-2" />
+              <p className="text-sm text-muted-foreground">No agreement types seeded - restart the server to run the bootstrap</p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {agreementTypes.map((type) => (
+                <div key={type.id} className="flex items-center justify-between gap-3 rounded-md bg-muted/50 p-3" data-testid={`row-agreement-type-${type.key}`}>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-sm font-medium">{type.label}</span>
+                      <Badge variant={type.isActive ? "secondary" : "outline"} className="text-xs">{type.isActive ? "Active" : "Inactive"}</Badge>
+                    </div>
+                    <p className="mt-0.5 text-xs text-muted-foreground">Key: {type.key} | Sort: {type.sortOrder} | {describeAgreementTypeUsage(type)}</p>
+                    {type.description && <p className="mt-0.5 text-xs text-muted-foreground">{type.description}</p>}
+                  </div>
+                  {canManageSettings ? (
+                    <div className="flex items-center gap-2 shrink-0">
+                      <Button variant="outline" size="sm" onClick={() => { setMergingAgreementType(null); setEditingAgreementType(type); setAgreementTypeDialogOpen(true); }} data-testid={`button-edit-agreement-type-${type.key}`}>Edit</Button>
+                      <Button variant="ghost" size="sm" onClick={() => { setEditingAgreementType(null); setMergingAgreementType(type); setAgreementTypeDialogOpen(true); }} data-testid={`button-merge-agreement-type-${type.key}`}>Merge</Button>
+                    </div>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
       <Card>
         <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
           <CardTitle className="text-base font-semibold flex items-center gap-2"><FileText className="h-4 w-4" /> Agreement Templates</CardTitle>
@@ -2714,7 +2940,7 @@ export default function Settings() {
             <DialogTrigger asChild><Button size="sm" data-testid="button-add-agreement-template" onClick={openCreateTemplate}><Plus className="h-3 w-3 mr-1" /> Add Template</Button></DialogTrigger>
             <DialogContent className="max-w-2xl">
               <DialogHeader><DialogTitle>{editingTemplate ? "Edit Agreement Template" : "New Agreement Template"}</DialogTitle></DialogHeader>
-              <AgreementTemplateForm serviceTypes={serviceTypes} cancellationPolicies={cancellationPolicies} billingPlans={billingPlans} template={editingTemplate} onClose={() => closeTemplateDialog(false)} />
+              <AgreementTemplateForm serviceTypes={serviceTypes} cancellationPolicies={cancellationPolicies} billingPlans={billingPlans} agreementTypes={agreementTypes} template={editingTemplate} onClose={() => closeTemplateDialog(false)} />
             </DialogContent>
           </Dialog>
         </CardHeader>

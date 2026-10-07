@@ -389,8 +389,21 @@ export const agreements = pgTable("agreements", {
   startDateSource: text("start_date_source").notNull().default("MANUAL"),
   agreementName: text("agreement_name").notNull(),
   status: text("status").notNull().default("ACTIVE"),
+  // Pass 35 (PLAN_ROADMAP_V2.md C5.3; B8 / D8): the KEY of one of the org's
+  // agreement_types (shared/agreement-types.ts) - "what kind of program"
+  // (pest control, termite, mosquito...), never the structure, which the
+  // Billing Plan and expectedServiceCount express. Nullable: the dropdown
+  // offers "None". Free text before Pass 35; the agreement bootstrap turned
+  // each distinct value into an entry the office can rename or merge and
+  // rewrote the rows to the key. Validated against the ACTIVE list by the
+  // storage writers (assertActiveAgreementTypeTx), not by a fixed enum.
   agreementType: text("agreement_type"),
   startDate: date("start_date").notNull(),
+  // The term and the service recurrence share one unit vocabulary, DAY |
+  // WEEK | MONTH | QUARTER | YEAR (shared/agreement-types.ts AGREEMENT_UNITS;
+  // the same five billingPlans.intervalUnit offers). CUSTOM, which had
+  // always meant days, was rewritten to DAY with the same interval by the
+  // Pass 35 bootstrap and is refused by the routes since.
   termUnit: text("term_unit").notNull().default("YEAR"),
   termInterval: integer("term_interval").notNull().default(1),
   renewalDate: date("renewal_date"),
@@ -487,6 +500,10 @@ export const agreementTemplates = pgTable("agreement_templates", {
   isActive: boolean("is_active").notNull().default(true),
   cancellationPolicyId: varchar("cancellation_policy_id").references(() => agreementCancellationPolicies.id),
   billingPlanId: varchar("billing_plan_id").references(() => billingPlans.id),
+  // Pass 35 (C5.3): the key of an agreement_types row, nullable, copied onto
+  // an agreement once at creation (buildAgreementInsertFromTemplate) - see
+  // agreements.agreementType. The unit defaults below share agreements'
+  // DAY | WEEK | MONTH | QUARTER | YEAR vocabulary.
   defaultAgreementType: text("default_agreement_type"),
   // The template's billing default is billingPlanId alone; the free-text
   // default_billing_frequency column was dropped by D9 (see agreements).
@@ -688,6 +705,33 @@ export const opportunityCategories = pgTable("opportunity_categories", {
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => ({
   orgKey: uniqueIndex("opportunity_categories_org_key_uidx").on(table.orgId, table.key),
+}));
+
+// Pass 35 (PLAN_ROADMAP_V2.md C5.3; B8 / PLAN_BILLING_V1_1.md D8): agreement
+// types - the settings-managed "what kind of program" list an agreement and
+// an agreement template name by KEY (agreements.agreement_type,
+// agreement_templates.default_agreement_type; shared/agreement-types.ts).
+// On the opportunity_categories pattern (org-scoped, unique on (org_id,
+// key), seeded per org by the agreement bootstrap with the five keys in
+// AGREEMENT_TYPE_SEED), but unlike that fixed list the office ADDS types
+// (the key derived from the label, upper snake), renames and reorders them,
+// retires them, and MERGES one into another: every agreement and template
+// on the source moves to the target and the source is retired, each moved
+// row audited. A type in use cannot be retired without a merge, and nothing
+// deletes a row (the route answers 405). The migration created one entry per
+// distinct free-text value the rows carried ("Annual" -> ANNUAL "Annual").
+export const agreementTypes = pgTable("agreement_types", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: varchar("org_id").notNull(),
+  key: text("key").notNull(),
+  label: text("label").notNull(),
+  description: text("description"),
+  isActive: boolean("is_active").notNull().default(true),
+  sortOrder: integer("sort_order").notNull().default(0),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => ({
+  orgKey: uniqueIndex("agreement_types_org_key_uidx").on(table.orgId, table.key),
 }));
 
 // Pass 26 (PLAN_ROADMAP_V2.md C4.1b): zones - named zip-code lists the
@@ -1356,6 +1400,7 @@ export const insertAppSettingSchema = createInsertSchema(appSettings).omit({ org
 export const insertOpportunitySchema = createInsertSchema(opportunities).omit({ orgId: true, id: true, createdAt: true, updatedAt: true });
 export const insertOpportunityDispositionSchema = createInsertSchema(opportunityDispositions).omit({ orgId: true, id: true, createdAt: true, updatedAt: true });
 export const insertOpportunityCategorySchema = createInsertSchema(opportunityCategories).omit({ orgId: true, id: true, createdAt: true, updatedAt: true });
+export const insertAgreementTypeSchema = createInsertSchema(agreementTypes).omit({ orgId: true, id: true, createdAt: true, updatedAt: true });
 export const insertZoneSchema = createInsertSchema(zones).omit({ orgId: true, id: true, createdAt: true, updatedAt: true });
 export const insertOpportunityAssignmentRuleSchema = createInsertSchema(opportunityAssignmentRules).omit({ orgId: true, id: true, createdAt: true, updatedAt: true });
 export const insertOpportunityActivitySchema = createInsertSchema(opportunityActivities).omit({ orgId: true, id: true, createdAt: true });
@@ -1422,6 +1467,8 @@ export type OpportunityDisposition = typeof opportunityDispositions.$inferSelect
 export type InsertOpportunityDisposition = z.infer<typeof insertOpportunityDispositionSchema>;
 export type OpportunityCategory = typeof opportunityCategories.$inferSelect;
 export type InsertOpportunityCategory = z.infer<typeof insertOpportunityCategorySchema>;
+export type AgreementType = typeof agreementTypes.$inferSelect;
+export type InsertAgreementType = z.infer<typeof insertAgreementTypeSchema>;
 export type Zone = typeof zones.$inferSelect;
 export type InsertZone = z.infer<typeof insertZoneSchema>;
 export type OpportunityAssignmentRule = typeof opportunityAssignmentRules.$inferSelect;

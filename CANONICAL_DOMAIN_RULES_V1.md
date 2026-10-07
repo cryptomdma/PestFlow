@@ -700,9 +700,20 @@ Pass 12; the compensation entry in `CURRENT_FOCUS.md`), and it is the payee a
 * accountId
 * locationId
 * serviceTypeId
-* agreementType (`recurring` | `one_time` | `warranty` | `installment` | `seasonal`)
+* agreementType nullable — the KEY of one of the org's settings-managed **agreement types**
+  (`agreement_types`, seeded Pest control / Termite / Mosquito / Wildlife / Evaluation; the office adds,
+  renames, retires and merges types in Settings; `shared/agreement-types.ts`; Pass 35, C5.3, B8 / D8). "What
+  kind of program", never the structure: recurring / one-time / installment / seasonal is the Billing Plan
+  and `expectedServiceCount` (§13), and a bundle is a grouping layer (below). Null is "no type". The fixed
+  `recurring | one_time | warranty | installment | seasonal` enum this line carried before Pass 35
+  contradicted B8 / D8 and never existed in code. `ServiceType.category` (§8) is a separate free-text display
+  grouping that overlaps this list and was not merged into it.
 * status (`active` | `paused` | `canceled` | `expired`)
-* frequencyRule nullable
+* termUnit / termInterval and recurrenceUnit / recurrenceInterval — the term's length and the service
+  cadence; the units are `DAY | WEEK | MONTH | QUARTER | YEAR` (`shared/agreement-types.ts` `AGREEMENT_UNITS`,
+  the same five as a Billing Plan's `intervalUnit`; `CUSTOM`, which meant days, was retired in Pass 35),
+  stepped by `shared/agreement-schedule.ts` `advanceAgreementDate`. The agreement templates carry the same
+  four as defaults. (This line read `frequencyRule nullable` before Pass 35; the code never had it.)
 * defaultPrice nullable
 * billingProfileId nullable
 * billingPlanId — the Billing Plan that decides how and when the agreement is billed (§13); required since Pass 12
@@ -1694,7 +1705,10 @@ way `appointments.status` did before D1a. Since Pass 32 (C5.1a, D7's follow-up) 
 carries a trail: customer, location, contact, billing profile (instance and org template), agreement,
 agreement template, appointment and service write `created` / `update` / `status_changed` /
 `deleted` rows beside the financial actions - a change only when the diff would show something, so
-an unchanged save leaves no row. There is no `account` entity: the account's facts are logged on the
+an unchanged save leaves no row. Since Pass 35 (C5.3) the settings-managed agreement types list writes its
+own rows too (`agreement_type`: `created` / `update`, and `agreement_type_merged` when one type is merged into
+another - with one `update` per agreement and template that moved); it is the first reference list with a
+trail and is not revertable. There is no `account` entity: the account's facts are logged on the
 location whose primary flag moved or on the customer. `service_records`' content edits are D9's
 `ticket_edited`; a price change is Pass 8's `price_overridden`.
 
