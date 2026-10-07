@@ -329,6 +329,13 @@ Decided now, built later, so they stop resurfacing as ambiguity:
 - **Agreement Type:** two dimensions — `serviceCategory` (pest/termite/mosquito/wildlife…, settings
   reference data) and structure (already expressed by Billing Plan + `expectedServiceCount`).
   **Bundle is not an agreement type** (canon: bundles are a grouping layer). (Agreements pass.)
+  **Built in Pass 35 (PLAN_ROADMAP_V2.md C5.3, 2026-10-06):** the first dimension is the settings-managed
+  `agreement_types` list (`shared/agreement-types.ts`; the code never had a `serviceCategory` symbol - the
+  column is `agreements.agreementType`, holding the type's KEY, nullable), seeded Pest control / Termite /
+  Mosquito / Wildlife / Evaluation with the office adding, renaming and merging types in Settings; the free
+  text the rows carried ("Annual") became its own entry to rename or merge. The structure stays the Billing
+  Plan and `expectedServiceCount` - no list - and the term / recurrence units became one vocabulary, DAY |
+  WEEK | MONTH | QUARTER | YEAR (CUSTOM, which meant days, migrated to DAY).
 - **Post-ticket sequence relabel:** tech flow becomes finish → collect (payment modal: type, check #,
   future signatures, customer-facing summary) → post. Button label must NOT be "Complete Service" —
   office finalization owns "complete." Use "Finish & Collect" / "Post Service Ticket."

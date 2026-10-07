@@ -41,6 +41,7 @@ import {
   type LocationBillingProjection,
 } from "@shared/billing-profile-defaults";
 import { describeInvoiceTerms } from "@shared/invoice-detail";
+import { AGREEMENT_UNITS, AGREEMENT_UNIT_LABELS, describeAgreementCadence, describeAgreementType, type AgreementTypeUsage } from "@shared/agreement-types";
 import { cn } from "@/lib/utils";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { OpportunityDispositionDialog } from "@/components/opportunity-disposition-dialog";
@@ -99,7 +100,7 @@ import {
   History,
   CreditCard, KeyRound, Ruler, ChevronUp, Check, Link2, Target,
 } from "lucide-react";
-import type { Account, AuditLog, Customer, Contact, Location, Appointment, Invoice, Service, ServiceRecord, ProductApplication, Communication, CustomerNote, BillingPlan, BillingProfile, BillingProfileTemplate, NoteRevision, Agreement, AgreementCancellationPolicy, AgreementTemplate, ServiceType, Technician, Opportunity, OpportunityCategory, OpportunityDisposition } from "@shared/schema";
+import type { Account, AuditLog, Customer, Contact, Location, Appointment, Invoice, Service, ServiceRecord, ProductApplication, Communication, CustomerNote, BillingPlan, BillingProfile, BillingProfileTemplate, NoteRevision, Agreement, AgreementCancellationPolicy, AgreementTemplate, AgreementType, ServiceType, Technician, Opportunity, OpportunityCategory, OpportunityDisposition } from "@shared/schema";
 
 interface CustomerDetailCompatResponse {
   legacyCustomer: Customer;
@@ -465,20 +466,15 @@ function scheduleStateBadgeClass(state: ServiceScheduleState): string {
   return "";
 }
 
+// Pass 35 (C5.3): the unit labels live in shared/agreement-types.ts with the
+// unit list (DAY | WEEK | MONTH | QUARTER | YEAR - CUSTOM retired), the same
+// labeler the Settings template row uses.
 function formatAgreementRecurrence(agreement: Agreement) {
-  const interval = agreement.recurrenceInterval || 1;
-  const labelByUnit: Record<string, string> = {
-    MONTH: "Month",
-    QUARTER: "Quarter",
-    YEAR: "Year",
-    CUSTOM: "Day",
-  };
-  const unitLabel = labelByUnit[agreement.recurrenceUnit] || agreement.recurrenceUnit;
-  const suffix = interval === 1 ? unitLabel : `${unitLabel}s`;
-  return agreement.recurrenceUnit === "QUARTER" && interval === 1
-    ? "Quarterly"
-    : `Every ${interval} ${suffix}`;
+  return describeAgreementCadence(agreement.recurrenceUnit, agreement.recurrenceInterval);
 }
+
+/** A row of GET /api/agreement-types: the type plus how many agreements and templates carry it. */
+type AgreementTypeRow = AgreementType & AgreementTypeUsage;
 
 function formatDateInputValue(date: Date) {
   const year = date.getFullYear();
@@ -504,7 +500,17 @@ function addAgreementInterval(dateOnly: string, unit: string | null | undefined,
   const nextDate = new Date(year, month - 1, day);
   const step = Math.max(interval || 1, 1);
 
+  // Pass 35 (C5.3): DAY and WEEK are explicit (the server's advanceAgreementDate
+  // has had both since Pass 3.5); before, both fell to the default and WEEK(1)
+  // would have previewed as one day. The default still steps by days, for a
+  // stored unit from before the vocabulary.
   switch (unit) {
+    case "DAY":
+      nextDate.setDate(nextDate.getDate() + step);
+      break;
+    case "WEEK":
+      nextDate.setDate(nextDate.getDate() + step * 7);
+      break;
     case "MONTH":
       nextDate.setMonth(nextDate.getMonth() + step);
       break;
@@ -1912,6 +1918,9 @@ function AgreementForm({
   const isEditMode = !!currentAgreement;
   const { data: serviceTypes } = useQuery<ServiceType[]>({ queryKey: ["/api/service-types"] });
   const { data: agreementTemplates } = useQuery<AgreementTemplate[]>({ queryKey: ["/api/agreement-templates"] });
+  // Pass 35 (C5.3): the agreement types for the dropdown, inactive included so
+  // an agreement carrying a since-retired key still names it.
+  const { data: agreementTypes } = useQuery<AgreementTypeRow[]>({ queryKey: ["/api/agreement-types?includeInactive=true"] });
   // Inactive plans are fetched too, so an agreement already carrying a retired
   // plan still renders its own plan name instead of silently reading as
   // plan-less - the same reason activeTemplates keeps the current template.
@@ -1925,6 +1934,10 @@ function AgreementForm({
   const selectableBillingPlans = useMemo(
     () => (billingPlans ?? []).filter((plan) => plan.isActive || plan.id === currentAgreement?.billingPlanId),
     [billingPlans, currentAgreement?.billingPlanId],
+  );
+  const selectableAgreementTypes = useMemo(
+    () => (agreementTypes ?? []).filter((type) => type.isActive || type.key === currentAgreement?.agreementType),
+    [agreementTypes, currentAgreement?.agreementType],
   );
   const activeTemplates = useMemo(() => {
     return (agreementTemplates ?? [])
@@ -2427,12 +2440,11 @@ function AgreementForm({
               <div className="space-y-1.5">
                 <Label>Agreement Term Unit</Label>
                 <Select value={form.termUnit} onValueChange={(value) => syncDerivedDates(form.startDate, { termUnit: value })}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectTrigger data-testid="select-agreement-term-unit"><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="MONTH">Month</SelectItem>
-                    <SelectItem value="QUARTER">Quarter</SelectItem>
-                    <SelectItem value="YEAR">Year</SelectItem>
-                    <SelectItem value="CUSTOM">Custom</SelectItem>
+                    {AGREEMENT_UNITS.map((unit) => (
+                      <SelectItem key={unit} value={unit}>{AGREEMENT_UNIT_LABELS[unit]}</SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
               </div>
@@ -2444,10 +2456,9 @@ function AgreementForm({
                 <Select value={form.recurrenceUnit} onValueChange={(value) => syncDerivedDates(form.startDate, { recurrenceUnit: value })}>
                   <SelectTrigger data-testid="select-agreement-recurrence-unit"><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="MONTH">Month</SelectItem>
-                    <SelectItem value="QUARTER">Quarter</SelectItem>
-                    <SelectItem value="YEAR">Year</SelectItem>
-                    <SelectItem value="CUSTOM">Custom</SelectItem>
+                    {AGREEMENT_UNITS.map((unit) => (
+                      <SelectItem key={unit} value={unit}>{AGREEMENT_UNIT_LABELS[unit]}</SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
               </div>
@@ -2468,7 +2479,22 @@ function AgreementForm({
                 </SelectContent>
               </Select>
             </div>
-            <div className="space-y-1.5"><Label>Agreement Type Override</Label><Input value={form.agreementType} onChange={(e) => setForm((prev) => ({ ...prev, agreementType: e.target.value }))} /></div>
+            <div className="space-y-1.5">
+              <Label>Agreement Type</Label>
+              <Select value={form.agreementType || "NONE"} onValueChange={(value) => setForm((prev) => ({ ...prev, agreementType: value === "NONE" ? "" : value }))}>
+                <SelectTrigger data-testid="select-agreement-type"><SelectValue placeholder="Select an agreement type" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="NONE">None</SelectItem>
+                  {selectableAgreementTypes.map((type) => (
+                    <SelectItem key={type.id} value={type.key}>{type.label}{type.isActive ? "" : " (inactive)"}</SelectItem>
+                  ))}
+                  {form.agreementType && !selectableAgreementTypes.some((type) => type.key === form.agreementType) ? (
+                    <SelectItem value={form.agreementType}>{form.agreementType} (not on the Settings list)</SelectItem>
+                  ) : null}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">What kind of program this is. Starts from the template's type; a change here applies to this agreement only. The list is kept under Agreement Types in Settings.</p>
+            </div>
             <div className="space-y-1">
               <h3 className="text-sm font-semibold">Service Details</h3>
               <p className="text-sm text-muted-foreground">Use these only when this location needs service behavior that differs from the template defaults.</p>
@@ -2708,6 +2734,9 @@ function AgreementsTab({
   const { data: services } = useQuery<Service[]>({ queryKey: ["/api/services/by-location", locationId], enabled: !!locationId });
   const { data: serviceTypes } = useQuery<ServiceType[]>({ queryKey: ["/api/service-types"] });
   const { data: agreementTemplates } = useQuery<AgreementTemplate[]>({ queryKey: ["/api/agreement-templates"] });
+  // Pass 35 (C5.3): the card's one type line names the key's label; inactive
+  // included so a retired key still reads as its label.
+  const { data: agreementTypes } = useQuery<AgreementTypeRow[]>({ queryKey: ["/api/agreement-types?includeInactive=true"] });
   // D6: the billing-plan pill needs the plan's name and cadence; the agreement
   // row carries only billingPlanId. Inactive included so a retired plan still names itself.
   const { planById: billingPlanById, isLoading: billingPlansLoading } = useBillingPlanById();
@@ -2837,6 +2866,11 @@ function AgreementsTab({
                           ? `Cancelled ${agreement.cancelledAt ? new Date(agreement.cancelledAt).toLocaleDateString() : ""}${agreement.cancellationEffectiveDate ? ` - Effective ${formatDateOnly(agreement.cancellationEffectiveDate)}` : ""}`
                           : `${formatAgreementRecurrence(agreement)} - Next due ${formatDateOnly(agreement.nextServiceDate)}`}
                       </p>
+                      {agreement.agreementType ? (
+                        <p className="text-xs text-muted-foreground" data-testid={`text-agreement-type-${agreement.id}`}>
+                          Type: {describeAgreementType(agreement.agreementType, agreementTypes)}
+                        </p>
+                      ) : null}
                       {agreement.status === "CANCELLED" && (
                         <div className="mt-2 rounded-md border border-destructive/20 bg-destructive/5 px-3 py-2 text-xs text-muted-foreground">
                           <p className="font-medium text-foreground">Cancellation details</p>

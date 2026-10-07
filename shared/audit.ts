@@ -30,7 +30,14 @@
  *  row. There is no `account` member (decided): canon has no account
  *  history; what the account carries moves with the location invariant
  *  (primaryLocationId is the primary flag on the locations, logged there)
- *  or sits on the customer (Pass 30's account-scoped preferences). */
+ *  or sits on the customer (Pass 30's account-scoped preferences).
+ *  `agreement_type` joined in Pass 35 (C5.3): the settings-managed list an
+ *  agreement's type is chosen from - a type created, edited, retired or
+ *  merged into another writes its own row (the first reference list with a
+ *  trail; opportunity categories, zones and service types still have none).
+ *  Org-wide, no location: read by entityType + entityId like the templates';
+ *  never revertable (REVERTABLE_AUDIT_ENTITY_TYPES leaves it out - a merge
+ *  is undone by hand, a rename by renaming). */
 export type AuditEntityType =
   | "customer"
   | "location"
@@ -45,6 +52,7 @@ export type AuditEntityType =
   | "credit_memo"
   | "agreement"
   | "agreement_template"
+  | "agreement_type"
   | "opportunity"
   | "appointment";
 
@@ -155,7 +163,14 @@ export type AuditEntityType =
  *  source row (extractAuditRevertedRef; the key is on the diff's ignore list
  *  so it never reads as a field change). Which rows may be reverted is
  *  describeAuditRevertability below; who may is REVERT_HISTORY
- *  (shared/permissions.ts, manager+ until C5.6). */
+ *  (shared/permissions.ts, manager+ until C5.6).
+ *  `agreement_type_merged` (Pass 35, C5.3): one agreement type was merged
+ *  into another from Settings (POST /api/agreement-types/:id/merge) - the
+ *  source type's own row, before = the source as it was, after = the source
+ *  retired plus `merge` { intoId, intoKey, intoLabel, agreementsMoved,
+ *  templatesMoved }. Each agreement and template that moved gets its own
+ *  `update` row in the same transaction (the type key as a field change),
+ *  so a location's History shows the move on the agreement itself. */
 export type AuditAction =
   | "update"
   | "created"
@@ -192,7 +207,8 @@ export type AuditAction =
   | "technician_preference_cleared"
   | "placement_exclusion_overridden"
   | "appointment_crew_changed"
-  | "placement_preference_bypassed";
+  | "placement_preference_bypassed"
+  | "agreement_type_merged";
 
 const ENTITY_TYPE_LABELS: Record<AuditEntityType, string> = {
   customer: "Customer",
@@ -208,6 +224,7 @@ const ENTITY_TYPE_LABELS: Record<AuditEntityType, string> = {
   credit_memo: "Credit memo",
   agreement: "Agreement",
   agreement_template: "Agreement template",
+  agreement_type: "Agreement type",
   opportunity: "Opportunity",
   appointment: "Appointment",
 };
@@ -249,6 +266,7 @@ const ACTION_LABELS: Record<AuditAction, string> = {
   placement_exclusion_overridden: "Excluded technician scheduled (override)",
   appointment_crew_changed: "Crew changed",
   placement_preference_bypassed: "Preferred technician passed over (confirmed)",
+  agreement_type_merged: "Agreement type merged",
 };
 
 // Both take plain strings, not the unions: they render rows already in the

@@ -30,6 +30,7 @@ const TABLES_REQUIRING_ORG_ID = [
   "agreement_cancellation_policies",
   "agreements",
   "agreement_templates",
+  "agreement_types",
   "billing_plans",
   "service_records",
   "app_settings",

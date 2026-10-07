@@ -58,7 +58,7 @@ are calibrated to Phase 1's: Pass 6 (four tables, routes, three dialogs) is the 
 | Billing profile changeable from the customer screen (edit / add location) | DONE | Pass 34 (2026-10-05, C5.2): a Billing selector in Add Location and Edit Location (`AddLocationDialog` / `EditLocationDialog` / `LocationBillingSelector` in `customer-detail.tsx`) - inherit the account default or override for this location - and the account default's own fields on the primary location's Edit Location. Resolution is still `resolveBillingProfileForLocation()` (`storage.ts`; since Pass 34 a wrapper over the reader-taking `resolveBillingProfileForLocationTx`): the location's active override, else the account's active default. `billing_profiles.location_id` is the only pointer read; `locations.billing_profile_id` is a mirror the profile write path keeps, read by nothing |
 | Default billing profile option in Settings | DONE | Pass 34 (C5.2): Settings -> Billing Defaults, one `app_settings` row `default_billing_profile_template_id` (`shared/billing-profile-defaults.ts`), read at customer creation. `customers.defaultBillingProfileId` (`schema.ts:20`) is read by nothing - a dead column for the hygiene row C5.8 |
 | "Monthly billing" in template invoice terms | **MISREAD**; the statement B5 asked for instead is DONE — Pass 15 (2026-09-25) | terms are `DUE_ON_RECEIPT / NET_15 / NET_30 / NET_60` (`settings.tsx:423-432`); monthly cadence is a Billing Plan, not a term. See B5. The statement: `shared/statements.ts` (the arithmetic), `server/documents/statement-pdf.ts` (the document), `StatementDialog` on the location Invoices tab and the customer header. See "Shipped in Pass 15" at the end of Part D. |
-| Agreement Type as a dropdown | ABSENT | free-text `Input` at `settings.tsx:1130`; `agreements.agreementType` is untyped text; seed holds "Residential Recurring" etc. |
+| Agreement Type as a dropdown | DONE | Pass 35 (2026-10-06, C5.3): a `Select` over the org's `agreement_types` list on the template form (`settings.tsx` `AgreementTemplateForm`, `select-template-agreement-type`) and on the agreement form (`customer-detail.tsx` `AgreementForm`, `select-agreement-type`, the template's default preselected), plus "None"; `agreements.agreementType` holds the type's KEY (nullable); the list is Settings → Agreement Types (Add / Edit / Merge, admin). Was: a free-text `Input` (`settings.tsx:1281` at the time, not :1130 - that was the form's declaration); the dev DB held "Annual" (16 agreements, one template) and NULL, not the seed's "Residential Recurring" (`server/seed.ts`, which now names the seed keys PEST_CONTROL / TERMITE / MOSQUITO) |
 
 ### A2. Invoices, ticket review, services
 
@@ -236,7 +236,11 @@ visit; INSTALLMENT is a billing plan, not a type). **Bundle is not an agreement 
 grouping layer via `bundle_agreements`). **Owner:** a dropdown, **configurable in Settings**, seeded
 with Pest control / Termite / Mosquito / Wildlife / **Evaluation**; no hardcoded structure list. The
 existing free text migrates into the list (each distinct value becomes an entry the office can rename
-or merge). C5.3.
+or merge). C5.3. **Built as Pass 35** (`feature/phase-5-agreement-vocabulary`, 2026-10-06): the
+`agreement_types` list seeded with the five, Add / Edit / **Merge** in Settings, the two dropdowns, the
+one free-text value "Annual" migrated as its own entry ANNUAL for the office to rename or merge (not
+silently Pest control), NULL left as "None"; no structure list - the Billing Plan and `expectedServiceCount`
+remain the structure, and a bundle remains a grouping layer.
 
 **B9. "Designate the service type as Production or Billable; agreement services / billing profiles
 with monthly billing show as production."** Built (Pass 7), but the designation is decided per
@@ -408,12 +412,12 @@ zones from C4.1b, and only the last exists by then.
 | C5.1a (**Pass 32**) — **done** (`feature/phase-5-audit-coverage`, 2026-10-04; see "Shipped in Pass 32" at the end of Part D) | **Non-financial audit coverage (D7 follow-up).** Every mutation of customer, location, contact, billing profile, agreement, agreement template, appointment, and service (create / update / status) writes the log through the existing helper, with new entity members in `shared/audit.ts`. Excludes `service_records` (C3.1's `ticket_edited`) and price overrides (Pass 8). As built: `contact`, `billing_profile`, `billing_profile_template`, `agreement_template` join `AuditEntityType` (no `account` - the primary flip is logged on the locations, the account's facts sit on the customer); `created` / `status_changed` / `deleted` join `AuditAction` beside the existing `update` (one member for "updated"); three private writers (`auditCreatedTx` / `auditChangeTx` / `auditDeletedTx`) write inside each method's transaction, a change only when the History tab's own diff would show something (`auditChangeAction`; `updateLocationProfile`'s always-write fixed), `status_changed` when `status` moved; whole-row snapshots for the simple entities (the agreement's with its sold-by user named), the curated `serviceAuditSnapshot` / `appointmentAuditSnapshot` grown for the two scheduling entities; the fourteen actor-less storage methods take `actor` and every route passes `getAuditActor(req)`; an agreement's own schedule executing - the generated service (also from the three write-on-GET routes), the recurrence advance, the billing run's `nextBillingDate` - signs as `SYSTEM_AUDIT_ACTOR`; `cancelAgreement`'s visits carry the disposition's cancel fields and a `status_changed` each; `deleteService` writes `deleted` (and no longer fails on the crew FK); the location History read lists the contacts' and the billing profiles' rows, the templates are read by `entityType` + `entityId`; `audit_logs_entity_idx` on (org_id, entity_type, entity_id); the dead public `recordAuditLog` removed; the client's five dead `["/api/audit-logs"]` invalidations replaced by `invalidateAuditViews()` and every mutation that now writes a row calls it. | Customer/account history log | — | — |
 | C5.1b (**Pass 33**) — **done** (`feature/phase-5-customer-history-revert`, 2026-10-05; see "Shipped in Pass 33" at the end of Part D) | **Customer-level History + Revert.** A History view on the customer that rolls up every location plus account-level rows; **Revert** on a row = a new forward update through the entity's normal write path, logged as `reverted` naming the source row; manager+ until C5.6 makes it a configurable permission (owner). As built: `GET /api/audit-logs?customerId=` (the third exclusive form) backed by `getAuditLogsForCustomer` - the account's locations (keyed on the account, the screen's own source; `locations.customerId` only for a legacy customer with no account row) with every record anchored to them, plus the customer's own rows, the account's billing profiles with no location and any contact with no location, newest first at the read's clamp, each row annotated `locationId` / `locationName` (null = "Account"); a **History** button on the customer screen's toolbar beside Statement opening a sheet with a location filter and a record-type filter (the tab list is location-scoped by canon, so no customer-level tab); the per-location History tab untouched. Revert: `POST /api/history/:auditLogId/revert` under `REVERT_HISTORY` (manager+; the table's own API stays read-only) - the storage plans it (`shared/audit.ts` `describeAuditRevertability`: `update` / `status_changed` / `reverted` rows of customer, location, contact, billing profile, the two templates and agreement; the entity must exist; the fields the row changed must still hold its after values, else 409 `HISTORY_STALE` with the current row), the route validates the planned payload with the entity's own zod schema and the agreement's sale-credit rule, and the entity's existing update method replays it - ONE `reverted` row (the write path writes it instead of its `update`, the after carrying `reverted` = { auditLogId, action, createdAt, actorLabel }), re-checking the fields inside its transaction. Refused with a code: `created` / `deleted` rows, the financial entities, service / appointment / opportunity rows, the special actions (preference set / clear...), an agreement's cancellation, a location made non-primary. The card renders a one-sided row's snapshot, the location chip, the "Reverted the ... of ..." line and the Revert button with an AlertDialog confirm; the reverted entity's own reads refresh. | History for all changes; revert | C5.1a | — |
 | C5.2 (**Pass 34**) — **done** (`feature/phase-5-billing-profile-customer-screen`, 2026-10-05; see "Shipped in Pass 34" at the end of Part D) | **Billing profile on the customer screen.** Selector in edit/add location (inherit account default / override), account default on the customer edit modal, org default template in Settings (`default_billing_profile_template_id`) used at customer creation; the "Billing: Per-location / Default" chip reads real data. As built: `billing_profiles.location_id` is the one pointer read (`locations.billing_profile_id` is a mirror the profile write path keeps, no reader; `customers.default_billing_profile_id` dead, left for C5.8); `shared/billing-profile-defaults.ts` holds the setting key, the vocabularies and the `LocationBillingProjection` (ACCOUNT_DEFAULT \| LOCATION_OVERRIDE \| NONE) the compat read answers for the selected location beside `accountDefault` and `billingOverrideLocationIds`; Settings -> Billing Defaults (`GET` open / `PATCH` MANAGE_SETTINGS, 400 `BILLING_DEFAULTS_INVALID` for an unknown or inactive template, null deletes the row); `createCustomerWithPrimaryLocation` creates the account-default row from that template in its transaction, audited `created` (no template, or a stale one: no profile; no backfill of existing accounts); the writers refuse a foreign location, a second active override per location and a second active default per account (400 with a code), never type the card / ACH tokens, and retire with `status: "inactive"` (never a delete - invoices carry the id); the Add / Edit Location dialogs carry the selector (inherit / override with label, type, terms, billing name, address) and the primary location's Edit Location the account default's fields (created there when the account has none, prefilled from the org template); the template routes' writes are MANAGE_SETTINGS (the card gated), the instance routes stay open like the location PATCH; the chip prints "<label> (account default)" / "<label> (this location)" / "No billing profile", the switcher and profile-card badges read the projection, the ticket header prints the resolved profile; `getAuditLogsForLocation` narrowed to the location's own overrides plus the account's location-less rows. Not audited: the setting's write (no `set*` app_settings writer is - C5.8). | Billing profile from customer screen; add-location setup; default in settings | — | — |
-| C5.3 (**Pass 35**) | **Agreement vocabulary.** A settings-managed **Agreement types** list (seeded Pest control / Termite / Mosquito / Wildlife / Evaluation) with dropdowns on template and agreement; the existing free text migrated into entries the office can rename or merge; no hardcoded structure list (B8). `CUSTOM` recurrence → explicit DAY / WEEK with the `CUSTOM(N)` → `DAY(N)` migration (7 agreements, 2 templates). | Agreement Type dropdown; CUSTOM recurrence | — | — |
+| C5.3 (**Pass 35**) — **done** (`feature/phase-5-agreement-vocabulary`, 2026-10-06; see "Shipped in Pass 35" at the end of Part D) | **Agreement vocabulary.** A settings-managed **Agreement types** list (seeded Pest control / Termite / Mosquito / Wildlife / Evaluation) with dropdowns on template and agreement; the existing free text migrated into entries the office can rename or merge; no hardcoded structure list (B8). `CUSTOM` recurrence → explicit DAY / WEEK with the `CUSTOM(N)` → `DAY(N)` migration (this row said 7 agreements and 2 templates; the DB had NINE and 2, every one with recurrence CUSTOM/1, and the 7 / 10 sat on the TERM columns, so the migration covered four columns). As built: `agreement_types` (id, orgId, key, label, description, isActive, sortOrder; unique (org_id, key)) with `shared/agreement-types.ts` holding the seed, the key derivation (upper snake from the label), the one unit list `AGREEMENT_UNITS` = DAY \| WEEK \| MONTH \| QUARTER \| YEAR and its labelers; `agreements.agreement_type` / `agreement_templates.default_agreement_type` keep their columns and hold the type's KEY, nullable - a type is not required (the dropdowns offer "None"; no "Untyped" entry); the agreement bootstrap seeds the five keys per org, turned the one free-text value "Annual" (16 agreements and the Quarterly Control template) into the entry ANNUAL "Annual" at sort 60 for the office to rename or merge (never silently Pest control; NULL stayed NULL on 9 agreements and 2 templates), and rewrote CUSTOM → DAY with the same interval on all four unit columns (recurrence CUSTOM/1 → DAY/1 on 9 agreements and 2 templates; term CUSTOM/7 → DAY/7 on 6 agreements and 2 templates, CUSTOM/10 → DAY/10 on 3 - exact, never WEEK(1) for a 7; next-service, renewal and billing dates untouched), each row printed before its write, both steps self-guarding and unaudited (bootstrap UPDATEs); `server/seed.ts` names the seed keys on its three templates. Settings → **Agreement Types** card: Add (the key derived and previewed; fixed once created), Edit (label / description / active / sort), **Merge** (every agreement and template on the source moves to the target in one transaction, the source inactive); a type in use - any agreement whatever its status, or any template - cannot be made inactive without a merge (409 `AGREEMENT_TYPE_IN_USE`); no DELETE (405); the controls admin-only. Routes: `GET /api/agreement-types[?includeInactive=true]` open, each row with `agreementCount` / `templateCount`; `POST`, `PATCH /:id`, `POST /:id/merge { intoId }` MANAGE_SETTINGS, strict (a key on a PATCH refused), 400 `AGREEMENT_TYPE_KEY_TAKEN` / `_KEY_INVALID` / `_LABEL_REQUIRED` / `_MERGE_TARGET_INVALID` (self, unknown, inactive), 404 `_NOT_FOUND`; the agreement and template writers refuse a key that is not an ACTIVE type (400 `AGREEMENT_TYPE_UNKNOWN`, `assertActiveAgreementTypeTx`, on insert and on a change); `recurrenceUnitSchema` = `z.enum(AGREEMENT_UNITS)` on all four columns (CUSTOM refused). Audit: `agreement_type` joins `AuditEntityType` (`created` / `update`; never revertable) and `agreement_type_merged` joins `AuditAction` (the source's row, the after naming `merge` { intoId, intoKey, intoLabel, agreementsMoved, templatesMoved }) PLUS one `update` per moved agreement (`agreementAuditSnapshotTx` - the key reads as a field change on the location's History) and per moved template - direct UPDATEs inside the merge's transaction, not `updateAgreement` (its own transaction, re-derives billing, regenerates services). `advanceAgreementDate` dropped its CUSTOM case (an unknown unit is a MONTH; no row carries CUSTOM); a pre-migration History row whose before holds CUSTOM replays as DAY (`REVERT_UNIT_FIELDS`). Client: the two type dropdowns (template form; agreement form with the template's default preselected) over the active types plus "None" (plus the row's own key if since inactive); the four unit selects over the list; the three labelers delegate to the shared ones; `addAgreementInterval` gained DAY / WEEK (WEEK(1) previewed as one day before); the type shows in ONE place, "Type: <label>" on the agreement card (nowhere else read it). Untouched by decision: billing plan `anchorMode` CUSTOM, cancellation `effectiveDateMode` CUSTOM, the material "Custom / Unlisted"; `service_types.category` (Termite / General / Rodent / Commercial free text) overlaps the list and was not merged; POST / PATCH `/api/agreement-templates` and the Settings Agreement Templates card stay ungated (C5.8 / C5.6). | Agreement Type dropdown; CUSTOM recurrence | — | — |
 | C5.4 (**Pass 36**) | **UI hygiene.** Hyperlinks on the dispatch sheet, hover card, Service Details dialog, pending-queue rows, the Ticket Review list and modal, and the Service History page; a details link from the pending queue (service details + location); the `schedulingMode` badge humanized ("Scheduling: auto-eligible") with no auto-schedule promise (dev rule 6); Make Primary moves into the contact dialog (inline button removed); New Service modal `max-w-2xl`. May be split across other passes that touch the same files. | Hyperlinks; pending-queue links; AUTO_ELIGIBLE pill; Make Primary; widen modal | — | — |
 | C5.6 (**Pass 37**) | **Role profiles in Settings** (B16). `role_profiles` + `role_profile_permissions` (org-scoped); the four built-in roles seeded as editable, cloneable profiles; users assigned a profile; `can()` reads the profile instead of the fixed matrix (`shared/permissions.ts`), so no call site changes; an admin cannot remove `MANAGE_SETTINGS` from their own profile; every profile change audit-logged. Interim "manager+" answers elsewhere in this roadmap become profile permissions. | Role profile creation | — | — |
 | C5.7 (**Pass 38**) | **Technicians are users** (owner decision 2): technician profile fields (license, color, display name) move onto `users`; `technicians` becomes a compatibility view or is dropped after every FK (`appointments`, `services`, `service_records`, `production_value_entries`, `technician_preferences`, crew) is rewired; the C2.2 bridge is the migration key. | One table for all users | C2.2, C5.6 | — |
 | C5.5 | **Org timezone** for every date-only value (billing run "today", collections days, batch range, aging). Cross-cutting; scheduled when the UTC-day slips become a real complaint. | (Pass 7.7 note) | — | — |
-| C5.8 | **Schema and settings hygiene** (found by Pass 34, unscheduled - the owner sequences it). Drop the two dead billing pointers, `locations.billing_profile_id` (a mirror with no reader since Pass 34) and `customers.default_billing_profile_id` (no reader at all) - a column drop, so the copy-database recipe; add the `billing_profiles` foreign keys `shared/schema.ts` declares (`accountId`, `locationId`, `templateId`) that the bootstrap never created; audit the `app_settings` writes (no `set*` writer writes `audit_logs`, and there is no `app_setting` audit entity - the Pass 32 coverage stopped at the customer record); reconcile `server/seed.ts`'s four billing profile templates with what the dev DB holds (COD, Test Net 15). | (Pass 34 notes) | C5.2 | — |
+| C5.8 | **Schema and settings hygiene** (found by Pass 34, unscheduled - the owner sequences it). Drop the two dead billing pointers, `locations.billing_profile_id` (a mirror with no reader since Pass 34) and `customers.default_billing_profile_id` (no reader at all) - a column drop, so the copy-database recipe; add the `billing_profiles` foreign keys `shared/schema.ts` declares (`accountId`, `locationId`, `templateId`) that the bootstrap never created; audit the `app_settings` writes (no `set*` writer writes `audit_logs`, and there is no `app_setting` audit entity - the Pass 32 coverage stopped at the customer record); reconcile `server/seed.ts`'s four billing profile templates with what the dev DB holds (COD, Test Net 15). Found by Pass 35 and left here (or for C5.6's profiles): POST / PATCH `/api/agreement-templates` have no permission gate and the Settings Agreement Templates card's Add / Edit are ungated - the only Settings reference data still open to every role; and `service_types.category` (free text: Termite / General / Rodent / Commercial) overlaps the Pass 35 agreement types list - decide whether it stays a display grouping or reads the list. | (Pass 34 and 35 notes) | C5.2, C5.3 | — |
 
 ### Phase 6 — Card / ACH payments and invoice delivery (V1's "Phase 2")
 
@@ -923,7 +927,7 @@ Behavior worth knowing before the next pass touches it:
   of the term, the pill's own number) from there to its term end, never the elapsed periods. The 5
   CANCELLED `Quarterly Control` rows (`94343aa9`, `43438e38`, `12ffbbcb`, `d8de7167`, `9662bca9` -
   the roadmap said 4) attached for the constraint only, no schedule. The 2 `Wildlife Trapping
-  Program` rows (`6e6f03c3`, `1044779c`) hit Pass 3.5's term-end refusal (CUSTOM/7 terms that ended
+  Program` rows (`6e6f03c3`, `1044779c`) hit Pass 3.5's term-end refusal (CUSTOM/7 terms - DAY/7 since Pass 35's migration - that ended
   2026-05-23 / 2026-05-30): plan attached, nothing billed. No row hit the billing-events refusal.
   The 9 `Quarterly Control` notes were exactly the Pass 9 line and are null now. A field-by-field
   diff of all 25 rows against a pre-boot JSON snapshot shows only `billing_plan_id`,
@@ -4140,6 +4144,157 @@ default block and its prefill), the Billing Defaults card, the gated Templates c
 two badges, the profile card's billing line and the ticket header's line - the repo has no browser automation
 and the session had no browser; restart `npm run dev:full` before trying them.
 
+**Shipped in Pass 35** (`feature/phase-5-agreement-vocabulary`, 2026-10-06) — the C5.3 row as built, the
+fourth Phase 5 row. One new table (`agreement_types`: CREATE TABLE IF NOT EXISTS, a unique index on
+(org_id, key), five seed rows per org) and two data migrations (the free-text type → key; CUSTOM → DAY on the
+four unit columns), all in `server/agreement-bootstrap.ts` `bootstrapAgreementVocabulary()`, self-guarding,
+unaudited (bootstrap UPDATEs, as Pass 25's were). Verified on the **copy-database recipe** (the migration
+rewrites 9 agreements and 2 templates the owner uses), so the owner's `npm run dev:full` restart after the
+merge prints the five seed rows, the 17 "Annual" → ANNUAL rows and the 11 CUSTOM → DAY rows once, then nothing.
+
+```ts
+// shared/agreement-types.ts                  AGREEMENT_UNITS / AgreementUnit (DAY | WEEK | MONTH | QUARTER | YEAR); AGREEMENT_UNIT_LABELS; LEGACY_AGREEMENT_UNIT ("CUSTOM");
+//                                             isAgreementUnit; normalizeLegacyAgreementUnit (CUSTOM -> DAY, else unchanged); describeAgreementUnit; describeAgreementCadence(unit,
+//                                             interval) -> "Quarterly" | "Every 7 Days"; describeAgreementTerm(unit, interval) -> "Renews every 7 days"; AGREEMENT_TYPE_SEED
+//                                             (PEST_CONTROL "Pest control" 10 / TERMITE 20 / MOSQUITO 30 / WILDLIFE 40 / EVALUATION 50); AGREEMENT_TYPE_KEY_MAX_LENGTH 64 /
+//                                             _LABEL_ 80 / _DESCRIPTION_ 500; deriveAgreementTypeKey(label) (NFKD, upper, [^A-Z0-9]+ -> _, trimmed - "Bed-bug (heat)" ->
+//                                             BED_BUG_HEAT); isValidAgreementTypeKey; AGREEMENT_TYPE_ERROR_CODES (NOT_FOUND 404; LABEL_REQUIRED / KEY_INVALID / KEY_TAKEN /
+//                                             MERGE_TARGET_INVALID / UNKNOWN 400; IN_USE 409); AgreementTypeUsage { agreementCount, templateCount }; NO_AGREEMENT_TYPE_USAGE;
+//                                             describeAgreementType(key, types) -> label | key | ""; describeAgreementTypeUsage(usage) -> "16 agreements and 1 template"
+// shared/schema.ts                            agreementTypes (id, orgId, key, label, description, isActive, sortOrder, createdAt, updatedAt; agreement_types_org_key_uidx);
+//                                             insertAgreementTypeSchema; AgreementType / InsertAgreementType; the agreementType / termUnit / defaultAgreementType comments
+// shared/audit.ts                             AuditEntityType + agreement_type (16 members; not in REVERTABLE_AUDIT_ENTITY_TYPES); AuditAction + agreement_type_merged (36 members);
+//                                             the two labels ("Agreement type", "Agreement type merged")
+// shared/agreement-schedule.ts                advanceAgreementDate(dateOnly, unit, interval) without the CUSTOM case (DAY / WEEK / QUARTER / YEAR; MONTH and default = months);
+//                                             the header comment rewritten (one vocabulary, the history of the DAY / WEEK gap and of CUSTOM)
+// server/agreement-bootstrap.ts               bootstrapAgreementVocabulary() - the table, the index, the per-org seed (printed when inserted) -> migrateLegacyAgreementTypes(org)
+//                                             (SELECT the agreements / templates whose text is NOT IN the org's keys; one entry per distinct value - key derived, label as typed,
+//                                             sort max+10, a value whose derived key exists maps to it; the per-row print then the UPDATE) -> migrateCustomAgreementUnits()
+//                                             (SELECT both tables WHERE a unit = 'CUSTOM'; the count report; the per-row print with the next-service date; four guarded UPDATEs
+//                                             to 'DAY'); called last in bootstrapAgreements(), after the plan attach
+// server/tenancy-bootstrap.ts                 TABLES_REQUIRING_ORG_ID + agreement_types
+// server/seed.ts                              the three seed templates' defaultAgreementType -> PEST_CONTROL / TERMITE / MOSQUITO (were "Residential Recurring" etc.)
+// server/storage.ts                           AgreementTypeError(status 400 | 404 | 409, code: AgreementTypeErrorCode, message); AgreementTypeInput { label, key?, description?,
+//                                             isActive?, sortOrder? }; AgreementTypeUpdateInput { label?, description?, isActive?, sortOrder? }; AgreementTypeWithUsage =
+//                                             AgreementType & AgreementTypeUsage; AgreementTypeMergeResult { source, target, agreementsMoved, templatesMoved };
+//                                             IStorage getAgreementTypes(includeInactive?) / createAgreementType(data, actor?) / updateAgreementType(id, data, actor?) /
+//                                             mergeAgreementTypes(sourceId, targetId, actor?); private agreementTypeUsageTx(reader) (two GROUP BY counts), readAgreementTypeTx,
+//                                             nextAgreementTypeSortOrderTx (max+10), assertActiveAgreementTypeTx(reader, key) - called by createAgreementTemplate,
+//                                             updateAgreementTemplate (on a change), createAgreement, updateAgreement (on a change); REVERT_UNIT_FIELDS (agreement: termUnit /
+//                                             recurrenceUnit; agreement_template: the defaults) read by coerceRevertValue (CUSTOM -> DAY)
+// server/routes.ts                            recurrenceUnitSchema = z.enum(AGREEMENT_UNITS); agreementTypeKeySchema (trimmed string 1..64, nullable, optional) on
+//                                             agreementTemplateBaseSchema.defaultAgreementType and agreementBaseSchema.agreementType; agreementTypeCreateSchema { label, key?,
+//                                             description?, isActive?, sortOrder? } / agreementTypeUpdateSchema (no key) / agreementTypeMergeSchema { intoId }, all .strict();
+//                                             respondAgreementTypeError(res, e); GET /api/agreement-types[?includeInactive=true] (open); POST /api/agreement-types
+//                                             (MANAGE_SETTINGS, 201); PATCH /api/agreement-types/:id (MANAGE_SETTINGS; 404 NOT_FOUND; 409 IN_USE); POST
+//                                             /api/agreement-types/:id/merge (MANAGE_SETTINGS; 404 / 400 / 200 { source, target, agreementsMoved, templatesMoved });
+//                                             DELETE /api/agreement-types/:id -> 405; the template and agreement POST / PATCH and the revert route answer an
+//                                             AgreementTypeError as { code, message }
+// client/src/pages/settings.tsx               formatTemplateRecurrence / formatTemplateTerm delegate to describeAgreementCadence / describeAgreementTerm; AgreementTypeRow;
+//                                             invalidateAgreementTypeViews(); AgreementTemplateForm { agreementTypes? } - the "Agreement Type" Select
+//                                             (select-template-agreement-type; active types + the template's own key if inactive + "None") and the unit selects over
+//                                             AGREEMENT_UNITS (select-template-term-unit / select-template-recurrence-unit); AgreementTypeForm (Add / Edit: label, the key
+//                                             previewed from the label and fixed on Edit, description, Active - disabled with the usage when in use -, sort);
+//                                             AgreementTypeMergeForm (the target among the active types, the counts before and after, a destructive Merge); the
+//                                             Agreement Types card (card-agreement-types: Add / Edit / Merge admin-only, "Admins manage agreement types." otherwise;
+//                                             row-agreement-type-<KEY> printing Key | Sort | usage) above Agreement Templates
+// client/src/pages/customer-detail.tsx        formatAgreementRecurrence delegates; AgreementTypeRow; addAgreementInterval with DAY and WEEK cases; AgreementForm - the
+//                                             agreement-types query, selectableAgreementTypes, the "Agreement Type" Select (select-agreement-type; the template's default
+//                                             preselected through buildAgreementFormState and applyTemplate) and the unit selects over AGREEMENT_UNITS
+//                                             (select-agreement-term-unit / select-agreement-recurrence-unit); AgreementsTab - the agreement-types query and the card's one
+//                                             "Type: <label>" line (text-agreement-type-<id>)
+```
+
+**Decided (1), the list:** a new table on Pass 25's `opportunity_categories` pattern, not an `app_settings`
+JSON list - a type needs a stable row for its usage counts and its audit trail; the two type columns stay
+and hold the KEY, nullable; **a type is not required** (9 agreements and 2 templates had none, and an
+"Untyped" entry would be a lie - the dropdowns offer "None"); the migration maps each distinct free-text
+value to its own entry (label as typed, key derived exactly as Settings derives one, so "Annual" → ANNUAL
+"Annual" at sort 60), never to a seed entry by guess - the owner's answer was rename or merge, and the
+Settings card now has both; a value whose derived key already exists ("Termite") maps to that entry;
+`server/seed.ts` names the seed keys (the mapping lives in the seed, not the migration, so a fresh database
+needs none). **Decided (2), rename or merge:** Add (the key derived from the label, upper snake, previewed in
+the form; a caller may name a key, upper-cased and validated; fixed once created - the PATCH schema refuses
+one), Edit (label / description / active / sort), Merge (`POST /api/agreement-types/:id/merge { intoId }`),
+no DELETE (405); **a type in use cannot be made inactive** - in use means any agreement whatever its status
+(a cancelled one still names it) or any template carries the key - 409 `AGREEMENT_TYPE_IN_USE` naming the
+counts, merge first; an unused type can be made inactive and reactivated; the writes MANAGE_SETTINGS (the
+settings-reference-data rule, Pass 34's precedent), the card's Add / Edit / Merge admin-only, the read open.
+The opportunity-category precedent (label / active / sort only, ungated, unaudited) stays as it is - noted,
+not this row. **Decided (3), audit:** `agreement_type` joins the entity vocabulary with `created` / `update`
+(an active flip reads as `update` - the row has `isActive`, not `status`) and a dedicated
+`agreement_type_merged` action rather than an `update` with a marker, because a merge is a workflow the
+History reader should name; the merge writes the source type's row (before = the source, after = the source
+inactive plus `merge` { intoId, intoKey, intoLabel, agreementsMoved, templatesMoved }) PLUS one `update` per
+moved agreement and template through `auditChangeTx` with the same whole-row snapshots the writers use (the
+agreement's with `soldBy` named), so each agreement's own History shows the key moving, by the admin who
+merged - as direct UPDATEs inside the merge's one transaction, not through `updateAgreement` /
+`updateAgreementTemplate` (each runs its own transaction, so a failure half-way would leave half the rows
+moved; `updateAgreement` also re-derives billing and regenerates services, none of which a type change
+touches); the per-row cost is 16 rows for Annual on the dev DB. The migration's own mapping is NOT audited
+(a bootstrap UPDATE, printed at boot - Pass 25's rule). The type's own rows have no location and are read by
+`GET /api/audit-logs?entityType=agreement_type&entityId=`; no Settings surface lists them yet. **Decided
+(4), the dropdowns:** a Select over the ACTIVE types plus "None" on both forms, the row's own key kept in the
+list when it has since gone inactive (a merge moves rows, so that is a race, not a state) and shown as "(not
+on the Settings list)" if it is on no row at all; the agreement form preselects the template's default
+(`buildAgreementFormState` already did; `buildAgreementInsertFromTemplate` still copies it once at creation);
+the type showed NOWHERE before this pass (no badge, filter, report or document read it) and shows in ONE
+place now - "Type: <label>" on the agreement card. **Decided (5), CUSTOM → DAY / WEEK:** one enum for all
+four columns; the migration rewrites every CUSTOM(N) as DAY(N) - the same interval, exactly, never WEEK(1)
+for a 7 (the office may pick WEEK afterwards); next-service, renewal and billing dates untouched (the
+arithmetic did not change: CUSTOM stepped by days); `advanceAgreementDate` DROPS the CUSTOM case rather than
+keeping an alias - the enum refuses it and no row carries it, and a stray CUSTOM would now step by a month
+(stated); the client's `addAgreementInterval` gained DAY and WEEK (its default added days, so WEEK(1) would
+have previewed as one day); the three labelers delegate to the shared `describeAgreementCadence` /
+`describeAgreementTerm`; the other CUSTOMs (billing plan `anchorMode`, cancellation `effectiveDateMode`, the
+material "Custom / Unlisted") untouched. **Decided (6), Revert:** the two `agreement|update` rows on the dev
+DB carry only `soldBy` / `soldByUserId`, so no stored row is affected; still, a pre-migration row whose
+before holds CUSTOM replays as DAY (`REVERT_UNIT_FIELDS` in `coerceRevertValue`, the migration's own rule)
+rather than 400ing at the enum; a row whose after holds CUSTOM is stale anyway once the migration rewrote the
+current row; a type-key revert is a legitimate replay (the key re-validated against the active list by
+`updateAgreement`); a type's own rows are never revertable (a merge is undone by hand). **Decided (7), not
+this row:** POST / PATCH `/api/agreement-templates` keep no permission gate and the Settings Agreement
+Templates card stays ungated - recorded on C5.8 for C5.8 or C5.6. **Found and fixed:** the row's "7
+agreements, 2 templates" (9 and 2, the 7 / 10 on the TERM); CURRENT_FOCUS's "Wildlife is CUSTOM/7 term and
+recurrence" (recurrence was CUSTOM/1); A1 :61's `settings.tsx:1130` (the Input was :1281) and "seed holds
+Residential Recurring" (the dev DB held Annual and NULL); canon §9's fixed `agreementType` enum and
+`frequencyRule` (neither existed in code; now the settings-managed list by key and the four unit columns);
+`shared/agreement-schedule.ts`'s header (DAY and WEEK were never billing-only in the switch); D8's
+`serviceCategory` name (no such symbol; the dimension is the agreement type).
+
+Verified on the copy-database recipe on PORT=5001: `npm run check` clean; boot 1 printed the table's five seed
+rows, the "Annual" report with its 17 per-row lines and the CUSTOM report with its 11 per-row lines (each row's
+next-service date unchanged); boot 2 printed only "serving on port 5001" with every table count unchanged (the
+one diff against the pre-boot snapshot: `agreement_types` 6). **100 smoke assertions passed on the first
+run:** the pure functions (DAY(7) and WEEK(1) step the same seven days; CUSTOM has no case; the key derivation;
+the labelers); the migrated rows read back (six types, ANNUAL ×16 / NULL ×9, no CUSTOM, the four known
+next-service dates unchanged, no audit rows from the migration); the list's GET open to every role with usage
+counts (ANNUAL 16 / 1); POST / PATCH / merge 403 for tech, support and manager; as admin a create with the key
+derived (201, `created` row), a duplicate 400 KEY_TAKEN, a no-letters label 400 KEY_INVALID, a blank label and
+an unknown field 400, a given key stored upper-cased, a bad key 400, an edit (200, `update` row, an unchanged
+PATCH writing nothing), a key on a PATCH 400, an unknown id 404, DELETE 405, an unused type made inactive and
+dropped from the active read, the type's rows on `GET /api/audit-logs?entityType=agreement_type`; a template
+with an unknown or inactive key 400 AGREEMENT_TYPE_UNKNOWN and with CUSTOM 400, then 201 with the key, DAY/28
+and WEEK/1; an agreement created from it with the type, WEEK/1 and DAY/28 preselected, a second with an
+explicit type and DAY/7, both `expectedServiceCount` 4 on a DAY/28 term, an unknown / inactive key and a
+CUSTOM unit refused on POST and PATCH; the real path - one AGREEMENT_GENERATED service per agreement at
+creation, the tech posting both tickets and support finalizing them, both next-service dates advanced from
+yesterday by exactly seven days (WEEK/1 and DAY/7 agree), no second service, the System `update` row; the
+in-use rule (409 with "2 agreements and 1 template"); the merge's refusals (self, unknown, inactive target
+400; unknown source 404; strict body) and the merge itself (200, 2 agreements and 1 template moved, the
+source inactive, exactly four audit rows - the `agreement_type_merged` row naming the target and the counts,
+an `update` per agreement with the key before / after and `soldBy` named, the template's `update` - the usage
+counts after, the location History listing the moved agreements' rows, the merged type reactivated and made
+inactive again); a revert of the agreement's type (TARGET → null → back, one `reverted` row) and of its unit
+(WEEK → MONTH → back through the enum; support 403); a merge row and a type's `created` row not revertable;
+the fixture deleted in FK order, counts back at baseline (+4 session rows). Vite 200 on `settings.tsx`,
+`customer-detail.tsx` and the three shared modules, the new symbols in the transforms. The copy was dropped
+afterwards; the shared dev DB is untouched (no `agreement_types`, the 9 CUSTOM rows still there) until the
+owner's restart. **Not rendered in a browser:** the Agreement Types card (its rows, the Add / Edit form with
+the key preview and the disabled Active select, the Merge form and its counts, the admin-only note), the two
+type dropdowns, the four unit selects now listing Day / Week, the agreement card's "Type:" line - the repo
+has no browser automation and the session had no browser; restart `npm run dev:full` before trying them.
+
 ---
 
 ## Part E — Decision log
@@ -4156,7 +4311,7 @@ and the session had no browser; restart `npm run dev:full` before trying them.
 | 6 | B13 order instructions | Appointment-level instructions to the technician; dispatch and tech views both edit services, the tech view behind selectors |
 | 7 | Technician adds a service without approval | Yes, flagged for review (C4.3b) |
 | 8 | Who may revert | Manager+ as the interim; a configurable permission once role profiles exist (C5.6) |
-| 9 | B8 structure label | None; a settings-managed Agreement types list seeded with Pest control / Termite / Mosquito / Wildlife / Evaluation (C5.3) |
+| 9 | B8 structure label | None; a settings-managed Agreement types list seeded with Pest control / Termite / Mosquito / Wildlife / Evaluation (C5.3) - **built in Pass 35** (2026-10-06): `agreement_types`, Settings → Agreement Types with Add / Edit / Merge; the migrated "Annual" is its own entry to rename or merge |
 | — | B2 | The action is RESCHEDULE; CANCEL runs the flow; agreement services recycle with a reset window; confirm board moves (C4.2) |
 | — | B7 | ASSIGNED_TO with auto-assignment rules (C4.1, C4.1b) |
 | — | B11 | Separate documents; a Settings toggle attaches the service report to visit invoices (C3.5) |

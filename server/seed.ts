@@ -147,7 +147,12 @@ export async function seedDatabase() {
       description: "Standard recurring residential pest prevention agreement.",
       isActive: true,
       cancellationPolicyId: annualPolicy.id,
-      defaultAgreementType: "Residential Recurring",
+      // Pass 35 (C5.3): the agreement type is a KEY of the org's agreement_types
+      // list (shared/agreement-types.ts AGREEMENT_TYPE_SEED), not free text -
+      // the seed names the seed keys so a fresh database's templates need no
+      // migration ("Residential Recurring" / "Termite Renewal" / "Seasonal
+      // Mosquito" were the labels before the list existed).
+      defaultAgreementType: "PEST_CONTROL",
       defaultTermUnit: "YEAR",
       defaultTermInterval: 1,
       defaultRecurrenceUnit: "QUARTER",
@@ -168,7 +173,7 @@ export async function seedDatabase() {
       description: "Annual termite monitoring and renewal agreement.",
       isActive: true,
       cancellationPolicyId: termitePolicy.id,
-      defaultAgreementType: "Termite Renewal",
+      defaultAgreementType: "TERMITE",
       defaultTermUnit: "YEAR",
       defaultTermInterval: 1,
       defaultRecurrenceUnit: "YEAR",
@@ -189,7 +194,7 @@ export async function seedDatabase() {
       description: "Warm-season mosquito reduction service template.",
       isActive: true,
       cancellationPolicyId: seasonalPolicy.id,
-      defaultAgreementType: "Seasonal Mosquito",
+      defaultAgreementType: "MOSQUITO",
       defaultTermUnit: "YEAR",
       defaultTermInterval: 1,
       defaultRecurrenceUnit: "MONTH",
