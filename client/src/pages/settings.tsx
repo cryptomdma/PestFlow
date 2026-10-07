@@ -48,6 +48,8 @@ import {
   type DispatchSnapInterval,
   type DispatchViewInterval,
 } from "@shared/dispatch-board";
+import { DEFAULT_BILLING_DEFAULTS, describeBillingType, type BillingDefaults } from "@shared/billing-profile-defaults";
+import { describeInvoiceTerms } from "@shared/invoice-detail";
 import { isOnList, matchListEntry } from "@shared/material-lists";
 import { ListMultiSelect } from "@/components/list-multi-select";
 import { Switch } from "@/components/ui/switch";
@@ -1822,6 +1824,29 @@ export default function Settings() {
     },
     onError: (error: Error) => toast({ title: "Unable to update the dispatch board settings", description: getApiErrorMessage(error), variant: "destructive" }),
   });
+  // Pass 34 (C5.2): Settings -> Billing Defaults - the template a new
+  // customer's account-default billing profile is created from
+  // (shared/billing-profile-defaults.ts, one app_settings row, no seed row).
+  // Read by anyone; the PATCH is MANAGE_SETTINGS, so the select is disabled -
+  // not hidden - for everyone else. Saves on change; "None" clears it.
+  const { data: billingDefaultsData } = useQuery<BillingDefaults>({ queryKey: ["/api/settings/billing-defaults"] });
+  const billingDefaults = billingDefaultsData ?? DEFAULT_BILLING_DEFAULTS;
+  const defaultBillingTemplate = billingProfileTemplates?.find((template) => template.id === billingDefaults.defaultBillingProfileTemplateId) ?? null;
+  const updateBillingDefaultsMutation = useMutation({
+    mutationFn: async (next: BillingDefaults) => {
+      const response = await apiRequest("PATCH", "/api/settings/billing-defaults", next);
+      return (await response.json()) as BillingDefaults;
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/settings/billing-defaults"] });
+      const template = billingProfileTemplates?.find((candidate) => candidate.id === data.defaultBillingProfileTemplateId);
+      toast({
+        title: "Billing defaults updated",
+        description: template ? `New customers get an account-level billing profile from "${template.name}".` : "New customers start with no billing profile.",
+      });
+    },
+    onError: (error: Error) => toast({ title: "Unable to update the billing defaults", description: getApiErrorMessage(error), variant: "destructive" }),
+  });
   const updateAppointmentCancelReasonsMutation = useMutation({
     mutationFn: async () => {
       const reasons = appointmentCancelReasonsText
@@ -2008,13 +2033,19 @@ export default function Settings() {
       <Card>
         <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
           <CardTitle className="text-base font-semibold flex items-center gap-2"><CreditCard className="h-4 w-4" /> Billing Profile Templates</CardTitle>
-          <Dialog open={billingProfileTemplateDialogOpen} onOpenChange={(open) => { setBillingProfileTemplateDialogOpen(open); if (!open) setEditingBillingProfileTemplate(null); }}>
-            <DialogTrigger asChild><Button size="sm" onClick={() => setEditingBillingProfileTemplate(null)}><Plus className="h-3 w-3 mr-1" /> Add Template</Button></DialogTrigger>
-            <DialogContent>
-              <DialogHeader><DialogTitle>{editingBillingProfileTemplate ? "Edit Billing Profile Template" : "New Billing Profile Template"}</DialogTitle></DialogHeader>
-              <BillingProfileTemplateForm template={editingBillingProfileTemplate} onClose={() => { setBillingProfileTemplateDialogOpen(false); setEditingBillingProfileTemplate(null); }} />
-            </DialogContent>
-          </Dialog>
+          {/* Pass 34 (C5.2): the template routes' writes are MANAGE_SETTINGS (admin) since this pass,
+              like every other settings write. Everyone else reads the list. */}
+          {canManageSettings ? (
+            <Dialog open={billingProfileTemplateDialogOpen} onOpenChange={(open) => { setBillingProfileTemplateDialogOpen(open); if (!open) setEditingBillingProfileTemplate(null); }}>
+              <DialogTrigger asChild><Button size="sm" data-testid="button-add-billing-profile-template" onClick={() => setEditingBillingProfileTemplate(null)}><Plus className="h-3 w-3 mr-1" /> Add Template</Button></DialogTrigger>
+              <DialogContent>
+                <DialogHeader><DialogTitle>{editingBillingProfileTemplate ? "Edit Billing Profile Template" : "New Billing Profile Template"}</DialogTitle></DialogHeader>
+                <BillingProfileTemplateForm template={editingBillingProfileTemplate} onClose={() => { setBillingProfileTemplateDialogOpen(false); setEditingBillingProfileTemplate(null); }} />
+              </DialogContent>
+            </Dialog>
+          ) : (
+            <p className="text-xs text-muted-foreground" data-testid="text-billing-profile-templates-admin-only">Admins manage billing profile templates.</p>
+          )}
         </CardHeader>
         <CardContent>
           {billingProfileTemplatesLoading ? (
@@ -2037,11 +2068,51 @@ export default function Settings() {
                     {template.description && <p className="mt-0.5 text-xs text-muted-foreground">{template.description}</p>}
                     {template.defaultInvoiceTerms && <p className="mt-0.5 text-xs text-muted-foreground">Terms: {template.defaultInvoiceTerms.replace(/_/g, " ")}</p>}
                   </div>
-                  <Button variant="outline" size="sm" onClick={() => { setEditingBillingProfileTemplate(template); setBillingProfileTemplateDialogOpen(true); }}>Edit</Button>
+                  <Button variant="outline" size="sm" onClick={() => { setEditingBillingProfileTemplate(template); setBillingProfileTemplateDialogOpen(true); }} disabled={!canManageSettings} title={canManageSettings ? undefined : "Admins manage billing profile templates"}>Edit</Button>
                 </div>
               ))}
             </div>
           )}
+        </CardContent>
+      </Card>
+
+      {/* Pass 34 (C5.2): the org default billing profile template. A new customer's account gets
+          its default profile created from it at creation (the template's name as the label, its
+          type and terms); every location inherits that until it is given an override on the
+          customer screen. No template: new customers start with no billing profile. One
+          app_settings row (default_billing_profile_template_id), no seed row. */}
+      <Card data-testid="card-billing-defaults">
+        <CardHeader>
+          <CardTitle className="text-base font-semibold flex items-center gap-2"><CreditCard className="h-4 w-4" /> Billing Defaults</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="max-w-xl space-y-2">
+            <Label>Default billing profile template for new customers</Label>
+            <Select
+              value={billingDefaults.defaultBillingProfileTemplateId ?? "NONE"}
+              onValueChange={(value) => updateBillingDefaultsMutation.mutate({ defaultBillingProfileTemplateId: value === "NONE" ? null : value })}
+              disabled={!canManageSettings || updateBillingDefaultsMutation.isPending || billingProfileTemplatesLoading}
+            >
+              <SelectTrigger data-testid="select-default-billing-profile-template"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="NONE">None - new customers start with no billing profile</SelectItem>
+                {(billingProfileTemplates ?? [])
+                  .filter((template) => template.isActive || template.id === billingDefaults.defaultBillingProfileTemplateId)
+                  .map((template) => (
+                    <SelectItem key={template.id} value={template.id} disabled={!template.isActive}>
+                      {template.name}{template.isActive ? "" : " (inactive)"} · {describeBillingType(template.billingType)}{template.billingType === "invoice_terms" && template.defaultInvoiceTerms ? ` · ${describeInvoiceTerms(template.defaultInvoiceTerms)}` : ""}
+                    </SelectItem>
+                  ))}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">
+              A new customer's account gets a default billing profile created from this template - the template's name as the label, its type and terms - and every location of the account inherits it until one is given an override on the customer screen. Existing customers are not changed; their default is set from the primary location's Edit Location.
+            </p>
+            {defaultBillingTemplate && !defaultBillingTemplate.isActive ? (
+              <p className="text-xs text-destructive" data-testid="text-default-billing-template-inactive">This template is inactive, so new customers get no billing profile until another is chosen.</p>
+            ) : null}
+          </div>
+          {!canManageSettings ? <p className="text-xs text-muted-foreground">Only an admin can change this setting.</p> : null}
         </CardContent>
       </Card>
 

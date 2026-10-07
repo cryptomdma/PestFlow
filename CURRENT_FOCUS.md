@@ -34,8 +34,9 @@ rules and zones, C4.1b - the first open Phase 4 row in phase order) is merged (P
 crew, C4.4) is merged (PR #100); Pass 30b (the owner's two additions to it, C4.4b) is merged (PR #102);
 Pass 31 (dispatch board settings, C4.5 - the last Phase 4 row, with the owner's FB-021 board layout as
 Pass 31b on the same PR) is merged (PR #103); Pass 32 (non-financial audit coverage, C5.1a - the first
-Phase 5 row) is merged (PR #104); Pass 33 (customer-level History + Revert, C5.1b) is pushed, awaiting
-merge; **next pass: 34, Billing profile on the customer screen** (C5.2). The roadmap
+Phase 5 row) is merged (PR #104); Pass 33 (customer-level History + Revert, C5.1b) is merged (PR #105);
+Pass 34 (billing profile on the customer screen, C5.2) is pushed, awaiting merge; **next pass: 35,
+Agreement vocabulary** (C5.3). The roadmap
 sequences every remaining item below; this file keeps the status pointer and, as its last
 section, the handoff prompt that starts the next session.
 
@@ -409,8 +410,9 @@ location's - marked transitional. The invoice modal's Terms shows "Bill to <name
 (primary location)" and "Service location: …" from the shared reader. No migration; documents
 already stored keep their bytes (§1.7), so the eight PDFs rendered before this pass still print the
 service location as Bill To until the owner decides to re-render them. Not built: the wider document
-redesign (owner: later), a screen that creates a billing profile or gives one an address (C5.2, Pass
-34 - until then every new invoice on the dev DB bills the primary location), profile terms as the
+redesign (owner: later), a screen that creates a billing profile or gives one an address (C5.2, built
+as Pass 34 - until then only Golden Gate's two locations resolved a profile on the dev DB and every
+other new invoice billed the primary location), profile terms as the
 manual invoice's default due date (left for C2.3). **Restart `npm run dev:full` before manually
 testing - this pass changes server code and the document renderer, and the third block's layout has
 not been rendered by anyone yet.** Signatures and behavior are under "Shipped in Pass 11c" at the end
@@ -589,7 +591,8 @@ location is already known: description (required), amount, tax (typed, not compu
 notes, through the unchanged `POST /api/invoices` (`GENERATE_INVOICE`; the location still
 required, Pass 10) - and a **blank due date now defaults from the location's billing terms**
 (`createManualInvoice` falls back to `resolveInvoiceTermsForLocationTx`'s due date; null when no
-profile resolves, which is every location on the dev DB until C5.2), the default Pass 11c left for
+profile resolves - every location on the dev DB but Golden Gate's two until Pass 34 (C5.2) let the
+office give a location one), the default Pass 11c left for
 C2.3; the dialog's hint reads the resolved profile and says which. `LocationLedgerPanel` takes
 `customerId` (required) and `onOpenInvoice`, which the customer screen passes. No schema change,
 no migration. Also this pass, at the owner's request (2026-09-24): **every pass ends by opening its
@@ -949,7 +952,8 @@ transitional legacy column and is empty everywhere, which is why the sheet's Loc
 had been silently blank since before this pass; the sheet reads the same route now (the owner's
 live test of 2026-09-26, fixed on the branch before merge). **The billing-plan pill** (D6's
 `BillingPlanPill`; `useBillingPlanById` now takes `enabled`) sits under the mode badge in the header
-for an agreement service; the billing-profile display waits for C5.2. **Time in now?** lives in
+for an agreement service; the location's resolved billing profile prints under it since Pass 34
+(C5.2). **Time in now?** lives in
 the technician view (`technician-work.tsx`), in front of the ticket's open: an `AlertDialog` when
 the appointment has no `timeInAt` - "Time in and open" posts the existing
 `POST /api/appointments/:id/time-in` and opens the ticket on the stamped appointment, "Open
@@ -1555,7 +1559,7 @@ renders only two-sided diffs - C5.1b's, with the rollup and Revert). Signatures 
 "Shipped in Pass 32" at the end of `PLAN_ROADMAP_V2.md` Part D. **The owner's restart after the merge
 prints nothing for the index** (CREATE INDEX IF NOT EXISTS is silent).
 
-Pass 33 (`feature/phase-5-customer-history-revert`, 2026-10-05, C5.1b) pushed, awaiting merge.
+Pass 33 (`feature/phase-5-customer-history-revert`, 2026-10-05, C5.1b) merged as PR #105.
 **Customer-level History + Revert** - the second Phase 5 row. **Decided (1), the read:** `?customerId=`
 is the third exclusive form of `GET /api/audit-logs`, backed by `getAuditLogsForCustomer` - the
 account's locations (keyed on the account, the screen's own source; `locations.customerId` only for a
@@ -1611,13 +1615,52 @@ line - restart `npm run dev:full` before trying them. Signatures and behavior un
 at the end of `PLAN_ROADMAP_V2.md` Part D. **The owner's restart after the merge prints nothing** (no
 migration).
 
-Next up: **Pass 34** — Billing profile on the customer screen (`PLAN_ROADMAP_V2.md` Phase 5 table,
-C5.2): a selector in edit / add location (inherit the account default / override), the account default
-on the customer edit (the primary location's identity block - there is no separate customer modal), an
-org default template in Settings (`default_billing_profile_template_id`) used at customer creation, and
-the "Billing: Per-location / Default" chip reading real data. Branch from `origin/main` after confirming
-it contains Pass 33's merge. The handoff prompt for Pass 34 is the last section of this file; the Pass
-34 session writes the next one.
+Pass 34 (`feature/phase-5-billing-profile-customer-screen`, 2026-10-05, C5.2) pushed, awaiting merge.
+**Billing profile on the customer screen** - the third Phase 5 row. **Decided (1), the pointer:**
+`billing_profiles.location_id` is the truth (canon §4, the resolver, Pass 11c); the compat read's
+`hasBillingOverride` and the two "Billing Override" badges stopped reading `locations.billing_profile_id`
+and read a `billing` projection (ACCOUNT_DEFAULT / LOCATION_OVERRIDE / NONE with the profile's id, label,
+type and terms, resolved by the invoices' own resolver) plus `accountDefault` and
+`billingOverrideLocationIds`; the legacy column is still written as a mirror by the profile write path
+(no location audit row) and left every location body; `customers.default_billing_profile_id` is read by
+nothing and left; both are the new hygiene row C5.8. **Decided (2), the org default:**
+`shared/billing-profile-defaults.ts`, one `app_settings` key `default_billing_profile_template_id` on
+Pass 31's one-key pattern (no seed row, null = none; the PATCH refuses an unknown or inactive template
+with 400 `BILLING_DEFAULTS_INVALID`, null deletes the row); `GET /api/settings/billing-defaults` open,
+`PATCH` MANAGE_SETTINGS; a Billing Defaults card on Settings; the write not audited (no `set*` writer is;
+C5.8). **Decided (3), creation:** `createCustomerWithPrimaryLocation` creates the account-default row
+from the template in its transaction, audited `created`; no template, or a stale one, creates nothing;
+`createLocation` creates nothing (a location inherits); no backfill - an existing account gets its default
+from the primary location's Edit Location. **Decided (4), the selector:** both location dialogs carry a
+Billing radio (inherit the account default, its label and terms shown, or override with label / type /
+terms / billing name / address - the card and ACH tokens never typed); Add Location posts the override
+after the location; Edit Location creates, updates or retires it (`status: "inactive"`, never a delete -
+invoices carry the id); the primary location's Edit Location (the customer editor) carries the account
+default's fields, created there when the account has none, prefilled from the org template. **Decided
+(5), permissions:** the template routes' writes are MANAGE_SETTINGS (the card gated); the instance routes
+stay open like the location PATCH; the writers refuse a foreign location, a second active override per
+location and a second active default per account with a code, and the strict route schema never accepts
+the tokens. **Decided (6):** `getAuditLogsForLocation` lists the location's own override rows and the
+account's location-less rows, not a sibling's override. **(7)** the invoice side unchanged (the resolver
+now reads through the caller's transaction); the smoke proves an invoice on an override location carries
+its snapshot and terms. **(8)** the ticket header prints the resolved profile under the billing-plan pill.
+**Found and fixed:** four docs claimed no dev-DB location resolved a profile (Golden Gate's two do).
+Verified against the shared dev DB on PORT=5001: `npm run check` clean, 55 smoke assertions first run,
+double boot clean, Vite 200 on the five touched modules. **Not rendered in a browser:** the Billing
+section of both dialogs, the Billing Defaults card, the gated Templates card, the chip's text, the badges,
+the profile card's billing line, the ticket header's line - restart `npm run dev:full` before trying
+them. Signatures and behavior under "Shipped in Pass 34" at the end of `PLAN_ROADMAP_V2.md` Part D. **The
+owner's restart after the merge prints nothing** (no migration).
+
+Next up: **Pass 35** — Agreement vocabulary (`PLAN_ROADMAP_V2.md` Phase 5 table, C5.3): a
+settings-managed Agreement types list (seeded Pest control / Termite / Mosquito / Wildlife / Evaluation)
+with dropdowns on the agreement template and the agreement, the existing free text ("Annual" on 16
+agreements and one template; NULL on the rest) migrated into entries the office can rename or merge, no
+hardcoded structure list (B8); and `CUSTOM` recurrence made explicit DAY / WEEK with the `CUSTOM(N)` ->
+`DAY(N)` migration - the Pass 34 inventory found 9 agreements and 2 templates on CUSTOM, every one with
+recurrence `CUSTOM/1` and the 7 / 10 on the TERM, so the migration covers the term columns too. Branch
+from `origin/main` after confirming it contains Pass 34's merge. The handoff prompt for Pass 35 is the
+last section of this file; the Pass 35 session writes the next one.
 
 Phase 1's ordered plan, impact analysis, conflict resolutions, and per-pass verification steps live in
 `PLAN_BILLING_V1_1_EXECUTION.md` — read it when a pass builds on a Phase 1 helper (its "Shipped in
@@ -1872,257 +1915,227 @@ pointer and that prompt.
 
 Replaced at the end of every pass (`AGENT_WORKING_AGREEMENT.md`, the end-of-pass step). The owner
 pastes it verbatim to start the next session; it is also the last thing in the finishing session's
-final message. Written 2026-10-05, after Pass 33 was pushed as
-`feature/phase-5-customer-history-revert`. Its ground truth came from a read-only Explore subagent's
-inventory of the working tree at the start of Pass 33 (origin/main after PR #104), plus the SQL it
-ran, with the line numbers of the six files Pass 33 edited (storage.ts, routes.ts, shared/audit.ts,
-shared/permissions.ts, customer-detail.tsx, audit-log-entry-card.tsx) re-grepped after its edits.
-They are that tree's, so run the SQL and grep the names before trusting any claim.
+final message. Written 2026-10-05, after Pass 34 was pushed as
+`feature/phase-5-billing-profile-customer-screen`. Its ground truth came from a read-only Explore
+subagent's inventory of the working tree at the start of Pass 34 (origin/main after PR #105), plus the
+SQL it ran, with the line numbers of the four files Pass 34 edited (storage.ts, routes.ts,
+customer-detail.tsx, settings.tsx) re-grepped after its edits. They are that tree's, so run the SQL
+and grep the names before trusting any claim.
 
 ```text
-Start Pass 34 — Billing profile on the customer screen (C5.2)
-(PLAN_ROADMAP_V2.md Phase 5 table, row C5.2 :403 "Selector in edit/add location (inherit account
-default / override), account default on the customer edit modal, org default template in Settings
-(`default_billing_profile_template_id`) used at customer creation; the 'Billing: Per-location / Default'
-chip reads real data"; Part A1 rows :58-59 (the billing-profile inventory of 2026-09-17: the resolver
-order, "`customers.defaultBillingProfileId` exists with no UI"); :307 (B-item: "a billing profile the
-location actually selects" is what Phase 6's card-on-file needs); :728 (Pass 11c's parties: "Until C5.2
-no screen creates a profile or gives one an address"); :1125 and :1138 (Pass 11c / the fee dialog's
-notes); PLAN_BILLING_V1_1.md :181 ("no screen can create a billing profile or give one an address
-today") and :280; CURRENT_FOCUS.md :411, :591, :951; canon §4 BillingProfile (CANONICAL_DOMAIN_RULES_V1.md
-:227-258) and the Scope Rules "Default inheritance" (:1731-1739). Phase order: Pass 33 (C5.1b) was the
-second Phase 5 row; this is the third. OWNER_FEEDBACK.md: no open item covers billing profiles; FB-020
-is roadmap row C4.6, unscheduled - build it only if I say so.) Read the CLAUDE.md docs in order first,
-and OWNER_FEEDBACK.md (its review process applies at the start and end of the session);
-CURRENT_FOCUS.md's last entries (Pass 32, Pass 33 and "Next up") are the ones that matter.
+Start Pass 35 — Agreement vocabulary (C5.3)
+(PLAN_ROADMAP_V2.md Phase 5 table, row C5.3 :411 "A settings-managed **Agreement types** list (seeded Pest
+control / Termite / Mosquito / Wildlife / Evaluation) with dropdowns on template and agreement; the existing
+free text migrated into entries the office can rename or merge; no hardcoded structure list (B8). `CUSTOM`
+recurrence → explicit DAY / WEEK with the `CUSTOM(N)` → `DAY(N)` migration (7 agreements, 2 templates)";
+B8 :232-239 (D8's two dimensions, bundle is not a type, the owner's seeded list, "rename or merge"); Part E
+answer 9 :4159; A1 :61 ("Agreement Type as a dropdown | ABSENT | free-text Input at settings.tsx:1130"); :926
+(the Wildlife CUSTOM/7 terms); PLAN_BILLING_V1_1.md D8 :329-331 ("Agreement Type: two dimensions -
+`serviceCategory` ... structure ... Bundle is not an agreement type"); CURRENT_FOCUS.md :1903-1913 (the
+"CUSTOM recurrence silently means days" entry) and :1655 ("Next up"); canon §9 ServiceAgreement :454-712 -
+its Required fields :697-712 carry a fixed `agreementType (recurring | one_time | warranty | installment |
+seasonal)` enum at :703 that B8 / D8 reject, and `frequencyRule nullable` :705 where the code has
+recurrenceUnit / recurrenceInterval / termUnit / termInterval; Bundles :631. Phase order: Pass 34 (C5.2) was
+the third Phase 5 row; this is the fourth. OWNER_FEEDBACK.md: no open item covers agreement types or
+recurrence; FB-006 (Schedule Now), FB-007 (cancel reason) and FB-003 touch agreements but are not this row;
+FB-020 is C4.6, unscheduled - build it only if I say so.) Read the CLAUDE.md docs in order first, and
+OWNER_FEEDBACK.md (its review process applies at the start and end of the session); CURRENT_FOCUS.md's last
+entries (Pass 33, Pass 34 and "Next up") are the ones that matter.
 
-Branch feature/phase-5-billing-profile-customer-screen from origin/main. Confirm main contains the
-Pass 33 merge (feature/phase-5-customer-history-revert) before branching.
+Branch feature/phase-5-agreement-vocabulary from origin/main. Confirm main contains the Pass 34 merge
+(feature/phase-5-billing-profile-customer-screen) before branching.
 
-The row, in four parts, and the fact that shapes all of them: there are THREE default / override
-pointers today and only one is read. (a) `billing_profiles.location_id` is the forward pointer - the
-only one `resolveBillingProfileForLocation` reads (storage.ts :4132: an active row with location_id =
-this location, else the active account-level rows (location_id null) with isDefault first, else the
-first; it reads through `db`, not the caller's tx). (b) `locations.billing_profile_id` (schema.ts :70) is
-the legacy reverse pointer: the resolver never reads it, but `getCustomerDetailCompat.hasBillingOverride`
-(:3791, `relatedLocations.some((l) => !!l.billingProfileId)`) and both "Billing Override" badges
-(customer-detail.tsx :4086 the switcher row, :4146 the Location Profile card) do, and the header chip
-`chip-billing` (:4033-4034) prints "Per-location" / "Default" from it - "Default" even when no profile
-exists at all. (c) `customers.default_billing_profile_id` (schema.ts :20) is read by nothing on the
-server or the client (set for one customer on the dev DB). Decide and state, in the pass:
-(1) which pointer is the truth - recommend `billing_profiles.location_id` (canon §4's shape, the
-resolver's, Pass 11c's invoice parties): the compat read and the two badges switch to it (the compat
-read gains a `billing` projection - recommend { source: "ACCOUNT_DEFAULT" | "LOCATION_OVERRIDE" |
-"NONE", profileId, label, billingType, invoiceTerms } for the selected location, resolved by the same
-resolver, so the chip reads "Billing: <label> (account default)" / "<label> (this location)" / "No
-billing profile" - real data, dev rule 6); `locations.billing_profile_id` either kept in sync by the
-profile write path (write both) or retired from every reader and left as a dead column for a later
-cleanup (recommend: retire the readers, keep writing it for now so Pass 11c's bootstrap backfill stays
-true, note the column for C5.5-style hygiene); `customers.default_billing_profile_id` - say it is dead
-(no reader) and leave it, or drop it in the pass (a column drop = the copy-database recipe; recommend
-leave, say so);
-(2) the org default - recommend one `app_settings` key `default_billing_profile_template_id` in a new
-`shared/billing-profile-defaults.ts` on Pass 31's one-key pattern (shared/dispatch-board.ts :41-68:
-the key, no seed row - the reader returns null = no default; `GET /api/settings/billing-defaults` open,
-`PATCH` under MANAGE_SETTINGS, 400 when the template is unknown or inactive; storage
-`getBillingDefaults` / `setBillingDefaults` beside `getDispatchBoardSettings` :8845 /
-`setDispatchBoardSettings` :8866 / `readDispatchBoardSettingsTx` :8849); a "Billing defaults" card on
-Settings (settings.tsx: the Dispatch Board card :2770-2852 is the pattern - `canManageSettings` :1731,
-disabled with "Only an admin can change this setting." :2850) with a select over the active templates
-(`GET /api/billing-profile-templates`, :1275) and "None"; say whether the settings write is audited
-(none of the set* app_settings writers is, and there is no `app_setting` entity type - recommend not in
-this pass, note it);
-(3) creation - `createCustomerWithPrimaryLocation` (storage.ts :3703; route :900, body
-createCustomerWithLocationSchema :99 { customer, location, initialContact? }) creates the account-default
-`billing_profiles` row from the org default template when one is set (accountId = the new account,
-locationId null, templateId, label = the template's name, billingType, invoiceTerms =
-defaultInvoiceTerms, isDefault true, status active), inside the same transaction, audited `created`
-(Pass 32's `auditCreatedTx`, entity `billing_profile`); no template set = no profile (the resolver
-returns undefined, as today); `createLocation` :3981 / `createLocationWithPrimaryContact` :3991 create
-nothing (a location inherits); say whether existing accounts with no profile get one (recommend no
-backfill - the owner sets the default and new customers take it; an existing account gets its default
-the first time someone picks "account default" with no row, or never);
-(4) the selector in Add / Edit Location (customer-detail.tsx `AddLocationDialog` :670,
-`EditLocationDialog` :880; the forms' fields are in the Pass 34 inventory) - "Billing" radio: inherit the
-account default (the row's label shown, "no account default yet" when none) | override for this
-location, the override's fields (label, billingType, invoiceTerms when invoice_terms, billingName,
-billingAddress; the card / ACH tokens are Phase 6's - never typed here); on save the override row is
-created (`POST /api/billing-profiles` :1316) or updated (`PATCH /api/billing-profiles/:id` :1327) or,
-when switching back to inherit, retired - recommend `status: "inactive"`, never deleted: invoices carry
-`billingProfileSnapshot.profileId` (schema.ts :928) and the resolver already filters on active - and
-`locations.billing_profile_id` written alongside (decision 1); the account default's fields editable on
-the primary location's EditLocationDialog identity block (the inventory: there is no separate customer
-edit modal - the primary location's dialog IS the customer editor, Pass 30's precedent for "Apply to all
-locations"), so "account default on the customer edit modal" means that block: the account-default
-row's label / type / terms / billing name / address, created there from the org default (or blank) when
-the account has none;
-(5) the permission - the billing-profile and template routes have NO requirePermission today (:1275-1332);
-decide: templates are Settings (recommend MANAGE_SETTINGS on their POST / PATCH, matching every other
-settings write; the Settings card's Add / Edit then disable for a non-admin as the other cards do), profile
-instances are customer data (recommend open to every role like the location PATCH, or support+ - say);
-(6) the audit read's comment - `getAuditLogsForLocation` (storage.ts :2201) pulls the account's profiles
-(`accountId = X`, so sibling locations' overrides ride along) while its comment says "own override and
-the account's default": decide (recommend: narrow to the location's own override + the account's
-location-less rows, now that the customer-level History (Pass 33) carries every override with its
-location), and keep `getAuditLogsForCustomer` :2245 as it is;
-(7) the invoice side - `resolveInvoiceTermsForLocationTx` :10456 / `resolveInvoicePartiesTx` :10423 /
-`computeDueDateFromInvoiceTerms` :1879 / `statementBillToTx` :13588 read the resolver; nothing changes
-there, but the smoke test proves an invoice issued after an override is chosen carries that profile's
-snapshot and terms (the Pass 19 invoiced-visit fixture: post, finalize, generate-from-service-record);
-(8) the fee dialog's note (add-fee-adjustment-dialog.tsx :45-46 "A 404 means no profile resolves") and
-service-completion-dialog.tsx :271 ("the billing-profile display waits for C5.2") - the ticket header
-shows the resolved profile's label / terms beside the billing-plan pill, or say why not (recommend yes,
-one line, read from `GET /api/locations/:id/billing-profile` :1310 which already exists).
+The row, in two halves, and the fact that shapes the second: the roadmap's "7 agreements, 2 templates" is
+wrong, and the 7 is on the wrong column. The DB has NINE agreements (6 active, 3 cancelled) and 2 templates
+on `CUSTOM`, every one of them with RECURRENCE `CUSTOM/1` (daily); the 7 and the 10 sit on the TERM
+(`term_unit = 'CUSTOM'`, `term_interval` 7 or 10; the templates `default_term_unit` CUSTOM/7). Term and
+recurrence share one zod enum (routes.ts :565 `recurrenceUnitSchema = z.enum(["MONTH", "QUARTER", "YEAR",
+"CUSTOM"])`, used for defaultTermUnit / defaultRecurrenceUnit :717-747 and termUnit / recurrenceUnit
+:752-805), so the migration covers four columns, not two. Decide and state, in the pass:
+(1) the Agreement types list - recommend a new table `agreement_types` (id, orgId, key, label, description?,
+isActive, sortOrder, timestamps; unique (org_id, key)) on Pass 25's opportunity_categories pattern
+(shared/schema.ts :680; the seed in shared/opportunities.ts :38-41; the bootstrap
+server/service-scheduling-bootstrap.ts :656 `bootstrapOpportunityTaxonomy` - CREATE TABLE IF NOT EXISTS, a
+unique index, per-org INSERT ... ON CONFLICT DO NOTHING RETURNING printed, the mapped per-row UPDATE printed
+before each write, SET NOT NULL once no row is left), seeded PEST_CONTROL "Pest control" / TERMITE / MOSQUITO /
+WILDLIFE / EVALUATION (Part E answer 9); `agreements.agreementType` (schema.ts :392, free text) and
+`agreementTemplates.defaultAgreementType` (:490) keep their columns and hold the type's KEY (the
+opportunities.categoryKey shape), nullable - say whether a type becomes required (recommend not in this pass:
+9 agreements and 2 templates have none, and an "Untyped" seed entry would be a lie; the dropdown offers
+"None" and the office fills them in); the migration maps the existing free text: "Annual" (16 agreements -
+11 active, 5 cancelled - and the Quarterly Control template) becomes an entry ANNUAL "Annual" the office can
+rename or merge (NOT silently Pest control - the owner said rename or merge), NULL stays NULL, printed per
+row at boot (the Pass 25 pattern); server/seed.ts :150 / :171 / :192 seed "Residential Recurring" / "Termite
+Renewal" / "Seasonal Mosquito" on templates the dev DB does not have - map them to keys in the seed or leave
+the seed's free text to the migration (say which);
+(2) rename or merge - the Settings card (settings.tsx: the Opportunity Categories card :2418 and
+`OpportunityCategoryForm` :774 are the pattern - label / active / sort only, no create, no merge, its PATCH
+ungated at routes.ts :1756 with the comment that C5.6 decides, unaudited at storage.ts `updateOpportunityCategory`;
+note that precedent falls short of this row) gains Add (key derived from the label, upper snake), Edit (label,
+description, active, sort), and **Merge** (every agreement and template on type A moves to type B, A
+deactivated) - recommend `POST /api/agreement-types`, `PATCH /api/agreement-types/:id`, `POST
+/api/agreement-types/:id/merge { intoId }`, no DELETE (deactivate; a type in use cannot be deactivated
+without a merge - say the rule), all three writes MANAGE_SETTINGS (settings reference data, the billing
+templates' precedent from Pass 34) and the card's controls gated by `canManageSettings` :1733; the reads open;
+(3) audit - recommend `agreement_type` joins `AuditEntityType` (shared/audit.ts :34-49; Pass 32's
+auditCreatedTx / auditChangeTx pattern) with `created` / `update` / `status_changed`, and a merge writes the
+type's own row (the after naming `mergedIntoId` and the counts) PLUS one `update` per moved agreement and
+template through `updateAgreement` :5832 / `updateAgreementTemplate` :5773 (their auditChangeTx is where the
+row comes from; the agreement's snapshot is `agreementAuditSnapshotTx` :2175, the whole row with soldBy, so
+the type key shows as a field change) - or a bulk UPDATE with the type's row only; say which and why (the
+per-row cost is 16 rows for Annual on the dev DB); say whether the migration's own mapping is audited
+(recommend no: a bootstrap UPDATE bypasses the writers, as Pass 25's did, printed at boot instead);
+(4) the dropdowns - the template form (settings.tsx `AgreementTemplateForm` :1130, the "Agreement Type" Input
+:1281) and the agreement form (customer-detail.tsx: the init :551 `agreementType: agreement?.agreementType ??
+template?.defaultAgreementType ?? ""`, the payload :2041, the "Agreement Type Override" Input :2471) become a
+Select over the active types plus "None", the template's default preselected on the agreement
+(`buildAgreementInsertFromTemplate` storage.ts :3256 already copies it once at creation); where the type
+shows - nowhere today (no badge, filter, report or document reads it: say so and recommend one line on the
+agreement card, nothing more);
+(5) CUSTOM → DAY / WEEK - `recurrenceUnitSchema` becomes DAY | WEEK | MONTH | QUARTER | YEAR for all four
+columns; the migration (the agreement bootstrap; Pass 23's self-guarding pattern at
+server/agreement-bootstrap.ts :525-602 - SELECT the rows, a count report, a per-row print, guarded UPDATEs on
+both tables) rewrites `recurrence_unit = 'CUSTOM'` → DAY with the same interval (CUSTOM/1 → DAY/1 on the 9
+agreements and 2 templates) and `term_unit = 'CUSTOM'` → DAY with the same interval (CUSTOM/7 → DAY/7 on
+6 agreements and 2 templates, CUSTOM/10 → DAY/10 on 3) - DAY(N) uniformly, never WEEK(1) for 7 (exact,
+no rounding; the office may pick WEEK afterwards) - and the same for `default_term_unit` /
+`default_recurrence_unit`; `advanceAgreementDate` (shared/agreement-schedule.ts :33; DAY :37, WEEK :39
+already there, CUSTOM :45 = addDays) drops the CUSTOM case after the migration (or keeps it one pass as a
+transitional alias - recommend drop: the enum refuses it and no row carries it) and its header comment
+:25-32 ("billing offers DAY | WEEK...") is corrected; the client: the four selects (settings.tsx :1291 /
+:1309, customer-detail.tsx :2435 / :2450) offer Day / Week / Month / Quarter / Year, the three labelers
+(settings.tsx `formatTemplateRecurrence` :61 / `formatTemplateTerm` :76, customer-detail.tsx
+`formatAgreementRecurrence` :468) drop the CUSTOM→"Day" mapping, and `addAgreementInterval`
+(customer-detail.tsx :494, local-time Dates, no DAY / WEEK case - its default adds days, so WEEK(1) would
+add one day) gains both cases; the OTHER `CUSTOM`s stay - billing plan `anchorMode` (schema.ts :323,
+settings.tsx :619), cancellation `effectiveDateMode` (routes.ts :548 region, settings.tsx :1111,
+agreement-bootstrap.ts, seed.ts), the material "CUSTOM" in service-completion-dialog.tsx;
+(6) Revert - Pass 33's revert replays an agreement / template row through `updateAgreementSchema` :805 /
+`updateAgreementTemplateSchema` :747, so a pre-migration row whose before holds `CUSTOM` would 400 at the
+enum once it changes; the dev DB has 2 `agreement|update` audit rows - check whether either carries a unit
+(recommend: normalize CUSTOM→DAY in the revert's payload, or state the 400 as acceptable; say which).
+REVERT_ENTITY_STRIPPED_FIELDS (storage.ts :512) strips neither agreementType nor the units - a type key
+revert is a legitimate replay once the key is validated;
+(7) the agreement-template routes - POST / PATCH /api/agreement-templates (routes.ts :2128 / :2139) have NO
+permission gate and the Settings Agreement Templates card (:2712) is ungated; not this row (say so, leave
+them, note for C5.6 or a hygiene row) unless I say otherwise.
 
-Ground truth today (line numbers from the working tree at the end of Pass 33; they drift, the names do
-not; the inventory came from a read-only Explore subagent at the start of Pass 33 on origin/main after
-PR #104, with the six files Pass 33 edited re-grepped after its edits):
-- shared/schema.ts: customers :7-22 (`defaultBillingProfileId` :20, no FK, no reader); accounts :26-35
-  (no billing column); locations :51-72 (`billingProfileId` :70, no FK in schema or DB);
-  billingProfileTemplates :77-88 (id, orgId, name, description, isActive, billingType card | ach |
-  invoice_terms | cash | check, defaultInvoiceTerms, sortOrder, timestamps); billingProfiles :95-113
-  (accountId notNull, locationId nullable = account level, templateId, label notNull, billingType,
-  billingName, billingAddress, cardOnFileToken, achToken, invoiceTerms, lastFour, isDefault, status,
-  timestamps; the `.references()` on accountId / locationId / templateId are NOT in the DB - the
-  bootstrap only adds columns); appSettings :593-600 (orgId, key, value text, updatedAt; PK (orgId,
-  key)); insertBillingProfileTemplateSchema :1323 / insertBillingProfileSchema :1324 (omit orgId, id,
-  timestamps); insertCustomerSchema :1319 includes defaultBillingProfileId; insertLocationSchema :1322
-  includes billingProfileId; invoices.billingProfileSnapshot :928.
-- server/billing-profile-bootstrap.ts (`bootstrapBillingProfiles` :14, server/index.ts :120): creates
-  billing_profile_templates, ALTERs billing_profiles (no REFERENCES), migrates the reverse pointer into
-  the forward one (`SET location_id = l.id` :61), indexes on account_id / location_id. No
-  `default_billing_profile_template_id` anywhere (code, app_settings, bootstraps). server/seed.ts :64-69
-  seeds four templates (Card on File, ACH Autopay, Net 30 Invoice, Due on Receipt) - the dev DB has
-  different ones, so the seed never ran there.
-- server/storage.ts (13810 lines): CustomerDetailCompatProjection :351 ({ legacyCustomer, account,
-  primaryLocation, selectedLocation, relatedLocations, hasBillingOverride }); CreateCustomerWithPrimaryLocationInput
-  :514; createCustomer :3679 (no profile); createCustomerWithPrimaryLocation :3703 (customer, account,
-  primary location, optional contact, no profile, no setting read); getCustomerDetailCompat :3791;
-  createLocation :3981 / createLocationWithPrimaryContact :3991 (spread any billingProfileId passed, no
-  profile handling); getBillingProfileTemplates :4061 (active only unless includeInactive);
-  createBillingProfileTemplate :4073 (its comment: "the template is the org default C5.2 will read at
-  customer creation"); getBillingProfilesForAccount :4099 (every row, no status filter);
-  createBillingProfile :4103 / updateBillingProfile :4111 (audited; neither checks that locationId
-  belongs to accountId, enforces one isDefault, nor touches locations.billingProfileId);
-  resolveBillingProfileForLocation :4132; the app_settings pattern getDispatchBoardSettings :8845 /
-  readDispatchBoardSettingsTx :8849 / setDispatchBoardSettings :8866 (upsert `onConflictDoUpdate` on
-  [orgId, key], only the changed keys; no generic getSetting / setSetting; none of the set* writers is
-  audited); resolveInvoicePartiesTx :10423 (Bill To: the profile's billingAddress, else the override's
-  own address, else the primary location); resolveInvoiceTermsForLocationTx :10456; statementBillToTx
-  :13588; computeDueDateFromInvoiceTerms :1879 (DUE_ON_RECEIPT / NET_15 / NET_30 / NET_60);
-  getAuditLogsForLocation :2201 (the account's profiles ride along); getAuditLogsForCustomer :2245.
-- server/routes.ts (3740 lines): createCustomerWithLocationSchema :99; GET /api/customer-detail-compat
-  :840; POST /api/customers :877; POST /api/customers/create-with-primary-location :900; POST
-  /api/locations :1103; PATCH /api/customers/:customerId/locations/:locationId/profile :~1165
-  (updateLocationProfileSchema :111-126 omits customerId / accountId / isPrimary from the location and
-  picks six customer fields - `billingProfileId` passes, `defaultBillingProfileId` cannot); the billing
-  routes, all UNGATED: GET /api/billing-profile-templates :1275 (?includeInactive=true), POST :1281,
-  PATCH :1292 (updateBillingProfileTemplateSchema = .partial()), GET /api/accounts/:accountId/billing-profiles
-  :1305, GET /api/locations/:locationId/billing-profile :1310 (the resolver; 404 "No billing profile
-  resolved for this location"), POST /api/billing-profiles :1316, PATCH /api/billing-profiles/:id :1327;
-  the settings routes: every GET open, every PATCH MANAGE_SETTINGS except service-time-tracking :2696
-  (still ungated, noted since Pass 31); dispatchBoardSettingsSchema :419; GET / PATCH
-  /api/settings/dispatch-board :2833 / :2838. requirePermission: server/auth.ts :109. MANAGE_SETTINGS is
-  admin only (shared/permissions.ts :148 admin = Object.values; the manager set :119-147 holds
-  REVERT_HISTORY since Pass 33 but not MANAGE_SETTINGS).
-- Client: customer-detail.tsx (4414 lines) - CustomerDetailCompatResponse :92 (hasBillingOverride :97;
-  no `account` field though the server returns one; `BillingProfile` imported and unused);
-  AddLocationDialog :670 ({ customerId, customerType, onClose }: nickname, firstName, lastName, email,
-  phone, source, address, city, state, zip, propertyType, isPrimary, gateCode, squareFootage + the
-  preference drafts; POST /api/locations { location, initialContact }, then the preference PUTs,
-  invalidates the compat predicate, contacts and invalidateAuditViews(); NO billing selector);
-  EditLocationDialog :880 ({ customer, location, totalLocations, onClose }: firstName, lastName,
-  companyName, email, phone, customerType, name, address, city, state, zip, propertyType, source,
-  squareFootage, gateCode, setAsPrimary; the "Customer identity" block on the primary location; PATCH
-  .../profile { location, customer? } then set-primary; embeds TechnicianPreferencesEditor; NO billing
-  selector); hasBillingOverride :3773; the chip `chip-billing` :4033-4034; the switcher's "Billing
-  Override" badge :4086; the Location Profile card's `badge-billing-override` :4146; the toolbar: the
-  switcher, Add Location, Statement :4108, History :4125 (Pass 33). customers.tsx :70-98 posts
-  create-with-primary-location with customer, location (name "Primary Location") and initialContact -
-  nothing billing-related. settings.tsx (Settings :1649): BillingProfileTemplateForm :434-508 (name,
-  description, billingType, defaultInvoiceTerms when invoice_terms, isActive, sortOrder; POST / PATCH
-  :457-458; invalidates ["/api/billing-profile-templates?includeInactive=true"] :462; the query :1722);
-  the Billing Profile Templates card :2010 (its Add / Edit NOT gated by canManageSettings - matching the
-  ungated route); canManageSettings :1731; the Dispatch Board card :2770-2852 (the settings-card pattern:
-  useQuery with a DEFAULT fallback, a PATCH mutation of a partial, selects saving on change, "Only an
-  admin can change this setting." :2850). No screen creates or edits a billing profile INSTANCE; reads
-  only: add-fee-adjustment-dialog.tsx :45-52 and :135-136 (["/api/locations", id, "billing-profile"],
-  404 = none), invoice-detail-dialog.tsx :312, :499-545 (the snapshot display);
-  service-completion-dialog.tsx :271 ("the billing-profile display waits for C5.2").
-- DB today (run the SQL, never trust a doc's data claim): billing_profiles 2 - `dded27ea-...` "Corporate
-  Card" (card, last_four 4242, is_default t, account `db19381a-...` = customer `1bd31e91-...` Sarah Chen /
-  Golden Gate, location_id NULL = the account default) and `8fa46a3a-...` "Westside Invoice"
-  (invoice_terms, invoice_terms NULL, location_id `50ed9f99-...` Westside Location, and
-  locations.billing_profile_id matches); billing_profile_templates 2 - `78658bf4-...` COD (invoice_terms,
-  DUE_ON_RECEIPT, sort 0) and `93ada57d-...` Test Net 15 (NET_15); no profile references a template;
-  locations 14 (1 with billing_profile_id); accounts 10; customers 10 (1 with default_billing_profile_id
-  = Corporate Card); app_settings 7 rows (appointment_cancel_reschedule_reasons,
-  attach_service_report_to_invoices true, dispatch_snap_minutes 15, dispatch_view_interval_minutes 60,
-  invoice_on_finalize PROMPT, service_time_tracking_mode PROMPT_FOR_TIMEOUT, ticket_reopen_reasons), no
-  default_billing_profile_template_id; invoices by snapshot profileId: Corporate Card 18, Westside 1,
-  null 59; audit_logs 236 at the start of Pass 33 (its fixture rows were deleted; the owner's own use
-  since may have added rows - count by entity_type, action; billing_profile rows 0 before Pass 33's
-  smoke). Golden Gate's two locations both RESOLVE a profile; the other nine accounts have none.
-- Docs versus code, found by the inventory and left for you: PLAN_ROADMAP_V2.md :58 cites
-  customer-detail.tsx:3633,3659 for the badges (now :4086 / :4146) and storage.ts:2522 for the
-  resolver (now :4132), and its "account default" means billing_profiles rows with location_id null,
-  not customers.defaultBillingProfileId; :59 should say the column is never read; CURRENT_FOCUS.md :591
-  ("null when no profile resolves, which is every location on the dev DB until C5.2"), :411-412 and
-  PLAN_ROADMAP_V2.md :728-729, :1123-1125 claim no location resolves a profile on the dev DB - wrong
-  (Golden Gate's two do; 19 invoices carry a profileId); the true narrower claim is "no screen can
-  create or assign one, and nine accounts have none" (PLAN_BILLING_V1_1.md :180-183 is accurate); canon
-  §4's field list omits locationId, templateId and lastFour, and its "primary location / account
-  context provides the default" is account-level rows only in code (there is no primary-location-scoped
-  profile); schema.ts's `.references()` on billingProfiles are not in the DB; the getAuditLogsForLocation
-  comment (decision 6); every set* app_settings write is unaudited (decision 2); server/seed.ts's
-  templates differ from the dev DB's. Fix the ones your pass touches; list the rest.
-- Docs to carry: the C5.2 row (mark done with the as-built); A1 :58-59; B-item :307 (what Phase 6 needs
-  now exists); :728, :1125, :1138; PLAN_BILLING_V1_1.md :181 and :280; CURRENT_FOCUS.md :411, :591,
-  :951; canon §4 (the field list, the inheritance sentence) and the Scope Rules if the shape changes;
-  shared/schema.ts :90-94's comment; the storage comment above createBillingProfileTemplate;
-  service-completion-dialog.tsx :271; a "Shipped in Pass 34" record; CURRENT_FOCUS's Pass 34 entry and
-  "Next up" (phase order: Pass 35, C5.3 Agreement vocabulary - its spec is its row in the Phase 5 table
-  :404; say so and write that handoff unless I say otherwise).
+Ground truth today (line numbers from the working tree at the end of Pass 34; they drift, the names do not;
+the inventory came from a read-only Explore subagent at the start of Pass 34 on origin/main after PR #105,
+with the four files Pass 34 edited re-grepped after its edits):
+- shared/schema.ts: agreements :373-480 (`agreementType` :392 text nullable no default; `termUnit` :394
+  notNull default YEAR; `recurrenceUnit` :441 notNull default MONTH; the intervals beside them);
+  agreementTemplates :482-? (`defaultAgreementType` :490; `defaultTermUnit` :493; `defaultRecurrenceUnit`
+  :495); opportunityCategories :680 (key, label, isActive, sortOrder; unique (org_id, key));
+  insertAgreementSchema :1352 / insertAgreementTemplateSchema :1353 (createInsertSchema, no refinement on
+  the type - any string passes). No `serviceCategory` symbol exists anywhere (PLAN_BILLING_V1_1.md :329's
+  name); `service_types.category` is a separate free-text column (Termite 2, General 2, Rodent 1, Commercial
+  1 on the dev DB) that overlaps the proposed list - name the overlap, do not merge them.
+- shared/agreement-schedule.ts: the comment :25-32; `advanceAgreementDate(dateOnly, unit, interval)` :33 (DAY
+  :37, WEEK :39, CUSTOM :45 = addDays(step), default MONTH); `computeExpectedServiceCount` :61 (uses it for
+  the term end and the cadence). No exported unit union or list.
+- server/storage.ts (14065 lines): `normalizeAgreementInsert` :2536 (`agreementType?.trim() || null` :2549),
+  `normalizeAgreementUpdate` :2587 (:2604), `normalizeAgreementTemplateInsert` :2645,
+  `normalizeAgreementTemplateUpdate` :2671; `buildAgreementInsertFromTemplate` :3195 (:3256 copies the
+  template's default once); `resolveAgreementStartDateFromValues` :1955; `generateServiceForAgreement` :3415;
+  `advanceAgreementForCompletedService` :3553; `createAgreementTemplate` :5764 / `updateAgreementTemplate`
+  :5773 (auditChangeTx agreement_template); `createAgreement` :5802 / `updateAgreement` :5832
+  (`agreementAuditSnapshotTx` :2175); `generateAgreementServicesForLocation` :6146; the opportunity-category
+  precedent `assertActiveOpportunityCategoryTx` :5193 / `getOpportunityCategories` :5230 /
+  `updateOpportunityCategory` :5241 (label, isActive, sortOrder; no audit); REVERT_ENTITY_STRIPPED_FIELDS
+  :512. server/jobs/billing-run.ts computes the term end with `agreement.termUnit` (CUSTOM = days);
+  server/production-value-backfill.ts and server/agreement-bootstrap.ts's Pass 12 attach do too.
+- server/routes.ts (3797 lines): `recurrenceUnitSchema` :565; `agreementTemplateBaseSchema` :717 /
+  `agreementTemplateSchema` :725 / `updateAgreementTemplateSchema` :747; `agreementBaseSchema` :752 /
+  `agreementSchema` :772 / `updateAgreementSchema` :805; `createAgreementFromTemplateSchema` :820;
+  `opportunityCategoryUpdateSchema` :520 (strict) and `PATCH /api/opportunity-categories/:id` :1756 (ungated;
+  POST / DELETE answer 405); `revertPayloadSchemas` :1446; POST / PATCH /api/agreement-templates :2128 /
+  :2139 (ungated); POST / PATCH /api/agreements :2164 / :2189 (gated only on soldByUserId,
+  ASSIGN_SALE_CREDIT); the settings writes' pattern `requirePermission(PERMISSIONS.MANAGE_SETTINGS)`
+  (service types :1498-ish, zones, the billing templates since Pass 34 :1305).
+- Client: settings.tsx (2979 lines) - `formatTemplateRecurrence` :61 / `formatTemplateTerm` :76 (CUSTOM →
+  "Day"); the billing plan anchorMode CUSTOM :619 (NOT this row); `OpportunityCategoryForm` :774;
+  `AgreementTemplateForm` :1130 (the free-text "Agreement Type" Input :1281; the term / recurrence selects
+  :1283-1310 with CUSTOM at :1291 / :1309); `canManageSettings` :1733; the Opportunity Categories card :2418
+  (Edit ungated); the Agreement Templates card :2712 (Add / Edit ungated). customer-detail.tsx (4776 lines) -
+  `formatAgreementRecurrence` :468; `addAgreementInterval` :494; the agreement form's init :551 and payload
+  :2041; the selects :2435 / :2450; the "Agreement Type Override" Input :2471. opportunities.tsx :111,
+  opportunity-taxonomy-chips.tsx :46 / :55 and the rule matchers read the category list the way a type list
+  would be read.
+- shared/audit.ts :34-49 `AuditEntityType` (customer, location, contact, billing_profile,
+  billing_profile_template, invoice, invoice_line_item, service, service_record, payment, credit_memo,
+  agreement, agreement_template, opportunity, appointment; labels :197-210); no member for any reference
+  list. REVERTABLE_AUDIT_ENTITY_TYPES :398-406.
+- DB today (run the SQL, never trust a doc's data claim): agreements 25 (17 ACTIVE, 8 CANCELLED, one org);
+  `agreement_type`: Annual 16, NULL 9; agreement_templates 3 - Quarterly Control (Annual; QUARTER/1; YEAR/1),
+  Wildlife Trapping Program (NULL; CUSTOM/1; CUSTOM/7), Daily Rodent Trapping (NULL; CUSTOM/1; CUSTOM/7);
+  recurrence: CUSTOM/1 ×9, QUARTER/1 ×16; term: CUSTOM/7 ×6, CUSTOM/10 ×3, YEAR/1 ×16; the 9 CUSTOM
+  agreements: Daily Rodent 2ab3aeae / 0e504ea6 (ACTIVE, term 10), d314e8e7 (CANCELLED, 10), 366356d6
+  (CANCELLED, 7); Wildlife 6e6f03c3 / 1044779c (ACTIVE, 7), 3d2549c6 "Unit 12 Prepaid Test" / 0d5c7fb1
+  (ACTIVE, 7), 44c81fb7 (CANCELLED, 7); audit_logs 237 before Pass 34's smoke (its rows were deleted; the
+  owner's own use since may have added rows - count by entity_type, action; `agreement|update` 2, no
+  agreement_template rows); billing_profiles 2, billing_profile_templates 2, app_settings 7 (no
+  default_billing_profile_template_id row - Pass 34's smoke restored "none").
+- Docs versus code, found by the inventory and left for you: the C5.3 row :411 and CURRENT_FOCUS.md
+  :1910-1912 say "7 agreements, 2 templates" (it is 9 and 2) and that Wildlife is "CUSTOM/7 term *and*
+  recurrence" (the recurrence is CUSTOM/1; only the term is 7); A1 :61 cites settings.tsx:1130 for the Input
+  (it is :1281; :1130 is the form's declaration) and says the seed holds "Residential Recurring" (true of
+  seed.ts, not of the dev DB - the real values are Annual and NULL); canon §9 :703's fixed agreementType enum
+  contradicts B8 / D8 and the free text, and :705 `frequencyRule` is not the code's four columns; the
+  shared/agreement-schedule.ts comment :25-26 and CURRENT_FOCUS :1904-1907 say DAY and WEEK are billing-only
+  while the switch handles them and only the route enum and `addAgreementInterval` do not; PLAN_BILLING_V1_1.md
+  :329 and PLAN_ROADMAP_V2.md :233 name the dimension `serviceCategory`, the row and answer 9 say "Agreement
+  types", no such symbol exists; the opportunity-category precedent is "settings-managed" in name (no create,
+  no merge, ungated PATCH, unaudited). Fix the ones your pass touches; list the rest.
+- Docs to carry: the C5.3 row (mark done with the as-built, the true counts); A1 :61; B8 :232-239 (the
+  owner's answer, now built); :926; Part E answer 9 :4159; PLAN_BILLING_V1_1.md D8 :329-331; CURRENT_FOCUS.md
+  :1903-1913 (the CUSTOM entry - mark built) and the head status paragraph; canon §9 (:703 the enum → the
+  settings-managed list by key; :705 → the four columns; the units DAY | WEEK | MONTH | QUARTER | YEAR);
+  shared/agreement-schedule.ts :25-32; a "Shipped in Pass 35" record; CURRENT_FOCUS's Pass 35 entry and
+  "Next up" (phase order: Pass 36, C5.4 UI hygiene - its spec is its row in the Phase 5 table :412; say so
+  and write that handoff unless I say otherwise).
 
-Build per C5.2: (1) shared/billing-profile-defaults.ts (the key, the reader's null default, the
-normalizer) and the settings read / write + the Settings card; (2) storage - the compat read's `billing`
-projection, the creation of the account-default profile from the org default inside
-createCustomerWithPrimaryLocation (audited), the override create / update / retire path (through the
-existing writers; `locations.billing_profile_id` per decision 1), any guard the writers need (an
-override's locationId must belong to its accountId; one active default per account); (3) routes - the
-settings routes, the gates per decision 5, whatever the selector needs beyond the existing
-billing-profile routes (recommend nothing new: the dialogs call POST / PATCH /api/billing-profiles and the
-profile PATCH); (4) client - the selector in Add / Edit Location, the account default's fields on the
-primary location's identity block, the chip and the two badges reading the projection, the Settings
-card, the ticket header's one line (decision 8); (5) docs as above. Not touched: Phase 6's card / ACH
-capture (the tokens stay untyped; last four is C6.1), QBO, the statement's Bill To rules (Pass 15), the
-invoice document (Pass 11c), FB-020 / C4.6, a column drop unless you decide one (then the copy-database
-recipe).
+Build per C5.3: (1) shared - the agreement-type vocabulary module (the seed list and keys, the unit list DAY |
+WEEK | MONTH | QUARTER | YEAR with its labels, the key derivation for a new type) and `agreement_type` in
+shared/audit.ts; schema - the `agreement_types` table; (2) the bootstrap - the table, the seed per org, the
+free-text → key migration printed per row, the CUSTOM → DAY migration on the four columns printed per row,
+both self-guarding (boot 2 prints nothing); (3) storage - the list's reads and writes (create / update /
+merge, audited), `normalizeAgreement*` validating the key against the active list
+(`assertActiveOpportunityCategoryTx`'s precedent), `advanceAgreementDate` without CUSTOM; (4) routes - the
+list's routes (MANAGE_SETTINGS on the writes), the unit enum, the type key on the agreement / template
+schemas; (5) client - the Settings "Agreement Types" card (Add / Edit / Merge, gated), the two dropdowns,
+the four unit selects and three labelers, `addAgreementInterval`'s DAY / WEEK; (6) docs as above. Not touched:
+the agreement-template routes' gate (decision 7, note only), `service_types.category`, billing plan
+`anchorMode` / cancellation `effectiveDateMode` / the material "CUSTOM", FB-006 / FB-007 / FB-003, the
+agreement card's layout beyond one type line, a column drop (the type column stays, holding the key).
 
-Environment: Node 24.21.0, npm run dev:full (restart it before manually testing), DEV_NOTES.md for the
-DB backup / restore, the copy-database recipe and the PowerShell traps, gh logged in so the session
-can open the PR. Verify on PORT=5001 as the previous passes did: a pass with no column drop verifies
-against the shared dev DB (Passes 31-33 did) with the smoke test snapshotting and restoring the
-app_settings row it owns; the previous session's scratchpad
-(C:/Users/Austin/AppData/Local/Temp/claude/c--Dev-PestFlow/<session>/scratchpad - the newest holds
-patch.cjs (absolute === FILE paths), boot.sh (re-point its S= line), stop.sh, counts.sql, smoke33.mts,
-replace-handoff.cjs, pass34-inventory.md) is the starting kit. In a smoke test send `Connection: close`
-on every fetch, derive the cleanup from the DB by the fixture email, and clean a hard-deleted entity's
-audit rows by the customerId its snapshots carry. npm run check; double boot (boot 2 prints only
-"serving on port 5001" with every table count unchanged; no migration unless you add one); the pass's
-API smoke test as all four roles (the setting's GET open and PATCH 403 / 200 / 400 unknown template;
-a customer created with the default set gets an account-default profile audited `created`, without it
-none; a second location inherits (the resolver answers the account default; the compat projection says
-ACCOUNT_DEFAULT); an override chosen on it (the row created, the projection LOCATION_OVERRIDE, the
-badge's source), edited, then switched back to inherit (the row inactive, never deleted, the projection
-back to ACCOUNT_DEFAULT); an invoice issued on the override location carries that profile's snapshot
-and terms; the account default's fields edited from the primary location's dialog path; the template
-routes' gates; the History reads (Pass 32 / 33) listing the profile rows with the right location; the
-fixture deleted in FK order with its rows, the app_settings row restored, counts back at baseline) and a
-Vite 200 on every touched client module; state plainly what was not rendered - the selector, the
-Settings card and the chip cannot be judged without a browser.
+Environment: Node 24.21.0, npm run dev:full (restart it before manually testing), DEV_NOTES.md for the DB
+backup / restore, the copy-database recipe and the PowerShell traps, gh logged in so the session can open
+the PR. Verify on PORT=5001 as the previous passes did: this pass ADDS a table and runs two data migrations
+(no column drop) - an additive migration verifies against the shared dev DB under the owner's port-5000
+server (Passes 32-34 did; the owner's restart then prints nothing for it) OR on the copy-database recipe so
+the owner's restart prints the per-row effect for them (Pass 23 / 24 did; USE_COPY=1 in boot.sh) - say
+which you chose and why (recommend the copy: the migration rewrites 9 agreements and 2 templates the owner
+uses, and the printed report at their restart is the record); the previous session's scratchpad
+(C:/Users/Austin/AppData/Local/Temp/claude/c--Dev-PestFlow/<session>/scratchpad - the newest holds patch.cjs
+(absolute === FILE paths), boot.sh (re-point its S= line; USE_COPY=1 for the copy), stop.sh, counts.sql
+(rebuild it from pg_tables after boot 1 - the list is fixed and the new table would be missing),
+smoke34.mts, replace-handoff.cjs, pass35-inventory.md) is the starting kit. In a smoke test send
+`Connection: close` on every fetch, derive the cleanup from the DB by the fixture email, and clean a
+hard-deleted entity's audit rows by the customerId its snapshots carry. npm run check; double boot (boot 1
+prints the table, the five seed rows and the per-row migrations; boot 2 prints only "serving on port 5001"
+with every table count unchanged); the pass's API smoke test as all four roles (the list's GET open and its
+writes 403 / 201 / 200 / 400 for a duplicate key or an unknown merge target; a template and an agreement
+created with a type key, an unknown or inactive key refused, the template's default preselected on an
+agreement created from it; a merge moving them with the audit rows you decided on and the source
+deactivated; a deactivation of a type in use refused; a unit of DAY / WEEK accepted on both forms and
+CUSTOM refused; `advanceAgreementDate` DAY(7) and WEEK(1) stepping the same seven days through the real
+generation path; a revert of an agreement row with a unit; the migrated rows read back with DAY and the
+same intervals, their next-service dates unchanged; the fixture deleted in FK order with its rows, counts
+back at baseline) and a Vite 200 on every touched client module; state plainly what was not rendered - the
+Settings card, the dropdowns and the unit selects cannot be judged without a browser.
 
-Working agreement as always: one pass, one branch, update CURRENT_FOCUS and the roadmap's pass table at
-the end, replace the handoff prompt at the end of CURRENT_FOCUS.md with the one for the next pass (phase
-order: Pass 35, C5.3, unless I say otherwise), push, open the PR and stop. I merge.
+Working agreement as always: one pass, one branch, update CURRENT_FOCUS and the roadmap's pass table at the
+end, replace the handoff prompt at the end of CURRENT_FOCUS.md with the one for the next pass (phase order:
+Pass 36, C5.4, unless I say otherwise), push, open the PR and stop. I merge.
 ```

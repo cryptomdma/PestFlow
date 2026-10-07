@@ -55,8 +55,8 @@ are calibrated to Phase 1's: Pass 6 (four tables, routes, three dialogs) is the 
 | COA applied by support, role-gated | DONE | `APPLY_PAYMENT` is support+ (`permissions.ts:60,76`); technician cannot apply |
 | COA "auto-adjusts the service price with notation" | **REJECTED by D6** | COA is a payment application; Price / COA / Due today is what ships (Pass 7). See B3. |
 | Billing Plans tied to agreement templates, replacing billing frequency | DONE | Pass 3.5 selector, Pass 9 column drop |
-| Billing profile changeable from the customer screen (edit / add location) | ABSENT | no selector in either dialog; only a "Billing Override" badge (`customer-detail.tsx:3633,3659`). Resolution exists server-side: `resolveBillingProfileForLocation()` (`storage.ts:2522`) location override → account default |
-| Default billing profile option in Settings | ABSENT | `customers.defaultBillingProfileId` exists (`schema.ts:20`) with no UI; no org-level default |
+| Billing profile changeable from the customer screen (edit / add location) | DONE | Pass 34 (2026-10-05, C5.2): a Billing selector in Add Location and Edit Location (`AddLocationDialog` / `EditLocationDialog` / `LocationBillingSelector` in `customer-detail.tsx`) - inherit the account default or override for this location - and the account default's own fields on the primary location's Edit Location. Resolution is still `resolveBillingProfileForLocation()` (`storage.ts`; since Pass 34 a wrapper over the reader-taking `resolveBillingProfileForLocationTx`): the location's active override, else the account's active default. `billing_profiles.location_id` is the only pointer read; `locations.billing_profile_id` is a mirror the profile write path keeps, read by nothing |
+| Default billing profile option in Settings | DONE | Pass 34 (C5.2): Settings -> Billing Defaults, one `app_settings` row `default_billing_profile_template_id` (`shared/billing-profile-defaults.ts`), read at customer creation. `customers.defaultBillingProfileId` (`schema.ts:20`) is read by nothing - a dead column for the hygiene row C5.8 |
 | "Monthly billing" in template invoice terms | **MISREAD**; the statement B5 asked for instead is DONE — Pass 15 (2026-09-25) | terms are `DUE_ON_RECEIPT / NET_15 / NET_30 / NET_60` (`settings.tsx:423-432`); monthly cadence is a Billing Plan, not a term. See B5. The statement: `shared/statements.ts` (the arithmetic), `server/documents/statement-pdf.ts` (the document), `StatementDialog` on the location Invoices tab and the customer header. See "Shipped in Pass 15" at the end of Part D. |
 | Agreement Type as a dropdown | ABSENT | free-text `Input` at `settings.tsx:1130`; `agreements.agreementType` is untyped text; seed holds "Residential Recurring" etc. |
 
@@ -305,7 +305,9 @@ are (`payment_methods.last4`, shown on the billing profile and behind the card i
 
 **B19. "Batch: if CC on file and appropriate billing profile selected, auto-process with a
 confirmation."** Needs Phase 6 (cards) and C5.2 (a billing profile the location actually selects,
-with `autoChargeOnFile`). **Owner:** agreed.
+with `autoChargeOnFile`). **Owner:** agreed. C5.2 shipped as Pass 34 (2026-10-05): a location now
+selects its profile (the account default or its own override) and every invoice carries it; what Phase
+6 still needs is the card on file itself and the `autoChargeOnFile` flag.
 
 **B20. Aging "current/30/60/90/90+".** V1 §1.4: derived, never stored. **Owner:** "Current" should mean
 0-30 days; better semantics welcome. Resolution for C2.4: age by **invoice date** (`issuedAt`, days
@@ -405,12 +407,13 @@ zones from C4.1b, and only the last exists by then.
 |---|---|---|---|---|
 | C5.1a (**Pass 32**) — **done** (`feature/phase-5-audit-coverage`, 2026-10-04; see "Shipped in Pass 32" at the end of Part D) | **Non-financial audit coverage (D7 follow-up).** Every mutation of customer, location, contact, billing profile, agreement, agreement template, appointment, and service (create / update / status) writes the log through the existing helper, with new entity members in `shared/audit.ts`. Excludes `service_records` (C3.1's `ticket_edited`) and price overrides (Pass 8). As built: `contact`, `billing_profile`, `billing_profile_template`, `agreement_template` join `AuditEntityType` (no `account` - the primary flip is logged on the locations, the account's facts sit on the customer); `created` / `status_changed` / `deleted` join `AuditAction` beside the existing `update` (one member for "updated"); three private writers (`auditCreatedTx` / `auditChangeTx` / `auditDeletedTx`) write inside each method's transaction, a change only when the History tab's own diff would show something (`auditChangeAction`; `updateLocationProfile`'s always-write fixed), `status_changed` when `status` moved; whole-row snapshots for the simple entities (the agreement's with its sold-by user named), the curated `serviceAuditSnapshot` / `appointmentAuditSnapshot` grown for the two scheduling entities; the fourteen actor-less storage methods take `actor` and every route passes `getAuditActor(req)`; an agreement's own schedule executing - the generated service (also from the three write-on-GET routes), the recurrence advance, the billing run's `nextBillingDate` - signs as `SYSTEM_AUDIT_ACTOR`; `cancelAgreement`'s visits carry the disposition's cancel fields and a `status_changed` each; `deleteService` writes `deleted` (and no longer fails on the crew FK); the location History read lists the contacts' and the billing profiles' rows, the templates are read by `entityType` + `entityId`; `audit_logs_entity_idx` on (org_id, entity_type, entity_id); the dead public `recordAuditLog` removed; the client's five dead `["/api/audit-logs"]` invalidations replaced by `invalidateAuditViews()` and every mutation that now writes a row calls it. | Customer/account history log | — | — |
 | C5.1b (**Pass 33**) — **done** (`feature/phase-5-customer-history-revert`, 2026-10-05; see "Shipped in Pass 33" at the end of Part D) | **Customer-level History + Revert.** A History view on the customer that rolls up every location plus account-level rows; **Revert** on a row = a new forward update through the entity's normal write path, logged as `reverted` naming the source row; manager+ until C5.6 makes it a configurable permission (owner). As built: `GET /api/audit-logs?customerId=` (the third exclusive form) backed by `getAuditLogsForCustomer` - the account's locations (keyed on the account, the screen's own source; `locations.customerId` only for a legacy customer with no account row) with every record anchored to them, plus the customer's own rows, the account's billing profiles with no location and any contact with no location, newest first at the read's clamp, each row annotated `locationId` / `locationName` (null = "Account"); a **History** button on the customer screen's toolbar beside Statement opening a sheet with a location filter and a record-type filter (the tab list is location-scoped by canon, so no customer-level tab); the per-location History tab untouched. Revert: `POST /api/history/:auditLogId/revert` under `REVERT_HISTORY` (manager+; the table's own API stays read-only) - the storage plans it (`shared/audit.ts` `describeAuditRevertability`: `update` / `status_changed` / `reverted` rows of customer, location, contact, billing profile, the two templates and agreement; the entity must exist; the fields the row changed must still hold its after values, else 409 `HISTORY_STALE` with the current row), the route validates the planned payload with the entity's own zod schema and the agreement's sale-credit rule, and the entity's existing update method replays it - ONE `reverted` row (the write path writes it instead of its `update`, the after carrying `reverted` = { auditLogId, action, createdAt, actorLabel }), re-checking the fields inside its transaction. Refused with a code: `created` / `deleted` rows, the financial entities, service / appointment / opportunity rows, the special actions (preference set / clear...), an agreement's cancellation, a location made non-primary. The card renders a one-sided row's snapshot, the location chip, the "Reverted the ... of ..." line and the Revert button with an AlertDialog confirm; the reverted entity's own reads refresh. | History for all changes; revert | C5.1a | — |
-| C5.2 (**Pass 34**) | **Billing profile on the customer screen.** Selector in edit/add location (inherit account default / override), account default on the customer edit modal, org default template in Settings (`default_billing_profile_template_id`) used at customer creation; the "Billing: Per-location / Default" chip reads real data. | Billing profile from customer screen; add-location setup; default in settings | — | — |
+| C5.2 (**Pass 34**) — **done** (`feature/phase-5-billing-profile-customer-screen`, 2026-10-05; see "Shipped in Pass 34" at the end of Part D) | **Billing profile on the customer screen.** Selector in edit/add location (inherit account default / override), account default on the customer edit modal, org default template in Settings (`default_billing_profile_template_id`) used at customer creation; the "Billing: Per-location / Default" chip reads real data. As built: `billing_profiles.location_id` is the one pointer read (`locations.billing_profile_id` is a mirror the profile write path keeps, no reader; `customers.default_billing_profile_id` dead, left for C5.8); `shared/billing-profile-defaults.ts` holds the setting key, the vocabularies and the `LocationBillingProjection` (ACCOUNT_DEFAULT \| LOCATION_OVERRIDE \| NONE) the compat read answers for the selected location beside `accountDefault` and `billingOverrideLocationIds`; Settings -> Billing Defaults (`GET` open / `PATCH` MANAGE_SETTINGS, 400 `BILLING_DEFAULTS_INVALID` for an unknown or inactive template, null deletes the row); `createCustomerWithPrimaryLocation` creates the account-default row from that template in its transaction, audited `created` (no template, or a stale one: no profile; no backfill of existing accounts); the writers refuse a foreign location, a second active override per location and a second active default per account (400 with a code), never type the card / ACH tokens, and retire with `status: "inactive"` (never a delete - invoices carry the id); the Add / Edit Location dialogs carry the selector (inherit / override with label, type, terms, billing name, address) and the primary location's Edit Location the account default's fields (created there when the account has none, prefilled from the org template); the template routes' writes are MANAGE_SETTINGS (the card gated), the instance routes stay open like the location PATCH; the chip prints "<label> (account default)" / "<label> (this location)" / "No billing profile", the switcher and profile-card badges read the projection, the ticket header prints the resolved profile; `getAuditLogsForLocation` narrowed to the location's own overrides plus the account's location-less rows. Not audited: the setting's write (no `set*` app_settings writer is - C5.8). | Billing profile from customer screen; add-location setup; default in settings | — | — |
 | C5.3 (**Pass 35**) | **Agreement vocabulary.** A settings-managed **Agreement types** list (seeded Pest control / Termite / Mosquito / Wildlife / Evaluation) with dropdowns on template and agreement; the existing free text migrated into entries the office can rename or merge; no hardcoded structure list (B8). `CUSTOM` recurrence → explicit DAY / WEEK with the `CUSTOM(N)` → `DAY(N)` migration (7 agreements, 2 templates). | Agreement Type dropdown; CUSTOM recurrence | — | — |
 | C5.4 (**Pass 36**) | **UI hygiene.** Hyperlinks on the dispatch sheet, hover card, Service Details dialog, pending-queue rows, the Ticket Review list and modal, and the Service History page; a details link from the pending queue (service details + location); the `schedulingMode` badge humanized ("Scheduling: auto-eligible") with no auto-schedule promise (dev rule 6); Make Primary moves into the contact dialog (inline button removed); New Service modal `max-w-2xl`. May be split across other passes that touch the same files. | Hyperlinks; pending-queue links; AUTO_ELIGIBLE pill; Make Primary; widen modal | — | — |
 | C5.6 (**Pass 37**) | **Role profiles in Settings** (B16). `role_profiles` + `role_profile_permissions` (org-scoped); the four built-in roles seeded as editable, cloneable profiles; users assigned a profile; `can()` reads the profile instead of the fixed matrix (`shared/permissions.ts`), so no call site changes; an admin cannot remove `MANAGE_SETTINGS` from their own profile; every profile change audit-logged. Interim "manager+" answers elsewhere in this roadmap become profile permissions. | Role profile creation | — | — |
 | C5.7 (**Pass 38**) | **Technicians are users** (owner decision 2): technician profile fields (license, color, display name) move onto `users`; `technicians` becomes a compatibility view or is dropped after every FK (`appointments`, `services`, `service_records`, `production_value_entries`, `technician_preferences`, crew) is rewired; the C2.2 bridge is the migration key. | One table for all users | C2.2, C5.6 | — |
 | C5.5 | **Org timezone** for every date-only value (billing run "today", collections days, batch range, aging). Cross-cutting; scheduled when the UTC-day slips become a real complaint. | (Pass 7.7 note) | — | — |
+| C5.8 | **Schema and settings hygiene** (found by Pass 34, unscheduled - the owner sequences it). Drop the two dead billing pointers, `locations.billing_profile_id` (a mirror with no reader since Pass 34) and `customers.default_billing_profile_id` (no reader at all) - a column drop, so the copy-database recipe; add the `billing_profiles` foreign keys `shared/schema.ts` declares (`accountId`, `locationId`, `templateId`) that the bootstrap never created; audit the `app_settings` writes (no `set*` writer writes `audit_logs`, and there is no `app_setting` audit entity - the Pass 32 coverage stopped at the customer record); reconcile `server/seed.ts`'s four billing profile templates with what the dev DB holds (COD, Test Net 15). | (Pass 34 notes) | C5.2 | — |
 
 ### Phase 6 — Card / ACH payments and invoice delivery (V1's "Phase 2")
 
@@ -730,8 +733,10 @@ Behavior worth knowing before the next pass touches it:
   oversight - re-rendering them would be a deliberate decision (delete the `documents` row) the owner makes.
 - **An account-level profile without an address bills the primary location** (`PRIMARY_LOCATION`, `profileId` set) -
   the dev DB's "Corporate Card" profile is exactly that. Only a location-level profile without an address bills that
-  location's own address (`LOCATION_OVERRIDE`). Until C5.2 (Pass 34) no screen creates a profile or gives one an
-  address, so on the dev DB every new invoice bills the primary location.
+  location's own address (`LOCATION_OVERRIDE`). Until Pass 34 (C5.2) no screen created a profile or gave one an
+  address, so on the dev DB only Golden Gate's two locations (its account default and the Westside override, both
+  address-less) resolved one and every other new invoice billed the primary location; since Pass 34 the location
+  dialogs create, address and retire profiles.
 - **The manual path keeps its own due date.** `createManualInvoice` now freezes the parties and profile terms but
   still writes the due date the office typed (or none), never the profile's terms - that is a behavior change the
   spec did not ask for, left for C2.3's "Add fee / adjustment" to decide.
@@ -1126,8 +1131,9 @@ Behavior worth knowing before the next pass touches it:
 - **A manual invoice's blank due date means the location's terms.** `createManualInvoice` falls
   back to `resolveInvoiceTermsForLocationTx`'s `dueDate` (the resolved billing profile's
   `invoiceTerms` from today; null when no profile resolves), the default Pass 11c left for C2.3.
-  A typed due date still wins. Every new invoice on the dev DB has no profile, so blank stays blank
-  until C5.2 (Pass 34) can give a location one.
+  A typed due date still wins. On the dev DB only Golden Gate's two locations resolved a profile
+  then (the correction of 2026-10-05: the earlier "every location has none" was wrong), so blank
+  stayed blank everywhere else until Pass 34 (C5.2) let the office give a location one.
 - **Draftable is the Services tab's rule, client-side; the server is the authority.** The draft
   dialog lists a location's SCHEDULED / IN_PROGRESS visits with an active linked service and no
   non-void invoice, sorted chronologically, and says how many others are already invoiced; a
@@ -1140,7 +1146,8 @@ Behavior worth knowing before the next pass touches it:
 - **Not built:** paging the preview (the eligible list is the whole org's), excluding one visit from
   a batch, delivery (Send All is still the `sentAt` stamp plus the pinned PDF, and its toast says
   so), a draft for a service with no appointment (no anchor - Pass 4's limit, B6), a billing
-  profile the fee dialog could create (C5.2).
+  profile the fee dialog could create (C5.2, Pass 34: profiles are created from the location
+  dialogs, not from the fee dialog, which still only reads the resolved one).
 - **Verified 2026-09-24** (PORT=5001): `npm run check` clean; boot 1 printed only "serving on port
   5001" with all 43 tables' counts unchanged; 90 checks as the four roles - technician 403 on
   batch-preview / batch-generate / batch-send / draft / the manual invoice, unauthenticated 401,
@@ -3779,7 +3786,7 @@ bootstrap; declared on the table in `shared/schema.ts` too). No table, no column
 30 put account-scoped rows on the customer, and `accounts.status` / `primaryLocationId` move with the
 location invariant - so the primary flip is logged as each location's `update` (isPrimary before /
 after) and the account's own row is not logged. `billing_profile_template` joined (the row says
-"billing profile"; the template is the org default C5.2 will read). Three actions: `created`,
+"billing profile"; the template is the org default Pass 34 (C5.2) reads at customer creation). Three actions: `created`,
 `status_changed`, `deleted`; updates reuse the existing `update` rather than adding a second spelling
 of it (35 rows already carry `update`, its label is "Updated"). **Decided (2), the snapshot.** Whole
 rows for customer, location, contact, the two billing profile tables, the two templates and the
@@ -3987,6 +3994,151 @@ count unchanged. Vite 200 on the four touched client modules and the two shared 
 a browser:** the History sheet, its filters and the limit note, the Revert button, the AlertDialog
 confirm, the one-sided snapshot, the location chip and the "Reverted the..." line - the repo has no
 browser automation and the session had no browser; restart `npm run dev:full` before trying them.
+
+**Shipped in Pass 34** (`feature/phase-5-billing-profile-customer-screen`, 2026-10-05) — the C5.2 row as built,
+the third Phase 5 row. No migration, no table, no column, no seed row; verified against the shared dev DB.
+
+```ts
+// shared/billing-profile-defaults.ts         BILLING_TYPES / BillingType (card | ach | invoice_terms | cash | check); INVOICE_TERMS / InvoiceTerms (DUE_ON_RECEIPT | NET_15 |
+//                                             NET_30 | NET_60); BILLING_PROFILE_STATUSES / BillingProfileStatus (active | inactive); BILLING_PROFILE_ERROR_CODES
+//                                             (BILLING_PROFILE_ACCOUNT_NOT_FOUND / _LOCATION_MISMATCH / _OVERRIDE_EXISTS / _DEFAULT_EXISTS - the writers' 400 codes);
+//                                             isBillingType / isInvoiceTerms / describeBillingType; DEFAULT_BILLING_PROFILE_TEMPLATE_SETTING_KEY
+//                                             ("default_billing_profile_template_id"); BillingDefaults { defaultBillingProfileTemplateId: string | null };
+//                                             DEFAULT_BILLING_DEFAULTS (null); BILLING_DEFAULTS_INVALID; normalizeBillingDefaults(values) (blank -> null);
+//                                             BILLING_PROFILE_SOURCES / BillingProfileSource (ACCOUNT_DEFAULT | LOCATION_OVERRIDE | NONE); BillingProfileSummary
+//                                             { profileId, label, billingType, invoiceTerms }; LocationBillingProjection { source, profileId, label, billingType,
+//                                             invoiceTerms }; NO_BILLING_PROFILE; projectLocationBilling(locationId, profile); describeBillingProfileSource(source);
+//                                             describeLocationBilling(billing) -> "<label> (account default)" | "<label> (this location)" | "No billing profile";
+//                                             describeBillingProfileTerms(billing, describeInvoiceTerms) -> "Invoice terms · Net 30" | "Card" | null
+// shared/schema.ts                            the billingProfiles comment: which pointer is read, the two dead columns, the tokens are Phase 6's
+// server/storage.ts                           CustomerDetailCompatProjection { legacyCustomer, account, primaryLocation, selectedLocation, relatedLocations, billing:
+//                                             LocationBillingProjection, accountDefault: BillingProfileSummary | null, billingOverrideLocationIds: string[] }
+//                                             (hasBillingOverride gone); pickAccountDefaultProfile(profiles) / summarizeBillingProfile(profile) (module level);
+//                                             BillingDefaultsError (code BILLING_DEFAULTS_INVALID); BillingProfileError(code, message); IStorage getBillingDefaults() /
+//                                             setBillingDefaults(next) beside the dispatch pair, private readBillingDefaultsTx(reader); private
+//                                             createAccountDefaultProfileFromOrgDefaultTx(tx, accountId, actor) inside createCustomerWithPrimaryLocation; private
+//                                             assertBillingProfileRulesTx(tx, next) and syncLegacyLocationPointerTx(tx, before, after) inside createBillingProfile /
+//                                             updateBillingProfile; resolveBillingProfileForLocation(locationId) wraps private resolveBillingProfileForLocationTx(reader,
+//                                             location), which resolveInvoiceTermsForLocationTx (through its tx now), statementBillToTx and getCustomerDetailCompat read;
+//                                             getAuditLogsForLocation narrowed; REVERT_ENTITY_STRIPPED_FIELDS: location + billingProfileId, billing_profile +
+//                                             cardOnFileToken / achToken / lastFour
+// server/routes.ts                            billingProfileWriteSchema (insertBillingProfileSchema minus the tokens; label required; billingType / invoiceTerms / status
+//                                             enums; strict) and updateBillingProfileSchema = its partial (the revert's schema too); POST / PATCH /api/billing-profiles
+//                                             answer BillingProfileError as 400 { code, message }; POST / PATCH /api/billing-profile-templates requirePermission
+//                                             MANAGE_SETTINGS; GET /api/settings/billing-defaults (open) / PATCH (MANAGE_SETTINGS; billingDefaultsSchema
+//                                             { defaultBillingProfileTemplateId: string | null } strict; 400 BILLING_DEFAULTS_INVALID); billingProfileId omitted from
+//                                             createCustomerWithLocationSchema.location, updateLocationProfileSchema.location and PATCH /api/locations/:id
+// client/src/lib/invalidate-audit-views.ts    invalidateBillingProfileViews() (the compat read, the account's profiles, the location's resolved profile)
+// client/src/pages/customer-detail.tsx        CustomerDetailCompatResponse (+ account, billing, accountDefault, billingOverrideLocationIds); BillingProfileFormState,
+//                                             EMPTY_BILLING_PROFILE_FORM, billingProfileFormFrom(profile), billingProfileFormFromTemplate(template),
+//                                             billingProfilePayload(form), billingProfileFormChanged(form, profile), pickAccountDefaultProfile, pickLocationOverrideProfile;
+//                                             BillingProfileFields({ form, onChange, idPrefix }); LocationBillingSelector({ mode, onModeChange, form, onFormChange,
+//                                             accountDefault, idPrefix, isPrimary }); AddLocationDialog(+ accountDefault) posts the override after the location (a refusal
+//                                             is reported, the location stands); EditLocationDialog(+ accountId) reads ["/api/accounts", accountId, "billing-profiles"]
+//                                             (and the setting plus the templates to prefill a new account default) and writes the account default (primary location
+//                                             only; created when the account has none and a label was typed) and the override (create / update / retire) after the
+//                                             profile PATCH; the chip (chip-billing) prints describeLocationBilling(compat.billing) with the type and terms as its title;
+//                                             the switcher's "Billing Override" badge reads billingOverrideLocationIds; the profile card's badge-billing-override reads
+//                                             billing.source and text-location-billing prints the resolved profile with its terms
+// client/src/pages/settings.tsx               the Billing Defaults card (card-billing-defaults; select-default-billing-profile-template: None + the active templates,
+//                                             an inactive stored one listed disabled with text-default-billing-template-inactive; "Only an admin can change this
+//                                             setting."); the Templates card's Add / Edit gated by canManageSettings (text-billing-profile-templates-admin-only)
+// client/src/components/service-completion-dialog.tsx  text-ticket-billing-profile under the billing-plan pill: "Billing profile: <label> · <type · terms> (this location |
+//                                             account default)" or "No billing profile resolves for this location", from GET /api/locations/:id/billing-profile
+```
+
+**Decided (1), which pointer is the truth.** Three default / override pointers existed and one was read.
+`billing_profiles.location_id` - canon §4's shape, the resolver's, Pass 11c's invoice parties - is the truth:
+the compat read's `hasBillingOverride` and both "Billing Override" badges, which read the legacy reverse
+pointer `locations.billing_profile_id`, now read a `billing` projection the compat read resolves by the same
+code as the invoices (`resolveBillingProfileForLocationTx`), plus `accountDefault` and
+`billingOverrideLocationIds` for the Add Location copy and the switcher's badge. `locations.billing_profile_id`
+has no reader any more and is still WRITTEN, as a mirror by the profile write path (the active override's id on
+its location, cleared when the override is retired or moved; no location audit row - the profile's own row is
+the record, and a location `update` naming the mirror would invite a Revert that desyncs the two), so Pass 11c's
+bootstrap backfill stays true; it leaves every location body (`billingProfileId` is omitted from the two
+location PATCH schemas and the create-with-primary-location location, and stripped from a location revert).
+`customers.default_billing_profile_id` is read by nothing on either side (set for one customer on the dev DB,
+consistent with that account's default) and is left alone. Both columns are the hygiene row C5.8 (a column
+drop needs the copy-database recipe). **Decided (2), the org default.** One `app_settings` key,
+`default_billing_profile_template_id`, on Pass 31's one-key pattern: no seed row, the reader answers null,
+`setBillingDefaults` upserts an id that names an ACTIVE template of the org (else 400
+`BILLING_DEFAULTS_INVALID`) and deletes the row for null, so "no row" stays the one representation of "none".
+The stored id is answered as stored even if the template is later deactivated: the creation path checks again
+and creates nothing then, and the Settings select lists the stored inactive template disabled with a red note.
+`GET /api/settings/billing-defaults` is open (the location dialogs say what a new account starts with); the
+`PATCH` is MANAGE_SETTINGS like every settings write. The write is NOT audited - no `set*` app_settings writer
+is and there is no `app_setting` audit entity; a Settings-wide audit is C5.8's. **Decided (3), creation.**
+`createCustomerWithPrimaryLocation` creates the account-default row from the org default template inside its
+transaction (accountId the new account, locationId null, templateId, label = the template's name, its
+billingType, invoiceTerms = its defaultInvoiceTerms when the type is invoice terms, isDefault, active), audited
+`created` by the same actor as the customer, location and contact; no template set, or the setting naming a
+template that is gone or inactive, creates nothing (the resolver answers nothing, as before) - a stale setting
+never fails a customer's creation. `createLocation` / `createLocationWithPrimaryContact` create nothing: a
+location inherits. The legacy `POST /api/customers` path (`createCustomer`) creates nothing either - its account
+is made after the fact and the customers screen posts create-with-primary-location. No backfill: the nine
+accounts with no profile keep none; an existing account gets its default when someone saves the primary
+location's Edit Location with the account-default block filled in (prefilled from the org template when one is
+set), or never. **Decided (4), the selector.** Both location dialogs carry a Billing section:
+`LocationBillingSelector`, a radio - "Use the account default" (the account default's label and terms shown,
+or "No account default yet - ...") or "Override for this location" with the override's fields (label, type,
+terms when invoice terms, billing name, Bill To address; a card or ACH choice says the capture is a later
+phase). Add Location posts the override after the location exists (a refusal is reported in the toast; the
+location stands). Edit Location reads the account's profiles, seeds the radio from the location's active
+override, and on save creates the override, updates it when its fields changed, or retires it with `status:
+"inactive"` when the radio went back to inherit - never a delete: invoices carry `profileId` in their snapshot
+and the resolver already filters on active; a later override on the same location is a new row beside the
+retired one. There is no separate customer edit modal (Pass 30's finding), so "account default on the customer
+edit modal" is the primary location's Edit Location: an "Account default" block with the row's label, type,
+terms, billing name and address, created there (locationId null, isDefault, templateId when prefilled from the
+org template) when the account has none and a label was typed, updated when changed. **Decided (5), the
+permissions.** The templates are Settings reference data: POST / PATCH `/api/billing-profile-templates` are
+MANAGE_SETTINGS and the Settings card's Add / Edit disable for everyone else ("Admins manage billing profile
+templates."). The instances are customer data and stay open to every role like the location PATCH beside them;
+who may edit customer data is C5.6's role profiles. **The writers' rules** (inside the transaction, against the
+row as it will be): the account exists in the org (`BILLING_PROFILE_ACCOUNT_NOT_FOUND`), an override's
+location belongs to that account (`_LOCATION_MISMATCH`), one ACTIVE override per location
+(`_OVERRIDE_EXISTS` - the resolver takes the first it finds, so a second would be silent), one active default
+per account (`_DEFAULT_EXISTS`; a non-default account-level row is allowed); the route schema is strict, the
+vocabulary checked, the label required, and `cardOnFileToken` / `achToken` / `lastFour` are not in it (Phase 6
+captures them through its own path). **Decided (6), the location History read.** `getAuditLogsForLocation`
+listed every profile of the account (its comment said "own override and the account's default"); it now lists
+the location's own override rows (any status) and the account's location-less rows only - a sibling's override
+sits with its location, on its tab and on the customer-level History. `getAuditLogsForCustomer` is unchanged.
+**Decided (7), the invoice side.** Nothing changes in `resolveInvoicePartiesTx` / `resolveInvoiceTermsForLocationTx`
+/ `computeDueDateFromInvoiceTerms` / `statementBillToTx` except that the first and the last now resolve the
+profile through their own reader instead of `db`; the smoke test proves an invoice issued on an override
+location carries that profile's id, label and terms, bills to the profile's own address and name, and is due
+thirty days out. **Decided (8), the ticket header.** One line under the billing-plan pill, from
+`GET /api/locations/:id/billing-profile`: "Billing profile: <label> · <type · terms> (this location | account
+default)", or "No billing profile resolves for this location" on the 404. The fee dialog already read the
+resolved profile and is unchanged. **Found on the way:** four docs claimed no location on the dev DB resolved
+a profile; Golden Gate's two did (19 invoices carry a profileId) - corrected where this pass touched them.
+**Verified** (PORT=5001 against the shared dev DB; no migration): `npm run check` clean; 55 smoke assertions on
+the first run - the shared module pure; the template routes 403 for support / manager / technician and 201 /
+200 for the admin, the GET open; the setting's GET open to the technician, PATCH 403 for the three, 400 with
+the code for an unknown and an inactive template and 400 for '' / {} / an extra key, 200 for the active one
+(the row holds the id) and for null (the row deleted); a customer created with no default gets no profile
+(compat NONE, the resolver 404); one created with the default gets ONE account-default row (location null,
+the template, its name, NET_15, isDefault, active) audited `created` by the support user, compat
+ACCOUNT_DEFAULT; a second location inherits; an override chosen on it (201, `created`, the mirror set, compat
+LOCATION_OVERRIDE with its label and terms, the primary still ACCOUNT_DEFAULT with the override listed); the
+refusals (a second override, a second default, a foreign location, an unknown account, a typed token, a bad
+type, bad terms, a blank label) with their codes and nothing written; a non-default account-level row allowed
+and retired; the override edited (one `update`); the two location PATCHes dropping `billingProfileId`; an
+invoice issued on the override location (service, visit, posted by the technician, finalized by support,
+generated by the manager) with the override's snapshot, PROFILE Bill To and a due date 30 days out; the
+override retired (inactive, one `status_changed`, the mirror cleared, compat and the resolver back to the
+account default, the invoice's snapshot untouched), re-activated, retired again and a new one accepted beside
+it; the account default's fields edited through the dialog's PATCH; an account with none given one; the loc2
+History listing its overrides and the default, the loc1 History the default only, the rollup annotating the
+override with its location; every profile row by the support user; the fixture deleted in FK order, the
+setting restored, counts back at baseline (+4 session rows). Boot 1 and boot 2 print only "serving on port
+5001"; every table count unchanged. Vite 200 on the four touched client modules and the shared one. **Not
+rendered in a browser:** the Billing section of both dialogs (the radio, the override fields, the account
+default block and its prefill), the Billing Defaults card, the gated Templates card, the chip's new text, the
+two badges, the profile card's billing line and the ticket header's line - the repo has no browser automation
+and the session had no browser; restart `npm run dev:full` before trying them.
 
 ---
 

@@ -23,12 +23,24 @@ import {
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, getApiErrorMessage, queryClient } from "@/lib/queryClient";
-import { invalidateAuditViews } from "@/lib/invalidate-audit-views";
+import { invalidateAuditViews, invalidateBillingProfileViews } from "@/lib/invalidate-audit-views";
+import {
+  BILLING_TYPES,
+  INVOICE_TERMS,
+  describeBillingProfileTerms,
+  describeBillingType,
+  describeLocationBilling,
+  type BillingDefaults,
+  type BillingProfileSummary,
+  type LocationBillingProjection,
+} from "@shared/billing-profile-defaults";
+import { describeInvoiceTerms } from "@shared/invoice-detail";
 import { cn } from "@/lib/utils";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { OpportunityDispositionDialog } from "@/components/opportunity-disposition-dialog";
@@ -87,14 +99,194 @@ import {
   History,
   CreditCard, KeyRound, Ruler, ChevronUp, Check, Link2, Target,
 } from "lucide-react";
-import type { AuditLog, Customer, Contact, Location, Appointment, Invoice, Service, ServiceRecord, ProductApplication, Communication, CustomerNote, BillingPlan, BillingProfile, NoteRevision, Agreement, AgreementCancellationPolicy, AgreementTemplate, ServiceType, Technician, Opportunity, OpportunityCategory, OpportunityDisposition } from "@shared/schema";
+import type { Account, AuditLog, Customer, Contact, Location, Appointment, Invoice, Service, ServiceRecord, ProductApplication, Communication, CustomerNote, BillingPlan, BillingProfile, BillingProfileTemplate, NoteRevision, Agreement, AgreementCancellationPolicy, AgreementTemplate, ServiceType, Technician, Opportunity, OpportunityCategory, OpportunityDisposition } from "@shared/schema";
 
 interface CustomerDetailCompatResponse {
   legacyCustomer: Customer;
+  account: Account;
   primaryLocation: Location;
   selectedLocation: Location;
   relatedLocations: Location[];
-  hasBillingOverride: boolean;
+  /** Pass 34 (C5.2): the selected location's resolved billing, by the invoices' own resolver. */
+  billing: LocationBillingProjection;
+  /** The account's active default profile; null when the account has none. */
+  accountDefault: BillingProfileSummary | null;
+  /** The locations of the account with an active override (billing_profiles.location_id). */
+  billingOverrideLocationIds: string[];
+}
+
+// Pass 34 (C5.2): the fields a screen types on a billing profile - the label,
+// the type, the terms (when the type is invoice terms), the billing name and
+// the Bill To address. The card / ACH tokens and the last four are Phase 6's
+// capture (C6.1) and never appear here; the routes refuse them.
+interface BillingProfileFormState {
+  label: string;
+  billingType: string;
+  invoiceTerms: string;
+  billingName: string;
+  billingAddress: string;
+}
+
+const EMPTY_BILLING_PROFILE_FORM: BillingProfileFormState = { label: "", billingType: "invoice_terms", invoiceTerms: "", billingName: "", billingAddress: "" };
+
+function billingProfileFormFrom(profile: BillingProfile | null | undefined): BillingProfileFormState {
+  if (!profile) return EMPTY_BILLING_PROFILE_FORM;
+  return {
+    label: profile.label ?? "",
+    billingType: profile.billingType ?? "invoice_terms",
+    invoiceTerms: profile.invoiceTerms ?? "",
+    billingName: profile.billingName ?? "",
+    billingAddress: profile.billingAddress ?? "",
+  };
+}
+
+/** A new account default starts from the org default template (Settings -> Billing defaults) when one is set. */
+function billingProfileFormFromTemplate(template: BillingProfileTemplate | null | undefined): BillingProfileFormState {
+  if (!template) return EMPTY_BILLING_PROFILE_FORM;
+  return {
+    label: template.name,
+    billingType: template.billingType,
+    invoiceTerms: template.billingType === "invoice_terms" ? template.defaultInvoiceTerms ?? "" : "",
+    billingName: "",
+    billingAddress: "",
+  };
+}
+
+/** The fields POST / PATCH /api/billing-profiles take from the form. */
+function billingProfilePayload(form: BillingProfileFormState) {
+  return {
+    label: form.label.trim(),
+    billingType: form.billingType,
+    invoiceTerms: form.billingType === "invoice_terms" && form.invoiceTerms ? form.invoiceTerms : null,
+    billingName: form.billingName.trim() || null,
+    billingAddress: form.billingAddress.trim() || null,
+  };
+}
+
+function billingProfileFormChanged(form: BillingProfileFormState, profile: BillingProfile): boolean {
+  const next = billingProfilePayload(form);
+  return next.label !== profile.label
+    || next.billingType !== profile.billingType
+    || (next.invoiceTerms ?? null) !== (profile.invoiceTerms ?? null)
+    || (next.billingName ?? null) !== (profile.billingName ?? null)
+    || (next.billingAddress ?? null) !== (profile.billingAddress ?? null);
+}
+
+/** The account's active default among its profiles: isDefault first, else the first account-level row (the resolver's order). */
+function pickAccountDefaultProfile(profiles: BillingProfile[] | undefined): BillingProfile | null {
+  const accountLevel = (profiles ?? []).filter((profile) => !profile.locationId && profile.status === "active");
+  return accountLevel.find((profile) => profile.isDefault) ?? accountLevel[0] ?? null;
+}
+
+function pickLocationOverrideProfile(profiles: BillingProfile[] | undefined, locationId: string): BillingProfile | null {
+  return (profiles ?? []).find((profile) => profile.locationId === locationId && profile.status === "active") ?? null;
+}
+
+function BillingProfileFields({ form, onChange, idPrefix }: { form: BillingProfileFormState; onChange: (next: BillingProfileFormState) => void; idPrefix: string }) {
+  return (
+    <div className="space-y-3">
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="space-y-1.5">
+          <Label htmlFor={`${idPrefix}-label`}>Label *</Label>
+          <Input id={`${idPrefix}-label`} data-testid={`input-${idPrefix}-label`} placeholder="e.g. Net 30 invoice, Corporate card" value={form.label} onChange={(e) => onChange({ ...form, label: e.target.value })} />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor={`${idPrefix}-type`}>Billing Type</Label>
+          <Select value={form.billingType} onValueChange={(value) => onChange({ ...form, billingType: value, invoiceTerms: value === "invoice_terms" ? form.invoiceTerms : "" })}>
+            <SelectTrigger id={`${idPrefix}-type`} data-testid={`select-${idPrefix}-type`}><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {BILLING_TYPES.map((type) => (
+                <SelectItem key={type} value={type}>{describeBillingType(type)}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+      {form.billingType === "invoice_terms" && (
+        <div className="space-y-1.5">
+          <Label htmlFor={`${idPrefix}-terms`}>Invoice Terms</Label>
+          <Select value={form.invoiceTerms || "NONE"} onValueChange={(value) => onChange({ ...form, invoiceTerms: value === "NONE" ? "" : value })}>
+            <SelectTrigger id={`${idPrefix}-terms`} data-testid={`select-${idPrefix}-terms`}><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="NONE">Unset - invoices get no due date</SelectItem>
+              {INVOICE_TERMS.map((terms) => (
+                <SelectItem key={terms} value={terms}>{describeInvoiceTerms(terms)}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      )}
+      <div className="space-y-1.5">
+        <Label htmlFor={`${idPrefix}-billing-name`}>Billing Name</Label>
+        <Input id={`${idPrefix}-billing-name`} data-testid={`input-${idPrefix}-billing-name`} placeholder="Who invoices are addressed to; blank uses the customer's name" value={form.billingName} onChange={(e) => onChange({ ...form, billingName: e.target.value })} />
+      </div>
+      <div className="space-y-1.5">
+        <Label htmlFor={`${idPrefix}-billing-address`}>Billing Address</Label>
+        <Textarea id={`${idPrefix}-billing-address`} data-testid={`input-${idPrefix}-billing-address`} rows={2} placeholder="The Bill To address; blank uses the primary location's (an override's own location for an override)" value={form.billingAddress} onChange={(e) => onChange({ ...form, billingAddress: e.target.value })} />
+      </div>
+      {(form.billingType === "card" || form.billingType === "ach") && (
+        <p className="text-xs text-muted-foreground" data-testid={`text-${idPrefix}-capture-note`}>
+          Card and bank details are not captured yet: this records the arrangement only. Capturing a card or account on file is a later phase.
+        </p>
+      )}
+    </div>
+  );
+}
+
+type LocationBillingMode = "INHERIT" | "OVERRIDE";
+
+// The selector both location dialogs show: inherit the account default (the
+// row's label and terms shown, or that there is none yet) or override for
+// this location, with the override's own fields.
+function LocationBillingSelector({
+  mode,
+  onModeChange,
+  form,
+  onFormChange,
+  accountDefault,
+  idPrefix,
+  isPrimary,
+}: {
+  mode: LocationBillingMode;
+  onModeChange: (mode: LocationBillingMode) => void;
+  form: BillingProfileFormState;
+  onFormChange: (next: BillingProfileFormState) => void;
+  accountDefault: { label: string; billingType: string; invoiceTerms: string | null } | null;
+  idPrefix: string;
+  isPrimary: boolean;
+}) {
+  const accountDefaultTerms = accountDefault ? describeBillingProfileTerms(accountDefault, describeInvoiceTerms) : null;
+  return (
+    <div className="space-y-3">
+      <RadioGroup value={mode} onValueChange={(value) => onModeChange(value as LocationBillingMode)} className="gap-3">
+        <div className="flex items-start gap-2">
+          <RadioGroupItem value="INHERIT" id={`${idPrefix}-inherit`} data-testid={`radio-${idPrefix}-inherit`} className="mt-0.5" />
+          <Label htmlFor={`${idPrefix}-inherit`} className="space-y-0.5 font-normal">
+            <span className="block font-medium text-foreground">Use the account default</span>
+            <span className="block text-muted-foreground" data-testid={`text-${idPrefix}-account-default`}>
+              {accountDefault
+                ? `${accountDefault.label}${accountDefaultTerms ? ` · ${accountDefaultTerms}` : ""}`
+                : isPrimary
+                  ? "No account default yet - the account default above creates one."
+                  : "No account default yet - this location has no billing profile until one is set on the primary location."}
+            </span>
+          </Label>
+        </div>
+        <div className="flex items-start gap-2">
+          <RadioGroupItem value="OVERRIDE" id={`${idPrefix}-override`} data-testid={`radio-${idPrefix}-override`} className="mt-0.5" />
+          <Label htmlFor={`${idPrefix}-override`} className="space-y-0.5 font-normal">
+            <span className="block font-medium text-foreground">Override for this location</span>
+            <span className="block text-muted-foreground">Its own label, type, terms and Bill To; invoices for this location use it instead of the account default.</span>
+          </Label>
+        </div>
+      </RadioGroup>
+      {mode === "OVERRIDE" && (
+        <div className="rounded-md border bg-muted/20 p-3">
+          <BillingProfileFields form={form} onChange={onFormChange} idPrefix={`${idPrefix}-override`} />
+        </div>
+      )}
+    </div>
+  );
 }
 
 interface UpdateLocationProfileResponse {
@@ -670,14 +862,22 @@ function CommunicationActionLink({
 function AddLocationDialog({
   customerId,
   customerType,
+  accountDefault,
   onClose,
 }: {
   customerId: string;
   customerType: string;
+  /** Pass 34 (C5.2): the account's default profile the new location inherits, from the compat read. */
+  accountDefault: BillingProfileSummary | null;
   onClose: () => void;
 }) {
   const { toast } = useToast();
   const locationTypeOptions = buildOptions(customerType, BASE_LOCATION_TYPE_OPTIONS);
+  // Pass 34 (C5.2): inherit the account default (nothing is written - a
+  // location with no row of its own resolves the account's) or create an
+  // override row for the new location once it exists.
+  const [billingMode, setBillingMode] = useState<LocationBillingMode>("INHERIT");
+  const [billingForm, setBillingForm] = useState<BillingProfileFormState>(EMPTY_BILLING_PROFILE_FORM);
   const [form, setForm] = useState({
     nickname: "",
     firstName: "",
@@ -727,6 +927,19 @@ function AddLocationDialog({
         },
       });
       const created = (await response.json()) as Location;
+      let billingError: string | null = null;
+      if (billingMode === "OVERRIDE") {
+        try {
+          if (!created.accountId) throw new Error("The new location has no account");
+          await apiRequest("POST", "/api/billing-profiles", {
+            accountId: created.accountId,
+            locationId: created.id,
+            ...billingProfilePayload(billingForm),
+          });
+        } catch (error) {
+          billingError = getApiErrorMessage(error);
+        }
+      }
       let preferencesFailed = 0;
       for (const draft of preferenceDrafts) {
         try {
@@ -740,18 +953,21 @@ function AddLocationDialog({
           preferencesFailed += 1;
         }
       }
-      return { created, preferencesFailed };
+      return { created, preferencesFailed, billingError };
     },
-    onSuccess: ({ preferencesFailed }) => {
+    onSuccess: ({ preferencesFailed, billingError }) => {
       queryClient.invalidateQueries({
         predicate: (query) => typeof query.queryKey[0] === "string" && query.queryKey[0].startsWith(`/api/customer-detail-compat/${customerId}`),
       });
       queryClient.invalidateQueries({ queryKey: ["/api/contacts/by-location"] });
       invalidateAuditViews();
+      invalidateBillingProfileViews();
       if (preferenceDrafts.length) {
         invalidateTechnicianPreferences();
       }
-      if (preferencesFailed) {
+      if (billingError) {
+        toast({ title: "Location added, but its billing override was not saved", description: `${billingError} Open Edit Location to set it.`, variant: "destructive" });
+      } else if (preferencesFailed) {
         toast({ title: "Location added, but a technician preference was not saved", description: "Open Edit Location to add it again.", variant: "destructive" });
       } else {
         toast({ title: "Location added" });
@@ -778,6 +994,11 @@ function AddLocationDialog({
 
     if (!form.address.trim() || !form.city.trim() || !form.state.trim() || !form.zip.trim()) {
       toast({ title: "Address, city, state, and ZIP are required", variant: "destructive" });
+      return;
+    }
+
+    if (billingMode === "OVERRIDE" && !billingForm.label.trim()) {
+      toast({ title: "A billing override needs a label", variant: "destructive" });
       return;
     }
 
@@ -863,6 +1084,20 @@ function AddLocationDialog({
         />
       </div>
       <TechnicianPreferenceDraftEditor drafts={preferenceDrafts} onChange={setPreferenceDrafts} />
+      {/* Pass 34 (C5.2): the billing selector - inherit the account default or override for this location. */}
+      <div className="space-y-1">
+        <h3 className="text-sm font-semibold">Billing</h3>
+        <p className="text-sm text-muted-foreground">How invoices for this location are billed.</p>
+      </div>
+      <LocationBillingSelector
+        mode={billingMode}
+        onModeChange={setBillingMode}
+        form={billingForm}
+        onFormChange={setBillingForm}
+        accountDefault={accountDefault}
+        idPrefix="add-location-billing"
+        isPrimary={false}
+      />
       <label className="flex items-center gap-2 text-sm">
         <input type="checkbox" checked={form.isPrimary} onChange={(e) => setForm((p) => ({ ...p, isPrimary: e.target.checked }))} />
         Set as primary location
@@ -880,17 +1115,44 @@ function AddLocationDialog({
 function EditLocationDialog({
   customer,
   location,
+  accountId,
   totalLocations,
   onClose,
 }: {
   customer: Customer;
   location: Location;
+  /** Pass 34 (C5.2): the account whose billing profiles the dialog reads and writes. */
+  accountId: string;
   totalLocations: number;
   onClose: () => void;
 }) {
   const { toast } = useToast();
   const isPrimaryLocation = !!location.isPrimary;
   const canPromoteToPrimary = !isPrimaryLocation;
+  // Pass 34 (C5.2): the account's billing profiles - the active default
+  // (editable here on the primary location, created when the account has
+  // none) and this location's active override (the selector). The org
+  // default template prefills a new account default, as customer creation
+  // would have.
+  const { data: accountProfiles } = useQuery<BillingProfile[]>({ queryKey: ["/api/accounts", accountId, "billing-profiles"], enabled: !!accountId });
+  const accountDefaultProfile = useMemo(() => pickAccountDefaultProfile(accountProfiles), [accountProfiles]);
+  const overrideProfile = useMemo(() => pickLocationOverrideProfile(accountProfiles, location.id), [accountProfiles, location.id]);
+  const { data: billingDefaults } = useQuery<BillingDefaults>({ queryKey: ["/api/settings/billing-defaults"], enabled: isPrimaryLocation && !!accountProfiles && !accountDefaultProfile });
+  const { data: billingTemplates } = useQuery<BillingProfileTemplate[]>({ queryKey: ["/api/billing-profile-templates"], enabled: isPrimaryLocation && !!billingDefaults?.defaultBillingProfileTemplateId });
+  const defaultTemplate = useMemo(
+    () => (billingTemplates ?? []).find((template) => template.id === billingDefaults?.defaultBillingProfileTemplateId && template.isActive) ?? null,
+    [billingDefaults?.defaultBillingProfileTemplateId, billingTemplates],
+  );
+  const [billingMode, setBillingMode] = useState<LocationBillingMode>("INHERIT");
+  const [overrideForm, setOverrideForm] = useState<BillingProfileFormState>(EMPTY_BILLING_PROFILE_FORM);
+  const [accountDefaultForm, setAccountDefaultForm] = useState<BillingProfileFormState>(EMPTY_BILLING_PROFILE_FORM);
+  useEffect(() => {
+    setBillingMode(overrideProfile ? "OVERRIDE" : "INHERIT");
+    setOverrideForm(billingProfileFormFrom(overrideProfile));
+  }, [overrideProfile]);
+  useEffect(() => {
+    setAccountDefaultForm(accountDefaultProfile ? billingProfileFormFrom(accountDefaultProfile) : billingProfileFormFromTemplate(defaultTemplate));
+  }, [accountDefaultProfile, defaultTemplate]);
   const [form, setForm] = useState({
     firstName: customer.firstName || "",
     lastName: customer.lastName || "",
@@ -969,14 +1231,63 @@ function EditLocationDialog({
         await apiRequest("POST", `/api/locations/${location.id}/set-primary`, {});
       }
 
-      return res.json() as Promise<UpdateLocationProfileResponse>;
+      // Pass 34 (C5.2): the billing profiles, through their own routes. The
+      // account default (primary location only): created when the account
+      // has none and a label was given, else updated when changed. The
+      // override: created, updated when changed, or retired (status
+      // inactive - never deleted: invoices carry its id) when the selector
+      // went back to inherit. A refusal is reported, not swallowed; the
+      // location's own save above already stands.
+      let billingError: string | null = null;
+      try {
+        if (isPrimaryLocation && accountId) {
+          if (accountDefaultProfile) {
+            if (billingProfileFormChanged(accountDefaultForm, accountDefaultProfile)) {
+              await apiRequest("PATCH", `/api/billing-profiles/${accountDefaultProfile.id}`, billingProfilePayload(accountDefaultForm));
+            }
+          } else if (accountDefaultForm.label.trim()) {
+            await apiRequest("POST", "/api/billing-profiles", {
+              accountId,
+              locationId: null,
+              templateId: defaultTemplate?.id ?? null,
+              isDefault: true,
+              ...billingProfilePayload(accountDefaultForm),
+            });
+          }
+        }
+        if (billingMode === "OVERRIDE") {
+          if (overrideProfile) {
+            if (billingProfileFormChanged(overrideForm, overrideProfile)) {
+              await apiRequest("PATCH", `/api/billing-profiles/${overrideProfile.id}`, billingProfilePayload(overrideForm));
+            }
+          } else if (accountId) {
+            await apiRequest("POST", "/api/billing-profiles", {
+              accountId,
+              locationId: location.id,
+              ...billingProfilePayload(overrideForm),
+            });
+          }
+        } else if (overrideProfile) {
+          await apiRequest("PATCH", `/api/billing-profiles/${overrideProfile.id}`, { status: "inactive" });
+        }
+      } catch (error) {
+        billingError = getApiErrorMessage(error);
+      }
+
+      const body = (await res.json()) as UpdateLocationProfileResponse;
+      return { ...body, billingError };
     },
-    onSuccess: () => {
+    onSuccess: ({ billingError }) => {
       queryClient.invalidateQueries({
         predicate: (query) => typeof query.queryKey[0] === "string" && query.queryKey[0].startsWith(`/api/customer-detail-compat/${customer.id}`),
       });
       invalidateAuditViews();
-      toast({ title: "Location updated" });
+      invalidateBillingProfileViews();
+      if (billingError) {
+        toast({ title: "Location updated, but the billing profile was not saved", description: billingError, variant: "destructive" });
+      } else {
+        toast({ title: "Location updated" });
+      }
       onClose();
     },
     onError: (err: Error) => {
@@ -1002,6 +1313,11 @@ function EditLocationDialog({
         toast({ title: "Company name is required for commercial customers", variant: "destructive" });
         return;
       }
+    }
+
+    if (billingMode === "OVERRIDE" && !overrideForm.label.trim()) {
+      toast({ title: "A billing override needs a label", variant: "destructive" });
+      return;
     }
 
     mutation.mutate(form);
@@ -1112,6 +1428,45 @@ function EditLocationDialog({
           remove its own request. On the primary location (the customer identity) "Apply to all
           locations" writes the account-scoped row; a location's own row wins over it. */}
       <TechnicianPreferencesEditor locationId={location.id} />
+      {/* Pass 34 (C5.2): billing. On the primary location (the customer editor - there is no
+          separate customer modal) the account default's own fields, created here when the account
+          has none; on every location the selector: inherit that default or override. */}
+      <div className="space-y-1">
+        <h3 className="text-sm font-semibold">Billing</h3>
+        <p className="text-sm text-muted-foreground">
+          {isPrimaryLocation
+            ? "The account default every location inherits, and how this location bills."
+            : "How invoices for this location are billed."}
+        </p>
+      </div>
+      {isPrimaryLocation && accountProfiles && (
+        <div className="space-y-3 rounded-md border p-3" data-testid="block-account-billing-default">
+          <div className="space-y-0.5">
+            <p className="text-sm font-medium">Account default</p>
+            <p className="text-xs text-muted-foreground">
+              {accountDefaultProfile
+                ? "Every location of this account bills this way unless it has an override."
+                : defaultTemplate
+                  ? `This account has no billing default yet. Saving with a label creates one - prefilled from the Settings default template "${defaultTemplate.name}".`
+                  : "This account has no billing default yet. Saving with a label creates one; leave the label blank to keep none."}
+            </p>
+          </div>
+          <BillingProfileFields form={accountDefaultForm} onChange={setAccountDefaultForm} idPrefix="edit-account-default" />
+        </div>
+      )}
+      {accountProfiles ? (
+        <LocationBillingSelector
+          mode={billingMode}
+          onModeChange={setBillingMode}
+          form={overrideForm}
+          onFormChange={setOverrideForm}
+          accountDefault={accountDefaultProfile}
+          idPrefix="edit-location-billing"
+          isPrimary={isPrimaryLocation}
+        />
+      ) : (
+        <Skeleton className="h-16" />
+      )}
       <div className="rounded-md border bg-muted/20 px-3 py-2">
         <label className="flex items-start gap-2 text-sm">
           <input
@@ -3770,7 +4125,12 @@ export default function CustomerDetail() {
   const primaryLocation = compat?.primaryLocation;
   const activeLocation = compat?.selectedLocation;
   const activeLocationId = activeLocation?.id || "";
-  const hasBillingOverride = compat?.hasBillingOverride || false;
+  // Pass 34 (C5.2): the selected location's resolved billing (the chip, the
+  // profile card) and the locations with an override (the switcher's badge),
+  // from the compat read - the forward pointer, never locations.billingProfileId.
+  const locationBilling = compat?.billing ?? null;
+  const billingOverrideLocationIds = useMemo(() => new Set(compat?.billingOverrideLocationIds ?? []), [compat?.billingOverrideLocationIds]);
+  const locationBillingTerms = describeBillingProfileTerms(locationBilling, describeInvoiceTerms);
 
   const { data: contacts } = useQuery<Contact[]>({ queryKey: ["/api/contacts/by-location", activeLocationId], enabled: !!activeLocationId });
   const { data: accountContacts } = useQuery<Contact[]>({ queryKey: ["/api/contacts", customerId], enabled: !!customerId });
@@ -4030,8 +4390,8 @@ export default function CustomerDetail() {
                         <MapPin className="h-3 w-3 mr-1" /> Primary: {primaryLocation.name}
                       </Badge>
                     )}
-                    <Badge variant="secondary" className="text-xs" data-testid="chip-billing">
-                      <CreditCard className="h-3 w-3 mr-1" /> Billing: {hasBillingOverride ? "Per-location" : "Default"}
+                    <Badge variant="secondary" className="text-xs" data-testid="chip-billing" title={locationBillingTerms ?? "No billing profile resolves for the selected location"}>
+                      <CreditCard className="h-3 w-3 mr-1" /> Billing: {describeLocationBilling(locationBilling)}
                     </Badge>
                     <CustomerAgingChips aging={customerAging} locationCount={allLocations?.length ?? 0} />
                     <TechnicianPreferenceChips entries={activeLocationPreferences?.accountRows ?? []} testIdPrefix="chip-account-technician-preference" />
@@ -4083,7 +4443,7 @@ export default function CustomerDetail() {
                     <span className="font-medium text-sm truncate">{primaryText}</span>
                     <div className="flex items-center gap-1 ml-auto">
                       {loc.isPrimary && <Badge variant="secondary" className="text-[10px] px-1.5 py-0">Primary</Badge>}
-                      {loc.billingProfileId && <Badge variant="outline" className="text-[10px] px-1.5 py-0">Billing Override</Badge>}
+                      {billingOverrideLocationIds.has(loc.id) && <Badge variant="outline" className="text-[10px] px-1.5 py-0" data-testid={`badge-location-option-billing-override-${loc.id}`}>Billing Override</Badge>}
                     </div>
                   </div>
                   <div className="pl-5 w-full space-y-0.5">
@@ -4097,7 +4457,7 @@ export default function CustomerDetail() {
 
           <Dialog open={locDialogOpen} onOpenChange={setLocDialogOpen}>
             <DialogTrigger asChild><Button variant="outline" size="sm" data-testid="button-add-location"><Plus className="h-3 w-3 mr-1" /> Add Location</Button></DialogTrigger>
-            <DialogContent className="max-w-xl"><DialogHeader><DialogTitle>Add Location</DialogTitle></DialogHeader><AddLocationDialog customerId={customerId} customerType={customer?.customerType ?? "residential"} onClose={() => setLocDialogOpen(false)} /></DialogContent>
+            <DialogContent className="max-w-xl"><DialogHeader><DialogTitle>Add Location</DialogTitle></DialogHeader><AddLocationDialog customerId={customerId} customerType={customer?.customerType ?? "residential"} accountDefault={compat?.accountDefault ?? null} onClose={() => setLocDialogOpen(false)} /></DialogContent>
           </Dialog>
           {canStatement ? (
             <Button
@@ -4143,7 +4503,7 @@ export default function CustomerDetail() {
                 <CardTitle className="text-sm font-medium">Location Profile</CardTitle>
                 <div className="flex items-center gap-1">
                   {activeLocation.isPrimary && <Badge variant="secondary" className="text-xs">Primary</Badge>}
-                  {activeLocation.billingProfileId && <Badge variant="outline" className="text-xs text-chart-3" data-testid="badge-billing-override">Billing Override</Badge>}
+                  {locationBilling?.source === "LOCATION_OVERRIDE" && <Badge variant="outline" className="text-xs text-chart-3" data-testid="badge-billing-override">Billing Override</Badge>}
                   <Dialog open={editLocDialogOpen} onOpenChange={setEditLocDialogOpen}>
                     <DialogTrigger asChild>
                       <Button variant="outline" size="sm" className="h-7 text-xs" data-testid="button-edit-location">
@@ -4154,7 +4514,7 @@ export default function CustomerDetail() {
                       <DialogHeader>
                         <DialogTitle>Edit Location</DialogTitle>
                       </DialogHeader>
-                      <EditLocationDialog customer={customer} location={activeLocation} totalLocations={allLocations?.length ?? 0} onClose={() => setEditLocDialogOpen(false)} />
+                      <EditLocationDialog customer={customer} location={activeLocation} accountId={activeLocation.accountId ?? compat?.account?.id ?? ""} totalLocations={allLocations?.length ?? 0} onClose={() => setEditLocDialogOpen(false)} />
                     </DialogContent>
                   </Dialog>
                 </div>
@@ -4209,6 +4569,8 @@ export default function CustomerDetail() {
                 <div className="flex items-start gap-2"><MapPin className="h-3.5 w-3.5 mt-0.5 text-muted-foreground shrink-0" /><span>{activeLocation.address}, {activeLocation.city}, {activeLocation.state} {activeLocation.zip}</span></div>
                 <div className="flex items-center gap-4 flex-wrap text-xs text-muted-foreground">
                   <span className="capitalize flex items-center gap-1"><Building2 className="h-3 w-3" /> {activeLocation.propertyType}</span>
+                  {/* Pass 34 (C5.2): the location's resolved billing profile - what its invoices will carry. */}
+                  <span className="flex items-center gap-1" data-testid="text-location-billing"><CreditCard className="h-3 w-3" /> {describeLocationBilling(locationBilling)}{locationBillingTerms ? ` · ${locationBillingTerms}` : ""}</span>
                   {activeLocation.source && <span>Source: {activeLocation.source}</span>}
                   {activeLocation.squareFootage && <span className="flex items-center gap-1"><Ruler className="h-3 w-3" /> {activeLocation.squareFootage.toLocaleString()} sq ft</span>}
                   {activeLocation.gateCode && <span className="flex items-center gap-1"><KeyRound className="h-3 w-3" /> Gate: {activeLocation.gateCode}</span>}

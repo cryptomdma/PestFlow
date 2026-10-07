@@ -33,6 +33,15 @@ const REVERTED_ENTITY_KEY_PREFIXES: Record<string, string[]> = {
   agreement: ["/api/agreements", "/api/location-counts", "/api/services", "/api/appointments"],
 };
 
+// Pass 34 (C5.2): after a billing profile is created, edited or retired from
+// the location dialogs - the same reads a billing-profile revert refreshes:
+// the compat read (the chip, the badges), the account's profiles (the
+// dialogs), the location's resolved profile (the fee dialog, the ticket
+// header).
+export function invalidateBillingProfileViews() {
+  invalidateRevertedEntityViews("billing_profile");
+}
+
 export function invalidateRevertedEntityViews(entityType: string) {
   const prefixes = REVERTED_ENTITY_KEY_PREFIXES[entityType] ?? [];
   if (!prefixes.length) return;

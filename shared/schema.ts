@@ -89,9 +89,15 @@ export const billingProfileTemplates = pgTable("billing_profile_templates", {
 
 // Billing information used by a Location, or inherited from the Account
 // context when locationId is null. Per CANONICAL_DOMAIN_RULES_V1.md §4: the
-// account (or its primary location) provides the default billing behavior,
-// child locations inherit it, and a location may override with its own row
-// here when needed - see resolveBillingProfileForLocation in storage.ts.
+// account provides the default billing behavior (its active row with
+// locationId null, isDefault first), every location inherits it, and a
+// location may override with its own row here (locationId = that location)
+// - see resolveBillingProfileForLocation in storage.ts. `locationId` is the
+// one pointer that is read (Pass 34, C5.2): `locations.billingProfileId` is
+// the legacy reverse pointer, written as a mirror and read by nothing, and
+// `customers.defaultBillingProfileId` is read by nothing - both are dead
+// columns for a later hygiene pass. `cardOnFileToken` / `achToken` /
+// `lastFour` are Phase 6's (C6.1): no screen or route types them today.
 export const billingProfiles = pgTable("billing_profiles", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   orgId: varchar("org_id").notNull(),

@@ -228,7 +228,7 @@ For commercial:
 
 ### Definition
 
-Billing information used by a location or inherited from the account/primary-location context.
+Billing information used by a location or inherited from the account context.
 
 ### Required fields
 
@@ -237,23 +237,38 @@ Billing information used by a location or inherited from the account/primary-loc
 * label
 * billingType (`card` | `ach` | `invoice_terms` | `cash` | `check`)
 * isDefault
-* status
+* status (`active` | `inactive` - a retired profile is never deleted; invoices carry its id)
 * createdAt
 * updatedAt
 
 ### Optional fields
 
+* locationId (null = an account-level row; set = this location's override)
+* templateId (the org template the row was created from, if any)
 * billingName
 * billingAddress fields
 * cardOnFileToken
 * achToken
-* invoiceTerms
+* lastFour
+* invoiceTerms (`DUE_ON_RECEIPT` | `NET_15` | `NET_30` | `NET_60`)
 
 ### Canonical behavior
 
-* the primary location / account context provides the default billing behavior
-* child/related locations inherit that billing behavior by default
-* a location may override with a custom billing profile when needed
+* the account context provides the default billing behavior: the account's active row with no
+  locationId (its `isDefault` row first, else the first such row). There is no primary-location-scoped
+  profile; the primary location shows and edits the account default because it is the customer
+  identity in the UI (Pass 34, C5.2)
+* every location of the account inherits that default by default - a location with no row of its own
+  writes nothing
+* a location may override with a custom billing profile when needed: its own active row with
+  locationId = that location, one per location; switching back to the default retires the row
+  (`inactive`) rather than deleting it
+* `billing_profiles.locationId` is the one pointer the resolver reads. `locations.billingProfileId` is a
+  legacy mirror the profile write path keeps and nothing reads; `customers.defaultBillingProfileId` is
+  read by nothing. Both are dead columns awaiting a hygiene pass (PLAN_ROADMAP_V2.md C5.8)
+* a new customer's account gets its default created from the org's default template
+  (Settings -> Billing Defaults, `default_billing_profile_template_id`) when one is set; none set,
+  the account starts with no profile and every invoice bills the primary location until one is given
 
 ---
 
@@ -1746,7 +1761,8 @@ By default, related locations inherit from the primary location/account context 
 
 Examples:
 
-* default billing profile
+* default billing profile (the account's active default row; a location's own active row overrides
+  it - §4, Pass 34)
 * grouped relationship context
 
 Override should be allowed where appropriate.
