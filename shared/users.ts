@@ -3,6 +3,7 @@
 // the technician -> user bridge in Settings. A user is shown as "First Last"
 // everywhere; the same order getAuditActor() stamps into actorLabel.
 import type { UserSummary } from "./schema";
+import { describeRoleName } from "./permissions";
 
 export function userDisplayName(user: Pick<UserSummary, "firstName" | "lastName"> | null | undefined): string {
   if (!user) return "";
@@ -17,15 +18,12 @@ export function sortUsersByName<T extends Pick<UserSummary, "firstName" | "lastN
   });
 }
 
-const ROLE_LABELS: Record<string, string> = {
-  admin: "Admin",
-  manager: "Manager",
-  support: "Support",
-  technician: "Technician",
-};
-
+// Pass 37 (C5.6): a role is a role profile's KEY; its name is the profile's
+// (shared/permissions.ts describeRoleName reads the registry - the org's
+// profiles once /api/auth/me has answered, the built-in names before, the
+// key itself for a profile no longer on the list).
 export function describeUserRole(role: string): string {
-  return ROLE_LABELS[role] ?? role;
+  return describeRoleName(role);
 }
 
 /**

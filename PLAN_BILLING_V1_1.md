@@ -55,7 +55,8 @@ is reachable only via two manual routes and the nightly billing run.
 - An invoice may be **created** (DRAFT) against an unfinalized service/appointment — legitimate for
   office prep/preview.
 - It may not be **issued** before finalization except by a role-gated override
-  (`ISSUE_INVOICE_PREFINALIZATION`, Manager+) which flags the linked ticket(s) for review.
+  (`ISSUE_INVOICE_PREFINALIZATION`, held by the built-in manager and admin profiles - any profile since
+  Pass 37's role profiles) which flags the linked ticket(s) for review.
 - Finalization adopts the draft (D2). "Invoice generation does not repeat after finalization" —
   guaranteed by the idempotency index, not by convention.
 
@@ -297,7 +298,7 @@ one legacy path and has no read endpoint. Note-revisions is the only real histor
   before/after). Append-only: no update/delete route may exist for this table.
 - "Revert to previous state" = a **new forward change** recorded in the log, never a rollback of the
   log itself. **Built in Pass 33** (C5.1b, 2026-10-05): `POST /api/history/:auditLogId/revert`
-  (manager+, `REVERT_HISTORY`) puts the fields a row changed back through the entity's own write path,
+  (`REVERT_HISTORY` - the built-in manager and admin profiles, any profile since Pass 37) puts the fields a row changed back through the entity's own write path,
   which records one `reverted` row naming the source; the customer-level History (every location plus
   the account-level rows) ships with it. Financial rows are never reverted - a void and a re-entry.
 - Single last-actor stamps (`finalizedByUserId` etc.) remain for display; the log is the truth.
@@ -394,7 +395,7 @@ Decided now, built later, so they stop resurfacing as ambiguity:
   The price/payment and address blocks and Next/Back land in **Pass 7.6** (owner review of Pass 7.5,
   under D5). The reopen-reason dropdown shipped as **Pass 17** (`feature/phase-3-reopen-reason-popup`,
   2026-09-25, C3.2 - a pop-up over the `ticket_reopen_reasons` settings list, "Other" with the reason
-  typed out and gated `REOPEN_TICKET_OTHER`, manager+); the office edit button shipped as **Pass 18**
+  typed out and gated `REOPEN_TICKET_OTHER` - manager and admin by default, any profile since Pass 37); the office edit button shipped as **Pass 18**
   (`feature/phase-3-office-edit-ticket`, 2026-09-25, C3.1b): Edit on the review modal opens the
   ticket dialog in an office-edit mode over the gated PATCH, the Service's price and type riding
   along under the post's rule and logged `price_overridden`.
@@ -418,5 +419,5 @@ Decided now, built later, so they stop resurfacing as ambiguity:
   amounts and status atomically; the audit log shows both events with actors.
 - COA application changes "due today" on the tech ticket without touching price, production value, or
   tax basis.
-- Voiding an invoice requires Manager+, writes audit, and frees the appointment for regeneration.
+- Voiding an invoice requires `VOID_INVOICE` (the built-in manager and admin profiles), writes audit, and frees the appointment for regeneration.
 - No route can write `audit_logs` deletions/updates; the customer-screen history renders from it.

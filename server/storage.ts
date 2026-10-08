@@ -15,6 +15,8 @@ import {
   agreements,
   agreementTemplates,
   agreementTypes,
+  roleProfiles,
+  roleProfilePermissions,
   agreementCancellationPolicies,
   billingPlans,
   appSettings,
@@ -41,6 +43,7 @@ import {
   type Agreement, type InsertAgreement,
   type AgreementTemplate, type InsertAgreementTemplate,
   type AgreementType, type InsertAgreementType,
+  type RoleProfile, type InsertRoleProfile,
   type ServiceRecord, type InsertServiceRecord,
   type AppSetting,
   type Opportunity, type InsertOpportunity,
@@ -98,6 +101,17 @@ import {
   type AgreementTypeErrorCode,
   type AgreementTypeUsage,
 } from "@shared/agreement-types";
+import {
+  ROLE_PROFILE_ERROR_CODES,
+  ROLE_PROFILE_NAME_MAX_LENGTH,
+  deriveRoleProfileKey,
+  describeRoleProfileUsage,
+  holdsManageSettings,
+  isValidRoleProfileKey,
+  type RoleProfileErrorCode,
+  type RoleProfileSummary,
+} from "@shared/role-profiles";
+import { loadPermissionRegistry } from "./role-profile-bootstrap";
 import { CONTACT_ERROR_CODES, CONTACT_PRIMARY_REQUIRED_MESSAGE, type ContactErrorCode } from "@shared/contacts";
 import { PLACEHOLDER_LOCATION_NAME, PLACEHOLDER_LOCATION_NOTE } from "./account-bootstrap";
 import { createHash } from "crypto";
@@ -121,7 +135,7 @@ import {
   type ZeroBalanceLetter,
   type ZeroBalanceLetterAgreement,
 } from "@shared/statements";
-import { can, PERMISSIONS, rolesWithPermission, type UserRole } from "@shared/permissions";
+import { can, isPermission, PERMISSIONS, rolesWithPermission, sortPermissions, type Permission, type UserRole } from "@shared/permissions";
 import {
   ACCOUNT_SCOPE_PRIMARY_ONLY,
   EXCLUSION_OVERRIDE_FORBIDDEN,
@@ -1129,6 +1143,20 @@ export class AgreementTypeError extends Error {
   }
 }
 
+// Pass 37 (C5.6): a role-profile or user-role write the rules refuse - 404
+// an unknown profile or user, 400 a blank name / a bad or taken key / an
+// unknown permission / a user assigned a key that is not an active profile,
+// 409 retiring a profile users hold, the acting user locking themselves out
+// of Settings, or a write that would leave no active profile with Manage
+// Settings (shared/role-profiles.ts ROLE_PROFILE_ERROR_CODES). The route
+// answers { code, message }.
+export class RoleProfileError extends Error {
+  constructor(readonly status: 400 | 404 | 409, readonly code: RoleProfileErrorCode, message: string) {
+    super(message);
+    this.name = "RoleProfileError";
+  }
+}
+
 // Pass 34 (C5.2): a billing profile write the rules refuse (400 with the
 // code from shared/billing-profile-defaults.ts).
 export class BillingProfileError extends Error {
@@ -1404,6 +1432,38 @@ export interface AgreementTypeUpdateInput {
 
 /** A list row with how many agreements and templates carry its key. */
 export type AgreementTypeWithUsage = AgreementType & AgreementTypeUsage;
+
+// Pass 37 (C5.6): the role profiles' writes (shared/role-profiles.ts). The
+// key is derived from the name on create and clone, never given and never
+// changed; `permissions` holds PERMISSIONS values (an unknown one is a 400).
+export interface RoleProfileInput {
+  name: string;
+  description?: string | null;
+  permissions: string[];
+  isActive?: boolean;
+  sortOrder?: number;
+}
+
+export interface RoleProfileUpdateInput {
+  name?: string;
+  description?: string | null;
+  permissions?: string[];
+  isActive?: boolean;
+  sortOrder?: number;
+}
+
+export interface RoleProfileCloneInput {
+  name: string;
+  /** Absent: the source's description is copied. */
+  description?: string | null;
+}
+
+/** Who is writing: the audit actor plus the acting user's own role key and id, for the self-lockout rule. */
+export interface RoleProfileWriteContext {
+  actor?: AuditActor | null;
+  actorRole?: string | null;
+  actorUserId?: string | null;
+}
 
 export interface AgreementTypeMergeResult {
   /** The source, retired. */
@@ -1703,6 +1763,13 @@ export interface IStorage {
   createAgreementType(data: AgreementTypeInput, actor?: AuditActor | null): Promise<AgreementType>;
   updateAgreementType(id: string, data: AgreementTypeUpdateInput, actor?: AuditActor | null): Promise<AgreementType | undefined>;
   mergeAgreementTypes(sourceId: string, targetId: string, actor?: AuditActor | null): Promise<AgreementTypeMergeResult>;
+
+  // Pass 37 (C5.6): role profiles and the one users write (the profile assignment).
+  getRoleProfiles(includeInactive?: boolean): Promise<RoleProfileSummary[]>;
+  createRoleProfile(data: RoleProfileInput, context?: RoleProfileWriteContext): Promise<RoleProfileSummary>;
+  updateRoleProfile(id: string, data: RoleProfileUpdateInput, context?: RoleProfileWriteContext): Promise<RoleProfileSummary | undefined>;
+  cloneRoleProfile(id: string, data: RoleProfileCloneInput, context?: RoleProfileWriteContext): Promise<RoleProfileSummary | undefined>;
+  updateUserRole(userId: string, role: string, context?: RoleProfileWriteContext): Promise<UserSummary | undefined>;
 
   getAgreementTemplates(): Promise<AgreementTemplate[]>;
   getAgreementTemplate(id: string): Promise<AgreementTemplate | undefined>;
@@ -4795,10 +4862,15 @@ export class DatabaseStorage implements IStorage {
       // Pass 29 (C4.3b; B13 "instructions are editable only on services the
       // technician added"): a technician changes a service's instructions
       // (notes) only when the SESSION USER is the one stamped by the field
-      // add (addedInFieldByUserId) - never the technician picker. The
-      // office's roles are not held to it; a server write with no role may.
+      // add (addedInFieldByUserId) - never the technician picker. Pass 37
+      // (C5.6): "a technician" is any role profile WITHOUT
+      // EDIT_ANY_SERVICE_INSTRUCTIONS (the built-in support, manager and
+      // admin hold it; the built-in technician does not), so a profile cloned
+      // from Technician inherits the lock through the permission, not the
+      // name. A server write with no role may.
       if (
-        context?.actorRole === "technician" &&
+        context?.actorRole != null &&
+        !can(context.actorRole, PERMISSIONS.EDIT_ANY_SERVICE_INSTRUCTIONS) &&
         payload.notes !== undefined &&
         (payload.notes ?? null) !== (existing.notes ?? null) &&
         (!existing.addedInFieldByUserId || existing.addedInFieldByUserId !== (context.actor?.userId ?? null))
@@ -5900,6 +5972,308 @@ export class DatabaseStorage implements IStorage {
   private async readAgreementTypeTx(reader: Pick<typeof db, "select">, id: string): Promise<AgreementType | undefined> {
     const [row] = await reader.select().from(agreementTypes).where(and(eq(agreementTypes.orgId, this.orgId), eq(agreementTypes.id, id)));
     return row;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Pass 37 (C5.6; B16): role profiles (shared/role-profiles.ts) - the org's
+  // roles as permission sets; a user's `role` holds a profile's key. Every
+  // profile write refreshes the process registry can() reads
+  // (server/role-profile-bootstrap.ts loadPermissionRegistry) once its
+  // transaction has committed - a rolled-back write leaves the registry as
+  // it was. A user-role change needs no refresh: the profiles are unchanged
+  // and deserializeUser reads the new key on the user's next request.
+
+  private async readRoleProfileTx(reader: Pick<typeof db, "select">, id: string): Promise<RoleProfile | undefined> {
+    const [row] = await reader.select().from(roleProfiles).where(and(eq(roleProfiles.orgId, this.orgId), eq(roleProfiles.id, id)));
+    return row;
+  }
+
+  /** Each profile's permissions in declaration order (unknown values - a permission since removed from the list - dropped). */
+  private async roleProfilePermissionsTx(reader: Pick<typeof db, "select">, profileIds: string[]): Promise<Map<string, Permission[]>> {
+    const map = new Map<string, Permission[]>();
+    if (!profileIds.length) return map;
+    const rows = await reader
+      .select({ profileId: roleProfilePermissions.profileId, permission: roleProfilePermissions.permission })
+      .from(roleProfilePermissions)
+      .where(inArray(roleProfilePermissions.profileId, profileIds));
+    for (const row of rows) {
+      if (!isPermission(row.permission)) continue;
+      const list = map.get(row.profileId) ?? [];
+      list.push(row.permission);
+      map.set(row.profileId, list);
+    }
+    for (const profileId of Array.from(map.keys())) {
+      map.set(profileId, sortPermissions(map.get(profileId) ?? []));
+    }
+    return map;
+  }
+
+  /** How many users of the org hold each profile key - the card's usage column and the in-use rule. */
+  private async roleProfileUserCountsTx(reader: Pick<typeof db, "select">): Promise<Map<string, number>> {
+    const rows = await reader
+      .select({ role: users.role, userCount: count() })
+      .from(users)
+      .where(eq(users.orgId, this.orgId))
+      .groupBy(users.role);
+    return new Map(rows.map((row) => [row.role, Number(row.userCount)] as [string, number]));
+  }
+
+  private async roleProfileSummariesTx(reader: Pick<typeof db, "select">, rows: RoleProfile[]): Promise<RoleProfileSummary[]> {
+    const permissions = await this.roleProfilePermissionsTx(reader, rows.map((row) => row.id));
+    const userCounts = await this.roleProfileUserCountsTx(reader);
+    return rows.map((row) => ({ ...row, permissions: permissions.get(row.id) ?? [], userCount: userCounts.get(row.key) ?? 0 }));
+  }
+
+  // The row plus its permission list (declaration order) - the History diff
+  // then names the permissions that moved. A clone's `created` row carries
+  // the source under `clonedFrom`.
+  private roleProfileAuditSnapshot(row: RoleProfile, permissions: ReadonlyArray<Permission>, extra?: Record<string, unknown>) {
+    return { ...row, permissions: sortPermissions(permissions), ...(extra ?? {}) };
+  }
+
+  // A user's row for the log: never the password hash.
+  private userAuditSnapshot(user: User): UserSummary {
+    const { passwordHash, ...summary } = user;
+    return summary;
+  }
+
+  private normalizeRoleProfileName(name: string | undefined): string {
+    const trimmed = name?.trim() ?? "";
+    if (!trimmed) {
+      throw new RoleProfileError(400, ROLE_PROFILE_ERROR_CODES.NAME_REQUIRED, "A name is required");
+    }
+    if (trimmed.length > ROLE_PROFILE_NAME_MAX_LENGTH) {
+      throw new RoleProfileError(400, ROLE_PROFILE_ERROR_CODES.NAME_REQUIRED, `A name is at most ${ROLE_PROFILE_NAME_MAX_LENGTH} characters`);
+    }
+    return trimmed;
+  }
+
+  private normalizeRoleProfilePermissions(list: ReadonlyArray<string>): Permission[] {
+    for (const permission of list) {
+      if (!isPermission(permission)) {
+        throw new RoleProfileError(400, ROLE_PROFILE_ERROR_CODES.PERMISSION_UNKNOWN, `"${permission}" is not a permission`);
+      }
+    }
+    return sortPermissions(list);
+  }
+
+  // The key a new profile takes: derived from its name, unique in the org
+  // whatever the case (so "Admin" cannot derive ADMIN beside the built-in
+  // "admin"). Fixed once created - no PATCH changes it.
+  private async claimRoleProfileKeyTx(tx: DbTransaction, name: string): Promise<string> {
+    const key = deriveRoleProfileKey(name);
+    if (!isValidRoleProfileKey(key)) {
+      throw new RoleProfileError(400, ROLE_PROFILE_ERROR_CODES.KEY_INVALID, `"${name}" derives no key - a name needs at least one letter or digit`);
+    }
+    const [taken] = await tx
+      .select({ id: roleProfiles.id, name: roleProfiles.name })
+      .from(roleProfiles)
+      .where(and(eq(roleProfiles.orgId, this.orgId), sql`lower(${roleProfiles.key}) = ${key.toLowerCase()}`));
+    if (taken) {
+      throw new RoleProfileError(400, ROLE_PROFILE_ERROR_CODES.KEY_TAKEN, `Key ${key} is already taken by "${taken.name}" - pick another name`);
+    }
+    return key;
+  }
+
+  private async nextRoleProfileSortOrderTx(reader: Pick<typeof db, "select">): Promise<number> {
+    const [row] = await reader.select({ maxSort: max(roleProfiles.sortOrder) }).from(roleProfiles).where(eq(roleProfiles.orgId, this.orgId));
+    return Number(row?.maxSort ?? 0) + 10;
+  }
+
+  private async writeRoleProfilePermissionsTx(tx: DbTransaction, profileId: string, permissions: ReadonlyArray<Permission>): Promise<void> {
+    await tx.delete(roleProfilePermissions).where(eq(roleProfilePermissions.profileId, profileId));
+    if (permissions.length) {
+      await tx.insert(roleProfilePermissions).values(permissions.map((permission) => ({ orgId: this.orgId, profileId, permission })));
+    }
+  }
+
+  // Rule (b), defense in depth: after a profile write at least one ACTIVE
+  // profile of the org must still hold Manage Settings, else nobody could
+  // manage Settings again. While the actor must hold Manage Settings to
+  // write and the self-lockout rule protects their own profile, no API
+  // request reaches this today; a later user-deactivation route could.
+  private async assertSettingsManagerRemainsTx(tx: DbTransaction): Promise<void> {
+    const [row] = await tx
+      .select({ id: roleProfiles.id })
+      .from(roleProfiles)
+      .innerJoin(roleProfilePermissions, eq(roleProfilePermissions.profileId, roleProfiles.id))
+      .where(and(eq(roleProfiles.orgId, this.orgId), eq(roleProfiles.isActive, true), eq(roleProfilePermissions.permission, PERMISSIONS.MANAGE_SETTINGS)))
+      .limit(1);
+    if (!row) {
+      throw new RoleProfileError(
+        409,
+        ROLE_PROFILE_ERROR_CODES.LAST_SETTINGS_MANAGER,
+        "This would leave no active role profile with Manage Settings - nobody could manage Settings afterwards",
+      );
+    }
+  }
+
+  async getRoleProfiles(includeInactive = false): Promise<RoleProfileSummary[]> {
+    const rows = await db
+      .select()
+      .from(roleProfiles)
+      .where(eq(roleProfiles.orgId, this.orgId))
+      .orderBy(asc(roleProfiles.sortOrder), asc(roleProfiles.name));
+    return this.roleProfileSummariesTx(db, rows.filter((row) => includeInactive || row.isActive));
+  }
+
+  async createRoleProfile(data: RoleProfileInput, context?: RoleProfileWriteContext): Promise<RoleProfileSummary> {
+    const name = this.normalizeRoleProfileName(data.name);
+    const permissions = this.normalizeRoleProfilePermissions(data.permissions ?? []);
+    const created = await db.transaction(async (tx) => {
+      const key = await this.claimRoleProfileKeyTx(tx, name);
+      const sortOrder = data.sortOrder ?? (await this.nextRoleProfileSortOrderTx(tx));
+      const [row] = await tx
+        .insert(roleProfiles)
+        .values({ orgId: this.orgId, key, name, description: data.description?.trim() || null, isBuiltIn: false, isActive: data.isActive ?? true, sortOrder })
+        .returning();
+      await this.writeRoleProfilePermissionsTx(tx, row.id, permissions);
+      await this.auditCreatedTx(tx, "role_profile", row.id, this.roleProfileAuditSnapshot(row, permissions), context?.actor);
+      return row;
+    });
+    await loadPermissionRegistry();
+    const [summary] = await this.roleProfileSummariesTx(db, [created]);
+    return summary;
+  }
+
+  // Name, description, order, the permission list and the active flag; the
+  // key and isBuiltIn never change. The self-lockout rule (the C5.6 row):
+  // the acting user cannot remove Manage Settings from the profile their own
+  // role names, nor make that profile inactive. The in-use rule (Pass 35's):
+  // a profile users hold cannot be made inactive - move them first.
+  async updateRoleProfile(id: string, data: RoleProfileUpdateInput, context?: RoleProfileWriteContext): Promise<RoleProfileSummary | undefined> {
+    const updated = await db.transaction(async (tx) => {
+      const existing = await this.readRoleProfileTx(tx, id);
+      if (!existing) {
+        return undefined;
+      }
+      const current = (await this.roleProfilePermissionsTx(tx, [existing.id])).get(existing.id) ?? [];
+      const isOwnProfile = !!context?.actorRole && context.actorRole === existing.key;
+      const payload: Partial<InsertRoleProfile> = {};
+      if (data.name !== undefined) payload.name = this.normalizeRoleProfileName(data.name);
+      if (data.description !== undefined) payload.description = data.description?.trim() || null;
+      if (data.sortOrder !== undefined) payload.sortOrder = data.sortOrder;
+      let next = current;
+      if (data.permissions !== undefined) {
+        next = this.normalizeRoleProfilePermissions(data.permissions);
+        if (isOwnProfile && holdsManageSettings(current) && !holdsManageSettings(next)) {
+          throw new RoleProfileError(
+            409,
+            ROLE_PROFILE_ERROR_CODES.SELF_LOCKOUT,
+            `"${existing.name}" is your own role profile - you cannot remove Manage Settings from it (another user with Manage Settings can)`,
+          );
+        }
+      }
+      if (data.isActive !== undefined && data.isActive !== existing.isActive) {
+        if (!data.isActive) {
+          if (isOwnProfile) {
+            throw new RoleProfileError(409, ROLE_PROFILE_ERROR_CODES.SELF_LOCKOUT, `"${existing.name}" is your own role profile - you cannot make it inactive`);
+          }
+          const userCount = (await this.roleProfileUserCountsTx(tx)).get(existing.key) ?? 0;
+          if (userCount > 0) {
+            throw new RoleProfileError(
+              409,
+              ROLE_PROFILE_ERROR_CODES.IN_USE,
+              `${describeRoleProfileUsage(userCount)} ${userCount === 1 ? "holds" : "hold"} "${existing.name}" - move them to another profile to make it inactive`,
+            );
+          }
+        }
+        payload.isActive = data.isActive;
+      }
+      const [row] = await tx
+        .update(roleProfiles)
+        .set({ ...payload, updatedAt: new Date() })
+        .where(and(eq(roleProfiles.orgId, this.orgId), eq(roleProfiles.id, id)))
+        .returning();
+      const permissionsChanged = next.join(",") !== current.join(",");
+      if (permissionsChanged) {
+        await this.writeRoleProfilePermissionsTx(tx, row.id, next);
+      }
+      if (permissionsChanged || payload.isActive !== undefined) {
+        await this.assertSettingsManagerRemainsTx(tx);
+      }
+      await this.auditChangeTx(tx, "role_profile", row.id, this.roleProfileAuditSnapshot(existing, current), this.roleProfileAuditSnapshot(row, next), context?.actor);
+      return row;
+    });
+    if (!updated) return undefined;
+    await loadPermissionRegistry();
+    const [summary] = await this.roleProfileSummariesTx(db, [updated]);
+    return summary;
+  }
+
+  // A copy with a new name (and so a new key): the source's permissions and,
+  // unless given, its description; never built-in, active, last in order.
+  // Its `created` row names the source under `clonedFrom`.
+  async cloneRoleProfile(id: string, data: RoleProfileCloneInput, context?: RoleProfileWriteContext): Promise<RoleProfileSummary | undefined> {
+    const name = this.normalizeRoleProfileName(data.name);
+    const created = await db.transaction(async (tx) => {
+      const source = await this.readRoleProfileTx(tx, id);
+      if (!source) {
+        return undefined;
+      }
+      const permissions = (await this.roleProfilePermissionsTx(tx, [source.id])).get(source.id) ?? [];
+      const key = await this.claimRoleProfileKeyTx(tx, name);
+      const sortOrder = await this.nextRoleProfileSortOrderTx(tx);
+      const description = data.description !== undefined ? data.description?.trim() || null : source.description;
+      const [row] = await tx
+        .insert(roleProfiles)
+        .values({ orgId: this.orgId, key, name, description, isBuiltIn: false, isActive: true, sortOrder })
+        .returning();
+      await this.writeRoleProfilePermissionsTx(tx, row.id, permissions);
+      await this.auditCreatedTx(
+        tx,
+        "role_profile",
+        row.id,
+        this.roleProfileAuditSnapshot(row, permissions, { clonedFrom: { id: source.id, key: source.key, name: source.name } }),
+        context?.actor,
+      );
+      return row;
+    });
+    if (!created) return undefined;
+    await loadPermissionRegistry();
+    const [summary] = await this.roleProfileSummariesTx(db, [created]);
+    return summary;
+  }
+
+  // The one users write: the profile assignment. The role must be an ACTIVE
+  // profile of the org; the acting user cannot move THEMSELVES to a profile
+  // without Manage Settings. Audited as `update` on the user (role before
+  // and after, never the hash); an unchanged assignment writes nothing.
+  async updateUserRole(userId: string, role: string, context?: RoleProfileWriteContext): Promise<UserSummary | undefined> {
+    const updated = await db.transaction(async (tx) => {
+      const [existing] = await tx.select().from(users).where(and(eq(users.orgId, this.orgId), eq(users.id, userId)));
+      if (!existing) {
+        return undefined;
+      }
+      const [profile] = await tx.select().from(roleProfiles).where(and(eq(roleProfiles.orgId, this.orgId), eq(roleProfiles.key, role)));
+      if (!profile) {
+        throw new RoleProfileError(400, ROLE_PROFILE_ERROR_CODES.UNKNOWN, `"${role}" is not a role profile of this organization`);
+      }
+      if (!profile.isActive) {
+        throw new RoleProfileError(400, ROLE_PROFILE_ERROR_CODES.UNKNOWN, `"${profile.name}" is inactive - pick an active role profile`);
+      }
+      if (existing.role === profile.key) {
+        return existing;
+      }
+      if (context?.actorUserId && context.actorUserId === existing.id) {
+        const permissions = (await this.roleProfilePermissionsTx(tx, [profile.id])).get(profile.id) ?? [];
+        if (!holdsManageSettings(permissions)) {
+          throw new RoleProfileError(
+            409,
+            ROLE_PROFILE_ERROR_CODES.SELF_LOCKOUT,
+            `"${profile.name}" has no Manage Settings - you cannot move yourself off a profile that has it (another user with Manage Settings can)`,
+          );
+        }
+      }
+      const [row] = await tx
+        .update(users)
+        .set({ role: profile.key, updatedAt: new Date() })
+        .where(and(eq(users.orgId, this.orgId), eq(users.id, userId)))
+        .returning();
+      await this.auditChangeTx(tx, "user", row.id, this.userAuditSnapshot(existing), this.userAuditSnapshot(row), context?.actor);
+      return row;
+    });
+    return updated ? this.userAuditSnapshot(updated) : undefined;
   }
 
   private async nextAgreementTypeSortOrderTx(reader: Pick<typeof db, "select">): Promise<number> {

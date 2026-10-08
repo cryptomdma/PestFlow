@@ -19,7 +19,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth";
 import { ApiError, apiRequest, getApiErrorCode, getApiErrorMessage, queryClient } from "@/lib/queryClient";
 import { invalidateAuditViews } from "@/lib/invalidate-audit-views";
-import { can, PERMISSIONS } from "@shared/permissions";
+import { can, describePermissionHolders, PERMISSIONS } from "@shared/permissions";
 import { ServiceCancelDialog } from "@/components/service-cancel-dialog";
 import { DraftInvoiceVoidPrompt, getDraftInvoiceDecisionRequired, type DraftInvoiceRef } from "@/components/draft-invoice-void-prompt";
 import { VisitBillingRows, useVisitBillingSummary } from "@/components/visit-billing-summary";
@@ -655,7 +655,7 @@ function AppointmentSheet({
                       : hasTicket
                         ? "A ticket is posted - the type is changed on the ticket."
                         : isAgreement && !canChangeAgreementType
-                          ? "Agreement work - a manager or an admin may change the type."
+                          ? `Agreement work - ${describePermissionHolders(PERMISSIONS.ADJUST_PRICE_AGREEMENT)} may change the type.`
                           : null;
                     const actionLockReason = settled
                       ? (linked.status === "COMPLETED" ? "Completed - the ticket owns it" : "Cancelled")

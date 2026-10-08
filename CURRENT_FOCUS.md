@@ -36,8 +36,8 @@ Pass 31 (dispatch board settings, C4.5 - the last Phase 4 row, with the owner's 
 Pass 31b on the same PR) is merged (PR #103); Pass 32 (non-financial audit coverage, C5.1a - the first
 Phase 5 row) is merged (PR #104); Pass 33 (customer-level History + Revert, C5.1b) is merged (PR #105);
 Pass 34 (billing profile on the customer screen, C5.2) is merged (PR #106); Pass 35 (agreement vocabulary,
-C5.3) is merged (PR #107); Pass 36 (UI hygiene, C5.4) is pushed, awaiting merge; **next pass: 37, role
-profiles in Settings** (C5.6). The roadmap
+C5.3) is merged (PR #107); Pass 36 (UI hygiene, C5.4) is merged (PR #108); Pass 37 (role profiles in Settings,
+C5.6) is pushed, awaiting merge; **next pass: 38, technicians are users** (C5.7). The roadmap
 sequences every remaining item below; this file keeps the status pointer and, as its last
 section, the handoff prompt that starts the next session.
 
@@ -74,7 +74,7 @@ Pass 4 (`feature/phase-1-draft-invoice-lifecycle`, D3 + Q3) merged as PR #60. In
 now have a real `DRAFT` lifecycle: the office can draft an invoice against an appointment before its
 tickets are finalized, and it holds the visit's anchor so nothing else invoices that visit. Issuing
 re-prices it from the finalized tickets and stamps `issuedAt`; issuing *before* finalization needs
-both the new `ISSUE_INVOICE_PREFINALIZATION` permission (manager+) and an explicit confirmation, and
+both the new `ISSUE_INVOICE_PREFINALIZATION` permission (a profile holding it - manager and admin by default) and an explicit confirmation, and
 flags the unfinalized tickets `FLAGGED_FOR_REVIEW` — a ticket posted later onto an already-invoiced
 visit is flagged the same way. Generation adopts a draft it finds on a finalized visit rather than
 creating a second invoice, which is most of D2's "adopt" already. Cancelling an appointment that
@@ -115,7 +115,7 @@ template whose plan set one, then dropped the three plan columns. Signatures and
 
 Pass 6 (`feature/phase-1-payments-lite`, D5 + D4) merged as PR #63. The payments ledger
 exists: `payments` (CASH | CHECK | OTHER; posts `PENDING`, confirmed by the office - cash only by a
-manager+), `payment_applications`, `credit_memos`, `credit_applications`, all append-only with
+profile holding `CONFIRM_CASH_PAYMENT`, manager and admin by default), `payment_applications`, `credit_memos`, `credit_applications`, all append-only with
 stamped lifecycle transitions (confirm / void / refund / release, each with a required reason where it
 is a correction) and every act audit-logged. Invoices carry `amountPaidCents` / `balanceDueCents`,
 recomputed from the ledger under a row lock inside every transaction that touches them, and
@@ -234,7 +234,7 @@ Pass 8 (`feature/phase-1-audit-log-backfill`, D7 remainder) merged as PR #68. Th
 financial mutations that predate the audit helper now write it, each inside its own transaction
 and each **only when a value actually changed**: the **field price override** - a ticket post
 (`POST /api/services/:id/complete`) that stamps a different `priceCents`, by a technician on a
-manual service or by a manager+ (`ADJUST_PRICE_AGREEMENT`) on an agreement service - records
+manual service or by a profile holding `ADJUST_PRICE_AGREEMENT` (manager and admin by default) on an agreement service - records
 `price_overridden` on a new `service` audit entity, because the price lives on the Service and the
 ticket only reads it; a technician's price on an agreement service is not stamped and writes
 nothing, and the ticket dialog sends the current price on every post of a manual service, so an
@@ -373,7 +373,7 @@ unfinalized tickets - composed from the helpers Generate itself reads), feeds an
 in the review modal's header that opens the modal, or **Generate invoice** when the visit is
 finalized and un-invoiced - the finalize prompt's "Later" case - through the prompt's own generate
 route, then D4's apply-balance question. `POST /api/invoices/:id/assign-location` (new
-`ASSIGN_INVOICE_LOCATION`, manager+, audit `update`) is the repair for the two location-less rows:
+`ASSIGN_INVOICE_LOCATION`, held by the built-in manager and admin profiles, audit `update`) is the repair for the two location-less rows:
 "Assign location" in the modal's header, the customer's locations only, refused once a location
 exists (a repair, never a transfer). **Neither row was assigned - the owner picks.** No migration.
 **Restart `npm run dev:full` before manually testing - this pass adds two routes and a permission,
@@ -498,7 +498,7 @@ refusal; the 9 marked "Legacy billing frequency" note lines Pass 9 wrote were de
 (`buildBillingPlanSnapshot`) so the migration and storage freeze the same shape. **Sale
 attribution**: `agreements.soldByUserId`, a `users` FK, defaults to the session user at creation;
 naming anyone else (or nobody) at creation, and any later change, needs the new
-`ASSIGN_SALE_CREDIT` (manager+), and a change writes an audit `update` on a new `agreement` entity
+`ASSIGN_SALE_CREDIT` (manager and admin by default), and a change writes an audit `update` on a new `agreement` entity
 (before / after carry the id and the user's name; the location History tab rolls agreements in).
 The 25 existing rows are null - "Not recorded", never guessed from `createdByUserId`. Shown as a
 "Sold by" selector on the agreement form (read-only below manager, defaulted to you) and a "Sold
@@ -636,7 +636,7 @@ authenticated role**, like every read in `server/routes.ts` and specifically lik
 `/api/location-balances/:customerId`, `/api/locations/:id/ledger-summary` and `GET /api/invoices`,
 which already hand every role the same open and on-account figures: a gate would 403 the header
 while the switcher one inch below still says "Open $X", the RBAC matrix (PLAN_BILLING_V1.md 0.3)
-gates cost / margin / LTV and not receivables, and a real read gate is C5.6's role profiles.
+gates cost / margin / LTV and not receivables, and a real read gate would be a permission a profile holds (Pass 37 built the profiles and added none for reads - C5.8 decides per route).
 `invalidateInvoiceViews` refreshes both reads with the ledger. No schema change, no migration,
 nothing stored. Not built: due-date aging (B20's later Settings toggle for Net-terms accounts), an
 `asOf` parameter, aging by technician (V1 §1.4's "by tech"), statements (C2.5). **Restart
@@ -721,7 +721,7 @@ linked service SCHEDULED for any status but CANCELED (a completed visit's finali
 included) and re-linked a representative placed elsewhere; it is now a no-op for CANCELED and
 COMPLETED appointments. Skipped, never touched: a COMPLETED or CANCELLED service and a
 representative placed on another visit. Not built: service-level cancel (C4.3a), an appointment
-cancellation policy (Phase 9), a permission on the disposition (C5.6), un-cancelling from the
+cancellation policy (Phase 9), a permission on the disposition (none yet - C5.8), un-cancelling from the
 sheet, Pass 26 (since built). **Restart `npm run dev:full` before manually testing - this pass changes server
 code and the schema, and the two dialogs, the move confirmation, the read-only cancelled state and
 the Services-tab badges have not been rendered by anyone yet.** Signatures and behavior are under
@@ -927,7 +927,7 @@ else changes, so the same branches price it (a COD service at the draft; an agre
 run does not bill at the draft; a covered plan still $0 whatever is typed) and there is no second
 pricing path - and writes nothing: the stored price still changes only at Post (Pass 8's
 `price_overridden`), no audit row. **The post's rule, with the session's role**: an
-agreement-generated service is re-priced only for `ADJUST_PRICE_AGREEMENT` (manager+); a draft the
+agreement-generated service is re-priced only for `ADJUST_PRICE_AGREEMENT` (manager and admin by default); a draft the
 role may not apply is **ignored, not refused** - echoed in the summary's new `draft` field
 (`{ serviceId, priceCents, applied, note }`, the note naming "manager or admin") - because the read
 previews what Post will produce and `completeService` ignores that price too; a refusal would blank
@@ -1198,7 +1198,7 @@ and shown as "Answers <type> on <date>" on the Service Details, the queue and th
 an opportunity of a CALLBACK type converts into a callback answering its source service, and one
 with no source is refused rather than re-kinded. **Decided: the override is the price's rule** -
 `ADJUST_PRICE_NON_AGREEMENT` (every role) on a non-agreement service, `ADJUST_PRICE_AGREEMENT`
-(manager+) on an agreement one, at creation when the kind differs from the type's default and on
+(manager and admin by default) on an agreement one, at creation when the kind differs from the type's default and on
 any later change of the kind or the link; a change is refused 409 `SERVICE_KIND_LOCKED` once the
 ticket is finalized or the visit is invoiced (a DRAFT does not lock; a posted, unfinalized ticket
 is the review moment) and audited as `work_kind_changed` ({ workKind, answersServiceId } before and
@@ -1426,7 +1426,7 @@ the visit read-only ("Support"); production stays the lead's. **Decided (5):** d
 - every location's History shows it), no new entity type. **Decided (6):** the queue row reads "Prefers
 <tech>" / "Never <tech>", the sheet's select marks each option and warns; an excluded technician stays
 choosable and the 409 opens the reason prompt for a manager and resends. **Decided (7):** the editors
-are open to every role (customer data), the override manager+, the crew routes ungated like every
+are open to every role (customer data), the override a profile holding `OVERRIDE_TECHNICIAN_EXCLUSION` (manager and admin by default), the crew routes ungated like every
 appointment write. **Decided (8):** Smart Schedule (Phase 9) will read the same table and rule -
 PREFERRED a weight, EXCLUDED a constraint; nothing built. **Migration**: two tables, five indexes and
 the LEAD backfill, printed once; **it has NOT run against the shared dev DB** - verification ran on a
@@ -1695,7 +1695,7 @@ card's "Type:" line - restart `npm run dev:full` before trying them. Signatures 
 Pass 35" at the end of `PLAN_ROADMAP_V2.md` Part D. **The owner's restart after the merge prints the
 migration once** (the five seed rows, the 17 "Annual" rows, the 11 CUSTOM rows) and nothing after.
 
-Pass 36 (`feature/phase-5-ui-hygiene`, 2026-10-07, C5.4) pushed, awaiting merge. **UI hygiene** - the fifth
+Pass 36 (`feature/phase-5-ui-hygiene`, 2026-10-07, C5.4) merged as PR #108. **UI hygiene** - the fifth
 Phase 5 row; no migration, no table, no column, no new route. **Decided (1), the link convention:** a wouter
 `<Link>` with `hover:underline` and a `link-*` test id (the Pass 11a / 14 precedent), the targets built by one
 new client module `client/src/lib/customer-links.ts` (`customerPath`, `locationPath(customerId, locationId,
@@ -1740,17 +1740,71 @@ handling, the disabled checkbox and its note, the modal width, the selects' labe
 before trying them (the server changed). Signatures and behavior under "Shipped in Pass 36" at the end of
 `PLAN_ROADMAP_V2.md` Part D. **The owner's restart after the merge prints nothing** (no migration).
 
-Next up: **Pass 37** — Role profiles in Settings (`PLAN_ROADMAP_V2.md` Phase 5 table, C5.6; B16): org-defined
-roles as permission sets - `role_profiles` + `role_profile_permissions`, the four built-in roles seeded as
-editable, cloneable profiles, users assigned a profile, `can()` reading the profile, the admin unable to remove
-`MANAGE_SETTINGS` from their own profile, every change audited. The Pass 37 inventory found the row's premise
-short: there is no users write route and no Users card in Settings (a role changes only by SQL today), the
-"no call site changes" claim does not hold as written (`can(role, p)` is keyed by the role string at 62
-`requirePermission` + 10 inline server sites, 7 storage and 2 shared sites, and 46 client lines), and one
-direct role check sits in `storage.ts` (`actorRole === "technician"`) - the handoff lays out the design choice
-and recommends one. New tables and a bootstrap seed - the copy-database recipe. Branch from `origin/main` after
-confirming it contains Pass 36's merge. The handoff prompt for Pass 37 is the last section of this file; the
-Pass 37 session writes the next one.
+Pass 37 (`feature/phase-5-role-profiles`, 2026-10-08, C5.6) pushed, awaiting merge. **Role profiles in
+Settings** - the sixth Phase 5 row; two tables, a per-org seed, a new shared module, a 29th permission, the users
+write route, two Settings cards. **Decided (1), how `can()` reads a profile:** design (A) - the role string IS the
+profile key. `users.role` holds a `role_profiles.key` (the four built-ins keep `admin` / `manager` / `support` /
+`technician`, so no user row moved; no `users.role_profile_id`), and `can(role, permission)` stays synchronous and
+keyed by the string, reading a process-level registry (`setPermissionMatrix` / `getPermissionMatrix`) the server
+fills at boot and after every profile write and the client fills from the `roleProfiles` list `/api/auth/me` and
+the login answer carry - zero call-site changes, as the row intended; an empty registry falls back to
+`ROLE_PERMISSIONS`, now exported as the built-in defaults. The known limit is stated in the row and the code: the
+registry is per process, not per org (exact with one org; Phase 9 keys it by org). **Decided (2), the schema:**
+`role_profiles` + `role_profile_permissions` (a join row per permission), both org-scoped and in
+`TABLES_REQUIRING_ORG_ID`, created and seeded by a new `server/role-profile-bootstrap.ts` called between the auth
+and agreement bootstraps; the built-in keys stay lowercase, the office's own derive upper snake keys from their
+names (`deriveRoleProfileKey`, the agreement-type derivation), a derived key compared case-insensitively against
+the taken ones. **Decided (3), the cards and routes:** a Roles card (rows, Add / Edit with a grouped permission
+checklist, Clone, Deactivate through Edit's Active select) and a Users card (name / email / status / a role
+select per row) over `GET /api/role-profiles` (open), `POST` / `PATCH /:id` / `POST /:id/clone` (MANAGE_SETTINGS,
+strict), `DELETE` 405, and `PATCH /api/users/:id { role }` (MANAGE_SETTINGS; an ACTIVE profile key; live on the
+next request). **Decided (4), the guards:** (a) 409 `ROLE_PROFILE_SELF_LOCKOUT` on the admin's own profile
+(removing Manage Settings or making it inactive) and on their own assignment; (b) 409
+`ROLE_PROFILE_LAST_SETTINGS_MANAGER` built in storage as defense in depth - unreachable through the API while
+the actor must hold Manage Settings and (a) protects their own profile, so the smoke exercises it through the
+storage with a synthetic actor; the in-use rule 409 `ROLE_PROFILE_IN_USE`. **Decided (5), audit:** `role_profile`
+(`created`, a clone's row naming its source under `clonedFrom` - plain `created`, no dedicated action - and
+`update` with the permission list in both snapshots) and `user` (`update`, role before / after, never the hash)
+join `AuditEntityType`; neither revertable. **Decided (6), the direct role check:** a 29th permission,
+`EDIT_ANY_SERVICE_INSTRUCTIONS` (support / manager / admin, not technician), read by the instructions lock
+instead of `actorRole === "technician"`, so a clone of Technician inherits it - the seed counts are 4 / 13 / 28 /
+29. **Decided (7), the copy:** `rolesWithPermission()` returns profile NAMES from the registry (the existing
+refusal sentences stay true: "Manager or Admin"), `describePermissionHolders()` phrases them, and the 17
+settings.tsx strings, 6 client strings and 4 server refusals read it - the mechanical sweep, done. **Decided
+(8), the client's read:** `useAuth()`'s queryFn and the login's onSuccess call `setPermissionMatrix()` BEFORE
+the payload is committed, so the first render that knows the user reads the org's matrix; the Roles / Users
+cards invalidate `/api/auth/me`. **Decided (9), not done:** the "manager+ until C5.6" surfaces needed no code
+(they are permissions; the docs now say "a profile holding X - the built-in manager and admin do"); the
+ungated writes the roadmap deferred to C5.6 stay ungated and sit under C5.8 (a gate per route is a product
+decision); `technicians.userId` stays the C5.7 bridge; no password / invite flows; §0.3's "own only" /
+"partial" nuances not modeled. **Found and fixed:** A3 :141's drifted matrix lines, B16, the C5.1b / C5.3 /
+C5.8 rows' "until C5.6" phrasing, Part E answer 8 and the B16 index row, the inventory's §6 list of
+"manager+" lines in this file, the roadmap, the canon and PLAN_BILLING_V1_1.md; canon §16 gained the role
+profile. **Verified** on PORT=5001 against a COPY of the dev DB (`pestflow_verify`, dropped afterwards): `npm
+run check` clean; boot 1 printed the seed (four profiles, 4 / 13 / 28 / 29) and "permission registry loaded: 4
+active profile(s)", boot 2 only the serving line with every count unchanged across the 51 tables; **100 smoke
+assertions on the first run** (the pure registry, the parity check of every built-in profile against
+`ROLE_PERMISSIONS`, `/api/auth/me` carrying the matrix, 403s, create and every refusal code, a clone of
+Support gaining REVERT_HISTORY and the tech login's revert 403 -> 200 on the next request, the `user` rows,
+the three self-lockouts, in-use, an inactive profile refused on assignment, the converted lock for the
+built-in technician and its clone, a built-in's 405 / rename, rule (b) through the storage, cleanup to
+baseline); Vite 200 on the seven client modules and four shared modules. **Not rendered in a browser:** the
+Roles and Users cards, the checklist, the clone form, the role select, every toast and the swept copy -
+restart `npm run dev:full` before trying them (the server and the schema changed). Signatures and behavior
+under "Shipped in Pass 37" at the end of `PLAN_ROADMAP_V2.md` Part D. **The owner's restart after the merge
+prints the seed once** (the four profiles and the registry line) and nothing after.
+
+Next up: **Pass 38** — Technicians are users (`PLAN_ROADMAP_V2.md` Phase 5 table, C5.7; owner decision 2; canon
+§16's note): the technician profile fields move onto `users`, every technician FK is rewired and the
+`technicians` table becomes a compatibility view or is dropped; `technicians.userId` (C2.2, Pass 12) is the
+migration key. The Pass 38 inventory found the key EMPTY (both technician rows have `user_id` NULL and nothing
+matches them to a login - the handoff lays out how a users row is minted per technician), the row's FK list
+wrong in one place (`production_value_entries.technician_id` is a bare snapshot column, not an FK - five real
+FKs exist), the status vocabularies different (`ACTIVE | INACTIVE | TERMINATED` on the technician, `active` on
+the user and required by login), and the Tech View picking its technician by hand with no session check on
+the work route. A column set on `users`, FK re-pointing and a table drop - the copy-database recipe. Branch
+from `origin/main` after confirming it contains Pass 37's merge. The handoff prompt for Pass 38 is the last
+section of this file; the Pass 38 session writes the next one.
 
 Phase 1's ordered plan, impact analysis, conflict resolutions, and per-pass verification steps live in
 `PLAN_BILLING_V1_1_EXECUTION.md` — read it when a pass builds on a Phase 1 helper (its "Shipped in
@@ -2008,265 +2062,276 @@ pointer and that prompt.
 
 Replaced at the end of every pass (`AGENT_WORKING_AGREEMENT.md`, the end-of-pass step). The owner
 pastes it verbatim to start the next session; it is also the last thing in the finishing session's
-final message. Written 2026-10-07, after Pass 36 was pushed as `feature/phase-5-ui-hygiene`. Its
+final message. Written 2026-10-08, after Pass 37 was pushed as `feature/phase-5-role-profiles`. Its
 ground truth came from a read-only Explore subagent's inventory of the working tree at the start of
-Pass 36 (origin/main after PR #107), plus the SQL it ran, with server/routes.ts and server/storage.ts
-re-grepped after Pass 36's edits; shared/permissions.ts, server/auth.ts, server/index.ts, the schema,
-the bootstraps and the client files it cites were not touched by Pass 36 except the five pages named in
-its record. They are that tree's, so run the SQL and grep the names before trusting any claim.
+Pass 37 (origin/main after PR #108), plus the SQL it ran, with shared/schema.ts, server/storage.ts,
+server/routes.ts and client/src/pages/settings.tsx re-grepped after Pass 37's edits; the service
+scheduling bootstrap, technician-work.tsx, the cited schedule.tsx lines, service-completion-dialog.tsx
+and the shared technician helpers were not touched by Pass 37. They are that tree's, so run the SQL and
+grep the names before trusting any claim.
 
 ```text
-Start Pass 37 — Role profiles in Settings (C5.6)
-(PLAN_ROADMAP_V2.md Phase 5 table, row C5.6 (grep `C5.6 (**Pass 37**)`, :424 after Pass 36's doc edits -
-the new rows C3.8 / C4.7 and B23's five added lines):"`role_profiles` + `role_profile_permissions` (org-scoped); the four built-in roles seeded as
-editable, cloneable profiles; users assigned a profile; `can()` reads the profile instead of the fixed matrix
-(`shared/permissions.ts`), so no call site changes; an admin cannot remove `MANAGE_SETTINGS` from their own
-profile; every profile change audit-logged. Interim 'manager+' answers elsewhere in this roadmap become profile
-permissions."; B16 :295-298 (the owner: "role profiles must be configurable in Settings for the production-ready
-product - org-defined roles as permission sets, not four fixed ones"; "manager+" is the interim answer until
-then); A3 :141 "Role profiles configurable in Settings | ABSENT | four fixed roles, matrix in
-shared/permissions.ts:44-86, one can() helper" (its lines have drifted - see below); Part E answer 8 (the revert
-is manager+ interim); PLAN_BILLING_V1_1.md D7 :300 (REVERT_HISTORY manager+ until C5.6) and D9 :397; canon :611
-(who may cancel is C5.6), :712, :884, :1061, :1436, :1740 ("configurable once C5.6"); dev rules 2, 6 and 10
-(AGENT_WORKING_AGREEMENT.md :57, :60-61, :66). Phase order: Pass 36 (C5.4) was the fifth Phase 5 row; this is
-the sixth; after it C5.7 (technicians are users, Pass 38 - it depends on C5.6). OWNER_FEEDBACK.md: no open item
-is this row (FB-001 / -003 / -004 / -005 / -006 / -007 / -008 / -009 / -011 / -012 / -016 / -017 are other
-surfaces; FB-002 is C3.8 and FB-013 / -014 / -015 are C4.7, reviewed in Pass 36) - review any new item at the
-start and end, build none unless I say so. Read the CLAUDE.md docs in order first, and OWNER_FEEDBACK.md (its
-review process applies at the start and end of the session); CURRENT_FOCUS.md's last entries (Pass 35, Pass 36
-and "Next up") are the ones that matter.
+Start Pass 38 — Technicians are users (C5.7)
+(PLAN_ROADMAP_V2.md Phase 5 table, row C5.7 (grep `C5.7 (**Pass 38**)`, :429 after Pass 37's doc edits - B16
+grew by four lines and the C5.6 row is :428): "Technicians are users (owner decision 2): technician profile fields
+(license, color, display name) move onto `users`; `technicians` becomes a compatibility view or is dropped after
+every FK (`appointments`, `services`, `service_records`, `production_value_entries`, `technician_preferences`,
+crew) is rewired; the C2.2 bridge is the migration key."; Part E answer 2 :4525 ("One `users` table for everyone,
+techs and office. Recorded as a `users` FK plus a `technicians.userId` bridge in Pass 12 and the full merge in
+Pass 38 (C5.7), since the merge rewires every technician FK"); A3 :142 ("Technicians and users are one table |
+PARTIAL — Pass 12 | `technicians.userId` ... the merge itself is C5.7"); canon §16 User :1653 (its field list
+already puts license / training / service area on the User; the note :1695-1698 says C5.7 moves the technician
+profile there and rewires `technician_preferences` and `appointment_technicians`, which key on `technicians.id`);
+canon :708-709 (the bridge: "until C5.7 merges the two tables, `technicians.userId` is the nullable bridge") and
+:1044 ("never the technician picker, whose row is unlinked to a login until C5.7"); roadmap "Shipped in Pass 12"
+(grep - the bridge, `technicians_user_id_uidx`, `assertTechnicianUserLink`, the "Linked user" selector) and
+Pass 29's note :3386 ("the technician picker and a session check on the work route (C5.7)"); dev rules 2, 3
+and 10 (AGENT_WORKING_AGREEMENT.md :57-58, :66). Phase order: Pass 37 (C5.6) was the sixth Phase 5 row; this is
+the seventh and the last scheduled one - after it C5.8 (schema and settings hygiene, unscheduled - the owner
+sequences it) or Phase 6; say so in the handoff and let the owner pick. OWNER_FEEDBACK.md: no open item is this
+row (FB-001 / -003 / -004 / -005 / -006 / -007 / -008 / -009 / -011 / -012 / -016 / -017 are other surfaces;
+FB-002 is C3.8, FB-013 / -014 / -015 are C4.7, FB-020 is C4.6) - review any new item at the start and end, build
+none unless I say so. Read the CLAUDE.md docs in order first, and OWNER_FEEDBACK.md (its review process applies
+at the start and end of the session); CURRENT_FOCUS.md's last entries (Pass 36, Pass 37 and "Next up") are the
+ones that matter.
 
-Branch feature/phase-5-role-profiles from origin/main. Confirm main contains the Pass 36 merge
-(feature/phase-5-ui-hygiene) before branching.
+Branch feature/phase-5-technicians-are-users from origin/main. Confirm main contains the Pass 37 merge
+(feature/phase-5-role-profiles) before branching.
 
 Decide and state, in the pass:
-(1) how `can()` reads a profile - the row's "so no call site changes" does not hold as written: `can(role:
-string, permission)` (shared/permissions.ts :151-153) is synchronous and keyed by the ROLE STRING, and that
-string is passed at 62 `requirePermission(...)` route guards (server/auth.ts :109-117 runs `can(req.user.role,
-p)`), 10 inline `can(req.user!.role, …)` sites in routes.ts (:1515, :1956, :2279, :2307, :2330, :3228, :3238,
-:3532, :3553, :3574), 7 `can(actorRole, …)` sites in storage.ts (`actorRole: UserRole` typed in 11
-declarations, passed from routes.ts twelve times as `actorRole: req.user!.role as UserRole`), 2 in shared
-(field-surcharge.ts :114, service-kind.ts :207) and 46 client lines in 21 files (`can(user?.role ?? "", …)`;
-the only wrapper is `useCanOverrideExclusion()` technician-preferences.tsx :367). Two designs: (A) **the role
-string IS the profile key** - `users.role` holds the profile's key (the four built-ins keep "admin" /
-"manager" / "support" / "technician" as their keys, so no user row moves), `shared/permissions.ts` keeps
-`ROLE_PERMISSIONS` as the BUILT-IN DEFAULTS and gains a registry (`setPermissionMatrix(matrix)` /
-`getPermissionMatrix()`) that `can()` and `rolesWithPermission()` read: the server fills it at boot from the
-org's profiles and after every profile write, the client fills it from a new open read (`GET
-/api/role-profiles/matrix`, or `/api/auth/me` answering `{ ...user, matrix }`) at app start and on
-invalidation - ZERO call-site changes, as the row intends; the caveat: a process-level registry is per
-process, not per org, so with one org today it is exact and under multi-tenancy (Phase 9) the registry
-must be keyed by org and `can()` must learn the org - state it as the known limit; (B) **the user carries its
-permissions** - `req.user` and `/api/auth/me` gain `permissions: Permission[]` resolved in `deserializeUser`
-(server/auth.ts :51-62 re-reads the users row on EVERY request, so a profile change takes effect on the next
-request), `can(subject: string | { permissions }, p)` accepts either, and the ~125 call sites move to the
-subject form (mechanical, but a wide diff and the storage `actorRole` plumbing changes shape). Recommend (A)
-with the registry and the org caveat stated; if you pick (B), say so and I split the call-site sweep into
-its own commit;
-(2) the schema - the row names two tables: `role_profiles` (id, orgId, key - upper snake like
-agreement_types.key, unique (org_id, key) -, name, description, isBuiltIn, isActive, sortOrder, createdAt,
-updatedAt) and `role_profile_permissions` (profileId FK, permission text - one of `PERMISSIONS`' values,
-unique (profile_id, permission)); recommend both as the row says (a join row per permission keeps the usage
-and audit shape simple; a `text[]` column is the alternative - say if you take it); under design (A)
-`users.role` is the pointer and NO `users.role_profile_id` column is added (the key is the assignment; the
-row's "users assigned a profile" is a PATCH of `role`) - recommend that; under (B) add the FK column
-backfilled from `role`; the migration on Pass 35's `bootstrapAgreementVocabulary` pattern
-(server/agreement-bootstrap.ts :742-776: CREATE TABLE IF NOT EXISTS, the unique index, a per-org seed printed
-when inserted; register both tables in server/tenancy-bootstrap.ts TABLES_REQUIRING_ORG_ID :18-52) - seed the
-four built-in profiles per org from `ROLE_PERMISSIONS` (technician 4 / support 12 / manager 27 / admin 28
-permissions - the counts to assert), `isBuiltIn` true, and refuse deleting a built-in (rename and edit
-allowed); recommend a new `server/role-profile-bootstrap.ts` called from index.ts between auth (:90) and
-agreements (:99) so the registry is filled before any route is served;
-(3) the Settings card and the routes - **Roles** card in Settings (MANAGE_SETTINGS; the read open like every
-list): rows with name / key / built-in / active / permission count / users on it; Add (the key derived from
-the name as agreement types derive theirs - `deriveAgreementTypeKey`'s shape), Edit (name, description, the
-permission checklist with human labels - there are NONE today: add `PERMISSION_LABELS` and
-`describePermission()` to shared/permissions.ts, 28 entries), **Clone** (a copy with a new name - the row's
-"cloneable"), Deactivate (refused while users hold it - 409 `ROLE_PROFILE_IN_USE`, Pass 35's in-use rule);
-routes `GET /api/role-profiles[?includeInactive=true]` (open, each with `userCount` and its permissions),
-`POST`, `PATCH /:id`, `POST /:id/clone`, no DELETE (405) - MANAGE_SETTINGS, strict bodies, 400 codes for an
-unknown permission / a taken key / a blank name, 404 NOT_FOUND; and the **users write route the row
-presupposes and the code lacks**: `PATCH /api/users/:id { role }` (MANAGE_SETTINGS; the role must be an
-ACTIVE profile key of the org; today only `GET /api/users` exists, routes.ts :1604, open to every role -
-keep it open, the switcher and the assignee select read it) with a **Users** card (or a Users column on the
-Roles card) assigning a profile - recommend a small Users card listing name / email / profile select /
-status, no create / password flows (those are the auth bootstrap's, server/auth-bootstrap.ts, and not this
-row);
-(4) the two guards - (a) the row's: an admin cannot remove `MANAGE_SETTINGS` from their OWN profile (the
-profile `req.user.role` names) - 409 `ROLE_PROFILE_SELF_LOCKOUT` on the PATCH, and the same code on `PATCH
-/api/users/:id` when the acting user moves THEMSELVES to a profile without MANAGE_SETTINGS; (b) recommend
-also refusing to leave the org with NO active profile holding MANAGE_SETTINGS at all (409
-`ROLE_PROFILE_LAST_SETTINGS_MANAGER`) - without it one admin can lock the org out through another admin's
-profile; say if you decline (b);
-(5) audit - `role_profile` joins AuditEntityType (shared/audit.ts :41-57, 16 members) with `created` /
-`update` (the permission set as a sorted array in the snapshots, so the History diff names what moved) and a
-dedicated `role_profile_cloned` action (the clone's `created` row naming the source) or plain `created` (say
-which; recommend plain `created` with `clonedFrom` in the after), and `user` joins it for the assignment
-(`update` with `role` before / after on the users row - the first `user` entity rows ever; there is no
-`account` precedent to copy, the entity is new); neither revertable (recommend - a permission change is undone
-by hand with the card; add neither to REVERTABLE_AUDIT_ENTITY_TYPES :416-424);
-(6) the one direct role check - storage.ts :4801 `context?.actorRole === "technician"` (Pass 29's
-`SERVICE_INSTRUCTIONS_LOCKED`: a technician may edit only the instructions of a service they added) must
-become a permission or every custom profile is "not a technician" and skips the lock: recommend a new
-`EDIT_ANY_SERVICE_INSTRUCTIONS` held by support / manager / admin in the seed (the matrix gains a 29th
-permission; the technician profile does not hold it), checked with `can()`, so a cloned field profile
-inherits the lock;
-(7) the refusal copy that names roles - `rolesWithPermission()` (:156-158) prints role NAMES in refusal text
-at 8 server / shared sites and 2 client sites, and 17 "Admins manage … / Only an admin can change …" strings
-sit in settings.tsx (:2122, 2151, 2215, 2239, 2640, 2666, 2697, 2738, 2895; :2283, 2439, 2469, 2498, 2529,
-3048, 3147, 3174 - re-grep) with 6 "a manager or (an) admin" strings elsewhere (customer-detail.tsx :2387,
-:3078, :3082; schedule.tsx :658; payments.tsx :198; collect-payment-dialog.tsx :260): under profiles those
-go stale the moment a profile is renamed or a custom one holds the permission. Recommend: `rolesWithPermission`
-reads the registry and returns profile NAMES (so the existing refusal sentences stay true), and the 23 fixed
-strings become one shared phrase from it ("Roles that may: Admin" / "a role with Manage Settings") - a
-mechanical sweep; or leave the strings and note them (say which);
-(8) the client's permission read - with design (A) the client needs the matrix before the first `can()`:
-recommend `useAuth()` (client/src/hooks/use-auth.ts :5-13, the `/api/auth/me` query) to call
-`setPermissionMatrix()` from the `/api/auth/me` payload (the server attaches the org's matrix to the user
-there - one read, no race), invalidated by the Roles card's mutations through the existing
-`invalidate*Views` pattern; `can()` with an EMPTY registry falls back to the built-in defaults so nothing is
-blank during the first render;
-(9) what the pass does NOT do - the "manager+ until C5.6" surfaces (REVERT_HISTORY, CONFIRM_CASH_PAYMENT,
-ISSUE_INVOICE_PREFINALIZATION, REOPEN_TICKET_OTHER, ASSIGN_SALE_CREDIT, ADJUST_PRICE_AGREEMENT, EDIT_TICKET…)
-need NO code change: they are already permissions, and a profile that holds one gets it - the pass updates the
-docs' "manager+ until C5.6" wording to "a profile holding X" (the list is in the Pass 37 inventory §6);
-the ungated writes the roadmap defers to C5.6 (the service / appointment cancel and disposition routes.ts
-~:2027 / :2487-2637, the opportunity categories ~:1788, the agreement templates POST / PATCH, the customer-data
-edits, the money reads ~:927) are NOT gated in this pass unless you say so - gating is a product decision per
-route (recommend: leave them, list them under C5.8 as the roadmap already does, and say so); `technicians.userId`
-stays the C5.7 bridge; no password / invite flows; PLAN_BILLING_V1.md §0.3's "own only" production value and
-"partial" Manage Settings are not modeled (say so).
+(1) where the technician profile lives - recommend columns on `users`: `licenseId` text nullable, `color` text
+nullable, `phone` text nullable (users has none today), `technicianNotes` text nullable, and
+`technicianStatus` text nullable holding ACTIVE | INACTIVE | TERMINATED (the technician vocabulary routes.ts
+:214 enforces today) - NULL means "not a technician", so the column is the marker and no boolean is added;
+`displayName` is NOT stored (it is `userDisplayName(user)` = "First Last", shared/users.ts :8 - the inventory
+found every reader can derive it); `users.status` (active | inactive, what login checks, server/auth.ts :31)
+stays the LOGIN flag and `technicianStatus` the FIELD-availability flag the board and the pickers filter on
+(the two vocabularies differ today and must not be merged - a technician who never logs in is INACTIVE as a
+login and ACTIVE in the field); say if you fold them;
+(2) the migration key and the id strategy - **the bridge is EMPTY on the dev DB**: both technician rows
+(Austin Lowe c395cfff-8c26-4db8-a244-42222e5ae1dd, license 0526597, alowe@email.com; John Doe
+7a564428-778d-4fa6-94e5-0f099a97cb17, license 0123456, jdoe@email.com) have `user_id` NULL, no users row
+matches either by email or name, and Heritage Tech (tech@heritage.local, e3aba105-f2d0-4f45-ae89-512d7726b229,
+role technician) is linked to nothing. Recommend: for an UNLINKED technician the migration MINTS a users row
+WITH THE SAME id as the technician row (users.id is a plain varchar PK with a uuid default - nothing forbids
+supplying one; the row's org_id, first / last name split from display_name on the first space, email from the
+technician row - or `<id>@technicians.local` when null, since email is NOT NULL and lower-unique - a random
+unusable password hash, `status = 'inactive'` (no login until the owner activates - no password flow exists),
+`role = 'technician'`, the technician columns copied), so the five real FKs need NO data rewrite - only DROP
+CONSTRAINT by their exact names (`appointments_assigned_technician_id_technicians_id_fk`,
+`services_assigned_technician_id_technicians_id_fk`, `service_records_technician_id_technicians_id_fk`
+from db:push; `technician_preferences_technician_id_fkey`, `appointment_technicians_technician_id_fkey` from
+the bootstrap) and ADD CONSTRAINT ... REFERENCES users(id), and the bare `production_value_entries.technician_id`
+(NO FK - the row's "every FK" is wrong about it; a snapshot by design, schema.ts :1300-1301) keeps its ids; for
+a LINKED technician (user_id set - zero today, but the owner may link one in Settings before this pass runs)
+the five FK columns and the bare ledger column are REMAPPED technician.id -> user_id and the technician columns
+copied onto that user; the 39 audit_logs rows whose JSON embeds a technicianId stay as history (say so). The
+alternative, (B) always minting new ids and rewriting ~600 FK rows, is not recommended - say if you take it.
+The migration prints every minted user, every remap and every constraint move;
+(3) the `technicians` table - recommend DROP after the FKs move, with storage's `getTechnicians` /
+`createTechnician` / `updateTechnician` (storage.ts :4677 / :4685 / :4692) and `assertTechnicianUserLink`
+(:4704, the ONLY reader of `technicians.userId`) becoming a FACADE over users rows whose `technicianStatus` is
+not null, returning the existing `Technician` shape (id, displayName derived, licenseId, status =
+technicianStatus, email, phone, color, notes, userId = id, timestamps) as a projection type so the ten client
+readers of `/api/technicians` (§6 of the inventory), the shared helpers that take technician ids and name
+callbacks (`shared/technician-preferences.ts` resolveEffectivePreferences :109, `shared/appointment-crew.ts`
+:23-25, `shared/batch-invoice.ts` :149) and every storage join on `technicians.displayName` / `licenseId`
+(`resolveServiceRecordTechnicianSnapshot` :3268, `technicianNameMapTx` :7097, `crewMembersTx` :7528,
+`setTechnicianPreference` :7413, `addAppointmentCrewMember` :7602, `getInvoiceDetail` :10082, the service
+report context) read users instead - a sweep of the client from `Technician` to `UserSummary` is a later
+hygiene pass, not this one; the alternative (B), a compatibility VIEW named `technicians` over users (drizzle's
+pgTable keeps selecting; every write must already go to users), is the row's other option - say which. The
+drizzle `technicians` pgTable (schema.ts :178-200) and `insertTechnicianSchema` :1413 go with the table;
+(4) the users write surface the merge needs - today the only users write is Pass 37's `PATCH /api/users/:id
+{ role }` (routes.ts :1649, MANAGE_SETTINGS, strict) and the only creator is the auth bootstrap
+(server/auth-bootstrap.ts :8-12, :51-58). Recommend: extend the PATCH (strict) with firstName / lastName /
+email / phone / status / licenseId / color / technicianNotes / technicianStatus under MANAGE_SETTINGS, add
+`POST /api/users` (MANAGE_SETTINGS; firstName, lastName, email, role - an ACTIVE profile key -, the technician
+block; status 'inactive', a random unusable hash, NO password - "set password" / invite is a later pass, say
+so), and MERGE the Settings Technicians card (settings.tsx :3003 - its TechnicianForm :943 with the "Linked
+user" select :1011-1013) into Pass 37's Users card (:3109: name / email / status / role select) so one card
+edits a person and their technician block (dev rule 6: no second surface for the same row) - `POST` / `PATCH
+/api/technicians` (routes.ts :1727 / :1738, UNGATED today - any role sets `userId`) either go with the table or
+become MANAGE_SETTINGS facades; recommend they go and the client's two writers (settings.tsx :959-960 pre-Pass
+37, now in TechnicianForm) move to the users routes; fix the Technicians card's stale-cache bug on the way
+(it invalidates `["/api/technicians"]` while every reader keys `?includeInactive=true` - staleTime Infinity, so
+the board and the card showed stale rows until a reload);
+(5) the Tech View identity (client/src/pages/technician-work.tsx) - today `selectedTechnicianId` starts "" (:112),
+the page never consults `useAuth().user` for it, a manual Select lists the active technicians, and whatever is
+picked receives the ticket's `technicianId` and the production credit (`ServiceCompletionDialog`
+`defaultTechnicianId={selectedTechnicianId}` :887 -> service-completion-dialog.tsx :385, :586); `GET
+/api/technicians/:id/work` (routes.ts :1750) checks nothing. Recommend: the page defaults to the SESSION USER
+when `user.technicianStatus` is set and hides the picker for them; office roles keep the picker; the work route
+refuses another technician's day to a user without a new 30th permission `VIEW_OTHER_TECHNICIAN_WORK` (403;
+support / manager / admin hold it - and since Pass 37's bootstrap never re-syncs an existing org's seeded
+profiles, the pass must GRANT it to the seeded built-ins that should hold it with a guarded UPDATE by key and
+`is_built_in`, printed once, plus add it to `ROLE_PERMISSIONS` for new orgs - the first exercise of that rule);
+the ticket dialog's default technician is the session user for a technician; say if you decline the permission
+and leave the route open;
+(6) Heritage Tech (tech@heritage.local, the smoke and demo login) - recommend the auth bootstrap's seed gives it
+`technicianStatus = 'ACTIVE'` and a placeholder license (`DEMO-0001`) ON CONFLICT DO NOTHING-style (an UPDATE
+guarded by `technician_status IS NULL` and the email), so the Tech View resolves to a real technician for the
+demo login and the smoke test has a technician user without minting one; the two seed.ts demo technicians
+(Jake Miller / Sam Torres, server/seed.ts :71-74, only on an empty org) become users rows in seed.ts - say so;
+(7) what the pass does NOT do - the password / invite flow (a user minted by the migration or by POST cannot
+log in until it exists; say so plainly); the audit JSON remap; the client sweep from `Technician` to
+`UserSummary`; `appointments.assigned_to` and the ticket's `technician_name` / `technician_license_number`
+snapshots (they stay text, by design); `service_records` rows with a null technician (5 of 77 - canon §12 lists
+the three fields as required; note it, do not backfill); Smart Schedule.
 
-Ground truth today (line numbers from the working tree at the end of Pass 36; they drift, the names do not;
-the inventory came from a read-only Explore subagent at the start of Pass 36 on origin/main after PR #107, with
-server/routes.ts and server/storage.ts re-grepped after Pass 36's edits; shared/permissions.ts, server/auth.ts,
-server/index.ts, shared/schema.ts, shared/users.ts, shared/audit.ts, the bootstraps and the client files below
-were not touched by Pass 36 except the pages named in its record):
-- shared/permissions.ts (158 lines): `UserRole` :1 ("admin" | "manager" | "support" | "technician");
-  `PERMISSIONS` :3-89 - 28 permissions (POST_SERVICE_TICKET :4, FINALIZE_TICKET :5, REOPEN_TICKET :6,
-  EDIT_TICKET :13, REOPEN_TICKET_OTHER :19, ADJUST_PRICE_NON_AGREEMENT :20, ADJUST_PRICE_AGREEMENT :21,
-  ADD_FIELD_SURCHARGE :27, GENERATE_INVOICE :28, ISSUE_INVOICE_PREFINALIZATION :32, SEND_INVOICE :33,
-  VOID_INVOICE :34, ISSUE_CREDIT_MEMO :35, ASSIGN_INVOICE_LOCATION :40, ASSIGN_SALE_CREDIT :46,
-  ASSIGN_OPPORTUNITY :56, OVERRIDE_TECHNICIAN_EXCLUSION :62, REVERT_HISTORY :71, TAKE_PAYMENT_FIELD :74,
-  APPLY_PAYMENT :77, CONFIRM_PAYMENT :79, CONFIRM_CASH_PAYMENT :81, VOID_PAYMENT :83, REFUND_PAYMENT :84,
-  WAIVE_CANCELLATION_FEE :85, VIEW_COST_MARGIN_LTV :86, VIEW_PRODUCTION_VALUE :87, MANAGE_SETTINGS :88);
-  `Permission` :91; `ROLE_PERMISSIONS` :98-149 (not exported; technician :99-104 = 4, support :105-118 = 12,
-  manager :119-147 = 27 - everything but MANAGE_SETTINGS -, admin :148 = all 28); `can()` :151-153
-  (`ROLE_PERMISSIONS[role]?.has(p) ?? false`); `rolesWithPermission()` :156-158. Never checked anywhere:
-  POST_SERVICE_TICKET, VIEW_COST_MARGIN_LTV. Server / shared only: REOPEN_TICKET, ADJUST_PRICE_NON_AGREEMENT,
-  ADD_FIELD_SURCHARGE, ISSUE_INVOICE_PREFINALIZATION, WAIVE_CANCELLATION_FEE, VIEW_PRODUCTION_VALUE.
-- server/auth.ts: `serializeUser` :47-49 stores the user id only; `deserializeUser` :51-62 re-reads the users
-  row through `userStorage.getUser` on every request (a role change is live on the next request; status is
-  NOT re-checked, so an inactive user's live session survives); `requireAuth` :85; `attachOrgStorage` :97-105
-  (reads `req.user.orgId`); `requirePermission(permission)` :109-117 (`can(req.user.role, p)` else 403);
-  `POST /api/auth/login` :120-135 (passport LocalStrategy :27-45 rejects status != active); `GET /api/auth/me`
-  :147-153 returns `req.user` (the users row minus passwordHash :15, :22-25: id, orgId, names, email, role,
-  status). server/index.ts :93 `app.use("/api", requireAuth, attachOrgStorage)`; boot order: orgs :85, tenancy
-  :89, `bootstrapAuth` :90, `setupAuth` :91, agreements :99, tenancy again :110, audit :112, seed :116.
-- server/routes.ts (post-Pass 36): `requirePermission` imported :33, 62 uses (MANAGE_SETTINGS 29,
-  GENERATE_INVOICE 10, APPLY_PAYMENT 5, CONFIRM_PAYMENT / FINALIZE_TICKET / ISSUE_CREDIT_MEMO / SEND_INVOICE /
-  VIEW_PRODUCTION_VALUE 2 each, ASSIGN_INVOICE_LOCATION / EDIT_TICKET / REFUND_PAYMENT / REOPEN_TICKET /
-  REVERT_HISTORY (:1509) / TAKE_PAYMENT_FIELD / VOID_INVOICE / VOID_PAYMENT 1 each); `getAuditActor` :84-94
-  records `{ userId, actorLabel }` and no role; the inline `can()` sites above; `GET /api/users` :1604 (the ONLY
-  users route; `storage.getUsers()` storage.ts :4651 returns role and status); "C5.6 decides who may" comments
-  at ~:927-928 (money reads), ~:1343, ~:1483, ~:1788 (opportunity categories), ~:1991 / ~:2027 (service cancel),
-  ~:2487 / ~:2549 / ~:2559 / ~:2637 (appointment cancel), ~:3498 (aging read) - re-grep "C5.6".
-- server/storage.ts (post-Pass 36): `type DbReader` :356; `AuditActor` :419; `recordAuditLogTx` :2201,
-  `auditCreatedTx` :2225, `auditChangeTx` :2234, `auditDeletedTx` :2251 (all private); the direct role check
-  :4801 (`context?.actorRole === "technician"`); `createAgreementType` :5941 (the CRUD + audit precedent for
-  a settings table; `updateAgreementType` / `mergeAgreementTypes` follow); `userStorage` :14384 (getUser,
-  getUserByEmail, createUser - the last has no caller); `actorRole` appears 32 times.
-- shared/schema.ts: `users` :1320-1331 (id, orgId, firstName, lastName, email `.unique()`, passwordHash, `role`
-  text NOT NULL default "admin" :1327, status, createdAt, updatedAt; NO roleProfileId); `insertUserSchema`
-  :1424; `User` / `InsertUser` / `UserSummary` ~:1514-1517. shared/users.ts: `ROLE_LABELS` :20-25,
-  `describeUserRole` :27-29 (the only role labels; read by settings.tsx's technician "Linked user" select
-  ~:1003 and the assignment-rule assignee select ~:1770). shared/audit.ts: `AuditEntityType` :41-57 (16; no
-  `user`, no `role_profile`), `AuditAction` :174-211 (37, last `agreement_type_merged`),
-  `REVERTABLE_AUDIT_ENTITY_TYPES` :416-424 (7), :166 "manager+ until C5.6".
-- server/auth-bootstrap.ts: the four seeded logins - admin@heritage.local created :39-47 when the table is
-  empty, manager@ / support@ / tech@ :8-12 and :51-58 with ON CONFLICT DO NOTHING, password `ChangeMe123!`
-  :6; server/seed.ts seeds no users. Precedents: server/agreement-bootstrap.ts `bootstrapAgreementVocabulary`
-  :742 (CREATE TABLE :744-755, unique index :756, per-org seed :758-776), server/service-scheduling-bootstrap.ts
-  `bootstrapOpportunityTaxonomy` :656 (called :357); server/tenancy-bootstrap.ts `TABLES_REQUIRING_ORG_ID`
-  :18-52 (33 tables; agreement_types :33, users :50).
-- Client: client/src/hooks/use-auth.ts (43 lines) queries `/api/auth/me` :5-13 and returns `user` - no
-  permission helper, no `useCan`; `can(` lines per file: invoice-detail-dialog 7, location-ledger-panel 10,
-  customer-detail 7, service-ticket-review 4, invoice-on-finalize-prompt 2, and 1 each in
-  apply-location-balance-prompt, batch-invoice-dialog, collect-payment-dialog, customer-history-sheet,
-  field-added-badge, initial-charge-due-prompt, invoice-document-actions, record-payment-dialog,
-  service-completion-dialog (:331 also passes `actorRole: user?.role` to `resolveFieldSurchargeGate`),
-  technician-preferences, invoices, opportunities, payments, schedule, settings (`canManageSettings` :1891,
-  37 uses - Pass 35's "admin-only" Agreement Types card is this, with the fallback copy
-  `text-agreement-types-admin-only` :2895), technician-work; `rolesWithPermission` text at
-  service-completion-dialog.tsx ~:318 and service-ticket-review.tsx ~:283; no `role === "admin"` / `isAdmin`
-  anywhere on the client; app-sidebar and App.tsx gate nothing on role; the five admin-only test ids
-  (`text-service-types-admin-only`, `text-billing-profile-templates-admin-only`, `text-zones-admin-only`,
-  `text-assignment-admin-only`, `text-agreement-types-admin-only`).
-- DB today (run the SQL, never trust a doc's data claim): users 4 - admin / manager / support / technician one
-  each, all active, org 71e445ab… (the only organization); `users` columns id, first_name, last_name, email,
-  password_hash, role (default 'admin'), status, created_at, updated_at, org_id NOT NULL; indexes users_pkey,
-  `users_email_uidx` on lower(email) (the schema's `.unique()` is not what the DB has), users_org_id_idx; 49
-  public tables, no role_profiles / role_* table; technicians 2 (Austin Lowe, John Doe), 0 with user_id;
-  audit_logs 241 with no `user` or `role_profile` rows; session 34 (the smoke logins; shared with the owner).
-  After Pass 36 merges and the owner restarts: nothing changes in the DB (no migration).
-- Docs versus code, found by the inventory and left for you: A3 :141 cites "matrix in
-  shared/permissions.ts:44-86, one can() helper" (the matrix is :98-149, `PERMISSIONS` :3-89, `can()` :151-153,
-  and `rolesWithPermission` :156-158 is a second helper with 10 call sites); the C5.6 row's "so no call site
-  changes" (see decision 1) and its unlisted precondition (no users write route, no Users card); the row does
-  not mention the direct role check storage.ts :4801; CURRENT_FOCUS.md's Pass 35 handoff cited the C5.6 row as
-  ":413" (it was :417, and is :424 after Pass 36's doc edits); PLAN_BILLING_V1.md §0.3 :98-126 lists
-  "own only" (technician production value) and "partial" (manager Manage Settings) that the matrix does not
-  represent; shared/schema.ts :1325 declares `email .unique()` but the DB has only the lower(email) index.
-  Fix the ones your pass touches; list the rest.
-- Docs to carry: the C5.6 row (mark done with the as-built); A3 :141; B16 :295-298 (record the build); every
-  "manager+ until C5.6" / "C5.6 makes it a profile permission" line (the inventory §6 lists them: roadmap
-  :194, :331, :656, :1022, :1259, :1376, :1481, :1544, :2808, :3039, :3093, :3158, :3204, :3365, :3375,
-  :3555-3556, :3568, :3976 (was :3969), :4102, :4264 (was :4257), :4313, :4319 and Part E answer 8 at :4455 -
-  the unmarked ones are pre-Pass-36 lines, re-grep; CURRENT_FOCUS :76,
-  :117, :236, :375, :500, :638, :723, :929, :1200, :1428, :1723; canon :611, :712, :884, :1061, :1436, :1740;
-  PLAN_BILLING_V1_1.md :58, :300, :397, :421) - reword to "a profile holding X (the built-in manager and admin
-  profiles do)"; canon §16 User (the role field and the profile); PROJECT_MAP.md if a new bootstrap file lands;
-  a "Shipped in Pass 37" record; CURRENT_FOCUS's Pass 37 entry and "Next up" (phase order: Pass 38, C5.7
-  technicians are users - its spec is its row in the Phase 5 table and canon §16's note; say so and write that
-  handoff unless I say otherwise).
+Ground truth today (line numbers from the working tree at the end of Pass 37; they drift, the names do not;
+the inventory came from a read-only Explore subagent at the start of Pass 37 on origin/main after PR #108, with
+shared/schema.ts, server/storage.ts, server/routes.ts and client/src/pages/settings.tsx re-grepped after Pass
+37's edits; service-scheduling-bootstrap.ts, technician-work.tsx, schedule.tsx's cited lines,
+service-completion-dialog.tsx and the shared helpers were not touched by Pass 37):
+- shared/schema.ts: `technicians` :178-200 (id, orgId, displayName, licenseId, status default "ACTIVE", email,
+  phone, color, notes, `userId` :197 `.references(() => users.id)` nullable, timestamps; no indexes declared -
+  `technicians_user_id_uidx` / `_status_idx` / `_org_id_idx` exist only through the bootstraps; no
+  `relations()` anywhere); `users` :1355-1366 (id, orgId, firstName, lastName, email `.unique()` - the DB has
+  only the lower(email) index -, passwordHash, role, status, timestamps; NO license / color / phone / display
+  name); `roleProfiles` :748 / `roleProfilePermissions` :763 (Pass 37); `insertTechnicianSchema` :1413;
+  `insertUserSchema` :1460; `Technician` :1482; `User` :1553; `UserSummary` :1556. Every technician reference:
+  `services.assignedTechnicianId` :228 (real FK, nullable), `appointments.assignedTechnicianId` :277 (real FK,
+  nullable), `serviceRecords.technicianId` :555 (real FK, nullable) + `technicianName` :556 /
+  `technicianLicenseNumber` :557 (text snapshots), `technicianPreferences.technicianId` :832 (real FK, NOT
+  NULL), `appointmentTechnicians.technicianId` :851 (real FK, NOT NULL), `productionValueEntries.technicianId`
+  :1300 (BARE varchar, no FK) + `technicianName` :1301, `appointments.assignedTo` :302 (text). Columns already
+  pointing at users: `agreements.soldByUserId`, `services.addedInFieldByUserId` / `fieldReviewedByUserId`,
+  `technicianPreferences.createdByUserId`, `appointmentTechnicians.createdByUserId`,
+  `opportunities.assignedUserId`, `opportunityAssignmentRules.assignedUserId`, `payments.collectedByUserId` (bare).
+- DB today (run the SQL, never trust a doc's data claim): technicians 2 (both ACTIVE, color NULL, notes NULL,
+  **user_id NULL**), users 4 (one per built-in profile, all active, org 71e445ab…), role_profiles 4 /
+  role_profile_permissions 74 (Pass 37's seed, 4 / 13 / 28 / 29), 51 public tables. FKs referencing
+  technicians (pg_constraint confrelid): exactly five, named above. Rows holding a technician id:
+  services.assigned_technician_id 105 / 112 (Austin 74, John 31), appointments.assigned_technician_id 118 / 126
+  (77 / 41; the 8 without an id are legacy rows carrying only `assigned_to` "Jake Miller" / "Sam Torres"),
+  service_records.technician_id 72 / 77 (53 / 19; technician_name 74 / 77 including 2 "Jake Miller" with a null
+  id, technician_license_number 72 / 77), production_value_entries.technician_id 59 / 61 (42 / 17, 0 orphans),
+  technician_preferences 3 / 3 (all Austin: 2 PREFERRED, 1 EXCLUDED, LOCATION scope), appointment_technicians
+  119 / 119 (Austin LEAD 77 + SUPPORT 1, John LEAD 41), appointments.assigned_to 126 / 126 ("Austin Lowe" 77,
+  "John Doe" 41, "Jake Miller" 4, "Sam Torres" 1, "Austin" 1, "" 2); audit_logs 254, 39 of which embed a
+  technicianId in their JSON (appointment_cancelled 13, technician_preference_set 4, price_overridden 3, the
+  rest 1-2 each) - display-only, never revertable. After Pass 37 merges and the owner restarts: role_profiles 4
+  and role_profile_permissions 74 appear on the shared DB (the seed prints once); nothing else changes.
+- server/storage.ts (post-Pass 37): IStorage `getTechnicians` / `createTechnician` / `updateTechnician` ~:1713-1715,
+  `getUsers` ~:1718, the Pass 37 role-profile entries :1768-1772; `getTechnicians` :4677 (selects every org row
+  and filters status === "ACTIVE" in JS), `createTechnician` :4685, `updateTechnician` :4692,
+  `assertTechnicianUserLink` :4704 (the only `technicians.userId` reader), `getUsers` :4718 (sanitized,
+  sortUsersByName), `userAuditSnapshot` :6035, `updateUserRole` :6242 (Pass 37 - the audit `user` entity's one
+  writer; a wider users PATCH extends it or sits beside it), `userStorage` :14758 (getUser / getUserByEmail /
+  createUser - the last has no caller); the name / license joins: `resolveServiceRecordTechnicianSnapshot`
+  :3268, `createProductionValueEntriesForFinalizedRecord` :3757 (writes technicianId / technicianName from the
+  ticket snapshot), `getProductionValueEntriesByTechnician` :3871, `technicianNameMapTx` :7097 (six callers),
+  `setTechnicianPreference` :7413, `crewMembersTx` :7528, `syncCrewLeadTx` :7552, `addAppointmentCrewMember`
+  :7602, `nextStopTx` :8145, `getTechnicianWork` :8665 (no session check), `getInvoiceDetail` :10082
+  (technicianLabel from `technicians.displayName`); the instructions lock :4873 reads
+  `EDIT_ANY_SERVICE_INSTRUCTIONS` since Pass 37. No `getTechnician(id)`, `deleteTechnician` or
+  `getTechnicianByUserId` exists.
+- server/routes.ts (post-Pass 37): `technicianStatusSchema` :214; `technicianSchema` / `updateTechnicianSchema`
+  :231-244 (`userId` nullable optional); `GET /api/users` :1638; `PATCH /api/users/:id` :1649 (Pass 37,
+  `userRoleSchema` :632 strict `{ role }`); the role-profile routes :1671-1719; `GET /api/technicians` :1721;
+  `POST /api/technicians` :1727 and `PATCH /api/technicians/:id` :1738 (NO requirePermission); `GET
+  /api/technicians/:id/work` :1750 (any id, no session check); `GET /api/technicians/:technicianId/production-
+  value-entries` (VIEW_PRODUCTION_VALUE; no client caller - grep); the batch-invoice filter `technicianId`
+  (grep `batchInvoiceFiltersSchema`); `getAuditActor` :85 (userId + label only). `requirePermission` has 66 uses.
+- Bootstraps: server/service-scheduling-bootstrap.ts `CREATE TABLE IF NOT EXISTS technicians` :34-47 (user_id
+  included :43, no org_id - tenancy adds it), `technicians_status_idx` :48, the Pass 12 bridge ALTER :56 and
+  the partial unique index :57, `services.assigned_technician_id REFERENCES technicians(id)` :73,
+  `technician_preferences` :385-400 and `appointment_technicians` :410-422 with the LEAD backfill (grep
+  `bootstrapTechnicianPreferencesAndCrew`); server/production-value-ledger-bootstrap.ts :10-11 (bare
+  technician_id / technician_name) and the index :24; server/tenancy-bootstrap.ts `TABLES_REQUIRING_ORG_ID`
+  (technicians :27, technician_preferences :43, appointment_technicians :44, role_profiles :52); server/auth-
+  bootstrap.ts `DEMO_ROLE_USERS` :8-12 (Heritage Tech :11), the seed loop :51-58, no technician row and no link;
+  server/role-profile-bootstrap.ts (Pass 37) `bootstrapRoleProfiles` :25 and `loadPermissionRegistry` :127 -
+  its header comment is the rule for adding a permission to an existing org's seeded profiles; boot order
+  server/index.ts: tenancy early :90, auth :91, role profiles :95, agreements :104, service scheduling :105,
+  tenancy :115. server/seed.ts :71-74 inserts "Jake Miller" / "Sam Torres" technicians only on an empty org.
+- Client: the ten readers of `/api/technicians` (all typed `Technician[]`): batch-invoice-dialog.tsx :104,
+  draft-invoice-for-visit-dialog.tsx :78, technician-preferences.tsx :201 / :283, customer-detail.tsx :3557,
+  schedule.tsx :1250, service-ticket-review.tsx :388, services.tsx :128, settings.tsx :2024, technician-work.tsx
+  :140; `Technician` is imported in those plus service-completion-dialog.tsx :26. Settings → Technicians:
+  `TechnicianForm` :943 (state displayName / licenseId / status / email / phone / color / notes / userId; the
+  "Linked user" select :1011-1013 `select-technician-user` over `/api/users` through `selectableUsers`), the
+  card :3003-3047 (Add / Edit NOT gated by `canManageSettings` :2087, unlike every other card); the Users card
+  :3109 (Pass 37: `row-user-<id>`, `select-user-role-<id>`, `updateUserRoleMutation` :2037); technician-
+  work.tsx :112 / :140 / :445 / :600 / :887; schedule.tsx `technicianById` :1266, `visibleTechnicians` :1346
+  (active rows plus inactive ones holding visits), the colour dot :2081 (`technician.color || "#2563eb"` - the
+  ONLY reader of color), `assignedTo: technician.displayName` :1535 / :1827 (and a third, grep);
+  service-completion-dialog.tsx `defaultTechnicianId` :62 / :208 / :385, `technicianId:` :586. Renders of the
+  stored snapshot only (untouched by the merge): invoices.tsx :85, customer-detail.tsx :3450-3451, technician-
+  work.tsx :706, service-ticket-review.tsx :767-768, services.tsx :425, server/documents/service-report-pdf.ts
+  :200-201.
+- shared/: technician-preferences.ts (kinds / scopes :29-36, `resolveEffectivePreferences` :109 with a
+  `names(technicianId)` callback, codes :179-220), appointment-crew.ts (`AppointmentCrewMember` :23-25,
+  `SupportAssignment` :101-103), batch-invoice.ts (`technicianId` :23, `groupBatchInvoicePreview` :149 with a
+  label callback), users.ts (`userDisplayName` :8, `describeUserRole` :25 → the Pass 37 registry,
+  `selectableUsers` :34 filters `status === "active"`), permissions.ts (Pass 37: `BuiltInRole` :27, `UserRole =
+  string` :31, `PERMISSIONS` :33-127 (29), `ROLE_PERMISSIONS` :273, `BUILT_IN_ROLE_PROFILES` :346, the registry
+  :404-446), role-profiles.ts (`ROLE_PROFILE_SEED` :46, `deriveRoleProfileKey` :62, codes :84, `RoleProfileSummary`
+  :109), audit.ts (`role_profile` / `user` :66-67; `REVERTABLE_AUDIT_ENTITY_TYPES` :429).
+- Docs versus code, found by the inventory and left for you: the C5.7 row counts `production_value_entries`
+  among "every FK" (no FK - a snapshot, append-only; remap the ids in place or leave them) and its "license,
+  color, display name" leaves out email, phone, notes and status; roadmap :142 and :376 cite `technicians` at
+  `schema.ts:160-172` (it is :178-200); canon §16's field list names phone, hireDate, homeAddress,
+  licenseNumber, trainingStatus, serviceArea, forcePasswordReset and skills - NONE exist on users - and
+  `licenseNumber` where the code says `licenseId` / `technician_license_number`, and has no color or display
+  name; canon §12 (:1091-1093 pre-Pass 37) lists technicianId / technicianName / technicianLicenseNumber as
+  required on a ticket while 5 / 3 / 5 of 77 are null; PROJECT_MAP.md never mentions technicians and its
+  shared/ list omits users.ts, technician-preferences.ts and appointment-crew.ts; schema.ts :1360 `email
+  .unique()` versus the DB's lower(email) index (noted since Pass 36); the Technicians card's invalidation bug
+  (decision 4). Fix the ones your pass touches; list the rest.
+- Docs to carry: the C5.7 row (mark done with the as-built); A3 :142; Part E answer 2 :4525; canon §16 (the
+  User's fields as they exist after the merge, the technician block, the login / field status split; drop the
+  bridge notes :1695-1698 and rewrite :708-709 and :1044), canon §6 / §7 wherever `technicians.id` is named
+  (grep "technicians"); roadmap :142 / :376's drifted lines; PROJECT_MAP.md (the shared list, and the new or
+  changed bootstrap); a "Shipped in Pass 38" record; CURRENT_FOCUS's Pass 38 entry and "Next up" (C5.8 or
+  Phase 6 - the owner sequences; write the C5.8 handoff unless I say otherwise, since it is the only Phase 5
+  row left).
 
-Build per C5.6: (1) shared - `PERMISSION_LABELS` / `describePermission()`, the registry (or the subject form)
-in shared/permissions.ts, `shared/role-profiles.ts` (the key derivation, the error codes, the seed from
-ROLE_PERMISSIONS), the audit entity members; (2) schema + bootstrap - the two tables, the per-org seed of the
-four built-ins, tenancy registration, the registry filled at boot; (3) server - the role-profile routes
-(list / create / edit / clone / no delete), `PATCH /api/users/:id { role }`, the self-lockout and the
-in-use / last-settings-manager refusals, the audit rows, the direct role check converted, the registry refreshed
-on every write; (4) client - the Roles card (rows, Add / Edit with the permission checklist, Clone, Deactivate),
-the Users card with the profile select, `useAuth` filling the registry, the role-name copy sweep as decided;
-(5) docs as above. Not touched: the deferred ungated routes (unless you say so), password / invite flows, the
-technicians merge (C5.7), PLAN_BILLING_V1.md §0.3's unmodeled nuances.
+Build per C5.7: (1) shared - the users columns in schema.ts (and `insertUserSchema`), a `TechnicianSummary`
+projection (or the `Technician` type re-pointed at it), the technician-status vocabulary and labelers in a
+shared module, the 30th permission if taken (labels / description / group / `ROLE_PERMISSIONS`); (2) the
+migration - a new bootstrap step (in service-scheduling-bootstrap.ts after the technicians table, or its own
+file called before it drops - say which): the users columns, the users rows minted per unlinked technician
+(same id) or the remap per linked one, the five constraints moved, the table dropped (or the view created),
+each step printed and self-guarding, plus the seeded-profile grant for the new permission; (3) server - the
+technician facade in storage, `POST /api/users` and the extended `PATCH /api/users/:id`, the `/api/technicians`
+routes' fate, the work route's session check, the audit rows (`user` `created` / `update` carry the technician
+fields; the snapshot never carries the hash); (4) client - the Users card absorbing the Technicians card (the
+technician block, the status, the colour), the Tech View's session default, the stale-key fix; (5) docs as above.
+Not touched: the password / invite flow, the audit JSON, the snapshot text columns, the client's `Technician`
+type sweep (the facade keeps the shape), Smart Schedule.
 
 Environment: Node 24.21.0, npm run dev:full (restart it before manually testing), DEV_NOTES.md for the DB
 backup / restore, the copy-database recipe and the PowerShell traps, gh logged in so the session can open the
-PR. Verify on PORT=5001 as the previous passes did: this pass ADDS TABLES and a per-org seed (and a users
-column under design B) - use the copy-database recipe (USE_COPY=1 in boot.sh: pg_dump, CREATE DATABASE
-pestflow_verify, restore, boot, PGDB=pestflow_verify for the smoke, DROP afterwards; rebuild counts.sql from
-pg_tables on the COPY after boot 1 so the new tables are counted); the previous session's scratchpad
+PR. Verify on PORT=5001 as the previous passes did: this pass ADDS COLUMNS, MOVES CONSTRAINTS and DROPS A TABLE -
+use the copy-database recipe (USE_COPY=1 in boot.sh: pg_dump, CREATE DATABASE pestflow_verify, restore, boot,
+PGDB=pestflow_verify for the smoke, DROP afterwards; rebuild counts.sql from pg_tables on the COPY after boot 1
+so the dropped table leaves the list and the diff is by name); the previous session's scratchpad
 (C:/Users/Austin/AppData/Local/Temp/claude/c--Dev-PestFlow/<session>/scratchpad - find the kit with `grep -l
-smoke36 */scratchpad/*`, not by mtime; it holds patch.cjs (absolute === FILE paths), boot.sh (re-point its S=
-line), stop.sh, counts.sql, smoke36.mts, replace-handoff.cjs, pass37-inventory.md) is the starting kit. In a
-smoke test send `Connection: close` on every fetch, derive the cleanup from the DB by the fixture email, and
-clean a hard-deleted entity's audit rows by the customerId its snapshots carry. npm run check; double boot
-(boot 1 prints the two tables and the four seed rows per org, boot 2 prints only "serving on port 5001" with
-every table count unchanged); the pass's API smoke test as all four roles (the seeded matrix equal to
-ROLE_PERMISSIONS for every permission and role - a parity check through `await import(pathToFileURL(...))` of
-shared/permissions.ts against GET /api/role-profiles; the list open to every role, the writes 403 for tech /
-support / manager; a clone of the support profile with REVERT_HISTORY added, a fixture user (insert by SQL with
-a known password hash, or reuse tech@heritage.local and restore its role in the finally) assigned to it, the
-revert route 403 → 200 on the NEXT request without re-login; the self-lockout 409 on the admin's own profile
-and on the admin's own assignment; the in-use 409 and, if built, the last-settings-manager 409; a built-in's
-delete 405 / rename 200; the audit rows (`role_profile` created / update with the permission arrays, `user`
-update with role before / after); the converted instructions lock still 403 for the technician profile and
-for a clone of it; the fixture profile and user rows deleted, counts back at baseline) and a Vite 200 on every
-touched client module; state plainly what was not rendered - the Roles and Users cards, the permission
-checklist, the clone form and every refusal toast cannot be judged without a browser.
+smoke37 */scratchpad/*`, not by mtime; it holds patch.cjs (absolute === FILE paths), boot.sh (re-point its S=
+line), stop.sh, counts.sql (51 tables), smoke37.mts (its section 11 shows how a smoke imports server/storage.ts
+against the copy with DATABASE_URL set before the dynamic import and `pool.end()` in the finally),
+replace-handoff.cjs (update its intro lines), sweep-settings.cjs (a counted replace-all for identical lines the
+patcher cannot disambiguate), pass38-inventory.md) is the starting kit. In a smoke test send `Connection:
+close` on every fetch, derive the cleanup from the DB by the fixture email, and clean a hard-deleted entity's
+audit rows by the customerId its snapshots carry. npm run check; double boot (boot 1 prints the minted users,
+the remaps, the five constraint moves and the drop - or the view -, boot 2 prints only "serving on port 5001"
+with every table count unchanged by name); the pass's API smoke test as all four roles (before the boot,
+snapshot per technician id the counts above - services 74 / 31, appointments 77 / 41, service_records 53 / 19,
+crew 78 / 41, preferences 3 / 0, ledger 42 / 17 - and assert them unchanged under the same ids after the
+migration; the users rows minted with the technician columns, status inactive, role technician, a hash that
+cannot log in (POST /api/auth/login 401); the five FKs now reference users (pg_constraint confrelid =
+users); the technicians table gone (or the view answering) and `GET /api/technicians` as every role answering
+the same two rows in the old shape plus Heritage Tech if decision 6 is taken; the technician page's reads
+(`GET /api/technicians/:id/work`) for the session technician 200 and for another technician 403 without the
+new permission / 200 for support; `POST /api/users` as admin 201 and 403 for the rest, the extended PATCH
+writing the technician block with its `user` audit rows; the Settings reads the merged card makes; a fixture
+user created and deleted, counts back at baseline) and a Vite 200 on every touched client module; state
+plainly what was not rendered - the merged Users card, the technician block, the Tech View's default and
+every refusal toast cannot be judged without a browser.
 
 Working agreement as always: one pass, one branch, update CURRENT_FOCUS and the roadmap's pass table at the
-end, replace the handoff prompt at the end of CURRENT_FOCUS.md with the one for the next pass (phase order:
-Pass 38, C5.7, unless I say otherwise), push, open the PR and stop. I merge.
+end, replace the handoff prompt at the end of CURRENT_FOCUS.md with the one for the next pass (C5.8 unless I
+say otherwise), push, open the PR and stop. I merge.
 ```

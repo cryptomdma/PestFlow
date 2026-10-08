@@ -12,7 +12,7 @@ import { apiRequest, getApiErrorMessage } from "@/lib/queryClient";
 import { invalidateInvoiceViews } from "@/lib/invalidate-invoice-views";
 import { VisitBillingRows, VisitInitialChargeCallout, useVisitBillingSummary, type VisitBillingDraftPrice } from "@/components/visit-billing-summary";
 import type { RecordPaymentResponse } from "@/components/record-payment-dialog";
-import { can, PERMISSIONS } from "@shared/permissions";
+import { can, describePermissionHolders, PERMISSIONS } from "@shared/permissions";
 import { centsToDollarString, dollarsToCents, formatCents } from "@shared/money";
 import { MANUAL_PAYMENT_METHODS, formatPaymentMethod } from "@shared/payments";
 import { technicianCollectibleCents } from "@shared/visit-billing";
@@ -26,7 +26,8 @@ import { FileText } from "lucide-react";
 // amount to what is due today, and records the collection through
 // POST /api/payments - PENDING, unapplied, designated to the visit's
 // agreement as intent (D4). The field never applies money to an invoice; the
-// office does (APPLY_PAYMENT), and cash is confirmed only by a manager (D5).
+// office does (APPLY_PAYMENT), and cash is confirmed only by a role holding
+// CONFIRM_CASH_PAYMENT - the built-in manager and admin (D5; Pass 37 profiles).
 // Card / ACH wait for Phase 2. Signatures and a printable customer copy are
 // not built.
 
@@ -257,7 +258,7 @@ export function CollectPaymentDialog({
                 </p>
               )}
               <p className="text-xs text-muted-foreground">
-                Cash, check or other only. Posts as pending until the office confirms it; cash is confirmed by a manager.
+                Cash, check or other only. Posts as pending until the office confirms it; cash is confirmed by {describePermissionHolders(PERMISSIONS.CONFIRM_CASH_PAYMENT)}.
               </p>
               <Button type="submit" className="h-11 w-full" variant={hasAmount ? "default" : "outline"} disabled={!canRecord} data-testid="button-collect-record">
                 {mutation.isPending ? "Recording..." : "Record Payment"}

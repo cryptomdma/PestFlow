@@ -49,6 +49,8 @@ const TABLES_REQUIRING_ORG_ID = [
   "communications",
   "users",
   "audit_logs",
+  "role_profiles",
+  "role_profile_permissions",
 ] as const;
 
 export async function bootstrapTenancy(): Promise<void> {

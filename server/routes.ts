@@ -31,7 +31,7 @@ import {
 import { ZodError, z } from "zod";
 import type { Request } from "express";
 import { requirePermission } from "./auth";
-import { AgreementTypeError, AppointmentCrewError, AppointmentDispositionError, BillingDefaultsError, BillingProfileError, ContactError, DispatchBoardSettingsError, DraftInvoiceDecisionRequiredError, HistoryRevertError, OpportunityAssignmentError, PlacementRefusedError, PrefinalizationIssueError, ServiceCompositionError, ServiceKindError, StatementRefusedError, TechnicianPreferenceError, TicketEditError, TicketLockedError, TicketReopenError, VisitBillingDraftError } from "./storage";
+import { AgreementTypeError, AppointmentCrewError, AppointmentDispositionError, BillingDefaultsError, BillingProfileError, ContactError, DispatchBoardSettingsError, DraftInvoiceDecisionRequiredError, HistoryRevertError, OpportunityAssignmentError, PlacementRefusedError, PrefinalizationIssueError, RoleProfileError, ServiceCompositionError, ServiceKindError, StatementRefusedError, TechnicianPreferenceError, TicketEditError, TicketLockedError, TicketReopenError, VisitBillingDraftError } from "./storage";
 import { HISTORY_REVERT_CODES, type RevertableAuditEntityType } from "@shared/audit";
 import {
   MAX_EXCLUSION_OVERRIDE_REASON_LENGTH,
@@ -43,7 +43,8 @@ import { SERVICE_WORK_KINDS } from "@shared/service-kind";
 import { isUtcDay, statementFileName } from "@shared/statements";
 import { APPOINTMENT_DISPOSITION_MODES, DISPOSITION_OPPORTUNITY_CHOICES } from "@shared/appointment-disposition";
 import { COMPOSITION_ORIGINS } from "@shared/appointment-composition";
-import { can, PERMISSIONS, type UserRole } from "@shared/permissions";
+import { can, describePermissionHolders, PERMISSIONS, type UserRole } from "@shared/permissions";
+import { ROLE_PROFILE_DESCRIPTION_MAX_LENGTH, ROLE_PROFILE_ERROR_CODES, ROLE_PROFILE_KEY_MAX_LENGTH, ROLE_PROFILE_NAME_MAX_LENGTH } from "@shared/role-profiles";
 import { INVOICE_ON_FINALIZE_MODES, normalizeInvoiceOnFinalizeMode } from "@shared/invoice-on-finalize";
 import { normalizeAttachServiceReport } from "@shared/service-report";
 import {
@@ -602,6 +603,39 @@ export async function registerRoutes(
     res.status(e.status).json({ code: e.code, message: e.message });
     return true;
   };
+  // Pass 37 (C5.6; B16): role profiles (shared/role-profiles.ts). Strict
+  // bodies; the key is never in a body (derived from the name on create and
+  // clone, fixed after); `permissions` is validated against the list by
+  // storage (400 ROLE_PROFILE_PERMISSION_UNKNOWN with the value named). The
+  // acting user's own role key and id ride along for the self-lockout rule.
+  const roleProfilePermissionListSchema = z.array(z.string().trim().min(1).max(64)).max(200);
+  // The name is trimmed and refused blank by storage (400
+  // ROLE_PROFILE_NAME_REQUIRED, a code the card can read) rather than by zod.
+  const roleProfileCreateSchema = z.object({
+    name: z.string().max(ROLE_PROFILE_NAME_MAX_LENGTH),
+    description: z.string().trim().max(ROLE_PROFILE_DESCRIPTION_MAX_LENGTH).nullable().optional(),
+    permissions: roleProfilePermissionListSchema,
+    isActive: z.boolean().optional(),
+    sortOrder: z.number().int().optional(),
+  }).strict();
+  const roleProfileUpdateSchema = z.object({
+    name: z.string().max(ROLE_PROFILE_NAME_MAX_LENGTH).optional(),
+    description: z.string().trim().max(ROLE_PROFILE_DESCRIPTION_MAX_LENGTH).nullable().optional(),
+    permissions: roleProfilePermissionListSchema.optional(),
+    isActive: z.boolean().optional(),
+    sortOrder: z.number().int().optional(),
+  }).strict();
+  const roleProfileCloneSchema = z.object({
+    name: z.string().max(ROLE_PROFILE_NAME_MAX_LENGTH),
+    description: z.string().trim().max(ROLE_PROFILE_DESCRIPTION_MAX_LENGTH).nullable().optional(),
+  }).strict();
+  const userRoleSchema = z.object({ role: z.string().trim().min(1).max(ROLE_PROFILE_KEY_MAX_LENGTH) }).strict();
+  const respondRoleProfileError = (res: any, e: unknown): boolean => {
+    if (!(e instanceof RoleProfileError)) return false;
+    res.status(e.status).json({ code: e.code, message: e.message });
+    return true;
+  };
+  const roleProfileWriteContext = (req: Request) => ({ actor: getAuditActor(req), actorRole: req.user!.role, actorUserId: req.user!.id });
   const cancellationFeeTypeSchema = z.enum(["NONE", "FLAT", "PERCENT_CONTRACT", "PERCENT_REMAINING", "MANUAL"]);
   const cancellationEffectiveDateModeSchema = z.enum(["IMMEDIATE", "END_OF_TERM", "CUSTOM"]);
   const agreementCancellationPolicySchema = insertAgreementCancellationPolicySchema.omit({
@@ -1513,7 +1547,7 @@ export async function registerRoutes(
       if (plan.entityType === "agreement" && payload.soldByUserId !== undefined) {
         const currentSoldBy = (plan.current as { soldByUserId?: string | null }).soldByUserId ?? null;
         if ((payload.soldByUserId ?? null) !== currentSoldBy && !can(req.user!.role, PERMISSIONS.ASSIGN_SALE_CREDIT)) {
-          return res.status(403).json({ message: "Only a manager or admin can change who gets credit for this sale" });
+          return res.status(403).json({ message: `Only ${describePermissionHolders(PERMISSIONS.ASSIGN_SALE_CREDIT)} can change who gets credit for this sale` });
         }
       }
       const result = await req.storage.revertAuditLogEntry({
@@ -1603,6 +1637,84 @@ export async function registerRoutes(
   // roles and status only - the password hash never leaves the storage.
   app.get("/api/users", async (req, res) => {
     res.json(await req.storage.getUsers());
+  });
+
+  // Pass 37 (C5.6): assign a user a role profile - the one users write
+  // route. MANAGE_SETTINGS; the role must be an ACTIVE profile key of the
+  // org (400 ROLE_PROFILE_UNKNOWN); the acting user cannot move THEMSELVES
+  // to a profile without Manage Settings (409 ROLE_PROFILE_SELF_LOCKOUT).
+  // Takes effect on the user's next request (deserializeUser re-reads the
+  // row). No create, password or status flow here - those are the auth
+  // bootstrap's (server/auth-bootstrap.ts) until a later pass.
+  app.patch("/api/users/:id", requirePermission(PERMISSIONS.MANAGE_SETTINGS), async (req, res) => {
+    try {
+      const validated = userRoleSchema.parse(req.body);
+      const data = await req.storage.updateUserRole(req.params.id, validated.role, roleProfileWriteContext(req));
+      if (!data) return res.status(404).json({ code: ROLE_PROFILE_ERROR_CODES.USER_NOT_FOUND, message: "User not found" });
+      res.json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      if (respondRoleProfileError(res, e)) return;
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  // Pass 37 (C5.6; B16): the org's role profiles. Read by everyone (the
+  // Users card's select and the refusal copy need the names; every read is
+  // open); every write MANAGE_SETTINGS. Storage's refusals carry a code:
+  // ROLE_PROFILE_NAME_REQUIRED / _KEY_INVALID / _KEY_TAKEN /
+  // _PERMISSION_UNKNOWN (400), _IN_USE / _SELF_LOCKOUT /
+  // _LAST_SETTINGS_MANAGER (409), _NOT_FOUND (404). No DELETE: a profile is
+  // made inactive once no user holds it, and a built-in is never removed
+  // (405 says so). Every write refreshes the server's permission registry,
+  // and the client re-reads /api/auth/me for its own.
+  app.get("/api/role-profiles", async (req, res) => {
+    const includeInactive = req.query.includeInactive === "true";
+    res.json(await req.storage.getRoleProfiles(includeInactive));
+  });
+
+  app.post("/api/role-profiles", requirePermission(PERMISSIONS.MANAGE_SETTINGS), async (req, res) => {
+    try {
+      const validated = roleProfileCreateSchema.parse(req.body);
+      const data = await req.storage.createRoleProfile(validated, roleProfileWriteContext(req));
+      res.status(201).json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      if (respondRoleProfileError(res, e)) return;
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.patch("/api/role-profiles/:id", requirePermission(PERMISSIONS.MANAGE_SETTINGS), async (req, res) => {
+    try {
+      const validated = roleProfileUpdateSchema.parse(req.body);
+      const data = await req.storage.updateRoleProfile(req.params.id, validated, roleProfileWriteContext(req));
+      if (!data) return res.status(404).json({ code: ROLE_PROFILE_ERROR_CODES.NOT_FOUND, message: "Role profile not found" });
+      res.json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      if (respondRoleProfileError(res, e)) return;
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/role-profiles/:id/clone", requirePermission(PERMISSIONS.MANAGE_SETTINGS), async (req, res) => {
+    try {
+      const validated = roleProfileCloneSchema.parse(req.body);
+      const data = await req.storage.cloneRoleProfile(req.params.id, validated, roleProfileWriteContext(req));
+      if (!data) return res.status(404).json({ code: ROLE_PROFILE_ERROR_CODES.NOT_FOUND, message: "Role profile not found" });
+      res.status(201).json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      if (respondRoleProfileError(res, e)) return;
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.delete("/api/role-profiles/:id", (_req, res) => {
+    res.status(405).json({
+      message: "Role profiles are never deleted - make the profile inactive instead (move its users first); the four built-in profiles can be renamed and edited but not removed",
+    });
   });
 
   // Technicians
@@ -1954,7 +2066,7 @@ export async function registerRoutes(
         const existing = await req.storage.getOpportunity(req.params.id);
         if (!existing) return res.status(404).json({ message: "Opportunity not found" });
         if ((validated.assignedUserId ?? null) !== (existing.assignedUserId ?? null) && !can(req.user!.role, PERMISSIONS.ASSIGN_OPPORTUNITY)) {
-          return res.status(403).json({ message: "Only support, a manager or an admin can assign an opportunity" });
+          return res.status(403).json({ message: `Only ${describePermissionHolders(PERMISSIONS.ASSIGN_OPPORTUNITY)} can assign an opportunity` });
         }
       }
       const data = await req.storage.updateOpportunity(req.params.id, validated, getAuditActor(req));
@@ -2277,7 +2389,7 @@ export async function registerRoutes(
       // assignment, and needs ASSIGN_SALE_CREDIT like a later change does.
       const requestedSoldBy = validated.agreement.soldByUserId;
       if (requestedSoldBy !== undefined && requestedSoldBy !== req.user!.id && !can(req.user!.role, PERMISSIONS.ASSIGN_SALE_CREDIT)) {
-        return res.status(403).json({ message: "Only a manager or admin can credit a sale to someone else" });
+        return res.status(403).json({ message: `Only ${describePermissionHolders(PERMISSIONS.ASSIGN_SALE_CREDIT)} can credit a sale to someone else` });
       }
       const data = await req.storage.createAgreementFromTemplate({
         agreementTemplateId: validated.agreementTemplateId ?? null,
@@ -2305,7 +2417,7 @@ export async function registerRoutes(
         const existing = await req.storage.getAgreement(req.params.id);
         if (!existing) return res.status(404).json({ message: "Agreement not found" });
         if ((validated.soldByUserId ?? null) !== (existing.soldByUserId ?? null) && !can(req.user!.role, PERMISSIONS.ASSIGN_SALE_CREDIT)) {
-          return res.status(403).json({ message: "Only a manager or admin can change who gets credit for this sale" });
+          return res.status(403).json({ message: `Only ${describePermissionHolders(PERMISSIONS.ASSIGN_SALE_CREDIT)} can change who gets credit for this sale` });
         }
       }
       const data = await req.storage.updateAgreement(req.params.id, validated, getAuditActor(req));

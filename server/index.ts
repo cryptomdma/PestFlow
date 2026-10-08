@@ -10,6 +10,7 @@ import { bootstrapCanonicalNotes, bootstrapCanonicalNoteTables } from "./note-bo
 import { bootstrapAgreements } from "./agreement-bootstrap";
 import { bootstrapServiceSchedulingFoundation } from "./service-scheduling-bootstrap";
 import { bootstrapAuth } from "./auth-bootstrap";
+import { bootstrapRoleProfiles } from "./role-profile-bootstrap";
 import { setupAuth, registerAuthRoutes, requireAuth, attachOrgStorage } from "./auth";
 import { bootstrapOrganizations } from "./org-bootstrap";
 import { bootstrapTenancy } from "./tenancy-bootstrap";
@@ -88,6 +89,10 @@ app.use((req, res, next) => {
   // its Heritage default before they run. No-op on an established database.
   await bootstrapTenancy().catch((e) => console.error("Tenancy bootstrap (early) error:", e));
   await bootstrapAuth().catch((e) => console.error("Auth bootstrap error:", e));
+  // Pass 37 (C5.6): the role-profile tables, the per-org seed of the four
+  // built-in profiles and the permission registry can() reads - before any
+  // route is served (raw SQL only; the tables carry org_id from creation).
+  await bootstrapRoleProfiles().catch((e) => console.error("Role profile bootstrap error:", e));
   setupAuth(app);
   registerAuthRoutes(app);
   app.use("/api", requireAuth, attachOrgStorage);

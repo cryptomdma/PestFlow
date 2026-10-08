@@ -6,7 +6,7 @@ import type { Express, RequestHandler } from "express";
 import { pool } from "./db";
 import { userStorage, createOrgScopedStorage, type IStorage } from "./storage";
 import { verifyPassword } from "./password";
-import { can, type Permission } from "@shared/permissions";
+import { can, getPermissionMatrix, type Permission } from "@shared/permissions";
 import type { User } from "@shared/schema";
 
 declare global {
@@ -104,8 +104,12 @@ export const attachOrgStorage: RequestHandler = (req, res, next) => {
   next();
 };
 
-// Must run after requireAuth. 403s if the logged-in user's role doesn't
-// carry the given permission - see shared/permissions.ts for the matrix.
+// Must run after requireAuth. 403s if the logged-in user's role profile
+// doesn't carry the given permission - `req.user.role` is a role profile's
+// key and can() reads the registry server/role-profile-bootstrap.ts fills
+// (Pass 37, C5.6). deserializeUser re-reads the users row on every request,
+// so a profile edit or a reassignment takes effect on the user's next
+// request without a new login.
 export function requirePermission(permission: Permission): RequestHandler<any> {
   return (req, res, next) => {
     if (!req.user || !can(req.user.role, permission)) {
@@ -128,7 +132,10 @@ export function registerAuthRoutes(app: Express) {
 
         req.logIn(user, (loginErr) => {
           if (loginErr) return next(loginErr);
-          return res.json(user);
+          // Pass 37 (C5.6): the org's role profiles ride along so the
+          // client fills its permission registry before its first render
+          // (client/src/hooks/use-auth.ts) - the same shape /api/auth/me answers.
+          return res.json({ ...user, roleProfiles: getPermissionMatrix() });
         });
       },
     )(req, res, next);
@@ -149,6 +156,10 @@ export function registerAuthRoutes(app: Express) {
       return res.status(401).json({ message: "Not authenticated" });
     }
 
-    res.json(req.user);
+    // Pass 37 (C5.6): the user plus `roleProfiles` - the org's active role
+    // profiles (key, name, order, permissions) as the server's registry holds
+    // them, so the client's can() reads the same matrix. Refetched when the
+    // Roles / Users cards write (they invalidate this read).
+    res.json({ ...req.user, roleProfiles: getPermissionMatrix() });
   });
 }

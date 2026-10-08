@@ -37,7 +37,15 @@
  *  trail; opportunity categories, zones and service types still have none).
  *  Org-wide, no location: read by entityType + entityId like the templates';
  *  never revertable (REVERTABLE_AUDIT_ENTITY_TYPES leaves it out - a merge
- *  is undone by hand, a rename by renaming). */
+ *  is undone by hand, a rename by renaming).
+ *  `role_profile` and `user` joined in Pass 37 (C5.6): a role profile
+ *  created (a clone's row names its source under `clonedFrom`), edited or
+ *  made inactive writes `created` / `update` with the permission list in
+ *  both snapshots (declaration order, so the diff names what moved); a
+ *  user's profile assignment writes `update` on the user with `role` before
+ *  and after - the first `user` rows; the snapshot never carries the
+ *  password hash. Org-wide like the types; neither is revertable - a
+ *  permission change is undone by hand on the Roles card. */
 export type AuditEntityType =
   | "customer"
   | "location"
@@ -54,7 +62,9 @@ export type AuditEntityType =
   | "agreement_template"
   | "agreement_type"
   | "opportunity"
-  | "appointment";
+  | "appointment"
+  | "role_profile"
+  | "user";
 
 /** One member per mutation in D7's Phase 1 scope list, plus the pre-existing
  *  `update` written by `updateLocationProfile()` (and, since Pass 8, by
@@ -163,7 +173,8 @@ export type AuditEntityType =
  *  source row (extractAuditRevertedRef; the key is on the diff's ignore list
  *  so it never reads as a field change). Which rows may be reverted is
  *  describeAuditRevertability below; who may is REVERT_HISTORY
- *  (shared/permissions.ts, manager+ until C5.6).
+ *  (shared/permissions.ts - the built-in manager and admin profiles hold it;
+ *  since Pass 37 any profile the office gives it to does).
  *  `agreement_type_merged` (Pass 35, C5.3): one agreement type was merged
  *  into another from Settings (POST /api/agreement-types/:id/merge) - the
  *  source type's own row, before = the source as it was, after = the source
@@ -227,6 +238,8 @@ const ENTITY_TYPE_LABELS: Record<AuditEntityType, string> = {
   agreement_type: "Agreement type",
   opportunity: "Opportunity",
   appointment: "Appointment",
+  role_profile: "Role profile",
+  user: "User",
 };
 
 const ACTION_LABELS: Record<AuditAction, string> = {
