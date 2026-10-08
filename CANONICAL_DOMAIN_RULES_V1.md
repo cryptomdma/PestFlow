@@ -222,6 +222,20 @@ For commercial:
 * on-site contact = Contact
 * billing/AP contact = Contact
 
+### Canonical rule — one primary contact per location (PLAN_ROADMAP_V2.md C5.4; Pass 36)
+
+A location with contacts has **exactly one** primary contact. The first contact of a location is
+primary whatever the form said (`createContact`); making another contact primary demotes the current
+one in the same transaction, one audit row each (Pass 32, `auditDemotedContactsTx`); and the current
+primary is **never made non-primary on its own** - a contact update that would leave the location
+with no primary is refused (400 `CONTACT_PRIMARY_REQUIRED`, `shared/contacts.ts`), on the contact
+dialog (its "Make primary contact" box is disabled on the current primary, with the note) and on the
+server, where a History revert of a promotion row goes through the same write path and is refused the
+same way - the row to revert is the other contact's. The one way to change who is primary is to
+promote the other contact (the dialog's checkbox, or `POST /api/contacts/:id/set-primary` for an API
+caller - the route promotes only). Before Pass 36 nothing enforced this and the dialog could leave a
+location with none.
+
 ---
 
 ## 4. BillingProfile
@@ -482,6 +496,14 @@ Agreement scheduling modes:
 * `AUTO_ELIGIBLE` - generated Services can enter a future auto-scheduling pool, but are still pending Services until placed
 * `CONTACT_REQUIRED` - generated Services require office/customer contact and create linked Opportunities
 * `MANUAL` - generated Services are manually scheduled without contact automation assumptions
+
+The mode is one shared vocabulary (`shared/agreement-types.ts` `SCHEDULING_MODES`, read by the server's
+enum and every client surface since Pass 36 / PLAN_ROADMAP_V2.md C5.4) and is shown as **"Scheduling:
+auto-eligible" / "Scheduling: contact required" / "Scheduling: manual"** on the pending dispatch queue
+and the Settings template row, "Auto-eligible / Contact required / Manual" on the agreement card and
+the two form selects - never the raw enum, and never a promise: no auto-scheduling exists today (Smart
+Schedule is Phase 9), so AUTO_ELIGIBLE means "may enter a future pool, pending until someone places it",
+and CONTACT_REQUIRED is the one mode the server acts on (the contact Opportunity below).
 
 Contact-required agreement Opportunities are distinct from non-contract follow-up Opportunities. They must link back to the generated Service and Agreement cycle where possible.
 

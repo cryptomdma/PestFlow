@@ -26,6 +26,7 @@ Product owner feedback from hands-on testing — notes for the dev to review, qu
   - Prevents generating/sending invoices with unapplied payments.
 - [ ] **FB-002 — Widen viewport**
   - Currently requires horizontal scroll.
+  > **Review (2026-10-07):** QUALIFIED — agreed in principle; not built in Pass 36, which touched this page for C5.4's links (the owner's word: build only FB-010). What exists today: the page is full width (`p-4 sm:p-6`, no max-width), the queue row is a five-column grid from `md` up (a `div[role=button]` since Pass 36), and the review modal is `sm:max-w-3xl` with vertical scroll only. Which element scrolls sideways has not been rendered by any session - the modal's billing table and the materials rows are the candidates - so the pass needs the surface named and your screen width. Roadmap: `PLAN_ROADMAP_V2.md` Phase 3 table, new row **C3.8**, unscheduled - you sequence it.
 
 ## Agreement Templates
 
@@ -62,7 +63,6 @@ Product owner feedback from hands-on testing — notes for the dev to review, qu
   - Optionally applied through service templates.
   - Callback (and possibly Follow-up) should require service and insect attribution for reporting.
     - e.g. Callback report — analyze by service, insect, technician, and other key categories.
-- [ ] **FB-010 — Widen modal viewport**
 
 ## Aging Report
 
@@ -83,13 +83,16 @@ Product owner feedback from hands-on testing — notes for the dev to review, qu
 - [ ] **FB-013 — Tag tech-canceled appointments**
   - Canceled-by-tech should carry a tag/pill on the `PENDING_SCHEDULING` line indicating it's a canceled appointment.
   - Increases visibility for support and prevents accidental reschedule.
+  > **Review (2026-10-07):** ACCEPTED — not built in Pass 36, which touched the queue row for C5.4's links and humanized only the scheduling-mode badge beside the name (the owner's word: build only FB-010). The data exists: `services.lastAppointmentId` points at the placement the service came off, whose `rescheduleRequested` / `cancelRequestedByLabel` say whether it was a field reschedule or cancel, and the Services tab already reads "Rescheduling" from it; the queue still prints the raw `PENDING_SCHEDULING` badge. Roadmap: `PLAN_ROADMAP_V2.md` Phase 4 table, new row **C4.7** (with FB-014 and FB-015), unscheduled - you sequence it.
 
 ## Appointment Details
 
 - [ ] **FB-014 — Remove (or lock) technician and date/time range**
   - These changes should go through the reschedule function.
+  > **Review (2026-10-07):** ACCEPTED — not built in Pass 36, which touched the sheet's header for C5.4's links and left the technician select, Scheduled Start / End and the Lock switches as they were. Locking them behind Reschedule (the one disposition path since Pass 27) is roadmap **C4.7**; FB-019's note stands - the preferred-technician reminder moves with the technician change.
 - [ ] **FB-015 — "Add Service" button**
   - Expands/shows the Add Service section (or opens a modal) rather than showing it by default.
+  > **Review (2026-10-07):** ACCEPTED — not built in Pass 36 (same sheet, not the C5.4 row). The add block (`sheet-add-service`) is always open today; collapsing it behind an "Add Service" button is roadmap **C4.7** with FB-013 and FB-014.
 
 ## Target Pests
 
@@ -112,6 +115,8 @@ Product owner feedback from hands-on testing — notes for the dev to review, qu
 
 ## Archive
 
+- [x] **FB-010 — Widen modal viewport** (New Service)
+  > **Review (2026-10-07):** DONE — Pass 36, `feature/phase-5-ui-hygiene` (roadmap C5.4, its last item). The New Service dialog is `max-w-2xl` - the width of the customer screen's Service Details dialog - instead of the component's default `max-w-lg`; the same dialog serves Edit Service, so both widened. Not rendered in a browser - please check the form on your screen after `npm run dev:full` restarts.
 - [x] **FB-021 - Schedule board view changes** (owner, 2026-10-04, while PR #103 was open)
   - User shouldbe able to view a full day without scrolling, even in smallest interview view. The view port is currently very narrow, and could easily been widened for functionality.
   - Move non-static reporting modals to the bottom, or completely remove them. The prev/next, today, jump to date, window, etc buttons should not move. This makes the scheduler difficult to use. Do the same for the CLEAR SELECTION box, it should reside below the dispatch board, not on top.

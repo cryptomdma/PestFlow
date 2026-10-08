@@ -41,7 +41,8 @@ import {
   type LocationBillingProjection,
 } from "@shared/billing-profile-defaults";
 import { describeInvoiceTerms } from "@shared/invoice-detail";
-import { AGREEMENT_UNITS, AGREEMENT_UNIT_LABELS, describeAgreementCadence, describeAgreementType, type AgreementTypeUsage } from "@shared/agreement-types";
+import { AGREEMENT_UNITS, AGREEMENT_UNIT_LABELS, SCHEDULING_MODES, SCHEDULING_MODE_LABELS, describeAgreementCadence, describeAgreementType, describeSchedulingModeLabel, type AgreementTypeUsage } from "@shared/agreement-types";
+import { CONTACT_PRIMARY_LOCKED_NOTE } from "@shared/contacts";
 import { cn } from "@/lib/utils";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { OpportunityDispositionDialog } from "@/components/opportunity-disposition-dialog";
@@ -1543,6 +1544,9 @@ function ContactDialogForm({
       });
 
       await queryClient.invalidateQueries({ queryKey: ["/api/contacts/by-location", locationId] });
+      // Pass 36 (C5.4): the account-wide read feeds the location switcher's contact label
+      // (primaryContactNameByLocationId) - a primary change left it stale before this pass.
+      await queryClient.invalidateQueries({ queryKey: ["/api/contacts", customerId] });
       await queryClient.invalidateQueries({ queryKey: ["/api/location-counts", locationId] });
       invalidateAuditViews();
       toast({ title: isEditMode ? "Contact updated" : "Contact added" });
@@ -1551,11 +1555,15 @@ function ContactDialogForm({
     onError: (error: Error) => {
       toast({
         title: isEditMode ? "Error updating contact" : "Error adding contact",
-        description: error.message,
+        description: getApiErrorMessage(error),
         variant: "destructive",
       });
     },
   });
+  // Pass 36 (C5.4): a location keeps one primary contact (shared/contacts.ts). Editing the
+  // current primary cannot uncheck it - the server refuses the demotion too
+  // (CONTACT_PRIMARY_REQUIRED); promoting another contact from its own dialog demotes this one.
+  const primaryLocked = isEditMode && !!contact?.isPrimary;
   return (
     <form onSubmit={(e) => { e.preventDefault(); mutation.mutate(form); }} className="space-y-4">
       <div className="grid grid-cols-2 gap-3">
@@ -1580,10 +1588,13 @@ function ContactDialogForm({
         </div>
         <div className="space-y-1.5"><Label>Role</Label><Input placeholder="e.g., Property Manager" value={form.role} onChange={(e) => setForm(p => ({ ...p, role: e.target.value }))} /></div>
       </div>
-      <label className="flex items-center gap-2 text-sm">
-        <input type="checkbox" checked={form.isPrimary} onChange={(e) => setForm((p) => ({ ...p, isPrimary: e.target.checked }))} />
-        Make primary contact
-      </label>
+      <div className="space-y-1">
+        <label className={`flex items-center gap-2 text-sm ${primaryLocked ? "text-muted-foreground" : ""}`}>
+          <input type="checkbox" checked={form.isPrimary} disabled={primaryLocked} onChange={(e) => setForm((p) => ({ ...p, isPrimary: e.target.checked }))} data-testid="checkbox-contact-primary" />
+          {primaryLocked ? "Primary contact" : "Make primary contact"}
+        </label>
+        {primaryLocked ? <p className="text-xs text-muted-foreground" data-testid="text-contact-primary-locked">{CONTACT_PRIMARY_LOCKED_NOTE}</p> : null}
+      </div>
       <div className="flex justify-end gap-2"><Button type="button" variant="outline" onClick={onClose}>Cancel</Button><Button type="submit" disabled={mutation.isPending} data-testid="button-save-contact">{mutation.isPending ? "Saving..." : isEditMode ? "Save Changes" : "Add Contact"}</Button></div>
     </form>
   );
@@ -2471,11 +2482,9 @@ function AgreementForm({
             <div className="space-y-1.5">
               <Label>Scheduling Mode</Label>
               <Select value={form.schedulingMode} onValueChange={(value) => setForm((prev) => ({ ...prev, schedulingMode: value }))}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectTrigger data-testid="select-agreement-scheduling-mode"><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="AUTO_ELIGIBLE">Auto Eligible</SelectItem>
-                  <SelectItem value="CONTACT_REQUIRED">Contact Required</SelectItem>
-                  <SelectItem value="MANUAL">Manual</SelectItem>
+                  {SCHEDULING_MODES.map((mode) => <SelectItem key={mode} value={mode}>{SCHEDULING_MODE_LABELS[mode]}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>
@@ -2918,7 +2927,8 @@ function AgreementsTab({
                     </div>
                     <div>
                       <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Scheduling Mode</p>
-                      <p className="mt-1">{agreement.schedulingMode || "MANUAL"}</p>
+                      {/* Pass 36 (C5.4): the shared label ("Auto-eligible"), not the raw enum. */}
+                      <p className="mt-1" data-testid={`text-agreement-scheduling-${agreement.id}`}>{describeSchedulingModeLabel(agreement.schedulingMode || "MANUAL")}</p>
                     </div>
                     <div>
                       <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Sold by</p>
@@ -3778,7 +3788,9 @@ function ServicesTab({
       <div className="flex justify-end">
         <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
           <DialogTrigger asChild><Button size="sm" onClick={openCreate}><Plus className="h-3 w-3 mr-1" /> New Service</Button></DialogTrigger>
-          <DialogContent>
+          {/* Pass 36 (C5.4; FB-010): the Service Details dialog's width - the default max-w-lg squeezed
+              the form. The one dialog serves New Service and Edit Service. */}
+          <DialogContent className="max-w-2xl" data-testid="dialog-service-form">
             <DialogHeader><DialogTitle>{editingService ? "Edit Service" : "New Service"}</DialogTitle></DialogHeader>
             <ServiceForm customerId={customerId} locationId={locationId} service={editingService} onClose={() => setDialogOpen(false)} answerCandidates={answerCandidates.filter((candidate) => candidate.id !== editingService?.id)} />
           </DialogContent>
@@ -4300,17 +4312,9 @@ export default function CustomerDetail() {
     return customer.companyName || `${customer.firstName || ""} ${customer.lastName || ""}`.trim() || "Customer";
   }, [customer]);
 
-  const setPrimaryContactMutation = useMutation({
-    mutationFn: (contactId: string) => apiRequest("POST", `/api/contacts/${contactId}/set-primary`, {}),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/contacts/by-location", activeLocationId] });
-      invalidateAuditViews();
-      toast({ title: "Primary contact updated" });
-    },
-    onError: (err: Error) => {
-      toast({ title: "Error updating primary contact", description: err.message, variant: "destructive" });
-    },
-  });
+  // Pass 36 (C5.4): the inline "Make Primary" button and its POST /api/contacts/:id/set-primary
+  // mutation left this screen - the contact dialog's checkbox is the one way to promote a contact
+  // here (the route stays for API callers; it writes the same audit rows as the dialog's PATCH).
 
   function selectLocation(locId: string) {
     setLocation(`/customers/${customerId}?locationId=${locId}`);
@@ -4722,18 +4726,6 @@ export default function CustomerDetail() {
                       )}
                     </div>
                   </div>
-                  {!ct.isPrimary && (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="shrink-0"
-                      onClick={() => setPrimaryContactMutation.mutate(ct.id)}
-                      disabled={setPrimaryContactMutation.isPending}
-                      data-testid={`button-make-primary-contact-${ct.id}`}
-                    >
-                      Make Primary
-                    </Button>
-                  )}
                 </CardContent>
               </Card>
             ))}

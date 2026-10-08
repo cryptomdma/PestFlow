@@ -26,11 +26,12 @@ import {
   AGREEMENT_TYPE_KEY_MAX_LENGTH,
   AGREEMENT_TYPE_LABEL_MAX_LENGTH,
   AGREEMENT_UNITS,
+  SCHEDULING_MODES,
 } from "@shared/agreement-types";
 import { ZodError, z } from "zod";
 import type { Request } from "express";
 import { requirePermission } from "./auth";
-import { AgreementTypeError, AppointmentCrewError, AppointmentDispositionError, BillingDefaultsError, BillingProfileError, DispatchBoardSettingsError, DraftInvoiceDecisionRequiredError, HistoryRevertError, OpportunityAssignmentError, PlacementRefusedError, PrefinalizationIssueError, ServiceCompositionError, ServiceKindError, StatementRefusedError, TechnicianPreferenceError, TicketEditError, TicketLockedError, TicketReopenError, VisitBillingDraftError } from "./storage";
+import { AgreementTypeError, AppointmentCrewError, AppointmentDispositionError, BillingDefaultsError, BillingProfileError, ContactError, DispatchBoardSettingsError, DraftInvoiceDecisionRequiredError, HistoryRevertError, OpportunityAssignmentError, PlacementRefusedError, PrefinalizationIssueError, ServiceCompositionError, ServiceKindError, StatementRefusedError, TechnicianPreferenceError, TicketEditError, TicketLockedError, TicketReopenError, VisitBillingDraftError } from "./storage";
 import { HISTORY_REVERT_CODES, type RevertableAuditEntityType } from "@shared/audit";
 import {
   MAX_EXCLUSION_OVERRIDE_REASON_LENGTH,
@@ -222,7 +223,8 @@ export async function registerRoutes(
   const serviceTypeSchema = insertServiceTypeSchema.extend({
     workKind: serviceWorkKindSchema.optional(),
   });
-  const agreementSchedulingModeSchema = z.enum(["AUTO_ELIGIBLE", "CONTACT_REQUIRED", "MANUAL"]);
+  // Pass 36 (C5.4): one list with the client's labels (shared/agreement-types.ts SCHEDULING_MODES).
+  const agreementSchedulingModeSchema = z.enum(SCHEDULING_MODES);
   // Pass 12: userId is the technician -> user bridge (C2.2); an empty string
   // is refused rather than stored, null clears the link.
   const technicianSchema = insertTechnicianSchema.extend({
@@ -1133,10 +1135,17 @@ export async function registerRoutes(
       res.json(data);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
+      // Pass 36 (C5.4): the location's only primary contact cannot be demoted or moved (400 CONTACT_PRIMARY_REQUIRED).
+      if (e instanceof ContactError) return res.status(e.status).json({ code: e.code, message: e.message });
       res.status(400).json({ message: e.message });
     }
   });
 
+  // Pass 36 (C5.4): the inline "Make Primary" button that called this left the
+  // customer screen (the contact dialog's checkbox promotes through the PATCH
+  // above, which demotes the siblings the same way). The route stays for API
+  // callers - one call, the same audit rows - and promotes only, so the primary
+  // rule above cannot be broken through it.
   app.post("/api/contacts/:id/set-primary", async (req, res) => {
     try {
       const data = await req.storage.setPrimaryContact(req.params.id, getAuditActor(req));
@@ -1517,6 +1526,8 @@ export async function registerRoutes(
       if (e instanceof ZodError) return handleZodError(res, e);
       if (e instanceof HistoryRevertError) return respondHistoryRevertError(res, e);
       if (respondAgreementTypeError(res, e)) return;
+      // Pass 36 (C5.4): a revert that would leave a location with no primary contact is refused like the PATCH.
+      if (e instanceof ContactError) return res.status(e.status).json({ code: e.code, message: e.message });
       res.status(400).json({ message: e.message });
     }
   });

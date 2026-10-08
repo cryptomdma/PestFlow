@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { useLocation, useSearch } from "wouter";
+import { Link, useLocation, useSearch } from "wouter";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
@@ -27,6 +27,9 @@ import { InitialChargeDuePrompt, type WithInitialChargeDue } from "@/components/
 import type { InitialChargeDue } from "@shared/initial-charge";
 import { centsToDollarString, formatCents, dollarsToCents } from "@shared/money";
 import { describeAnswersLink } from "@shared/service-kind";
+import { describeSchedulingMode, describeSchedulingModeDetail } from "@shared/agreement-types";
+import { describeCustomerLabel, describeLocationLabel } from "@shared/customer-label";
+import { customerPath, locationPath, stopLinkPropagation } from "@/lib/customer-links";
 import { ServiceWorkKindBadge, ServiceWorkKindListBadge } from "@/components/service-work-kind-badge";
 import { FieldAddedBadge, MarkFieldReviewedButton } from "@/components/field-added-badge";
 import {
@@ -180,19 +183,14 @@ function isSameStart(a: Date | string, b: Date) {
     && left.getMinutes() === b.getMinutes();
 }
 
+// Pass 36 (C5.4): both delegate to the shared labelers (development rule 10)
+// with this page's own fallback words, so nothing printed here moved.
 function getCustomerLabel(customer?: Customer, location?: Location) {
-  if (customer) {
-    const fullName = `${customer.firstName || ""} ${customer.lastName || ""}`.trim();
-    if (fullName) return fullName;
-    if (customer.companyName) return customer.companyName;
-  }
-  return location?.name || "Location service";
+  return describeCustomerLabel(customer, location, "Location service");
 }
 
 function getLocationLabel(location?: Location) {
-  if (!location) return "Location";
-  const parts = [location.name, location.address].filter(Boolean);
-  return parts.join(" - ");
+  return describeLocationLabel(location, "Location");
 }
 
 function getAppointmentDurationMinutes(appointment: Appointment, linkedService?: Service) {
@@ -624,14 +622,18 @@ function AppointmentSheet({
           {appointment ? (
             <div className="mt-6 space-y-5">
               <div className="rounded-lg border bg-muted/20 p-3">
+                {/* Pass 36 (C5.4; B23): the names are links - the customer to the customer screen, the
+                    service type to the location's Services tab (no per-service deep link exists), the
+                    location to its own screen. The composition rows below stay plain text: they are the
+                    edit surface, and every one of them would point at the same tab. */}
                 <div className="flex items-center justify-between gap-2">
-                  <div>
-                    <p className="text-sm font-semibold">{customerLabel}</p>
-                    <p className="text-xs text-muted-foreground">{serviceTypeName}</p>
+                  <div className="min-w-0">
+                    <Link href={customerPath(appointment.customerId)} className="block text-sm font-semibold hover:underline" data-testid="link-sheet-customer">{customerLabel}</Link>
+                    <Link href={locationPath(appointment.customerId, appointment.locationId, "services")} className="block text-xs text-muted-foreground hover:underline" data-testid="link-sheet-service">{serviceTypeName}</Link>
                   </div>
                   <Badge variant="outline">{describeAppointmentStatus(appointment)}</Badge>
                 </div>
-                <p className="mt-2 text-xs text-muted-foreground">{locationLabel}</p>
+                <Link href={locationPath(appointment.customerId, appointment.locationId)} className="mt-2 block text-xs text-muted-foreground hover:underline" data-testid="link-sheet-location">{locationLabel}</Link>
                 {/* Pass 28 (C4.3a; B13 "Appointment Details"): the visit's composition - each service with its
                     type (a select on one-time work; locked on agreement work unless the role holds
                     ADJUST_PRICE_AGREEMENT, and once a ticket is posted), its expected duration (committed on
@@ -1153,19 +1155,21 @@ function ServiceDetailDialog({
         <DialogHeader>
           <DialogTitle>Service Details</DialogTitle>
           <DialogDescription>
-            Current service details tied to the selected dispatch card.
+            The service as it stands - opened from a dispatch card or from the pending queue.
           </DialogDescription>
         </DialogHeader>
         {service ? (
           <div className="space-y-4 text-sm">
+            {/* Pass 36 (C5.4; B23): the names link out - the customer, the location, and the service
+                type to the location's Services tab (there is no per-service deep link). */}
             <div className="rounded-lg border bg-muted/20 p-3">
-              <p className="font-semibold">{customerLabel}</p>
-              <p className="text-muted-foreground">{locationLabel}</p>
+              <Link href={customerPath(service.customerId)} className="block font-semibold hover:underline" data-testid="link-service-detail-customer">{customerLabel}</Link>
+              <Link href={locationPath(service.customerId, service.locationId)} className="block text-muted-foreground hover:underline" data-testid="link-service-detail-location">{locationLabel}</Link>
             </div>
             <div className="grid gap-3 sm:grid-cols-2">
               <div>
                 <p className="text-xs uppercase tracking-wide text-muted-foreground">Service Type</p>
-                <p className="mt-1 font-medium">{serviceTypeName}</p>
+                <Link href={locationPath(service.customerId, service.locationId, "services")} className="mt-1 block font-medium hover:underline" data-testid="link-service-detail-service">{serviceTypeName}</Link>
               </div>
               <div>
                 <p className="text-xs uppercase tracking-wide text-muted-foreground">Status</p>
@@ -2145,9 +2149,10 @@ export default function Schedule() {
                                     >
                                       <div className="flex items-start justify-between gap-2">
                                         <div className="min-w-0">
-                                          <button type="button" className="truncate text-left font-medium underline-offset-2 hover:underline" onClick={(event) => { event.stopPropagation(); setLocation(locationHref); }}>
+                                          {/* Pass 36 (C5.4): a real link (middle-click, a new tab) - it was a button calling setLocation. */}
+                                          <Link href={locationHref} className="block truncate text-left font-medium underline-offset-2 hover:underline" onClick={stopLinkPropagation} data-testid={`link-card-location-${appointment.id}`}>
                                             {customerLabel}
-                                          </button>
+                                          </Link>
                                           <button type="button" className={`mt-0.5 block truncate text-left underline-offset-2 hover:underline ${mutedTextTone}`} onClick={(event) => { event.stopPropagation(); if (linkedService?.id) setDetailServiceId(linkedService.id); }}>
                                             {serviceTypeName}
                                           </button>
@@ -2168,9 +2173,11 @@ export default function Schedule() {
                                   </HoverCardTrigger>
                                   <HoverCardContent align="start" className="w-72 p-3">
                                     <div className="space-y-2 text-xs">
+                                      {/* Pass 36 (C5.4; B23): the hover card's names link out; the clicks stop short of the
+                                          slot behind the card, whose click would place or move. */}
                                       <div>
-                                        <p className="font-semibold">{customerLabel}</p>
-                                        <p className="text-muted-foreground">{locationLabel}</p>
+                                        <Link href={customerPath(appointment.customerId)} className="block font-semibold hover:underline" onClick={stopLinkPropagation} data-testid={`link-hover-customer-${appointment.id}`}>{customerLabel}</Link>
+                                        <Link href={locationHref} className="block text-muted-foreground hover:underline" onClick={stopLinkPropagation} data-testid={`link-hover-location-${appointment.id}`}>{locationLabel}</Link>
                                       </div>
                                       <div className="grid grid-cols-2 gap-2">
                                         <div><p className="uppercase tracking-wide text-muted-foreground">Service</p><p className="mt-1">{serviceTypeName}</p></div>
@@ -2207,7 +2214,8 @@ export default function Schedule() {
                                   data-testid={`card-support-${appointment.id}-${technician.id}`}
                                 >
                                   <div className="flex items-center justify-between gap-2">
-                                    <p className="truncate font-medium">{getCustomerLabel(customer, location)}</p>
+                                    {/* Pass 36 (C5.4): the name links to the location; the card's own click still opens the sheet. */}
+                                    <Link href={locationPath(appointment.customerId, appointment.locationId)} className="block min-w-0 truncate font-medium hover:underline" onClick={stopLinkPropagation} data-testid={`link-support-customer-${appointment.id}`}>{getCustomerLabel(customer, location)}</Link>
                                     <Badge variant="outline" className="text-[10px]">Support</Badge>
                                   </div>
                                   <p className="mt-0.5 truncate text-[11px] text-slate-600">With {leadName}</p>
@@ -2302,10 +2310,14 @@ export default function Schedule() {
                   >
                     <div className="min-w-0">
                       <div className="flex items-center gap-2 flex-wrap">
-                        <p className="text-sm font-medium">{getCustomerLabel(customer, location)}</p>
+                        {/* Pass 36 (C5.4; B23): the names link out of the row (stopPropagation keeps the row's
+                            select-for-dispatch click out of it), and the scheduling badge reads the shared
+                            labeler - "Scheduling: auto-eligible", with what the mode means today as its
+                            title; no mode schedules anything by itself (development rule 6). */}
+                        <Link href={customerPath(service.customerId)} className="text-sm font-medium hover:underline" onClick={stopLinkPropagation} data-testid={`link-queue-customer-${service.id}`}>{getCustomerLabel(customer, location)}</Link>
                         <Badge variant="outline" className="text-xs">{service.status}</Badge>
                         {service.source === "AGREEMENT_GENERATED" ? <Badge variant="secondary" className="text-xs">Agreement</Badge> : null}
-                        {service.schedulingMode ? <Badge variant="outline" className="text-xs">{service.schedulingMode}</Badge> : null}
+                        {service.schedulingMode ? <Badge variant="outline" className="text-xs" title={describeSchedulingModeDetail(service.schedulingMode)} data-testid={`badge-queue-scheduling-${service.id}`}>{describeSchedulingMode(service.schedulingMode)}</Badge> : null}
                         <ServiceWorkKindListBadge workKind={service.workKind} className="text-xs" />
                       </div>
                       <p className="mt-1 text-xs text-muted-foreground">{serviceTypeNameById.get(service.serviceTypeId || "") || "Service"} | {service.expectedDurationMinutes ? `${service.expectedDurationMinutes} min` : "Duration not set"} | Due {service.dueDate || "Not set"}</p>
@@ -2324,11 +2336,24 @@ export default function Schedule() {
                       ) : null}
                       {service.timeWindow ? <p className="mt-1 text-xs text-muted-foreground">Time window: {service.timeWindow}</p> : null}
                       {service.agreementId ? <p className="mt-1 text-xs text-muted-foreground">Agreement: {service.agreementId.slice(0, 8)}</p> : null}
-                      <p className="mt-1 text-xs text-muted-foreground">{getLocationLabel(location)}</p>
+                      <Link href={locationPath(service.customerId, service.locationId)} className="mt-1 block text-xs text-muted-foreground hover:underline" onClick={stopLinkPropagation} data-testid={`link-queue-location-${service.id}`}>{getLocationLabel(location)}</Link>
                     </div>
                     <div className="shrink-0 text-right">
                       <p className="text-sm font-medium">{formatCurrency(service.priceCents)}</p>
                       <p className="mt-1 text-xs text-muted-foreground">{isSelected ? "Selected" : "Click to dispatch"}</p>
+                      {/* Pass 36 (C5.4; Part E item 5): the service's details from the queue - the same
+                          dialog a dispatch card's service name opens (it resolves from the all-services
+                          read, so a pending service needs no new query); the row's select click stays out. */}
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="mt-1 h-7 px-2 text-xs"
+                        onClick={(event) => { event.stopPropagation(); setDetailServiceId(service.id); }}
+                        data-testid={`button-queue-details-${service.id}`}
+                      >
+                        Details
+                      </Button>
                       <Button
                         type="button"
                         variant="ghost"

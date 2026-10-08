@@ -1,7 +1,8 @@
 // PLAN_ROADMAP_V2.md C5.3 (Pass 35; B8 / PLAN_BILLING_V1_1.md D8): the
 // agreement vocabulary both sides share.
 //
-// Two things live here. The AGREEMENT TYPE is "what kind of program this is"
+// Three things live here (the third, the scheduling modes, since Pass 36 /
+// C5.4). The AGREEMENT TYPE is "what kind of program this is"
 // (D8's first dimension - pest control, termite, mosquito...): a settings-
 // managed list, `agreement_types`, seeded per org with the five keys below
 // (owner, Part E answer 9) and then the office's own - Settings adds a type,
@@ -156,4 +157,60 @@ export function describeAgreementTypeUsage(usage: AgreementTypeUsage): string {
   const agreements = `${usage.agreementCount} agreement${usage.agreementCount === 1 ? "" : "s"}`;
   const templates = `${usage.templateCount} template${usage.templateCount === 1 ? "" : "s"}`;
   return `${agreements} and ${templates}`;
+}
+
+// ---------------------------------------------------------------------------
+// Scheduling modes (PLAN_ROADMAP_V2.md C5.4, Pass 36)
+//
+// An agreement's `schedulingMode` - the template's default, copied onto every
+// service the agreement generates (services.scheduling_mode, nullable: a
+// manual one-time service carries none) - says how its generated services
+// reach the board (canon §9): AUTO_ELIGIBLE may enter a FUTURE auto-scheduling
+// pool and is a pending service until someone places it; CONTACT_REQUIRED has
+// the office contact the customer first (the server creates the contact
+// opportunity with the service - the one mode the server acts on today);
+// MANUAL is placed by hand from the queue. The pending queue's badge, the
+// agreement card and the Settings template row printed the raw enum
+// ("AUTO_ELIGIBLE"); they print the labels below now, and the labels promise
+// no auto-scheduling - nothing schedules itself today (development rule 6,
+// A3 "Smart Schedule / AUTO_ELIGIBLE pill"). The server's enum
+// (routes.ts agreementSchedulingModeSchema) reads this list.
+
+export const SCHEDULING_MODES = ["AUTO_ELIGIBLE", "CONTACT_REQUIRED", "MANUAL"] as const;
+export type SchedulingMode = (typeof SCHEDULING_MODES)[number];
+
+/** The form selects' and the agreement card's wording. */
+export const SCHEDULING_MODE_LABELS: Record<SchedulingMode, string> = {
+  AUTO_ELIGIBLE: "Auto-eligible",
+  CONTACT_REQUIRED: "Contact required",
+  MANUAL: "Manual",
+};
+
+/** What each mode means TODAY - a badge's title. No mode schedules anything by itself. */
+export const SCHEDULING_MODE_DESCRIPTIONS: Record<SchedulingMode, string> = {
+  AUTO_ELIGIBLE: "May enter a future auto-scheduling pool. Pending until someone places it on the board.",
+  CONTACT_REQUIRED: "The office contacts the customer before placing it; a contact opportunity is created with the service.",
+  MANUAL: "Placed by hand from the pending queue.",
+};
+
+export function isSchedulingMode(value: unknown): value is SchedulingMode {
+  return (SCHEDULING_MODES as readonly string[]).includes(value as string);
+}
+
+/** "Auto-eligible" / "Contact required" / "Manual"; the raw value for one not on the list (a row from before the enum); "" for none. */
+export function describeSchedulingModeLabel(mode: string | null | undefined): string {
+  if (!mode) return "";
+  return isSchedulingMode(mode) ? SCHEDULING_MODE_LABELS[mode] : mode;
+}
+
+/** "Scheduling: auto-eligible" / "Scheduling: contact required" / "Scheduling: manual" - the pending queue's badge and the template row's segment; "" for none. */
+export function describeSchedulingMode(mode: string | null | undefined): string {
+  const label = describeSchedulingModeLabel(mode);
+  if (!label) return "";
+  return `Scheduling: ${isSchedulingMode(mode) ? label.toLowerCase() : label}`;
+}
+
+/** The mode's description for a title attribute; "" for none or for a value not on the list. */
+export function describeSchedulingModeDetail(mode: string | null | undefined): string {
+  return isSchedulingMode(mode) ? SCHEDULING_MODE_DESCRIPTIONS[mode] : "";
 }

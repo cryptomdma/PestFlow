@@ -98,6 +98,7 @@ import {
   type AgreementTypeErrorCode,
   type AgreementTypeUsage,
 } from "@shared/agreement-types";
+import { CONTACT_ERROR_CODES, CONTACT_PRIMARY_REQUIRED_MESSAGE, type ContactErrorCode } from "@shared/contacts";
 import { PLACEHOLDER_LOCATION_NAME, PLACEHOLDER_LOCATION_NOTE } from "./account-bootstrap";
 import { createHash } from "crypto";
 import type { InvoiceDocumentBranding, InvoiceDocumentContext, ServiceReportDocumentContext, ServiceReportMaterialLine, StatementDocumentContext, StatementDocumentParty } from "./documents/types";
@@ -1134,6 +1135,17 @@ export class BillingProfileError extends Error {
   constructor(readonly code: BillingProfileErrorCode, message: string) {
     super(message);
     this.name = "BillingProfileError";
+  }
+}
+
+// Pass 36 (C5.4): a contact write the primary rule refuses (400 with the code
+// from shared/contacts.ts) - the location's only primary contact made
+// non-primary, or moved to another location.
+export class ContactError extends Error {
+  readonly status = 400;
+  constructor(readonly code: ContactErrorCode, message: string) {
+    super(message);
+    this.name = "ContactError";
   }
 }
 
@@ -4113,6 +4125,24 @@ export class DatabaseStorage implements IStorage {
 
       const nextLocationId = data.locationId ?? existing.locationId;
       const requestedPrimary = data.isPrimary ?? existing.isPrimary ?? false;
+
+      // Pass 36 (C5.4; shared/contacts.ts): the location keeps one primary. Its
+      // current primary is neither made non-primary nor moved to another
+      // location unless another contact of the location is primary - which the
+      // writers never leave true, so the answer is "promote the other contact
+      // instead, and this one is demoted with it". A History revert of a
+      // promotion row comes through here and is refused the same way: the row
+      // to revert is the other contact's.
+      if (existing.isPrimary && existing.locationId && (!requestedPrimary || nextLocationId !== existing.locationId)) {
+        const [otherPrimary] = await tx
+          .select({ id: contacts.id })
+          .from(contacts)
+          .where(and(eq(contacts.orgId, this.orgId), eq(contacts.locationId, existing.locationId), eq(contacts.isPrimary, true), ne(contacts.id, id)))
+          .limit(1);
+        if (!otherPrimary) {
+          throw new ContactError(CONTACT_ERROR_CODES.PRIMARY_REQUIRED, CONTACT_PRIMARY_REQUIRED_MESSAGE);
+        }
+      }
 
       if (nextLocationId && requestedPrimary) {
         const siblings = await tx.select().from(contacts).where(and(eq(contacts.orgId, this.orgId), eq(contacts.locationId, nextLocationId)));
