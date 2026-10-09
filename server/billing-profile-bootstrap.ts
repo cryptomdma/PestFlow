@@ -8,6 +8,45 @@ async function columnExists(table: string, column: string): Promise<boolean> {
   return result.rows.length > 0;
 }
 
+// Pass 39 (C5.8): "any foreign key on this column", whatever its name - a
+// fresh `db:push` database already has the three billing_profiles keys under
+// drizzle's names, an established one had none, so the guard looks at the
+// catalog's column list rather than a constraint name (the Pass 38 precedent).
+async function foreignKeyExists(table: string, column: string): Promise<boolean> {
+  const result = await db.execute(sql`
+    SELECT 1
+    FROM pg_constraint c
+    JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey)
+    WHERE c.contype = 'f' AND c.conrelid = ${table}::regclass AND a.attname = ${column}
+  `);
+  return result.rows.length > 0;
+}
+
+async function indexExists(name: string): Promise<boolean> {
+  const result = await db.execute(sql`SELECT 1 FROM pg_indexes WHERE schemaname = 'public' AND indexname = ${name}`);
+  return result.rows.length > 0;
+}
+
+// Adds the foreign key shared/schema.ts declares, under the name db:push
+// would give it, once - and never over orphans: a row naming a referenced id
+// that does not exist is printed and the key skipped (the data is the owner's
+// to fix; a silent DELETE here would be a data loss the boot log never shows).
+async function addForeignKeyIfMissing(column: string, refTable: string, name: string): Promise<void> {
+  if (await foreignKeyExists("billing_profiles", column)) return;
+  const orphans = await db.execute(sql.raw(`
+    SELECT count(*)::int AS n
+    FROM billing_profiles bp
+    WHERE bp.${column} IS NOT NULL AND NOT EXISTS (SELECT 1 FROM ${refTable} r WHERE r.id = bp.${column})
+  `));
+  const n = Number((orphans.rows[0] as { n: number } | undefined)?.n ?? 0);
+  if (n > 0) {
+    console.warn(`[billing-profile-bootstrap] NOT adding ${name}: ${n} billing_profiles row(s) name a ${refTable} row that does not exist - fix them by hand and restart`);
+    return;
+  }
+  await db.execute(sql.raw(`ALTER TABLE billing_profiles ADD CONSTRAINT ${name} FOREIGN KEY (${column}) REFERENCES ${refTable} (id)`));
+  console.log(`[billing-profile-bootstrap] added foreign key ${name} (billing_profiles.${column} -> ${refTable}.id)`);
+}
+
 // Must run after bootstrapCanonicalAccounts() - the account_id backfill below
 // joins through accounts.legacy_customer_id, which only exists once that
 // bootstrap has populated it for every customer.
@@ -52,16 +91,30 @@ export async function bootstrapBillingProfiles(): Promise<void> {
     `);
   }
 
-  // Migrate the pre-existing reverse pointer (locations.billing_profile_id ->
-  // billing_profiles.id) onto the new forward pointer this bootstrap
-  // introduces (billing_profiles.location_id -> locations.id), so a location
-  // override created before this migration still resolves as one after it.
-  await db.execute(sql`
-    UPDATE billing_profiles bp
-    SET location_id = l.id
-    FROM locations l
-    WHERE bp.location_id IS NULL AND l.billing_profile_id = bp.id
-  `);
+  // Pass 39 (C5.8): the two legacy pointers go. locations.billing_profile_id
+  // was the pre-Pass-34 reverse pointer (location -> profile), mirrored by the
+  // profile write path and read by nothing but the backfill that used to sit
+  // here, which carried it onto the forward pointer (billing_profiles.
+  // location_id, the one the resolver reads) on every boot. That carry runs
+  // ONE last time, inside the guard, and then the column is dropped - so an
+  // override created before Pass 34 on a database that never booted since
+  // still resolves. customers.default_billing_profile_id was read by nothing
+  // and written only from a request body; dropped outright. Both print once;
+  // the guards make the second boot silent.
+  if (await columnExists("locations", "billing_profile_id")) {
+    const carried = await db.execute(sql`
+      UPDATE billing_profiles bp
+      SET location_id = l.id
+      FROM locations l
+      WHERE bp.location_id IS NULL AND l.billing_profile_id = bp.id
+    `);
+    await db.execute(sql`ALTER TABLE locations DROP COLUMN billing_profile_id`);
+    console.log(`[billing-profile-bootstrap] dropped locations.billing_profile_id (${carried.rowCount ?? 0} reverse pointer(s) carried onto billing_profiles.location_id first)`);
+  }
+  if (await columnExists("customers", "default_billing_profile_id")) {
+    await db.execute(sql`ALTER TABLE customers DROP COLUMN default_billing_profile_id`);
+    console.log("[billing-profile-bootstrap] dropped customers.default_billing_profile_id (read by nothing)");
+  }
 
   if (await columnExists("billing_profiles", "method_type")) {
     await db.execute(sql`
@@ -86,4 +139,17 @@ export async function bootstrapBillingProfiles(): Promise<void> {
 
   await db.execute(sql`CREATE INDEX IF NOT EXISTS billing_profiles_account_id_idx ON billing_profiles (account_id)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS billing_profiles_location_id_idx ON billing_profiles (location_id)`);
+  // Pass 39 (C5.8): the index the template pointer never had (printed once),
+  // then the three foreign keys shared/schema.ts has declared since the
+  // columns were added and this bootstrap never created (0 orphans on the
+  // dev DB; the names are what db:push gives them, so a fresh database and a
+  // migrated one agree). The route refuses an unknown templateId as 400
+  // BILLING_PROFILE_TEMPLATE_UNKNOWN before the key can refuse it as a 500.
+  if (!(await indexExists("billing_profiles_template_id_idx"))) {
+    await db.execute(sql`CREATE INDEX IF NOT EXISTS billing_profiles_template_id_idx ON billing_profiles (template_id)`);
+    console.log("[billing-profile-bootstrap] created index billing_profiles_template_id_idx");
+  }
+  await addForeignKeyIfMissing("account_id", "accounts", "billing_profiles_account_id_accounts_id_fk");
+  await addForeignKeyIfMissing("location_id", "locations", "billing_profiles_location_id_locations_id_fk");
+  await addForeignKeyIfMissing("template_id", "billing_profile_templates", "billing_profiles_template_id_billing_profile_templates_id_fk");
 }

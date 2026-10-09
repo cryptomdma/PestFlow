@@ -103,10 +103,12 @@ app.use((req, res, next) => {
   registerAuthRoutes(app);
   app.use("/api", requireAuth, attachOrgStorage);
 
-  // Table/column structure only (raw SQL, no query-builder use) must run
-  // before bootstrapTenancy() adds org_id - everything below this point uses
-  // the Drizzle query builder against these tables and needs org_id to
-  // already exist in the DB, since it's already present in the schema types.
+  // The structure bootstraps (raw SQL, no query-builder use) run between the
+  // two tenancy passes: the early one above gave every table that already
+  // existed its org_id, the second one below covers the tables these create,
+  // and everything after it may use the Drizzle query builder, whose schema
+  // types already carry org_id. (Pass 39 corrected this note: tenancy runs
+  // twice, not once "before" these.)
   await bootstrapAgreements().catch((e) => console.error("Agreement bootstrap error:", e));
   await bootstrapServiceSchedulingFoundation().catch((e) => console.error("Service scheduling bootstrap error:", e));
   await bootstrapCanonicalNoteTables().catch((e) => console.error("Note table bootstrap error:", e));

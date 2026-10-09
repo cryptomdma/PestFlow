@@ -181,7 +181,7 @@ export const PERMISSION_LABELS: Record<Permission, string> = {
 };
 
 export const PERMISSION_DESCRIPTIONS: Record<Permission, string> = {
-  post_service_ticket: "Post a service ticket from the field (not checked by any route yet).",
+  post_service_ticket: "Post a service ticket - the field post and the direct ticket create (every built-in profile holds it; checked since Pass 39).",
   finalize_ticket: "Finalize a posted ticket in office review - the authoritative completion.",
   reopen_ticket: "Reopen a finalized ticket with a reason from the Settings list.",
   edit_ticket: "Edit a ticket in office review, or re-post over one.",
@@ -206,7 +206,7 @@ export const PERMISSION_DESCRIPTIONS: Record<Permission, string> = {
   void_payment: "Void a recorded payment.",
   refund_payment: "Record a refund against a payment.",
   waive_cancellation_fee: "Waive the fee an agreement's cancellation policy charges.",
-  view_cost_margin_ltv: "Read cost, margin and lifetime value figures (not checked by any screen yet).",
+  view_cost_margin_ltv: "Read cost, margin and lifetime value figures (not checked by any route or screen yet - the money reads are listed under PLAN_ROADMAP_V2.md C5.10).",
   view_production_value: "Read the production value ledger.",
   edit_any_service_instructions: "Change a service's instructions whoever added it; without it, only on a service you added in the field.",
   view_other_technician_work: "Open any technician's day on the Tech View; without it, only your own.",

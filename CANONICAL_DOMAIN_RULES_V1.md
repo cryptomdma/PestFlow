@@ -111,13 +111,15 @@ A lightweight grouping context for one or more related locations.
 
 ### Optional / computed fields
 
-* defaultBillingProfileId
 * lifetimeValue (LTV)
 * aggregate balance data
 
 ### Notes
 
 * Account is mostly an internal/domain object
+* The account's default billing is its `billing_profiles` row with no location (§4) - there is no pointer
+  column on the account (a `defaultBillingProfileId` was listed here until Pass 39; the code's lived on
+  `customers`, was read by nothing, and was dropped - PLAN_ROADMAP_V2.md C5.8)
 * It should not become a bloated duplicate of Location
 * Account type should **not** include `multi_location` or `property_management`
 * The real customer type logic belongs on Location (`residential` or `commercial`)
@@ -277,9 +279,11 @@ Billing information used by a location or inherited from the account context.
 * a location may override with a custom billing profile when needed: its own active row with
   locationId = that location, one per location; switching back to the default retires the row
   (`inactive`) rather than deleting it
-* `billing_profiles.locationId` is the one pointer the resolver reads. `locations.billingProfileId` is a
-  legacy mirror the profile write path keeps and nothing reads; `customers.defaultBillingProfileId` is
-  read by nothing. Both are dead columns awaiting a hygiene pass (PLAN_ROADMAP_V2.md C5.8)
+* `billing_profiles.locationId` is the one pointer. The two legacy pointers that shadowed it,
+  `locations.billingProfileId` (a mirror the write path kept) and `customers.defaultBillingProfileId`
+  (read by nothing), were dropped in Pass 39 (PLAN_ROADMAP_V2.md C5.8); the row's three foreign keys
+  (account, location, template) exist on every database since then, and a `templateId` naming no
+  template of the org is refused 400 `BILLING_PROFILE_TEMPLATE_UNKNOWN` before the key can refuse it
 * a new customer's account gets its default created from the org's default template
   (Settings -> Billing Defaults, `default_billing_profile_template_id`) when one is set; none set,
   the account starts with no profile and every invoice bills the primary location until one is given
@@ -608,8 +612,8 @@ for that Service and nothing else:
   the reason, the effect and the opportunities touched. A status change to `CANCELLED` through the
   generic Service update is refused (409 `SERVICE_CANCEL_REQUIRED`), as is detaching a placed Service
   (`SERVICE_REMOVE_REQUIRED`) - the Pass 27 precedent for `CANCELED` on the Appointment.
-* Ungated like the disposition (who may cancel has no permission yet - a gate per route is C5.8's
-  call; Pass 37's role profiles would hold it). The reasons list's write is
+* Ungated like the disposition (who may cancel has no permission yet - listed under PLAN_ROADMAP_V2.md
+  C5.10 for the owner to decide per route; Pass 37's role profiles would hold it). The reasons list's write is
   `MANAGE_SETTINGS` since this pass, now that two flows read it.
 
 Do not flatten all cancellation scenarios into generic Opportunity logic.
@@ -738,8 +742,9 @@ Pass 12; the compensation entry in `CURRENT_FOCUS.md`), and it is the payee a
   stepped by `shared/agreement-schedule.ts` `advanceAgreementDate`. The agreement templates carry the same
   four as defaults. (This line read `frequencyRule nullable` before Pass 35; the code never had it.)
 * defaultPrice nullable
-* billingProfileId nullable
 * billingPlanId — the Billing Plan that decides how and when the agreement is billed (§13); required since Pass 12
+  (an agreement has no billing-profile column: the profile is resolved per invoice from the location, §4 - a
+  `billingProfileId` was listed here until Pass 39)
 * soldByUserId nullable — who sold the agreement (see "Sale attribution" above)
 * startDate
 * endDate nullable
@@ -1061,7 +1066,7 @@ visit's `appointment_composition_changed` row records the add's `origin` and `fl
 as a "Field-added - review" badge (quiet "Field-added" once reviewed) on the dispatch sheet's
 composition block, the location's Services tab, Service Ticket Review and the technician's own row,
 with **Mark reviewed** beside it for the office. No new permission: the origin is open to every role
-(the surface decides, the flag is the control; a permission is C5.8's call per route). The ticket's `FLAGGED_FOR_REVIEW`
+(the surface decides, the flag is the control; a permission is listed under PLAN_ROADMAP_V2.md C5.10). The ticket's `FLAGGED_FOR_REVIEW`
 (§12) is untouched - it stays the invoice-driven flag on the ticket, and this one lives on the
 Service.
 
@@ -1552,7 +1557,8 @@ PDF keeps; the ticket's own report stays separately openable and follows the tic
   location-less row cannot recur.
 * appointmentId nullable — the billing anchor for visit work
 * serviceRecordId nullable — the fallback anchor for appointment-less work
-* billingProfileId nullable
+* billingProfileSnapshot nullable — the resolved billing profile frozen at issue (jsonb, Pass 11c); the invoice
+  carries no profile id column (a `billingProfileId` was listed here until Pass 39)
 * invoiceNumber
 * status (`draft` | `posted` | `sent` | `partially_paid` | `paid` | `void`)
 * subtotal
@@ -1778,7 +1784,11 @@ another - with one `update` per agreement and template that moved); it is the fi
 trail and is not revertable. Since Pass 37 (C5.6) the role profiles (`role_profile`: `created` - a clone's row
 naming its source under `clonedFrom` - and `update`, the permission list in both snapshots so the diff names what
 moved) and the users' profile assignments (`user`: `update` with `role` before and after, never the password
-hash) write theirs; neither is revertable. There is no `account` entity: the account's facts are logged on the
+hash) write theirs; neither is revertable. Since Pass 39 (C5.8) every `app_settings` write - the nine Settings
+setters behind `PATCH /api/settings/*` - records `app_setting`: `update` on the setting's KEY with the stored value
+before and after (null for a row that did not exist or was deleted), nothing on an unchanged save, never
+revertable (a setting is put back by setting it); the Settings page lists the recent rows org-wide. There is no
+`account` entity: the account's facts are logged on the
 location whose primary flag moved or on the customer. `service_records`' content edits are D9's
 `ticket_edited`; a price change is Pass 8's `price_overridden`.
 

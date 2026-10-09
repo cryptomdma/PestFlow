@@ -108,25 +108,29 @@ export async function registerRoutes(
   httpServer: Server,
   app: Express
 ): Promise<Server> {
-  // Pass 34 (C5.2): `billingProfileId` leaves every location body - the
-  // legacy reverse pointer is written by the billing profile path only, as
-  // a mirror of billing_profiles.location_id (the pointer that is read).
+  // Pass 39 (C5.8): the two legacy billing pointers are gone from the schema
+  // (and the columns from the DB), so no customer or location body can name
+  // one - a `billingProfileId` / `defaultBillingProfileId` in a body is
+  // stripped like any unknown key (these schemas are not strict). A new
+  // location's account is derived from its customer (storage createLocation
+  // resolves it), so `accountId` leaves the two create bodies too.
   const createCustomerWithLocationSchema = z.object({
     customer: insertCustomerSchema,
-    location: insertLocationSchema.omit({ customerId: true, accountId: true, isPrimary: true, billingProfileId: true }),
+    location: insertLocationSchema.omit({ customerId: true, accountId: true, isPrimary: true }),
     initialContact: insertContactSchema
       .omit({ customerId: true, locationId: true })
       .optional(),
   });
+  const createLocationSchema = insertLocationSchema.omit({ accountId: true });
   const createLocationWithContactSchema = z.object({
-    location: insertLocationSchema,
+    location: createLocationSchema,
     initialContact: insertContactSchema
       .omit({ customerId: true, locationId: true })
       .optional(),
   });
   const updateLocationProfileSchema = z.object({
     location: insertLocationSchema
-      .omit({ customerId: true, accountId: true, isPrimary: true, billingProfileId: true })
+      .omit({ customerId: true, accountId: true, isPrimary: true })
       .partial(),
     customer: insertCustomerSchema
       .pick({
@@ -179,14 +183,20 @@ export async function registerRoutes(
       limit: z.coerce.number().int().positive().optional(),
     })
     .superRefine((value, ctx) => {
-      const byEntity = !!value.entityType && !!value.entityId;
+      // Pass 39 (C5.8): entityType alone is a form of its own - every row of
+      // the type, org-wide (the Settings page's app_setting list); entityId
+      // narrows it and means nothing without it.
+      const byEntity = !!value.entityType;
       const forms = [!!value.locationId, !!value.customerId, byEntity].filter(Boolean).length;
       if (forms === 0) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: ["locationId"],
-          message: "Provide locationId, customerId, or both entityType and entityId",
+          message: "Provide locationId, customerId, or entityType (with an optional entityId)",
         });
+      }
+      if (value.entityId && !value.entityType) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["entityType"], message: "entityId needs an entityType" });
       }
       if (forms > 1) {
         ctx.addIssue({
@@ -435,8 +445,11 @@ export async function registerRoutes(
   // vocabulary checked (shared/billing-profile-defaults.ts), the card / ACH
   // tokens and the last four never typed (Phase 6's capture, C6.1), unknown
   // keys refused. The rules that span rows (one active override per
-  // location, one active default per account, the location in the account)
-  // are storage's, inside the write's transaction.
+  // location, one active default per account, the location in the account,
+  // and - since Pass 39 (C5.8) - a `templateId` that names one of the org's
+  // templates, 400 BILLING_PROFILE_TEMPLATE_UNKNOWN, since the foreign key
+  // would make an unknown id a 500) are storage's, inside the write's
+  // transaction.
   const billingProfileWriteSchema = insertBillingProfileSchema
     .omit({ cardOnFileToken: true, achToken: true, lastFour: true })
     .extend({
@@ -974,8 +987,10 @@ export async function registerRoutes(
   // and /api/locations/:id/ledger-summary, which already hand any
   // authenticated role the same open and on-account figures this rearranges:
   // a gate here would 403 the header card while the location switcher one
-  // inch below still says "Open $X". Who may read money at all is C5.6's
-  // role profiles, not a per-route call. 404 outside the org.
+  // inch below still says "Open $X". Who may read money at all is a
+  // per-route decision the owner has not made: Pass 39 listed the money
+  // reads under PLAN_ROADMAP_V2.md C5.10 (VIEW_COST_MARGIN_LTV is read by
+  // nothing). 404 outside the org.
   app.get("/api/customers/:id/aging", async (req, res) => {
     const data = await req.storage.getCustomerAging(req.params.id);
     if (!data) return res.status(404).json({ message: "Customer not found" });
@@ -1218,7 +1233,7 @@ export async function registerRoutes(
   app.post("/api/locations", async (req, res) => {
     try {
       const validated = createLocationWithContactSchema.safeParse(req.body);
-      const locationPayload = validated.success ? validated.data.location : insertLocationSchema.parse(req.body);
+      const locationPayload = validated.success ? validated.data.location : createLocationSchema.parse(req.body);
       const rawInitialContact = validated.success ? validated.data.initialContact : undefined;
       const locationNotesBody = locationPayload.notes?.trim() || "";
       const initialContact =
@@ -1272,7 +1287,7 @@ export async function registerRoutes(
 
   app.patch("/api/locations/:id", async (req, res) => {
     try {
-      const validated = insertLocationSchema.omit({ billingProfileId: true }).partial().parse(req.body);
+      const validated = insertLocationSchema.partial().parse(req.body);
       const data = await req.storage.updateLocation(req.params.id, validated, getAuditActor(req));
       if (!data) return res.status(404).json({ message: "Location not found" });
       res.json(data);
@@ -1397,7 +1412,8 @@ export async function registerRoutes(
   // writes are MANAGE_SETTINGS like every other settings write (the card's
   // Add / Edit disable for everyone else). The instances below stay open to
   // every role, like the location PATCH they sit beside - they are customer
-  // data; who may edit customer data is C5.6's role profiles.
+  // data; who may edit customer data is listed, undecided, under
+  // PLAN_ROADMAP_V2.md C5.10 (Pass 39 gated the Settings reference data only).
   app.post("/api/billing-profile-templates", requirePermission(PERMISSIONS.MANAGE_SETTINGS), async (req, res) => {
     try {
       const validated = insertBillingProfileTemplateSchema.parse(req.body);
@@ -1515,7 +1531,7 @@ export async function registerRoutes(
         ? await req.storage.getAuditLogsForLocation(query.locationId, query.limit)
         : query.customerId
           ? await req.storage.getAuditLogsForCustomer(query.customerId, query.limit)
-          : await req.storage.getAuditLogsForEntity(query.entityType!, query.entityId!, query.limit);
+          : await req.storage.getAuditLogsForEntity(query.entityType!, query.entityId ?? null, query.limit);
       res.json(data);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
@@ -1537,8 +1553,9 @@ export async function registerRoutes(
   // would, and applies the PATCH's own permission rule (an agreement's sale
   // credit needs ASSIGN_SALE_CREDIT). The write path's refusals pass through
   // unchanged (the agreement's CANCELLED, the plan requirement, the sold-by
-  // user check). Manager+ (REVERT_HISTORY; Part E answer 8) until C5.6 makes
-  // it a profile permission; the client shows Revert only to those roles.
+  // user check). A profile holding REVERT_HISTORY (the built-in manager and
+  // admin; any profile since Pass 37's role profiles - Part E answer 8); the
+  // client shows Revert only to a session that holds it.
   const revertPayloadSchemas: Record<RevertableAuditEntityType, z.ZodTypeAny> = {
     customer: insertCustomerSchema.partial(),
     location: insertLocationSchema.partial(),
@@ -1911,7 +1928,11 @@ export async function registerRoutes(
     res.json(data);
   });
 
-  app.post("/api/opportunity-dispositions", async (req, res) => {
+  // Pass 39 (C5.8): the dispositions and the categories are Settings
+  // reference data, so their writes are MANAGE_SETTINGS like every other
+  // Settings list (the cards' Add / Edit disable for everyone else); reads
+  // stay open - the opportunity dialogs fill from them.
+  app.post("/api/opportunity-dispositions", requirePermission(PERMISSIONS.MANAGE_SETTINGS), async (req, res) => {
     try {
       const validated = opportunityDispositionSchema.parse(req.body);
       const data = await req.storage.createOpportunityDisposition(validated);
@@ -1922,7 +1943,7 @@ export async function registerRoutes(
     }
   });
 
-  app.patch("/api/opportunity-dispositions/:id", async (req, res) => {
+  app.patch("/api/opportunity-dispositions/:id", requirePermission(PERMISSIONS.MANAGE_SETTINGS), async (req, res) => {
     try {
       const validated = opportunityDispositionUpdateSchema.parse(req.body);
       const data = await req.storage.updateOpportunityDisposition(req.params.id, validated);
@@ -1936,8 +1957,8 @@ export async function registerRoutes(
 
   // Pass 25 (C4.1): the settings-managed category list. Read by everyone
   // (the queue's filters and chips need it); edited on the dispositions
-  // pattern, which carries no gate today - who may edit reference data is
-  // C5.6's role profiles. No create and no delete: the five keys are the
+  // pattern - MANAGE_SETTINGS since Pass 39 (C5.8), like every Settings
+  // reference list. No create and no delete: the five keys are the
   // list (owner, second review of 2026-09-19), so POST and DELETE answer 405
   // with the reason rather than falling through to the client catch-all.
   app.get("/api/opportunity-categories", async (req, res) => {
@@ -1945,7 +1966,7 @@ export async function registerRoutes(
     res.json(await req.storage.getOpportunityCategories(includeInactive));
   });
 
-  app.patch("/api/opportunity-categories/:id", async (req, res) => {
+  app.patch("/api/opportunity-categories/:id", requirePermission(PERMISSIONS.MANAGE_SETTINGS), async (req, res) => {
     try {
       const validated = opportunityCategoryUpdateSchema.parse(req.body);
       const data = await req.storage.updateOpportunityCategory(req.params.id, validated);
@@ -2140,7 +2161,8 @@ export async function registerRoutes(
   // and, on a callback, the service it answers; storage refuses with a code
   // (400 the link, 403 WORK_KIND_FORBIDDEN, 409 SERVICE_KIND_LOCKED). The
   // session's role is the gate's input and the actor signs the audit row;
-  // the rest of the PATCH stays ungated as before (C5.6's role profiles).
+  // the rest of the PATCH stays ungated as before (listed under
+  // PLAN_ROADMAP_V2.md C5.10 - a gate per route is the owner's call).
   app.post("/api/services", async (req, res) => {
     try {
       const validated = serviceSchema.parse(req.body);
@@ -2176,7 +2198,8 @@ export async function registerRoutes(
   // with its window reset from today, the opportunity choice, one
   // service_cancelled audit row. A COMPLETED / CANCELLED service, one with a
   // posted ticket and the last active service on a live visit are refused
-  // with their codes. Ungated like the disposition (who may cancel is C5.6).
+  // with their codes. Ungated like the disposition (who may cancel: listed
+  // under PLAN_ROADMAP_V2.md C5.10, undecided).
   app.post("/api/services/:id/cancel", async (req, res) => {
     try {
       const validated = serviceCancelSchema.parse(req.body);
@@ -2223,7 +2246,12 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/services/:id/complete", async (req, res) => {
+  // Pass 39 (C5.8): POST_SERVICE_TICKET, seeded since Phase 0 and read by
+  // nothing until now, gates the two ticket-creating routes - this one (the
+  // technician's post, and the office's re-post on a ticket in review) and
+  // POST /api/service-records below. Every built-in profile holds it, so no
+  // existing user changes; a profile the office strips it from is refused.
+  app.post("/api/services/:id/complete", requirePermission(PERMISSIONS.POST_SERVICE_TICKET), async (req, res) => {
     try {
       const validated = completeServiceSchema.parse(req.body);
       const data = await req.storage.completeService({
@@ -2245,14 +2273,15 @@ export async function registerRoutes(
     }
   });
 
-  // Agreement Cancellation Policies
+  // Agreement Cancellation Policies - Pass 39 (C5.8): the writes are
+  // MANAGE_SETTINGS like every Settings reference list; reads stay open.
   app.get("/api/agreement-cancellation-policies", async (req, res) => {
     const includeInactive = req.query.includeInactive === "true";
     const data = await req.storage.getAgreementCancellationPolicies(includeInactive);
     res.json(data);
   });
 
-  app.post("/api/agreement-cancellation-policies", async (req, res) => {
+  app.post("/api/agreement-cancellation-policies", requirePermission(PERMISSIONS.MANAGE_SETTINGS), async (req, res) => {
     try {
       const validated = agreementCancellationPolicySchema.parse(req.body);
       const data = await req.storage.createAgreementCancellationPolicy(validated);
@@ -2263,7 +2292,7 @@ export async function registerRoutes(
     }
   });
 
-  app.patch("/api/agreement-cancellation-policies/:id", async (req, res) => {
+  app.patch("/api/agreement-cancellation-policies/:id", requirePermission(PERMISSIONS.MANAGE_SETTINGS), async (req, res) => {
     try {
       const validated = updateAgreementCancellationPolicySchema.parse(req.body);
       const data = await req.storage.updateAgreementCancellationPolicy(req.params.id, validated);
@@ -2275,14 +2304,15 @@ export async function registerRoutes(
     }
   });
 
-  // Billing Plans
+  // Billing Plans - Pass 39 (C5.8): the writes are MANAGE_SETTINGS like every
+  // Settings reference list; reads stay open (the agreement forms fill from them).
   app.get("/api/billing-plans", async (req, res) => {
     const includeInactive = req.query.includeInactive === "true";
     const data = await req.storage.getBillingPlans(includeInactive);
     res.json(data);
   });
 
-  app.post("/api/billing-plans", async (req, res) => {
+  app.post("/api/billing-plans", requirePermission(PERMISSIONS.MANAGE_SETTINGS), async (req, res) => {
     try {
       const validated = billingPlanSchema.parse(req.body);
       const data = await req.storage.createBillingPlan(validated);
@@ -2293,7 +2323,7 @@ export async function registerRoutes(
     }
   });
 
-  app.patch("/api/billing-plans/:id", async (req, res) => {
+  app.patch("/api/billing-plans/:id", requirePermission(PERMISSIONS.MANAGE_SETTINGS), async (req, res) => {
     try {
       const validated = updateBillingPlanSchema.parse(req.body);
       const data = await req.storage.updateBillingPlan(req.params.id, validated);
@@ -2366,13 +2396,15 @@ export async function registerRoutes(
     res.status(405).json({ message: "Agreement types are not deleted; retire the type, or merge it into another" });
   });
 
-  // Agreement Templates
+  // Agreement Templates - Pass 39 (C5.8): the writes are MANAGE_SETTINGS like
+  // every Settings reference list (open to every role from Phase 0 until
+  // then; the card's Add / Edit disable for everyone else); reads stay open.
   app.get("/api/agreement-templates", async (req, res) => {
     const data = await req.storage.getAgreementTemplates();
     res.json(data);
   });
 
-  app.post("/api/agreement-templates", async (req, res) => {
+  app.post("/api/agreement-templates", requirePermission(PERMISSIONS.MANAGE_SETTINGS), async (req, res) => {
     try {
       const validated = agreementTemplateSchema.parse(req.body);
       const data = await req.storage.createAgreementTemplate(validated, getAuditActor(req));
@@ -2384,7 +2416,7 @@ export async function registerRoutes(
     }
   });
 
-  app.patch("/api/agreement-templates/:id", async (req, res) => {
+  app.patch("/api/agreement-templates/:id", requirePermission(PERMISSIONS.MANAGE_SETTINGS), async (req, res) => {
     try {
       const validated = updateAgreementTemplateSchema.parse(req.body);
       const data = await req.storage.updateAgreementTemplate(req.params.id, validated, getAuditActor(req));
@@ -2636,7 +2668,7 @@ export async function registerRoutes(
   // Pass 30 (C4.4; CURRENT_FOCUS "Crew."): the visit's crew - the LEAD (the
   // visit's technician, moved by the PATCH above) and SUPPORT technicians
   // added and removed from the dispatch sheet, one appointment_crew_changed
-  // row each. Ungated like every appointment write (C5.6); a SUPPORT
+  // row each. Ungated like every appointment write (C5.10 lists it); a SUPPORT
   // technician the customer excluded is refused like a placement, with the
   // same manager override.
   app.get("/api/appointments/:id/crew", async (req, res) => {
@@ -2698,7 +2730,7 @@ export async function registerRoutes(
   // placement, which used to PATCH the service directly. Each is one
   // transaction through getLinkedServicesForAppointmentTx and one
   // appointment_composition_changed row. Ungated like every appointment write
-  // (C5.6), except that an agreement service's type is ADJUST_PRICE_AGREEMENT
+  // (C5.10 lists it), except that an agreement service's type is ADJUST_PRICE_AGREEMENT
   // (403 SERVICE_TYPE_LOCKED) - the price's rule. Refusals carry a code:
   // LAST_SERVICE_ON_APPOINTMENT (the disposition owns taking a visit off the
   // board), SERVICE_HAS_TICKET, SERVICE_SETTLED, VISIT_INVOICED,
@@ -2708,7 +2740,7 @@ export async function registerRoutes(
   // queued service), stamped with the session user and flagged for office
   // review, and refused when the visit would run into the technician's next
   // stop (409 NEXT_STOP_OVERLAP, the message naming both times). Open to
-  // every role like the rest; the flag is the control (C5.6 later).
+  // every role like the rest; the flag is the control (a gate: C5.10).
   app.post("/api/appointments/:id/services", async (req, res) => {
     try {
       const validated = appointmentServiceAddSchema.parse(req.body);
@@ -2786,8 +2818,8 @@ export async function registerRoutes(
   // Pass 27 (C4.2): the one cancel / reschedule path. The board's Cancel
   // appointment and Reschedule both post here; the technician's route below
   // is an alias with origin FIELD. Ungated like the status PATCH it replaces
-  // and every other appointment write; who may cancel is C5.6's role
-  // profiles.
+  // and every other appointment write; who may cancel is listed, undecided,
+  // under PLAN_ROADMAP_V2.md C5.10.
   app.post("/api/appointments/:id/disposition", async (req, res) => {
     try {
       const validated = appointmentDispositionSchema.parse(req.body);
@@ -2853,7 +2885,7 @@ export async function registerRoutes(
     res.json(data);
   });
 
-  app.post("/api/service-records", async (req, res) => {
+  app.post("/api/service-records", requirePermission(PERMISSIONS.POST_SERVICE_TICKET), async (req, res) => {
     try {
       const validated = serviceRecordSchema.parse(req.body);
       const data = await req.storage.createServiceRecord(validated, getAuditActor(req));
@@ -2973,10 +3005,14 @@ export async function registerRoutes(
     res.json({ mode });
   });
 
-  app.patch("/api/settings/service-time-tracking", async (req, res) => {
+  // Pass 39 (C5.8): MANAGE_SETTINGS like its eight siblings below (it was the
+  // one ungated settings write; the dev DB's PROMPT_FOR_TIMEOUT came through
+  // it). Every settings PATCH passes the actor so the write's `app_setting`
+  // audit row names who changed it.
+  app.patch("/api/settings/service-time-tracking", requirePermission(PERMISSIONS.MANAGE_SETTINGS), async (req, res) => {
     try {
       const validated = serviceTimeTrackingModeSchema.parse(req.body);
-      const data = await req.storage.setServiceTimeTrackingMode(validated.mode);
+      const data = await req.storage.setServiceTimeTrackingMode(validated.mode, getAuditActor(req));
       res.json({ mode: data.value });
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
@@ -2996,7 +3032,7 @@ export async function registerRoutes(
   app.patch("/api/settings/appointment-cancel-reasons", requirePermission(PERMISSIONS.MANAGE_SETTINGS), async (req, res) => {
     try {
       const validated = appointmentCancelReasonsSchema.parse(req.body);
-      const data = await req.storage.setAppointmentCancelReasons(validated.reasons);
+      const data = await req.storage.setAppointmentCancelReasons(validated.reasons, getAuditActor(req));
       res.json({ reasons: JSON.parse(data.value) });
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
@@ -3016,7 +3052,7 @@ export async function registerRoutes(
   app.patch("/api/settings/ticket-reopen-reasons", requirePermission(PERMISSIONS.MANAGE_SETTINGS), async (req, res) => {
     try {
       const validated = ticketReopenReasonsSchema.parse(req.body);
-      const data = await req.storage.setTicketReopenReasons(validated.reasons);
+      const data = await req.storage.setTicketReopenReasons(validated.reasons, getAuditActor(req));
       res.json({ reasons: JSON.parse(data.value) });
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
@@ -3037,7 +3073,7 @@ export async function registerRoutes(
   app.patch("/api/settings/material-units", requirePermission(PERMISSIONS.MANAGE_SETTINGS), async (req, res) => {
     try {
       const validated = materialUnitsSchema.parse(req.body);
-      const data = await req.storage.setMaterialUnits(validated.units);
+      const data = await req.storage.setMaterialUnits(validated.units, getAuditActor(req));
       res.json({ units: JSON.parse(data.value) });
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
@@ -3053,7 +3089,7 @@ export async function registerRoutes(
   app.patch("/api/settings/application-areas", requirePermission(PERMISSIONS.MANAGE_SETTINGS), async (req, res) => {
     try {
       const validated = applicationAreasSchema.parse(req.body);
-      const data = await req.storage.setApplicationAreas(validated.areas);
+      const data = await req.storage.setApplicationAreas(validated.areas, getAuditActor(req));
       res.json({ areas: JSON.parse(data.value) });
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
@@ -3072,7 +3108,7 @@ export async function registerRoutes(
   app.patch("/api/settings/invoice-on-finalize", requirePermission(PERMISSIONS.MANAGE_SETTINGS), async (req, res) => {
     try {
       const validated = invoiceOnFinalizeModeSchema.parse(req.body);
-      const data = await req.storage.setInvoiceOnFinalizeMode(validated.mode);
+      const data = await req.storage.setInvoiceOnFinalizeMode(validated.mode, getAuditActor(req));
       res.json({ mode: normalizeInvoiceOnFinalizeMode(data.value) });
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
@@ -3093,7 +3129,7 @@ export async function registerRoutes(
   app.patch("/api/settings/attach-service-report", requirePermission(PERMISSIONS.MANAGE_SETTINGS), async (req, res) => {
     try {
       const validated = attachServiceReportSchema.parse(req.body);
-      const data = await req.storage.setAttachServiceReportToInvoices(validated.enabled);
+      const data = await req.storage.setAttachServiceReportToInvoices(validated.enabled, getAuditActor(req));
       res.json({ enabled: normalizeAttachServiceReport(data.value) });
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
@@ -3118,7 +3154,7 @@ export async function registerRoutes(
   app.patch("/api/settings/dispatch-board", requirePermission(PERMISSIONS.MANAGE_SETTINGS), async (req, res) => {
     try {
       const validated = dispatchBoardSettingsSchema.parse(req.body);
-      const settings = await req.storage.setDispatchBoardSettings(validated as Partial<DispatchBoardSettings>);
+      const settings = await req.storage.setDispatchBoardSettings(validated as Partial<DispatchBoardSettings>, getAuditActor(req));
       res.json(settings);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
@@ -3146,7 +3182,7 @@ export async function registerRoutes(
   app.patch("/api/settings/billing-defaults", requirePermission(PERMISSIONS.MANAGE_SETTINGS), async (req, res) => {
     try {
       const validated = billingDefaultsSchema.parse(req.body);
-      const settings = await req.storage.setBillingDefaults(validated);
+      const settings = await req.storage.setBillingDefaults(validated, getAuditActor(req));
       res.json(settings);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
@@ -3155,14 +3191,15 @@ export async function registerRoutes(
     }
   });
 
-  // Material Products
+  // Material Products - Pass 39 (C5.8): the writes are MANAGE_SETTINGS like
+  // every Settings reference list; reads stay open (the ticket fills from them).
   app.get("/api/material-products", async (req, res) => {
     const includeInactive = req.query.includeInactive === "true";
     const data = await req.storage.getMaterialProducts(includeInactive);
     res.json(data);
   });
 
-  app.post("/api/material-products", async (req, res) => {
+  app.post("/api/material-products", requirePermission(PERMISSIONS.MANAGE_SETTINGS), async (req, res) => {
     try {
       const validated = materialProductSchema.parse(req.body);
       const data = await req.storage.createMaterialProduct(validated);
@@ -3173,7 +3210,7 @@ export async function registerRoutes(
     }
   });
 
-  app.patch("/api/material-products/:id", async (req, res) => {
+  app.patch("/api/material-products/:id", requirePermission(PERMISSIONS.MANAGE_SETTINGS), async (req, res) => {
     try {
       const validated = updateMaterialProductSchema.parse(req.body);
       const data = await req.storage.updateMaterialProduct(req.params.id, validated);
@@ -3185,14 +3222,15 @@ export async function registerRoutes(
     }
   });
 
-  // Target Pests
+  // Target Pests - Pass 39 (C5.8): the writes are MANAGE_SETTINGS like every
+  // Settings reference list; reads stay open (the ticket's pest picker).
   app.get("/api/target-pests", async (req, res) => {
     const includeInactive = req.query.includeInactive === "true";
     const data = await req.storage.getTargetPests(includeInactive);
     res.json(data);
   });
 
-  app.post("/api/target-pests", async (req, res) => {
+  app.post("/api/target-pests", requirePermission(PERMISSIONS.MANAGE_SETTINGS), async (req, res) => {
     try {
       const validated = targetPestSchema.parse(req.body);
       const data = await req.storage.createTargetPest(validated);
@@ -3203,7 +3241,7 @@ export async function registerRoutes(
     }
   });
 
-  app.patch("/api/target-pests/:id", async (req, res) => {
+  app.patch("/api/target-pests/:id", requirePermission(PERMISSIONS.MANAGE_SETTINGS), async (req, res) => {
     try {
       const validated = updateTargetPestSchema.parse(req.body);
       const data = await req.storage.updateTargetPest(req.params.id, validated);
@@ -3647,7 +3685,8 @@ export async function registerRoutes(
   // collections report above and every other read here: GET /api/invoices
   // already lists every balance in the org to any authenticated role, the
   // RBAC matrix (PLAN_BILLING_V1.md 0.3) gates cost / margin / LTV and not
-  // receivables, and a real read gate is C5.6's role profiles.
+  // receivables, and a real read gate is a per-route decision listed under
+  // PLAN_ROADMAP_V2.md C5.10 (Pass 39).
   app.get("/api/reports/aging", async (req, res) => {
     const data = await req.storage.getAgingReport();
     res.json(data);

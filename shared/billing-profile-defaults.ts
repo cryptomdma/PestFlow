@@ -7,13 +7,13 @@
 // forms and the route schemas validate against (billing type, invoice terms,
 // profile status).
 //
-// Three pointers existed before this pass and only one was read:
+// Three pointers existed before Pass 34 and only one was read:
 // `billing_profiles.location_id` (the forward pointer - canon §4's shape, the
-// resolver's, Pass 11c's invoice parties) is the truth. `locations.billing_
-// profile_id` is the legacy reverse pointer: no reader since this pass, still
-// written by the profile write path as a mirror so the bootstrap's backfill
-// stays true, a dead column to drop in a later hygiene pass.
-// `customers.default_billing_profile_id` has no reader at all (left alone).
+// resolver's, Pass 11c's invoice parties) is the truth. The other two,
+// `locations.billing_profile_id` (the legacy reverse pointer the write path
+// mirrored) and `customers.default_billing_profile_id` (read by nothing), were
+// DROPPED in Pass 39 (C5.8) - the bootstrap carried any surviving reverse
+// pointer onto location_id once before the drop.
 
 /** billing_profiles.billing_type / billing_profile_templates.billing_type. */
 export const BILLING_TYPES = ["card", "ach", "invoice_terms", "cash", "check"] as const;
@@ -33,6 +33,8 @@ export const BILLING_PROFILE_ERROR_CODES = {
   LOCATION_MISMATCH: "BILLING_PROFILE_LOCATION_MISMATCH",
   OVERRIDE_EXISTS: "BILLING_PROFILE_OVERRIDE_EXISTS",
   DEFAULT_EXISTS: "BILLING_PROFILE_DEFAULT_EXISTS",
+  /** Pass 39 (C5.8): `templateId` names no billing profile template of the org - refused 400 before the insert, since the foreign key would make it a 500. */
+  TEMPLATE_UNKNOWN: "BILLING_PROFILE_TEMPLATE_UNKNOWN",
 } as const;
 export type BillingProfileErrorCode = (typeof BILLING_PROFILE_ERROR_CODES)[keyof typeof BILLING_PROFILE_ERROR_CODES];
 

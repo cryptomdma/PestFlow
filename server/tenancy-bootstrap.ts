@@ -21,6 +21,7 @@ const TABLES_REQUIRING_ORG_ID = [
   "contacts",
   "locations",
   "billing_profiles",
+  "billing_profile_templates",
   "customer_notes",
   "note_revisions",
   "service_types",
