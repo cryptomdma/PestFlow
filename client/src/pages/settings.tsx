@@ -53,13 +53,15 @@ import {
 import { DEFAULT_BILLING_DEFAULTS, describeBillingType, type BillingDefaults } from "@shared/billing-profile-defaults";
 import { AGREEMENT_UNITS, AGREEMENT_UNIT_LABELS, SCHEDULING_MODES, SCHEDULING_MODE_LABELS, describeAgreementCadence, describeAgreementTerm, describeAgreementTypeUsage, describeSchedulingMode, deriveAgreementTypeKey, type AgreementTypeUsage } from "@shared/agreement-types";
 import { invalidateAuditViews } from "@/lib/invalidate-audit-views";
+import { AuditLogEntryCard, type AuditLogEntry } from "@/components/audit-log-entry-card";
+import { describeAppSettingKey } from "@shared/app-settings";
 import { describeInvoiceTerms } from "@shared/invoice-detail";
 import { isOnList, matchListEntry } from "@shared/material-lists";
 import { ListMultiSelect } from "@/components/list-multi-select";
 import { Switch } from "@/components/ui/switch";
 import { ServiceWorkKindBadge } from "@/components/service-work-kind-badge";
 import { SERVICE_WORK_KINDS, describeServiceWorkKind, formatServiceWorkKind, normalizeServiceWorkKind, type ServiceWorkKind } from "@shared/service-kind";
-import { Plus, Settings as SettingsIcon, Wrench, FileText, ShieldCheck, FlaskConical, Bug, CreditCard, CalendarClock, Percent, Scale, Building2, Receipt, MapPin, UserCheck, ArrowUp, ArrowDown, AlertTriangle, LayoutGrid, Tag, Shield, UserCog } from "lucide-react";
+import { Plus, Settings as SettingsIcon, Wrench, FileText, ShieldCheck, FlaskConical, Bug, CreditCard, CalendarClock, Percent, Scale, Building2, Receipt, MapPin, UserCheck, ArrowUp, ArrowDown, AlertTriangle, LayoutGrid, Tag, Shield, UserCog, History } from "lucide-react";
 import type { AgreementCancellationPolicy, AgreementTemplate, AgreementType, BillingPlan, BillingProfileTemplate, MaterialProduct, OpportunityAssignmentRule, OpportunityCategory, OpportunityDisposition, Organization, ServiceType, TargetPest, TaxRate, TaxRule, UserSummary, Zone } from "@shared/schema";
 import { DEFAULT_TECHNICIAN_COLOR, NOT_A_TECHNICIAN_LABEL, TECHNICIAN_STATUSES, TECHNICIAN_STATUS_LABELS, describeTechnicianStatus, isTechnicianUser } from "@shared/technicians";
 
@@ -2034,6 +2036,35 @@ function OpportunityAssignmentRuleForm({
   );
 }
 
+// Pass 39 (C5.8): the org-wide read of the `app_setting` audit rows every
+// settings write records (canon §17) - the last few, newest first, each
+// rendered by the History tab's own card so a row reads the same everywhere.
+// The key is labelled (shared/app-settings.ts); the diff shows the stored
+// value before and after. The only Settings-wide history there is.
+const RECENT_SETTINGS_CHANGES_LIMIT = 20;
+
+function RecentSettingsChanges() {
+  const { data: entries, isLoading } = useQuery<AuditLogEntry[]>({
+    queryKey: [`/api/audit-logs?entityType=app_setting&limit=${RECENT_SETTINGS_CHANGES_LIMIT}`],
+  });
+  if (isLoading) {
+    return <div className="space-y-2">{[1, 2, 3].map((i) => <Skeleton key={i} className="h-16" />)}</div>;
+  }
+  if (!entries?.length) {
+    return <p className="text-sm text-muted-foreground" data-testid="text-recent-settings-changes-empty">No settings changes recorded yet. Changes made from this page are listed here from now on.</p>;
+  }
+  return (
+    <div className="space-y-3">
+      {entries.map((entry) => (
+        <div key={entry.id} data-testid={`row-setting-change-${entry.id}`}>
+          <p className="mb-1 text-sm font-medium">{describeAppSettingKey(entry.entityId)}</p>
+          <AuditLogEntryCard entry={entry} showEntityType={false} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function Settings() {
   const { toast } = useToast();
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -2183,6 +2214,7 @@ export default function Settings() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/settings/service-time-tracking"] });
+      invalidateAuditViews();
       toast({ title: "Service time tracking updated" });
     },
     onError: (error: Error) => toast({ title: "Unable to update time tracking", description: error.message, variant: "destructive" }),
@@ -2194,6 +2226,7 @@ export default function Settings() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/settings/invoice-on-finalize"] });
+      invalidateAuditViews();
       toast({ title: "Invoicing on finalization updated" });
     },
     onError: (error: Error) => toast({ title: "Unable to update invoicing on finalization", description: error.message, variant: "destructive" }),
@@ -2210,6 +2243,7 @@ export default function Settings() {
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["/api/settings/attach-service-report"] });
+      invalidateAuditViews();
       toast({
         title: data.enabled ? "Service reports will be attached to visit invoices" : "Service reports will no longer be attached to visit invoices",
         description: "Applies to invoice PDFs rendered from now on. A PDF already rendered keeps what it rendered.",
@@ -2235,6 +2269,7 @@ export default function Settings() {
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["/api/settings/dispatch-board"] });
+      invalidateAuditViews();
       toast({
         title: "Dispatch board settings updated",
         description: `${describeViewInterval(data.viewIntervalMinutes).summary}, ${describeSnapInterval(data.snapMinutes)} snap, ${formatHourOfDay(data.defaultStartHour)} - ${formatHourOfDay(data.defaultEndHour)}. The board reads these on its next load.`,
@@ -2257,6 +2292,7 @@ export default function Settings() {
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["/api/settings/billing-defaults"] });
+      invalidateAuditViews();
       const template = billingProfileTemplates?.find((candidate) => candidate.id === data.defaultBillingProfileTemplateId);
       toast({
         title: "Billing defaults updated",
@@ -2276,6 +2312,7 @@ export default function Settings() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/settings/appointment-cancel-reasons"] });
+      invalidateAuditViews();
       toast({ title: "Appointment reasons updated" });
     },
     onError: (error: Error) => toast({ title: "Unable to update appointment reasons", description: error.message, variant: "destructive" }),
@@ -2291,6 +2328,7 @@ export default function Settings() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/settings/ticket-reopen-reasons"] });
+      invalidateAuditViews();
       toast({ title: "Ticket reopen reasons updated" });
     },
     onError: (error: Error) => toast({ title: "Unable to update ticket reopen reasons", description: error.message, variant: "destructive" }),
@@ -2303,6 +2341,7 @@ export default function Settings() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/settings/material-units"] });
+      invalidateAuditViews();
       toast({ title: "Material units updated" });
     },
     onError: (error: Error) => toast({ title: "Unable to update material units", description: error.message, variant: "destructive" }),
@@ -2315,6 +2354,7 @@ export default function Settings() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/settings/application-areas"] });
+      invalidateAuditViews();
       toast({ title: "Application areas updated" });
     },
     onError: (error: Error) => toast({ title: "Unable to update application areas", description: error.message, variant: "destructive" }),
@@ -2427,13 +2467,19 @@ export default function Settings() {
       <Card>
         <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
           <CardTitle className="text-base font-semibold flex items-center gap-2"><Bug className="h-4 w-4" /> Target Pests</CardTitle>
-          <Dialog open={targetPestDialogOpen} onOpenChange={(open) => { setTargetPestDialogOpen(open); if (!open) setEditingTargetPest(null); }}>
-            <DialogTrigger asChild><Button size="sm" onClick={() => setEditingTargetPest(null)}><Plus className="h-3 w-3 mr-1" /> Add Pest</Button></DialogTrigger>
-            <DialogContent>
-              <DialogHeader><DialogTitle>{editingTargetPest ? "Edit Target Pest" : "New Target Pest"}</DialogTitle></DialogHeader>
-              <TargetPestForm pest={editingTargetPest} onClose={() => { setTargetPestDialogOpen(false); setEditingTargetPest(null); }} />
-            </DialogContent>
-          </Dialog>
+          {/* Pass 39 (C5.8): the pest routes' writes are MANAGE_SETTINGS since this pass, like every
+              Settings reference list. Everyone else reads the list. */}
+          {canManageSettings ? (
+            <Dialog open={targetPestDialogOpen} onOpenChange={(open) => { setTargetPestDialogOpen(open); if (!open) setEditingTargetPest(null); }}>
+              <DialogTrigger asChild><Button size="sm" onClick={() => setEditingTargetPest(null)}><Plus className="h-3 w-3 mr-1" /> Add Pest</Button></DialogTrigger>
+              <DialogContent>
+                <DialogHeader><DialogTitle>{editingTargetPest ? "Edit Target Pest" : "New Target Pest"}</DialogTitle></DialogHeader>
+                <TargetPestForm pest={editingTargetPest} onClose={() => { setTargetPestDialogOpen(false); setEditingTargetPest(null); }} />
+              </DialogContent>
+            </Dialog>
+          ) : (
+            <p className="text-xs text-muted-foreground" data-testid="text-target-pests-admin-only">Target pests are managed by {settingsManagers} (Manage Settings).</p>
+          )}
         </CardHeader>
         <CardContent>
           {targetPestsLoading ? (
@@ -2455,7 +2501,7 @@ export default function Settings() {
                     </div>
                     <p className="mt-0.5 text-xs text-muted-foreground">Sort: {pest.sortOrder}{pest.notes ? ` | ${pest.notes}` : ""}</p>
                   </div>
-                  <Button variant="outline" size="sm" onClick={() => { setEditingTargetPest(pest); setTargetPestDialogOpen(true); }}>Edit</Button>
+                  <Button variant="outline" size="sm" onClick={() => { setEditingTargetPest(pest); setTargetPestDialogOpen(true); }} disabled={!canManageSettings} title={canManageSettings ? undefined : settingsManagedBy}>Edit</Button>
                 </div>
               ))}
             </div>
@@ -2552,13 +2598,18 @@ export default function Settings() {
       <Card>
         <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
           <CardTitle className="text-base font-semibold flex items-center gap-2"><CalendarClock className="h-4 w-4" /> Billing Plans</CardTitle>
-          <Dialog open={billingPlanDialogOpen} onOpenChange={(open) => { setBillingPlanDialogOpen(open); if (!open) setEditingBillingPlan(null); }}>
-            <DialogTrigger asChild><Button size="sm" onClick={() => setEditingBillingPlan(null)}><Plus className="h-3 w-3 mr-1" /> Add Plan</Button></DialogTrigger>
-            <DialogContent>
-              <DialogHeader><DialogTitle>{editingBillingPlan ? "Edit Billing Plan" : "New Billing Plan"}</DialogTitle></DialogHeader>
-              <BillingPlanForm plan={editingBillingPlan} onClose={() => { setBillingPlanDialogOpen(false); setEditingBillingPlan(null); }} />
-            </DialogContent>
-          </Dialog>
+          {/* Pass 39 (C5.8): the plan routes' writes are MANAGE_SETTINGS since this pass. */}
+          {canManageSettings ? (
+            <Dialog open={billingPlanDialogOpen} onOpenChange={(open) => { setBillingPlanDialogOpen(open); if (!open) setEditingBillingPlan(null); }}>
+              <DialogTrigger asChild><Button size="sm" onClick={() => setEditingBillingPlan(null)}><Plus className="h-3 w-3 mr-1" /> Add Plan</Button></DialogTrigger>
+              <DialogContent>
+                <DialogHeader><DialogTitle>{editingBillingPlan ? "Edit Billing Plan" : "New Billing Plan"}</DialogTitle></DialogHeader>
+                <BillingPlanForm plan={editingBillingPlan} onClose={() => { setBillingPlanDialogOpen(false); setEditingBillingPlan(null); }} />
+              </DialogContent>
+            </Dialog>
+          ) : (
+            <p className="text-xs text-muted-foreground" data-testid="text-billing-plans-admin-only">Billing plans are managed by {settingsManagers} (Manage Settings).</p>
+          )}
         </CardHeader>
         <CardContent>
           {billingPlansLoading ? (
@@ -2586,7 +2637,7 @@ export default function Settings() {
                       <p className="mt-0.5 text-xs text-muted-foreground">An agreement's initial charge covers its first period</p>
                     )}
                   </div>
-                  <Button variant="outline" size="sm" onClick={() => { setEditingBillingPlan(plan); setBillingPlanDialogOpen(true); }}>Edit</Button>
+                  <Button variant="outline" size="sm" onClick={() => { setEditingBillingPlan(plan); setBillingPlanDialogOpen(true); }} disabled={!canManageSettings} title={canManageSettings ? undefined : settingsManagedBy}>Edit</Button>
                 </div>
               ))}
             </div>
@@ -2807,13 +2858,18 @@ export default function Settings() {
       <Card>
         <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
           <CardTitle className="text-base font-semibold flex items-center gap-2"><FlaskConical className="h-4 w-4" /> Material Products</CardTitle>
-          <Dialog open={materialDialogOpen} onOpenChange={(open) => { setMaterialDialogOpen(open); if (!open) setEditingMaterialProduct(null); }}>
-            <DialogTrigger asChild><Button size="sm" onClick={() => setEditingMaterialProduct(null)}><Plus className="h-3 w-3 mr-1" /> Add Product</Button></DialogTrigger>
-            <DialogContent className="max-w-3xl">
-              <DialogHeader><DialogTitle>{editingMaterialProduct ? "Edit Material Product" : "New Material Product"}</DialogTitle></DialogHeader>
-              <MaterialProductForm product={editingMaterialProduct} onClose={() => { setMaterialDialogOpen(false); setEditingMaterialProduct(null); }} units={materialUnits?.units ?? []} areas={applicationAreas?.areas ?? []} />
-            </DialogContent>
-          </Dialog>
+          {/* Pass 39 (C5.8): the product routes' writes are MANAGE_SETTINGS since this pass. */}
+          {canManageSettings ? (
+            <Dialog open={materialDialogOpen} onOpenChange={(open) => { setMaterialDialogOpen(open); if (!open) setEditingMaterialProduct(null); }}>
+              <DialogTrigger asChild><Button size="sm" onClick={() => setEditingMaterialProduct(null)}><Plus className="h-3 w-3 mr-1" /> Add Product</Button></DialogTrigger>
+              <DialogContent className="max-w-3xl">
+                <DialogHeader><DialogTitle>{editingMaterialProduct ? "Edit Material Product" : "New Material Product"}</DialogTitle></DialogHeader>
+                <MaterialProductForm product={editingMaterialProduct} onClose={() => { setMaterialDialogOpen(false); setEditingMaterialProduct(null); }} units={materialUnits?.units ?? []} areas={applicationAreas?.areas ?? []} />
+              </DialogContent>
+            </Dialog>
+          ) : (
+            <p className="text-xs text-muted-foreground" data-testid="text-material-products-admin-only">Material products are managed by {settingsManagers} (Manage Settings).</p>
+          )}
         </CardHeader>
         <CardContent>
           {materialProductsLoading ? (
@@ -2838,7 +2894,7 @@ export default function Settings() {
                       {product.manufacturer || "No manufacturer"} | AI {product.activeIngredientPercent ?? "not set"}% | Default unit: {product.defaultUnit || "not set"} | Default area: {product.defaultApplicationArea || "not set"}
                     </p>
                   </div>
-                  <Button variant="outline" size="sm" onClick={() => { setEditingMaterialProduct(product); setMaterialDialogOpen(true); }}>Edit</Button>
+                  <Button variant="outline" size="sm" onClick={() => { setEditingMaterialProduct(product); setMaterialDialogOpen(true); }} disabled={!canManageSettings} title={canManageSettings ? undefined : settingsManagedBy}>Edit</Button>
                 </div>
               ))}
             </div>
@@ -2849,6 +2905,9 @@ export default function Settings() {
       <Card data-testid="card-opportunity-categories">
         <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
           <CardTitle className="text-base font-semibold flex items-center gap-2"><SettingsIcon className="h-4 w-4" /> Opportunity Categories</CardTitle>
+          {/* Pass 39 (C5.8): the category PATCH is MANAGE_SETTINGS since this pass; the Edit buttons
+              below disable for everyone else (there is no Add - the five keys are fixed). */}
+          {!canManageSettings ? <p className="text-xs text-muted-foreground" data-testid="text-opportunity-categories-admin-only">Opportunity categories are managed by {settingsManagers} (Manage Settings).</p> : null}
           <Dialog open={categoryDialogOpen} onOpenChange={(open) => { setCategoryDialogOpen(open); if (!open) setEditingCategory(null); }}>
             <DialogContent>
               <DialogHeader><DialogTitle>Edit Opportunity Category</DialogTitle></DialogHeader>
@@ -2878,7 +2937,7 @@ export default function Settings() {
                     </div>
                     <p className="mt-0.5 text-xs text-muted-foreground">Key: {category.key} | Sort: {category.sortOrder}</p>
                   </div>
-                  <Button variant="outline" size="sm" onClick={() => { setEditingCategory(category); setCategoryDialogOpen(true); }}>
+                  <Button variant="outline" size="sm" onClick={() => { setEditingCategory(category); setCategoryDialogOpen(true); }} disabled={!canManageSettings} title={canManageSettings ? undefined : settingsManagedBy}>
                     Edit
                   </Button>
                 </div>
@@ -3015,13 +3074,18 @@ export default function Settings() {
       <Card>
         <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
           <CardTitle className="text-base font-semibold flex items-center gap-2"><SettingsIcon className="h-4 w-4" /> Opportunity Dispositions</CardTitle>
-          <Dialog open={dispositionDialogOpen} onOpenChange={(open) => { setDispositionDialogOpen(open); if (!open) setEditingDisposition(null); }}>
-            <DialogTrigger asChild><Button size="sm" onClick={() => setEditingDisposition(null)}><Plus className="h-3 w-3 mr-1" /> Add Disposition</Button></DialogTrigger>
-            <DialogContent>
-              <DialogHeader><DialogTitle>{editingDisposition ? "Edit Opportunity Disposition" : "New Opportunity Disposition"}</DialogTitle></DialogHeader>
-              <OpportunityDispositionForm disposition={editingDisposition} onClose={() => { setDispositionDialogOpen(false); setEditingDisposition(null); }} />
-            </DialogContent>
-          </Dialog>
+          {/* Pass 39 (C5.8): the disposition routes' writes are MANAGE_SETTINGS since this pass. */}
+          {canManageSettings ? (
+            <Dialog open={dispositionDialogOpen} onOpenChange={(open) => { setDispositionDialogOpen(open); if (!open) setEditingDisposition(null); }}>
+              <DialogTrigger asChild><Button size="sm" onClick={() => setEditingDisposition(null)}><Plus className="h-3 w-3 mr-1" /> Add Disposition</Button></DialogTrigger>
+              <DialogContent>
+                <DialogHeader><DialogTitle>{editingDisposition ? "Edit Opportunity Disposition" : "New Opportunity Disposition"}</DialogTitle></DialogHeader>
+                <OpportunityDispositionForm disposition={editingDisposition} onClose={() => { setDispositionDialogOpen(false); setEditingDisposition(null); }} />
+              </DialogContent>
+            </Dialog>
+          ) : (
+            <p className="text-xs text-muted-foreground" data-testid="text-opportunity-dispositions-admin-only">Opportunity dispositions are managed by {settingsManagers} (Manage Settings).</p>
+          )}
         </CardHeader>
         <CardContent>
           {dispositionsLoading ? (
@@ -3047,7 +3111,7 @@ export default function Settings() {
                       Key: {disposition.key} | Callback: {disposition.defaultCallbackDays ?? "None"} day(s) | Sort: {disposition.sortOrder}
                     </p>
                   </div>
-                  <Button variant="outline" size="sm" onClick={() => { setEditingDisposition(disposition); setDispositionDialogOpen(true); }}>
+                  <Button variant="outline" size="sm" onClick={() => { setEditingDisposition(disposition); setDispositionDialogOpen(true); }} disabled={!canManageSettings} title={canManageSettings ? undefined : settingsManagedBy}>
                     Edit
                   </Button>
                 </div>
@@ -3195,13 +3259,18 @@ export default function Settings() {
       <Card>
         <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
           <CardTitle className="text-base font-semibold flex items-center gap-2"><ShieldCheck className="h-4 w-4" /> Agreement Cancellation Policies</CardTitle>
-          <Dialog open={policyDialogOpen} onOpenChange={closePolicyDialog}>
-            <DialogTrigger asChild><Button size="sm" onClick={() => { setEditingPolicy(null); setPolicyDialogOpen(true); }}><Plus className="h-3 w-3 mr-1" /> Add Policy</Button></DialogTrigger>
-            <DialogContent className="max-w-2xl">
-              <DialogHeader><DialogTitle>{editingPolicy ? "Edit Cancellation Policy" : "New Cancellation Policy"}</DialogTitle></DialogHeader>
-              <AgreementCancellationPolicyForm policy={editingPolicy} onClose={() => closePolicyDialog(false)} />
-            </DialogContent>
-          </Dialog>
+          {/* Pass 39 (C5.8): the policy routes' writes are MANAGE_SETTINGS since this pass. */}
+          {canManageSettings ? (
+            <Dialog open={policyDialogOpen} onOpenChange={closePolicyDialog}>
+              <DialogTrigger asChild><Button size="sm" onClick={() => { setEditingPolicy(null); setPolicyDialogOpen(true); }}><Plus className="h-3 w-3 mr-1" /> Add Policy</Button></DialogTrigger>
+              <DialogContent className="max-w-2xl">
+                <DialogHeader><DialogTitle>{editingPolicy ? "Edit Cancellation Policy" : "New Cancellation Policy"}</DialogTitle></DialogHeader>
+                <AgreementCancellationPolicyForm policy={editingPolicy} onClose={() => closePolicyDialog(false)} />
+              </DialogContent>
+            </Dialog>
+          ) : (
+            <p className="text-xs text-muted-foreground" data-testid="text-cancellation-policies-admin-only">Cancellation policies are managed by {settingsManagers} (Manage Settings).</p>
+          )}
         </CardHeader>
         <CardContent>
           {policiesLoading ? (
@@ -3222,7 +3291,7 @@ export default function Settings() {
                     </div>
                     <p className="text-xs text-muted-foreground">{formatCancellationFee(policy)} - {policy.noticeDays} day notice - {policy.effectiveDateMode.replaceAll("_", " ").toLowerCase()}</p>
                   </div>
-                  <Button variant="outline" size="sm" onClick={() => { setEditingPolicy(policy); setPolicyDialogOpen(true); }}>Edit</Button>
+                  <Button variant="outline" size="sm" onClick={() => { setEditingPolicy(policy); setPolicyDialogOpen(true); }} disabled={!canManageSettings} title={canManageSettings ? undefined : settingsManagedBy}>Edit</Button>
                 </div>
               ))}
             </div>
@@ -3291,13 +3360,19 @@ export default function Settings() {
       <Card>
         <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
           <CardTitle className="text-base font-semibold flex items-center gap-2"><FileText className="h-4 w-4" /> Agreement Templates</CardTitle>
-          <Dialog open={templateDialogOpen} onOpenChange={closeTemplateDialog}>
-            <DialogTrigger asChild><Button size="sm" data-testid="button-add-agreement-template" onClick={openCreateTemplate}><Plus className="h-3 w-3 mr-1" /> Add Template</Button></DialogTrigger>
-            <DialogContent className="max-w-2xl">
-              <DialogHeader><DialogTitle>{editingTemplate ? "Edit Agreement Template" : "New Agreement Template"}</DialogTitle></DialogHeader>
-              <AgreementTemplateForm serviceTypes={serviceTypes} cancellationPolicies={cancellationPolicies} billingPlans={billingPlans} agreementTypes={agreementTypes} template={editingTemplate} onClose={() => closeTemplateDialog(false)} />
-            </DialogContent>
-          </Dialog>
+          {/* Pass 39 (C5.8): the template routes' writes are MANAGE_SETTINGS since this pass (open to
+              every role from Phase 0 until then). Everyone else reads the list. */}
+          {canManageSettings ? (
+            <Dialog open={templateDialogOpen} onOpenChange={closeTemplateDialog}>
+              <DialogTrigger asChild><Button size="sm" data-testid="button-add-agreement-template" onClick={openCreateTemplate}><Plus className="h-3 w-3 mr-1" /> Add Template</Button></DialogTrigger>
+              <DialogContent className="max-w-2xl">
+                <DialogHeader><DialogTitle>{editingTemplate ? "Edit Agreement Template" : "New Agreement Template"}</DialogTitle></DialogHeader>
+                <AgreementTemplateForm serviceTypes={serviceTypes} cancellationPolicies={cancellationPolicies} billingPlans={billingPlans} agreementTypes={agreementTypes} template={editingTemplate} onClose={() => closeTemplateDialog(false)} />
+              </DialogContent>
+            </Dialog>
+          ) : (
+            <p className="text-xs text-muted-foreground" data-testid="text-agreement-templates-admin-only">Agreement templates are managed by {settingsManagers} (Manage Settings).</p>
+          )}
         </CardHeader>
         <CardContent>
           {templatesLoading ? (
@@ -3306,7 +3381,7 @@ export default function Settings() {
             <div className="text-center py-8">
               <FileText className="h-8 w-8 mx-auto text-muted-foreground/30 mb-2" />
               <p className="text-sm text-muted-foreground">No agreement templates configured</p>
-              <Button variant="outline" size="sm" className="mt-3" onClick={openCreateTemplate}>Add Agreement Template</Button>
+              {canManageSettings ? <Button variant="outline" size="sm" className="mt-3" onClick={openCreateTemplate}>Add Agreement Template</Button> : null}
             </div>
           ) : (
             <div className="space-y-2">
@@ -3344,7 +3419,7 @@ export default function Settings() {
                       </div>
                       <div className="flex items-center gap-3 shrink-0">
                         {template.defaultPriceCents != null && <span className="text-sm font-semibold">{formatCents(template.defaultPriceCents)}</span>}
-                        <Button variant="outline" size="sm" onClick={() => openEditTemplate(template)} data-testid={`button-edit-agreement-template-${template.id}`}>Edit</Button>
+                        <Button variant="outline" size="sm" onClick={() => openEditTemplate(template)} data-testid={`button-edit-agreement-template-${template.id}`} disabled={!canManageSettings} title={canManageSettings ? undefined : settingsManagedBy}>Edit</Button>
                       </div>
                     </div>
                   );
@@ -3361,11 +3436,14 @@ export default function Settings() {
         <CardContent className="space-y-3">
           <div className="max-w-md space-y-2">
             <Label>Service Time Tracking Mode</Label>
+            {/* Pass 39 (C5.8): the PATCH is MANAGE_SETTINGS since this pass (it was the one ungated
+                settings write), so the select is disabled - not hidden - for everyone else. */}
             <Select
               value={serviceTimeTracking?.mode || "AUTO_TIMEOUT_ON_TICKET_POST"}
               onValueChange={(mode) => updateServiceTimeTrackingMutation.mutate(mode)}
+              disabled={!canManageSettings || updateServiceTimeTrackingMutation.isPending}
             >
-              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectTrigger data-testid="select-service-time-tracking"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="AUTO_TIMEOUT_ON_TICKET_POST">Auto time out on ticket post</SelectItem>
                 <SelectItem value="PROMPT_FOR_TIMEOUT">Prompt tech after ticket post</SelectItem>
@@ -3373,6 +3451,7 @@ export default function Settings() {
               </SelectContent>
             </Select>
           </div>
+          {!canManageSettings ? <p className="text-xs text-muted-foreground">Only {settingsManagers} can change this setting (Manage Settings).</p> : null}
           <p className="text-xs text-muted-foreground">
             Controls appointment time-out behavior after technicians post service tickets. GPS fields are staged for a later route/field validation pass.
           </p>
@@ -3536,6 +3615,17 @@ export default function Settings() {
           >
             {updateTicketReopenReasonsMutation.isPending ? "Saving..." : "Save Reasons"}
           </Button>
+        </CardContent>
+      </Card>
+
+      {/* Pass 39 (C5.8): every settings write above records an `app_setting` audit row on its key
+          (canon §17); this card is the org-wide read of those rows. */}
+      <Card data-testid="card-recent-settings-changes">
+        <CardHeader>
+          <CardTitle className="text-base font-semibold flex items-center gap-2"><History className="h-4 w-4" /> Recent settings changes</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <RecentSettingsChanges />
         </CardContent>
       </Card>
 

@@ -113,6 +113,15 @@ Product owner feedback from hands-on testing — notes for the dev to review, qu
   - Adjust if duration is modified and apply conflict resolution prompt to this use case if a conflict exists.
   > **Review (2026-10-03):** QUALIFIED — agreed; not built in Pass 31. Today a card sits in its start slot and prints "N min"; spanning the slots the visit covers needs the minute-based slots Pass 31 (roadmap C4.5) just built, so it is its own rendering pass. Two qualifications: the span should be the planned window Pass 30b defined (the stored end, else the representative service's duration, else 60 minutes - `plannedWindow`), and the conflict prompt on a duration change is the lead-visit clash check Pass 30b noted as not built (today only a support add is checked). Roadmap: `PLAN_ROADMAP_V2.md` Phase 4 table, new row **C4.6**, unscheduled - the owner sequences it against Phase 5 (the next pass in phase order is Pass 32, C5.1a).
 
+## Users
+
+- [ ] **FB022 - Create/Edit Users**
+  - User profiles should be editable (role gated)
+  - Create new user (role gated)
+  - User profiles should include personal and professional information
+    - License # (technician) that is referenced automatically on service tickets; Home/starting address (all roles) ; other pertinent information
+  > **Review (2026-10-08):** QUALIFIED — most of this exists since Pass 38 (PR #110, merged the day this was written): Settings → Users and technicians has Add / Edit for one person (name, email, phone, role, login status, the technician block) behind Manage Settings (`POST /api/users`, `PATCH /api/users/:id`), and the license number (`users.licenseId`) is copied onto every ticket the technician posts (the ticket's name / license snapshot, printed on the service report). Not built: a home / starting address on users (no column today; it is also Smart Schedule's prerequisite), and the login itself - a created user has no password until the invite / set-password flow lands. Both are roadmap **C5.9** (`PLAN_ROADMAP_V2.md` Phase 5 table), which now names the address; "other pertinent information" needs the fields named before it can be built. Not built in Pass 39 (C5.8, this session - a hygiene pass).
+
 ## Archive
 
 - [x] **FB-010 — Widen modal viewport** (New Service)

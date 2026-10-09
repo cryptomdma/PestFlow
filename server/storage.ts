@@ -540,10 +540,13 @@ export interface AuditLogRevertResult {
 // soldBy is the snapshot's label for soldByUserId.
 const REVERT_STRIPPED_FIELDS = ["id", "orgId", "createdAt", "updatedAt", "updatedByUserId", "createdByUserId", AUDIT_REVERTED_MARKER];
 const REVERT_ENTITY_STRIPPED_FIELDS: Record<RevertableAuditEntityType, string[]> = {
-  customer: [],
-  // Pass 34 (C5.2): a location's legacy billing pointer is a mirror the
-  // profile write path keeps (never a field a revert puts back); a profile's
-  // card / ACH tokens and last four are Phase 6's capture, never a replay.
+  // Pass 39 (C5.8): the two legacy billing pointers are DROPPED columns. The
+  // snapshots written before the drop still carry them, and a revert of such
+  // a row puts back nothing for them - there is no column to put it in.
+  customer: ["defaultBillingProfileId"],
+  // Pass 34 (C5.2) / Pass 39: the location's pointer was a mirror the profile
+  // write path kept and is gone; a profile's card / ACH tokens and last four
+  // are Phase 6's capture, never a replay.
   location: ["customerId", "accountId", "billingProfileId"],
   contact: ["customerId", "locationId"],
   billing_profile: ["accountId", "cardOnFileToken", "achToken", "lastFour"],
@@ -1890,35 +1893,38 @@ export interface IStorage {
   finalizeServiceRecord(id: string, actor?: AuditActor): Promise<FinalizeServiceRecordResult | undefined>;
   reopenServiceRecord(input: ReopenServiceRecordInput): Promise<ServiceRecord | undefined>;
   getServiceTimeTrackingMode(): Promise<ServiceTimeTrackingMode>;
-  setServiceTimeTrackingMode(mode: ServiceTimeTrackingMode): Promise<AppSetting>;
+  // Pass 39 (C5.8): every set* writer below takes the session's actor and
+  // records an `app_setting` audit row on the key (nothing on an unchanged
+  // save) - see upsertSettingTx.
+  setServiceTimeTrackingMode(mode: ServiceTimeTrackingMode, actor?: AuditActor | null): Promise<AppSetting>;
   getAppointmentCancelReasons(): Promise<string[]>;
-  setAppointmentCancelReasons(reasons: string[]): Promise<AppSetting>;
+  setAppointmentCancelReasons(reasons: string[], actor?: AuditActor | null): Promise<AppSetting>;
   getTicketReopenReasons(): Promise<string[]>;
-  setTicketReopenReasons(reasons: string[]): Promise<AppSetting>;
+  setTicketReopenReasons(reasons: string[], actor?: AuditActor | null): Promise<AppSetting>;
   getMaterialUnits(): Promise<string[]>;
-  setMaterialUnits(units: string[]): Promise<AppSetting>;
+  setMaterialUnits(units: string[], actor?: AuditActor | null): Promise<AppSetting>;
   getApplicationAreas(): Promise<string[]>;
-  setApplicationAreas(areas: string[]): Promise<AppSetting>;
+  setApplicationAreas(areas: string[], actor?: AuditActor | null): Promise<AppSetting>;
   getInvoiceOnFinalizeMode(): Promise<InvoiceOnFinalizeMode>;
-  setInvoiceOnFinalizeMode(mode: InvoiceOnFinalizeMode): Promise<AppSetting>;
+  setInvoiceOnFinalizeMode(mode: InvoiceOnFinalizeMode, actor?: AuditActor | null): Promise<AppSetting>;
   // Pass 22 (C3.5; B11): "Attach service report to visit invoices" - one
   // boolean app_settings row (shared/service-report.ts), default off, read
   // by getInvoiceDocumentContext when an invoice PDF is first rendered.
   getAttachServiceReportToInvoices(): Promise<boolean>;
-  setAttachServiceReportToInvoices(enabled: boolean): Promise<AppSetting>;
+  setAttachServiceReportToInvoices(enabled: boolean, actor?: AuditActor | null): Promise<AppSetting>;
   // Pass 31 (C4.5): Settings -> Dispatch Board - the view interval, the snap
   // interval and the default visible hours (shared/dispatch-board.ts), one
   // app_settings row per value and no seed row: a missing or unrecognised
   // row reads as its default. The write takes a partial, validates the four
   // together and upserts only the values given.
   getDispatchBoardSettings(): Promise<DispatchBoardSettings>;
-  setDispatchBoardSettings(patch: Partial<DispatchBoardSettings>): Promise<DispatchBoardSettings>;
+  setDispatchBoardSettings(patch: Partial<DispatchBoardSettings>, actor?: AuditActor | null): Promise<DispatchBoardSettings>;
   // Pass 34 (C5.2): the org default template a new customer's account-default
   // billing profile is created from - one app_settings row, no seed row
   // (null = none). The write refuses an unknown or inactive template; null
   // deletes the row.
   getBillingDefaults(): Promise<BillingDefaults>;
-  setBillingDefaults(next: BillingDefaults): Promise<BillingDefaults>;
+  setBillingDefaults(next: BillingDefaults, actor?: AuditActor | null): Promise<BillingDefaults>;
 
   getMaterialProducts(includeInactive?: boolean): Promise<MaterialProduct[]>;
   createMaterialProduct(data: InsertMaterialProduct): Promise<MaterialProduct>;
@@ -2059,7 +2065,7 @@ export interface IStorage {
   // per-customer rollup, and Revert - which writes nothing to the table
   // itself: it replays the source row's before through the entity's own
   // update method, and that method writes the `reverted` row.
-  getAuditLogsForEntity(entityType: string, entityId: string, limit?: number): Promise<AuditLog[]>;
+  getAuditLogsForEntity(entityType: string, entityId: string | null, limit?: number): Promise<AuditLog[]>;
   getAuditLogsForLocation(locationId: string, limit?: number): Promise<AuditLog[]>;
   getAuditLogsForCustomer(customerId: string, limit?: number): Promise<AuditLogWithLocation[]>;
   planAuditLogRevert(auditLogId: string): Promise<AuditLogRevertPlan>;
@@ -2381,11 +2387,14 @@ export class DatabaseStorage implements IStorage {
   // now(), which in Postgres is transaction-start time - two rows written in
   // one transaction share a timestamp exactly - so id is the tiebreaker that
   // keeps paging and rendering order stable.
-  async getAuditLogsForEntity(entityType: string, entityId: string, limit?: number): Promise<AuditLog[]> {
+  // Pass 39 (C5.8): with no entityId, every row of the type, org-wide - the
+  // Settings page's "Recent settings changes" reads entityType=app_setting
+  // alone (the one org-wide entity with more than a handful of ids).
+  async getAuditLogsForEntity(entityType: string, entityId: string | null, limit?: number): Promise<AuditLog[]> {
     return db
       .select()
       .from(auditLogs)
-      .where(and(eq(auditLogs.orgId, this.orgId), eq(auditLogs.entityType, entityType), eq(auditLogs.entityId, entityId)))
+      .where(and(eq(auditLogs.orgId, this.orgId), eq(auditLogs.entityType, entityType), entityId ? eq(auditLogs.entityId, entityId) : undefined))
       .orderBy(desc(auditLogs.createdAt), desc(auditLogs.id))
       .limit(clampAuditLogLimit(limit));
   }
@@ -4114,8 +4123,8 @@ export class DatabaseStorage implements IStorage {
 
     // Pass 34 (C5.2): the selected location's billing by the same resolver
     // the invoices use, plus the account's active rows for the default and
-    // the overrides - the forward pointer (billing_profiles.location_id)
-    // only; locations.billing_profile_id has no reader since this pass.
+    // the overrides - the forward pointer (billing_profiles.location_id),
+    // the only one since Pass 39 dropped the legacy mirror on locations.
     const resolvedProfile = await this.resolveBillingProfileForLocationTx(db, selectedLocation);
     const activeProfiles = await db
       .select()
@@ -4441,11 +4450,24 @@ export class DatabaseStorage implements IStorage {
   // resolver already filters on active.
   private async assertBillingProfileRulesTx(
     tx: DbTransaction,
-    next: { id?: string; accountId: string; locationId: string | null; isDefault: boolean; status: string },
+    next: { id?: string; accountId: string; locationId: string | null; templateId: string | null; isDefault: boolean; status: string },
   ): Promise<void> {
     const [account] = await tx.select({ id: accounts.id }).from(accounts).where(and(eq(accounts.orgId, this.orgId), eq(accounts.id, next.accountId)));
     if (!account) {
       throw new BillingProfileError(BILLING_PROFILE_ERROR_CODES.ACCOUNT_NOT_FOUND, "Billing profile account not found");
+    }
+    // Pass 39 (C5.8): the template, when named, must be one of the org's -
+    // the foreign key the bootstrap adds would otherwise turn an unknown id
+    // into a 500 at the insert. Active or not: a profile created from a
+    // template that was retired since is still edited under it.
+    if (next.templateId) {
+      const [template] = await tx
+        .select({ id: billingProfileTemplates.id })
+        .from(billingProfileTemplates)
+        .where(and(eq(billingProfileTemplates.orgId, this.orgId), eq(billingProfileTemplates.id, next.templateId)));
+      if (!template) {
+        throw new BillingProfileError(BILLING_PROFILE_ERROR_CODES.TEMPLATE_UNKNOWN, "The billing profile template was not found");
+      }
     }
     if (next.locationId) {
       const [location] = await tx
@@ -4472,38 +4494,20 @@ export class DatabaseStorage implements IStorage {
     }
   }
 
-  // The legacy reverse pointer (locations.billing_profile_id), kept as a
-  // mirror of the forward pointer: the active override's id on its location,
-  // cleared when that override is retired or moved. No reader since Pass 34
-  // (C5.2), and no location audit row - the profile's own row is the record,
-  // and a location `update` naming the mirror would invite a Revert that
-  // desyncs the two. The column is dropped in a later hygiene pass.
-  private async syncLegacyLocationPointerTx(tx: DbTransaction, before: BillingProfile | null, after: BillingProfile): Promise<void> {
-    if (before?.locationId && (before.locationId !== after.locationId || after.status !== "active")) {
-      await tx
-        .update(locations)
-        .set({ billingProfileId: null })
-        .where(and(eq(locations.orgId, this.orgId), eq(locations.id, before.locationId), eq(locations.billingProfileId, after.id)));
-    }
-    if (after.locationId && after.status === "active") {
-      await tx
-        .update(locations)
-        .set({ billingProfileId: after.id })
-        .where(and(eq(locations.orgId, this.orgId), eq(locations.id, after.locationId)));
-    }
-  }
-
+  // Pass 39 (C5.8): the legacy reverse pointer (locations.billing_profile_id)
+  // this path used to mirror is dropped - the profile's own row is the whole
+  // record, and billing_profiles.location_id the one pointer.
   async createBillingProfile(data: InsertBillingProfile, actor?: AuditActor | null): Promise<BillingProfile> {
     return db.transaction(async (tx) => {
       await this.assertBillingProfileRulesTx(tx, {
         accountId: data.accountId,
         locationId: data.locationId ?? null,
+        templateId: data.templateId ?? null,
         isDefault: data.isDefault ?? false,
         status: data.status ?? "active",
       });
       const [bp] = await tx.insert(billingProfiles).values({ ...data, orgId: this.orgId }).returning();
       await this.auditCreatedTx(tx, "billing_profile", bp.id, bp, actor);
-      await this.syncLegacyLocationPointerTx(tx, null, bp);
       return bp;
     });
   }
@@ -4518,6 +4522,7 @@ export class DatabaseStorage implements IStorage {
         id: existing.id,
         accountId: data.accountId ?? existing.accountId,
         locationId: data.locationId === undefined ? existing.locationId : data.locationId,
+        templateId: data.templateId === undefined ? existing.templateId : data.templateId,
         isDefault: data.isDefault ?? existing.isDefault,
         status: data.status ?? existing.status,
       });
@@ -4528,7 +4533,6 @@ export class DatabaseStorage implements IStorage {
         .returning();
       if (bp) {
         await this.auditChangeTx(tx, "billing_profile", bp.id, existing, bp, actor, audit);
-        await this.syncLegacyLocationPointerTx(tx, existing, bp);
       }
       return bp;
     });
@@ -9766,16 +9770,41 @@ export class DatabaseStorage implements IStorage {
     return normalizeServiceTimeTrackingMode(setting?.value);
   }
 
-  async setServiceTimeTrackingMode(mode: ServiceTimeTrackingMode): Promise<AppSetting> {
-    const [setting] = await db
+  // Pass 39 (C5.8): the one write path into app_settings. Every setter runs
+  // in a transaction and records an `app_setting` audit row on the KEY
+  // (canon §17; shared/audit.ts): { key, value } with the stored text before
+  // and after - null for a row that did not exist or was deleted - and no
+  // row at all when the value did not move (auditChangeTx's own rule), so an
+  // unchanged save leaves nothing. The actor is the session's
+  // (routes.ts getAuditActor); a bootstrap seed writes raw SQL and no row.
+  private async readSettingValueTx(tx: DbReader, key: string): Promise<string | null> {
+    const [row] = await tx.select({ value: appSettings.value }).from(appSettings).where(and(eq(appSettings.orgId, this.orgId), eq(appSettings.key, key)));
+    return row?.value ?? null;
+  }
+
+  private async upsertSettingTx(tx: DbTransaction, key: string, value: string, actor: AuditActor | null | undefined): Promise<AppSetting> {
+    const before = await this.readSettingValueTx(tx, key);
+    const [setting] = await tx
       .insert(appSettings)
-      .values({ orgId: this.orgId, key: "service_time_tracking_mode", value: mode })
+      .values({ orgId: this.orgId, key, value })
       .onConflictDoUpdate({
         target: [appSettings.orgId, appSettings.key],
-        set: { value: mode, updatedAt: new Date() },
+        set: { value, updatedAt: new Date() },
       })
       .returning();
+    await this.auditChangeTx(tx, "app_setting", key, { key, value: before }, { key, value: setting.value }, actor);
     return setting;
+  }
+
+  private async clearSettingTx(tx: DbTransaction, key: string, actor: AuditActor | null | undefined): Promise<void> {
+    const before = await this.readSettingValueTx(tx, key);
+    if (before === null) return;
+    await tx.delete(appSettings).where(and(eq(appSettings.orgId, this.orgId), eq(appSettings.key, key)));
+    await this.auditChangeTx(tx, "app_setting", key, { key, value: before }, { key, value: null }, actor);
+  }
+
+  async setServiceTimeTrackingMode(mode: ServiceTimeTrackingMode, actor?: AuditActor | null): Promise<AppSetting> {
+    return db.transaction((tx) => this.upsertSettingTx(tx, "service_time_tracking_mode", mode, actor));
   }
 
   async getAppointmentCancelReasons(): Promise<string[]> {
@@ -9783,21 +9812,13 @@ export class DatabaseStorage implements IStorage {
     return normalizeAppointmentCancelReasons(setting?.value);
   }
 
-  async setAppointmentCancelReasons(reasons: string[]): Promise<AppSetting> {
+  async setAppointmentCancelReasons(reasons: string[], actor?: AuditActor | null): Promise<AppSetting> {
     const normalized = Array.from(new Set(reasons.map((reason) => reason.trim()).filter(Boolean)));
     if (!normalized.length) {
       throw new Error("At least one appointment cancellation reason is required");
     }
     const value = JSON.stringify(normalized);
-    const [setting] = await db
-      .insert(appSettings)
-      .values({ orgId: this.orgId, key: "appointment_cancel_reschedule_reasons", value })
-      .onConflictDoUpdate({
-        target: [appSettings.orgId, appSettings.key],
-        set: { value, updatedAt: new Date() },
-      })
-      .returning();
-    return setting;
+    return db.transaction((tx) => this.upsertSettingTx(tx, "appointment_cancel_reschedule_reasons", value, actor));
   }
 
   // Pass 17 (C3.2): the ticket reopen reasons list - one app_settings row in
@@ -9808,21 +9829,13 @@ export class DatabaseStorage implements IStorage {
     return normalizeTicketReopenReasons(setting?.value);
   }
 
-  async setTicketReopenReasons(reasons: string[]): Promise<AppSetting> {
+  async setTicketReopenReasons(reasons: string[], actor?: AuditActor | null): Promise<AppSetting> {
     const normalized = sanitizeTicketReopenReasons(reasons);
     if (!normalized.length) {
       throw new Error("At least one ticket reopen reason besides Other is required");
     }
     const value = JSON.stringify(normalized);
-    const [setting] = await db
-      .insert(appSettings)
-      .values({ orgId: this.orgId, key: TICKET_REOPEN_REASONS_SETTING_KEY, value })
-      .onConflictDoUpdate({
-        target: [appSettings.orgId, appSettings.key],
-        set: { value, updatedAt: new Date() },
-      })
-      .returning();
-    return setting;
+    return db.transaction((tx) => this.upsertSettingTx(tx, TICKET_REOPEN_REASONS_SETTING_KEY, value, actor));
   }
 
   // Pass 20 (C3.4a): the material unit list and the application-area list -
@@ -9853,33 +9866,25 @@ export class DatabaseStorage implements IStorage {
     return (await this.readMaterialVocabularyTx(db as any)).units;
   }
 
-  async setMaterialUnits(units: string[]): Promise<AppSetting> {
-    return this.writeMaterialList(MATERIAL_UNITS_SETTING_KEY, units, "At least one material unit is required");
+  async setMaterialUnits(units: string[], actor?: AuditActor | null): Promise<AppSetting> {
+    return this.writeMaterialList(MATERIAL_UNITS_SETTING_KEY, units, "At least one material unit is required", actor);
   }
 
   async getApplicationAreas(): Promise<string[]> {
     return (await this.readMaterialVocabularyTx(db as any)).areas;
   }
 
-  async setApplicationAreas(areas: string[]): Promise<AppSetting> {
-    return this.writeMaterialList(APPLICATION_AREAS_SETTING_KEY, areas, "At least one application area is required");
+  async setApplicationAreas(areas: string[], actor?: AuditActor | null): Promise<AppSetting> {
+    return this.writeMaterialList(APPLICATION_AREAS_SETTING_KEY, areas, "At least one application area is required", actor);
   }
 
-  private async writeMaterialList(key: string, values: string[], emptyMessage: string): Promise<AppSetting> {
+  private async writeMaterialList(key: string, values: string[], emptyMessage: string, actor: AuditActor | null | undefined): Promise<AppSetting> {
     const normalized = sanitizeMaterialList(values);
     if (!normalized.length) {
       throw new Error(emptyMessage);
     }
     const value = JSON.stringify(normalized);
-    const [setting] = await db
-      .insert(appSettings)
-      .values({ orgId: this.orgId, key, value })
-      .onConflictDoUpdate({
-        target: [appSettings.orgId, appSettings.key],
-        set: { value, updatedAt: new Date() },
-      })
-      .returning();
-    return setting;
+    return db.transaction((tx) => this.upsertSettingTx(tx, key, value, actor));
   }
 
   // D2: PROMPT | AUTO_DRAFT | OFF, default PROMPT. A missing or unrecognised
@@ -9893,16 +9898,8 @@ export class DatabaseStorage implements IStorage {
     return normalizeInvoiceOnFinalizeMode(setting?.value);
   }
 
-  async setInvoiceOnFinalizeMode(mode: InvoiceOnFinalizeMode): Promise<AppSetting> {
-    const [setting] = await db
-      .insert(appSettings)
-      .values({ orgId: this.orgId, key: INVOICE_ON_FINALIZE_SETTING_KEY, value: mode })
-      .onConflictDoUpdate({
-        target: [appSettings.orgId, appSettings.key],
-        set: { value: mode, updatedAt: new Date() },
-      })
-      .returning();
-    return setting;
+  async setInvoiceOnFinalizeMode(mode: InvoiceOnFinalizeMode, actor?: AuditActor | null): Promise<AppSetting> {
+    return db.transaction((tx) => this.upsertSettingTx(tx, INVOICE_ON_FINALIZE_SETTING_KEY, mode, actor));
   }
 
   // Pass 22 (C3.5; B11): "Attach service report to visit invoices", the
@@ -9917,17 +9914,9 @@ export class DatabaseStorage implements IStorage {
     return normalizeAttachServiceReport(setting?.value);
   }
 
-  async setAttachServiceReportToInvoices(enabled: boolean): Promise<AppSetting> {
+  async setAttachServiceReportToInvoices(enabled: boolean, actor?: AuditActor | null): Promise<AppSetting> {
     const value = serializeAttachServiceReport(enabled);
-    const [setting] = await db
-      .insert(appSettings)
-      .values({ orgId: this.orgId, key: ATTACH_SERVICE_REPORT_SETTING_KEY, value })
-      .onConflictDoUpdate({
-        target: [appSettings.orgId, appSettings.key],
-        set: { value, updatedAt: new Date() },
-      })
-      .returning();
-    return setting;
+    return db.transaction((tx) => this.upsertSettingTx(tx, ATTACH_SERVICE_REPORT_SETTING_KEY, value, actor));
   }
 
   // Pass 31 (C4.5): the dispatch board's four settings, read in one query
@@ -9955,7 +9944,7 @@ export class DatabaseStorage implements IStorage {
   // The body is partial: the values given are laid over what is stored, the
   // four are checked together, and only the values given are upserted - one
   // transaction, so a refused change writes nothing.
-  async setDispatchBoardSettings(patch: Partial<DispatchBoardSettings>): Promise<DispatchBoardSettings> {
+  async setDispatchBoardSettings(patch: Partial<DispatchBoardSettings>, actor?: AuditActor | null): Promise<DispatchBoardSettings> {
     return db.transaction(async (tx) => {
       const current = await this.readDispatchBoardSettingsTx(tx);
       const next: DispatchBoardSettings = {
@@ -9967,15 +9956,9 @@ export class DatabaseStorage implements IStorage {
       const changed = DISPATCH_BOARD_SETTING_FIELDS.filter((field) => patch[field] !== undefined);
       const problem = describeDispatchBoardProblem(next);
       if (problem) throw new DispatchBoardSettingsError(problem);
+      // Pass 39: one app_setting audit row per key whose value moved.
       for (const field of changed) {
-        const value = serializeDispatchBoardSetting(next[field]);
-        await tx
-          .insert(appSettings)
-          .values({ orgId: this.orgId, key: DISPATCH_BOARD_SETTING_KEYS[field], value })
-          .onConflictDoUpdate({
-            target: [appSettings.orgId, appSettings.key],
-            set: { value, updatedAt: new Date() },
-          });
+        await this.upsertSettingTx(tx, DISPATCH_BOARD_SETTING_KEYS[field], serializeDispatchBoardSetting(next[field]), actor);
       }
       return next;
     });
@@ -10000,9 +9983,9 @@ export class DatabaseStorage implements IStorage {
   // so "no row" stays the one representation of "none". The stored id is
   // answered as stored even if the template is later deactivated - the
   // creation path checks again and creates nothing then, and Settings says
-  // so. Not audited: no set* app_settings writer is and there is no
-  // `app_setting` audit entity; a Settings-wide audit is its own pass.
-  async setBillingDefaults(next: BillingDefaults): Promise<BillingDefaults> {
+  // so. Audited since Pass 39 (C5.8) like every settings write: an
+  // `app_setting` row on the key, the cleared row reading value null.
+  async setBillingDefaults(next: BillingDefaults, actor?: AuditActor | null): Promise<BillingDefaults> {
     return db.transaction(async (tx) => {
       const normalized = normalizeBillingDefaults(next);
       const templateId = normalized.defaultBillingProfileTemplateId;
@@ -10013,15 +9996,9 @@ export class DatabaseStorage implements IStorage {
           .where(and(eq(billingProfileTemplates.orgId, this.orgId), eq(billingProfileTemplates.id, templateId)));
         if (!template) throw new BillingDefaultsError("The default billing profile template was not found");
         if (!template.isActive) throw new BillingDefaultsError("The default billing profile template must be active");
-        await tx
-          .insert(appSettings)
-          .values({ orgId: this.orgId, key: DEFAULT_BILLING_PROFILE_TEMPLATE_SETTING_KEY, value: templateId })
-          .onConflictDoUpdate({
-            target: [appSettings.orgId, appSettings.key],
-            set: { value: templateId, updatedAt: new Date() },
-          });
+        await this.upsertSettingTx(tx, DEFAULT_BILLING_PROFILE_TEMPLATE_SETTING_KEY, templateId, actor);
       } else {
-        await tx.delete(appSettings).where(and(eq(appSettings.orgId, this.orgId), eq(appSettings.key, DEFAULT_BILLING_PROFILE_TEMPLATE_SETTING_KEY)));
+        await this.clearSettingTx(tx, DEFAULT_BILLING_PROFILE_TEMPLATE_SETTING_KEY, actor);
       }
       return normalized;
     });

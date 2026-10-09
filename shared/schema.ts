@@ -18,7 +18,9 @@ export const customers = pgTable("customers", {
   // Transitional legacy note field. Canonical notes now live in customer_notes at account scope.
   notes: text("notes"),
   tags: text("tags").array(),
-  defaultBillingProfileId: varchar("default_billing_profile_id"),
+  // `defaultBillingProfileId` was dropped in Pass 39 (C5.8): read by nothing,
+  // written only from a request body. The account default is the
+  // billing_profiles row with no location (canon §4).
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
@@ -68,7 +70,8 @@ export const locations = pgTable("locations", {
   gateCode: text("gate_code"),
   // Transitional legacy note field. Canonical notes now live in customer_notes at location scope.
   notes: text("notes"),
-  billingProfileId: varchar("billing_profile_id"),
+  // `billingProfileId` (the legacy reverse pointer onto billing_profiles) was
+  // dropped in Pass 39 (C5.8); billing_profiles.location_id is the one pointer.
   source: text("source"),
 });
 
@@ -94,11 +97,13 @@ export const billingProfileTemplates = pgTable("billing_profile_templates", {
 // locationId null, isDefault first), every location inherits it, and a
 // location may override with its own row here (locationId = that location)
 // - see resolveBillingProfileForLocation in storage.ts. `locationId` is the
-// one pointer that is read (Pass 34, C5.2): `locations.billingProfileId` is
-// the legacy reverse pointer, written as a mirror and read by nothing, and
-// `customers.defaultBillingProfileId` is read by nothing - both are dead
-// columns for a later hygiene pass. `cardOnFileToken` / `achToken` /
-// `lastFour` are Phase 6's (C6.1): no screen or route types them today.
+// one pointer (Pass 34, C5.2); the two legacy pointers that shadowed it,
+// `locations.billingProfileId` and `customers.defaultBillingProfileId`, were
+// dropped in Pass 39 (C5.8). The three foreign keys declared here exist on a
+// db:push database from creation and are added to an established one by
+// server/billing-profile-bootstrap.ts under the same names (Pass 39).
+// `cardOnFileToken` / `achToken` / `lastFour` are Phase 6's (C6.1): no screen
+// or route types them today (the dev DB's one `lastFour` is legacy seed data).
 export const billingProfiles = pgTable("billing_profiles", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   orgId: varchar("org_id").notNull(),
@@ -162,7 +167,11 @@ export const serviceTypes = pgTable("service_types", {
   // Free text - the display grouping ("General / Termite / Rodent /
   // Commercial"), edited as a text input in Settings. NOT the canon §10
   // "category": that is workKind below (Pass 24), a new column so this one
-  // keeps meaning what it always meant.
+  // keeps meaning what it always meant. Kept free text by decision (Pass 39,
+  // C5.8): the Pass 35 agreement types name a PROGRAM (Pest control /
+  // Termite / Mosquito / ...), this names a service offering's shelf (Rodent
+  // and Commercial have no program) - Termite is the one overlap, and no
+  // filter, grouping or report reads it.
   category: text("category"),
   opportunityLeadDays: integer("opportunity_lead_days"),
   opportunityLabel: text("opportunity_label"),
@@ -1353,15 +1362,16 @@ export const organizations = pgTable("organizations", {
 // in is inactive as a login and ACTIVE in the field), with `licenseId`,
 // `color` (the board's row dot) and `technicianNotes` beside it; `phone` is
 // any user's. `displayName` is NOT stored - it is "First Last"
-// (shared/users.ts userDisplayName). The email's uniqueness in the DB is the
-// auth bootstrap's lower(email) index, not this `.unique()` (noted since Pass
-// 36; C5.8).
+// (shared/users.ts userDisplayName). The email is unique whatever its case:
+// the `users_email_uidx` index on lower(email) declared below is the one the
+// auth bootstrap creates on an established database (Pass 39, C5.8, replaced
+// the column-level `.unique()` a db:push database used to get instead).
 export const users = pgTable("users", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   orgId: varchar("org_id").notNull(),
   firstName: text("first_name").notNull(),
   lastName: text("last_name").notNull(),
-  email: text("email").notNull().unique(),
+  email: text("email").notNull(),
   passwordHash: text("password_hash").notNull(),
   role: text("role").notNull().default("admin"),
   status: text("status").notNull().default("active"),
@@ -1372,7 +1382,9 @@ export const users = pgTable("users", {
   technicianStatus: text("technician_status"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
-});
+}, (table) => ({
+  emailIdx: uniqueIndex("users_email_uidx").on(sql`lower(${table.email})`),
+}));
 
 export const auditLogs = pgTable("audit_logs", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),

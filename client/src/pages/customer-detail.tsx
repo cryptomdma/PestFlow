@@ -4173,7 +4173,8 @@ export default function CustomerDetail() {
   const activeLocationId = activeLocation?.id || "";
   // Pass 34 (C5.2): the selected location's resolved billing (the chip, the
   // profile card) and the locations with an override (the switcher's badge),
-  // from the compat read - the forward pointer, never locations.billingProfileId.
+  // from the compat read - the forward pointer, billing_profiles.location_id
+  // (the legacy mirror on locations was dropped in Pass 39).
   const locationBilling = compat?.billing ?? null;
   const billingOverrideLocationIds = useMemo(() => new Set(compat?.billingOverrideLocationIds ?? []), [compat?.billingOverrideLocationIds]);
   const locationBillingTerms = describeBillingProfileTerms(locationBilling, describeInvoiceTerms);

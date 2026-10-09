@@ -37,9 +37,10 @@ Pass 31b on the same PR) is merged (PR #103); Pass 32 (non-financial audit cover
 Phase 5 row) is merged (PR #104); Pass 33 (customer-level History + Revert, C5.1b) is merged (PR #105);
 Pass 34 (billing profile on the customer screen, C5.2) is merged (PR #106); Pass 35 (agreement vocabulary,
 C5.3) is merged (PR #107); Pass 36 (UI hygiene, C5.4) is merged (PR #108); Pass 37 (role profiles in Settings,
-C5.6) is merged (PR #109); Pass 38 (technicians are users, C5.7 - the last scheduled Phase 5 row) is pushed,
-awaiting merge; **next pass: 39, schema and settings hygiene** (C5.8), unless the owner sequences Phase 6
-first. The roadmap sequences every remaining item below; this file keeps the status pointer and, as its last
+C5.6) is merged (PR #109); Pass 38 (technicians are users, C5.7 - the last scheduled Phase 5 row) is merged
+(PR #110); Pass 39 (schema and settings hygiene, C5.8) is pushed, awaiting merge; **next pass: 40, the payment
+provider port** (C6.1, the first Phase 6 row), unless the owner sequences C5.5, C5.9 or C5.10 first. The roadmap
+sequences every remaining item below; this file keeps the status pointer and, as its last
 section, the handoff prompt that starts the next session.
 
 ## Status
@@ -637,7 +638,7 @@ authenticated role**, like every read in `server/routes.ts` and specifically lik
 `/api/location-balances/:customerId`, `/api/locations/:id/ledger-summary` and `GET /api/invoices`,
 which already hand every role the same open and on-account figures: a gate would 403 the header
 while the switcher one inch below still says "Open $X", the RBAC matrix (PLAN_BILLING_V1.md 0.3)
-gates cost / margin / LTV and not receivables, and a real read gate would be a permission a profile holds (Pass 37 built the profiles and added none for reads - C5.8 decides per route).
+gates cost / margin / LTV and not receivables, and a real read gate would be a permission a profile holds (Pass 37 built the profiles and added none for reads; Pass 39 listed the money reads under C5.10 - the owner decides per route).
 `invalidateInvoiceViews` refreshes both reads with the ledger. No schema change, no migration,
 nothing stored. Not built: due-date aging (B20's later Settings toggle for Net-terms accounts), an
 `asOf` parameter, aging by technician (V1 §1.4's "by tech"), statements (C2.5). **Restart
@@ -722,7 +723,7 @@ linked service SCHEDULED for any status but CANCELED (a completed visit's finali
 included) and re-linked a representative placed elsewhere; it is now a no-op for CANCELED and
 COMPLETED appointments. Skipped, never touched: a COMPLETED or CANCELLED service and a
 representative placed on another visit. Not built: service-level cancel (C4.3a), an appointment
-cancellation policy (Phase 9), a permission on the disposition (none yet - C5.8), un-cancelling from the
+cancellation policy (Phase 9), a permission on the disposition (none yet - listed under C5.10), un-cancelling from the
 sheet, Pass 26 (since built). **Restart `npm run dev:full` before manually testing - this pass changes server
 code and the schema, and the two dialogs, the move confirmation, the read-only cancelled state and
 the Services-tab badges have not been rendered by anyone yet.** Signatures and behavior are under
@@ -1624,13 +1625,14 @@ Pass 34 (`feature/phase-5-billing-profile-customer-screen`, 2026-10-05, C5.2) me
 and read a `billing` projection (ACCOUNT_DEFAULT / LOCATION_OVERRIDE / NONE with the profile's id, label,
 type and terms, resolved by the invoices' own resolver) plus `accountDefault` and
 `billingOverrideLocationIds`; the legacy column is still written as a mirror by the profile write path
-(no location audit row) and left every location body; `customers.default_billing_profile_id` is read by
-nothing and left; both are the new hygiene row C5.8. **Decided (2), the org default:**
+(no location audit row) and left the location PATCH bodies (not POST /api/locations, which still took it);
+`customers.default_billing_profile_id` is read by nothing and left; both were DROPPED by Pass 39 (C5.8).
+**Decided (2), the org default:**
 `shared/billing-profile-defaults.ts`, one `app_settings` key `default_billing_profile_template_id` on
 Pass 31's one-key pattern (no seed row, null = none; the PATCH refuses an unknown or inactive template
 with 400 `BILLING_DEFAULTS_INVALID`, null deletes the row); `GET /api/settings/billing-defaults` open,
-`PATCH` MANAGE_SETTINGS; a Billing Defaults card on Settings; the write not audited (no `set*` writer is;
-C5.8). **Decided (3), creation:** `createCustomerWithPrimaryLocation` creates the account-default row
+`PATCH` MANAGE_SETTINGS; a Billing Defaults card on Settings; the write not audited then (no `set*` writer was;
+Pass 39, C5.8, audits every one). **Decided (3), creation:** `createCustomerWithPrimaryLocation` creates the account-default row
 from the template in its transaction, audited `created`; no template, or a stale one, creates nothing;
 `createLocation` creates nothing (a location inherits); no backfill - an existing account gets its default
 from the primary location's Edit Location. **Decided (4), the selector:** both location dialogs carry a
@@ -1684,7 +1686,7 @@ case; `addAgreementInterval` gained DAY / WEEK; the three labelers share the sha
 `anchorMode`, cancellation `effectiveDateMode` and the material "Custom / Unlisted" untouched. **Decided (6),
 Revert:** a pre-migration row whose before holds CUSTOM replays as DAY (`REVERT_UNIT_FIELDS`); the dev DB's two
 `agreement|update` rows carry only `soldBy`. **Decided (7):** POST / PATCH `/api/agreement-templates` and the
-Settings Agreement Templates card stay ungated - recorded on C5.8. **Found and fixed:** the row's counts,
+Settings Agreement Templates card stayed ungated until Pass 39 (C5.8). **Found and fixed:** the row's counts,
 CURRENT_FOCUS's Wildlife claim, A1 :61's line and seed claim, canon §9's fixed enum and `frequencyRule`, the
 schedule module's header, D8's `serviceCategory` name. Verified on the **copy-database recipe** on PORT=5001:
 `npm run check` clean, boot 1 printed the seed rows and the two per-row reports, boot 2 printed nothing with
@@ -1776,8 +1778,8 @@ settings.tsx strings, 6 client strings and 4 server refusals read it - the mecha
 the payload is committed, so the first render that knows the user reads the org's matrix; the Roles / Users
 cards invalidate `/api/auth/me`. **Decided (9), not done:** the "manager+ until C5.6" surfaces needed no code
 (they are permissions; the docs now say "a profile holding X - the built-in manager and admin do"); the
-ungated writes the roadmap deferred to C5.6 stay ungated and sit under C5.8 (a gate per route is a product
-decision); `technicians.userId` stays the C5.7 bridge; no password / invite flows; §0.3's "own only" /
+ungated writes the roadmap deferred to C5.6 stayed ungated - Pass 39 (C5.8) gated the Settings reference data
+and listed the rest under C5.10; `technicians.userId` stays the C5.7 bridge; no password / invite flows; §0.3's "own only" /
 "partial" nuances not modeled. **Found and fixed:** A3 :141's drifted matrix lines, B16, the C5.1b / C5.3 /
 C5.8 rows' "until C5.6" phrasing, Part E answer 8 and the B16 index row, the inventory's §6 list of
 "manager+" lines in this file, the roadmap, the canon and PLAN_BILLING_V1_1.md; canon §16 gained the role
@@ -1795,7 +1797,7 @@ restart `npm run dev:full` before trying them (the server and the schema changed
 under "Shipped in Pass 37" at the end of `PLAN_ROADMAP_V2.md` Part D. **The owner's restart after the merge
 prints the seed once** (the four profiles and the registry line) and nothing after.
 
-Pass 38 (`feature/phase-5-technicians-are-users`, 2026-10-08, C5.7) pushed, awaiting merge. **Technicians are
+Pass 38 (`feature/phase-5-technicians-are-users`, 2026-10-08, C5.7) merged as PR #110. **Technicians are
 users** - the seventh and last scheduled Phase 5 row; five users columns, a one-time migration, a new shared
 module, a 30th permission, the users write surface, one merged Settings card, the Tech View's identity.
 **Decided (1), where the profile lives:** on `users` - `phone`, `licenseId`, `color`, `technicianNotes` and
@@ -1828,7 +1830,7 @@ is granted to the seeded built-ins by `SEEDED_PROFILE_GRANTS` in the role-profil
 of Pass 37's rule (4 / 14 / 29 / 30). **Decided (6), Heritage Tech:** the auth bootstrap makes
 `tech@heritage.local` an ACTIVE technician with placeholder license DEMO-0001, once. **Decided (7), not done:**
 the password / invite flow (a minted or created user cannot log in - new roadmap row C5.9), the audit JSON
-remap, the client `Technician` -> `UserSummary` sweep (C5.8), the text snapshots, the 5 null-technician tickets
+remap, the client `Technician` -> `UserSummary` sweep (left again by Pass 39; C5.9), the text snapshots, the 5 null-technician tickets
 (canon §12 notes them), Smart Schedule. **Found and fixed:** the C5.7 row's FK list (`production_value_entries`
 has none) and its field list, A3 :142 and the C2.2 row's `schema.ts:160-172` cite, canon §16's field list (seven
 fields that never existed), §11's `assignedTechnicianId`, §12's null-technician note, the sale-attribution bullet
@@ -1847,15 +1849,66 @@ behavior under "Shipped in Pass 38" at the end of `PLAN_ROADMAP_V2.md` Part D. *
 merge prints the migration once** (the columns, Heritage Tech, the five drops, the two minted users, the five
 adds, the drop, the grant and the registry line) and nothing after.
 
-Next up: **Pass 39** — Schema and settings hygiene (`PLAN_ROADMAP_V2.md` Phase 5 table, C5.8 - the only Phase 5
-row left besides the unscheduled C5.5 timezone and the new C5.9 password flow; the owner sequences it against
-Phase 6): drop the two dead billing pointers (the copy-database recipe; the billing-profile bootstrap's backfill
-reads one of them on every boot and the customer routes still accept the other from a body), add the three
-`billing_profiles` FKs the schema declares and the DB lacks (0 orphans; a fresh db:push DB has them), audit the
-nine `app_settings` setters, reconcile seed.ts's templates, decide the ungated Settings writes (the Pass 39
-inventory counted 57 ungated writing routes, not the one the row named) and `service_types.category`, and sweep
-the client's `Technician` type to `UserSummary` if wanted. The handoff prompt for Pass 39 is the last section of
-this file; the Pass 39 session writes the next one.
+Pass 39 (`feature/phase-5-schema-settings-hygiene`, 2026-10-08, C5.8) pushed, awaiting merge. **Schema and
+settings hygiene** - the unscheduled Phase 5 list the owner sequenced after Pass 38; two column drops, three
+foreign keys, an audit entity, fourteen gates, one new card. **Decided (1), the dead pointers:** DROPPED, both -
+`locations.billing_profile_id` and `customers.default_billing_profile_id` - by the billing-profile bootstrap
+behind a column-exists guard, the reverse-pointer carry onto `billing_profiles.location_id` run one last time
+before the drop (0 rows: the one pointer agreed), the mirror writer `syncLegacyLocationPointerTx` and its three
+comments gone, the columns gone from the schema so no body can carry them (stripped, not refused - the customer /
+location schemas are not strict; `accountId` leaves the two location create bodies too, storage derives it), the
+dropped customer field stripped from a revert payload (`REVERT_ENTITY_STRIPPED_FIELDS`); the 16 location and 14
+customer snapshots embedding the fields stay as history. **Decided (2), the foreign keys:** the three added under
+db:push's names when no key exists on the column (`pg_constraint` by column; an orphan printed and the key
+skipped, never deleted), the `template_id` index, `billing_profile_templates` in `TABLES_REQUIRING_ORG_ID`, and
+the gap the keys would have exposed closed: an unknown `templateId` is 400 `BILLING_PROFILE_TEMPLATE_UNKNOWN` on
+POST and PATCH. **Decided (3), the settings audit:** `app_setting` joins `AuditEntityType` (never revertable); the
+nine setters take the actor and write through one `upsertSettingTx` / `clearSettingTx` pair - `update` on the
+KEY, `{ key, value }` before / after (null for no row or a deleted one), nothing on an unchanged save; the nine
+routes pass `getAuditActor(req)`; `PATCH /api/settings/service-time-tracking` is MANAGE_SETTINGS (the one
+ungated settings write) with its select disabled below it; the audit read takes `entityType` alone and a
+**Recent settings changes** card (the last 20, rendered by the History tab's card) sits at the bottom of
+Settings - visible, so the trail can be seen without a database. **Decided (4), seed.ts:** recorded, nothing to
+merge - the seed is a demo for an empty org, the dev DB is the owner's data. **Decided (5), the gates:** the
+Settings reference data only - agreement templates, target pests, material products, billing plans,
+cancellation policies, opportunity dispositions and the categories PATCH are MANAGE_SETTINGS (14 routes with
+service-time-tracking) and the seven cards hide Add and disable Edit below it; the other 43 ungated writing
+routes and the money reads are LISTED under the new row C5.10, grouped (customer data, scheduling, services,
+agreements, opportunities, communications, the money reads, the dev invariants route), not decided - each is a
+workflow decision. **Decided (6), `service_types.category`:** stays free text (a program versus a shelf;
+Termite the one overlap; no reader). **Decided (7):** the `Technician` -> `UserSummary` sweep LEFT
+(behaviour-free; on C5.9 with the users work - this pass already touches the schema, the bootstrap, nine
+writers, fourteen routes and seven cards); `users.email`'s `.unique()` replaced by the declared
+`users_email_uidx` on lower(email); `POST_SERVICE_TICKET` now read - it gates `POST /api/services/:id/complete`
+and `POST /api/service-records` (every built-in holds it; a profile stripped of it is 403);
+`VIEW_COST_MARGIN_LTV` kept, its description pointing at C5.10. **Found and fixed:** the C5.8 row's "no reader"
+claims, the roadmap's "leaves every location body" and "Pass 11c" (f4d43c8, Phase 1 unit 7), canon §1's Account
+`defaultBillingProfileId` (never a column), the Agreement's and the Invoice's `billingProfileId` (neither table
+has one; the invoice carries the jsonb snapshot), index.ts's tenancy-order comment, the eleven routes.ts
+comments still naming C5.6. **Verified** on PORT=5001 against a COPY of the dev DB (`pestflow_verify`, dropped
+afterwards): `npm run check` clean; boot 1 printed the two drops (0 pointers carried), the index and the three
+keys, boot 2 only the serving line with every count unchanged by name across the 50 tables; **135 smoke
+assertions on the first run** (the pure labels and vocabulary, the migration's result and the FK refusing a
+bogus account by SQL, the dead fields stripped from three bodies and a bogus `accountId` ignored, the templateId
+refusal on POST and PATCH, every settings PATCH as every role with its audit row and the silent re-save, the
+cleared billing default, the org-wide audit read, the six reference lists 403 x3 / 201 / 200 and the
+categories PATCH, the ticket post 201 then 403 on a permission-less profile and back, cleanup to baseline);
+Vite 200 on settings.tsx, customer-detail.tsx and the six shared modules. **Not rendered in a browser:** the
+seven cards' hidden Add / disabled Edit and notes, the disabled time-tracking select, the Recent settings
+changes card, every refusal toast - restart `npm run dev:full` before trying them (the server and the schema
+changed). Signatures and behavior under "Shipped in Pass 39" at the end of `PLAN_ROADMAP_V2.md` Part D. **The
+owner's restart after the merge prints the migration once** (the two drops, the index, the three keys) and
+nothing after. OWNER_FEEDBACK FB022 reviewed: QUALIFIED - most of it exists since Pass 38; the home / starting
+address joins C5.9.
+
+Next up: **Pass 40** — the payment provider port (`PLAN_ROADMAP_V2.md` Phase 6 table, C6.1 - the first Phase 6
+row; the owner may sequence C5.5 (the org timezone), C5.9 (the password / invite flow, the sweep, the home
+address) or C5.10 (the workflow gates) ahead of it): the port and the Stripe provider under
+`server/integrations/payments/` (types only today, no `providers/`), org-level credentials in their own table
+(never on `organizations`, whose GET answers every role), `payment_methods` (tokens, brand, last4, expiry; the
+three legacy `billing_profiles` token columns left unread), SetupIntent capture from the billing profile, last4
+shown on the profile. The handoff prompt for Pass 40 is the last section of this file; the Pass 40 session
+writes the next one.
 
 Phase 1's ordered plan, impact analysis, conflict resolutions, and per-pass verification steps live in
 `PLAN_BILLING_V1_1_EXECUTION.md` — read it when a pass builds on a Phase 1 helper (its "Shipped in
@@ -2113,223 +2166,231 @@ pointer and that prompt.
 
 Replaced at the end of every pass (`AGENT_WORKING_AGREEMENT.md`, the end-of-pass step). The owner
 pastes it verbatim to start the next session; it is also the last thing in the finishing session's
-final message. Written 2026-10-08, after Pass 38 was pushed as `feature/phase-5-technicians-are-users`.
-Its ground truth came from a read-only Explore subagent's inventory of the working tree DURING Pass 38
-(origin/main after PR #109 plus Pass 38's edits in progress), plus the SQL it ran, with every file:line
-below re-grepped on the finished Pass 38 tree. They are that tree's, so run the SQL and grep the names
+final message. Written 2026-10-08, after Pass 39 was pushed as `feature/phase-5-schema-settings-hygiene`.
+Its ground truth came from a read-only Explore subagent's inventory of the working tree at the START of Pass 39
+(origin/main after PR #110, before Pass 39's edits), plus the SQL it ran, with the key file:line citations
+below re-grepped on the finished Pass 39 tree. They are that tree's, so run the SQL and grep the names
 before trusting any claim.
 
 ```text
-Start Pass 39 — Schema and settings hygiene (C5.8)
-(PLAN_ROADMAP_V2.md Phase 5 table, row C5.8 (grep `C5.8 (**Pass 39**`, :431 after Pass 38's doc edits; the C5.7
-row is :429 and the new C5.9 password-flow row :432): "Schema and settings hygiene ... Drop the two dead billing
-pointers, `locations.billing_profile_id` ... and `customers.default_billing_profile_id` ... add the `billing_profiles`
-foreign keys ... audit the `app_settings` writes ... reconcile `server/seed.ts`'s four billing profile templates ...
-POST / PATCH `/api/agreement-templates` have no permission gate ... `service_types.category` ... overlaps the Pass 35
-agreement types list"; canon §4 :282 ("Both are dead columns awaiting a hygiene pass (PLAN_ROADMAP_V2.md C5.8)"),
-:611 (the service cancel "Ungated like the disposition ... a gate per route is C5.8's call") and :1064 (the field add:
-"a permission is C5.8's call per route"); dev rules 3, 4, 6 and 7 (AGENT_WORKING_AGREEMENT.md :57-62). Phase order:
-Pass 38 (C5.7) was the seventh and last SCHEDULED Phase 5 row; C5.8 is unscheduled - the owner sequences it - and
-C5.5 (org timezone) and C5.9 (password / invite flow, found by Pass 38) are the other unscheduled Phase 5 rows;
-after this pass Phase 6 (card / ACH payments and invoice delivery, roadmap :434) is next in phase order; say so in
-the handoff and let the owner pick. OWNER_FEEDBACK.md: no open item is this row (FB-001 / -003 / -004 / -005 / -006
-/ -007 / -008 / -009 / -011 / -012 / -016 / -017 are other surfaces; FB-002 is C3.8, FB-013 / -014 / -015 are C4.7,
-FB-020 is C4.6) - review any new item at the start and end, build none unless I say so. Read the CLAUDE.md docs in
-order first, and OWNER_FEEDBACK.md (its review process applies at the start and end of the session);
-CURRENT_FOCUS.md's last entries (Pass 37, Pass 38 and "Next up") are the ones that matter.
+Start Pass 40 — Payment provider port (C6.1)
+(PLAN_ROADMAP_V2.md Phase 6 table, row C6.1 (grep `| C6.1 |`, :439 after Pass 39's doc edits; C6.2 :440 and C6.3
+:441 are the next two rows): "Payment provider port (server/integrations/payments/, Stripe first, org-level
+credentials, Connect-ready), payment_methods (tokens, brand, last4 shown on the billing profile, expiry),
+SetupIntent capture from the billing profile; PCI: no card number ever touches PestFlow."; B18 / B19 (roadmap
+:308-318: the owner agreed, "the last four digits must be visible"); PLAN_BILLING_V1.md §0.4 (:127-152 - the port
+rule :140 "the domain layer imports only types.ts", org-level credentials :144), §1.2 payment_methods (:235-246),
+the PCI rule (:248-250, "a hard rule, not a preference"), §1.4 (:368-404), §1.8 (:565-577); PLAN_BILLING_V1_1.md
+D5 (:228-243, "Stripe remains Phase 2" - read Phase 6); canon §4 BillingProfile and §14 Payment; dev rules 2, 3,
+4 and 6 (AGENT_WORKING_AGREEMENT.md). Phase order: Pass 39 (C5.8) closed the Phase 5 list except the unscheduled
+C5.5 (org timezone), C5.9 (the password / invite flow, now also the client Technician sweep and FB022's home
+address) and C5.10 (the workflow permission gates - a LIST for the owner to decide route by route); C6.1 is the
+first Phase 6 row and the next in phase order - say so in the handoff and let the owner pick. OWNER_FEEDBACK.md:
+no open item is this row (FB022 is C5.9; FB-001 / -003 / -004 / -005 / -006 / -007 / -008 / -009 / -011 / -012
+/ -016 / -017 are other surfaces; FB-002 is C3.8, FB-013 / -014 / -015 are C4.7, FB-020 is C4.6) - review any
+new item at the start and end, build none unless I say so. Read the CLAUDE.md docs in order first, and
+OWNER_FEEDBACK.md (its review process applies at the start and end of the session); CURRENT_FOCUS.md's last
+entries (Pass 38, Pass 39 and "Next up") are the ones that matter.
 
-Branch feature/phase-5-schema-settings-hygiene from origin/main. Confirm main contains the Pass 38 merge
-(feature/phase-5-technicians-are-users) before branching.
+Branch feature/phase-6-payment-provider-port from origin/main. Confirm main contains the Pass 39 merge
+(feature/phase-5-schema-settings-hygiene) before branching.
 
-This row is a LIST of unrelated hygiene items, several of them product decisions. Decide and state, in the pass,
-which items you build and which you record and leave (with the reason), in this order:
-(1) the two dead billing pointers - recommend DROP both columns (`locations.billing_profile_id`,
-`customers.default_billing_profile_id`; schema.ts :71 and :21), the copy-database recipe, with these three
-prerequisites the inventory found and the row did not know: (a) `server/billing-profile-bootstrap.ts` :55-64 runs
-`UPDATE billing_profiles ... WHERE bp.location_id IS NULL AND l.billing_profile_id = bp.id` on EVERY boot - it reads
-the column, so the drop must remove that backfill (or guard it on the column's existence) FIRST, or the .catch-wrapped
-bootstrap throws there and the rest of it (the DELETE, SET NOT NULL, the indexes) silently stops; (b) `insertCustomerSchema`
-(schema.ts :1413) does not omit `defaultBillingProfileId`, so POST /api/customers (routes.ts :985), POST
-/api/customers/create-with-primary-location (:1008), PATCH /api/customers/:id (:1110) and the History revert schema
-(`customer: insertCustomerSchema.partial()`; `REVERT_ENTITY_STRIPPED_FIELDS.customer` is []) accept and WRITE it from
-a body today - the client sends it nowhere; omit it (and `billingProfileId` from `createLocationWithContactSchema`
-:121's `location` and the fallback `insertLocationSchema.parse` in POST /api/locations :1218, which also still takes
-`accountId`) before the drop; (c) `syncLegacyLocationPointerTx` (storage.ts :4481, called by createBillingProfile
-:4496 / updateBillingProfile :4511) is the mirror writer - it goes with the column, and the Pass 34 comment block in
-storage ~:4076 / shared/billing-profile-defaults.ts :10-16 / customer-detail.tsx ~:4176 that describe the mirror go
-with it. DB today: 1 of 14 locations has the pointer set (Westside Location 50ed9f99 -> 8fa46a3a, which AGREES with
-billing_profiles.location_id) and 1 of 10 customers (Sarah Chen -> dded27ea "Corporate Card", the same account's
-default row) - nothing to migrate; the 16 location and 14 customer audit snapshots that embed the fields stay as
-history (a revert of one of those rows puts back nothing for a dropped column - say so; `REVERT_ENTITY_STRIPPED_FIELDS`
-is where a dropped field is stripped);
-(2) the `billing_profiles` foreign keys - recommend ADD the three the schema declares (schema.ts :102-107: accountId ->
-accounts NOT NULL, locationId -> locations, templateId -> billing_profile_templates) in billing-profile-bootstrap.ts
-beside the ADD COLUMN lines :31-33, guarded by "any FK constraint on that column exists" (query pg_constraint by
-conrelid + conkey), NOT by name - a fresh db:push database already has them under drizzle's names
-(`billing_profiles_account_id_accounts_id_fk` etc.; compare `locations_account_id_accounts_id_fk`), so name the added
-ones the same way (Pass 38's precedent for the technician FKs); 0 orphans today on every column (every template_id is
-NULL); add the missing `template_id` index; and close the validation gap the FK would expose: `billingProfileWriteSchema`
-(routes.ts :440) accepts any `templateId` and `assertBillingProfileRulesTx` (storage.ts :4442) never checks it, so an
-unknown id becomes a 500 - refuse it 400 (`BILLING_PROFILE_TEMPLATE_UNKNOWN`, shared/billing-profile-defaults.ts has
-the codes) before the insert; also put `billing_profile_templates` in `TABLES_REQUIRING_ORG_ID`
-(tenancy-bootstrap.ts :18; it has no org_id index and no default today);
-(3) the `app_settings` audit - recommend a new audit entity `app_setting` (shared/audit.ts `AuditEntityType` :49, 18
-members today; never revertable) written by every `set*` writer with the key as `entityId` and `{ key, value }` before
-/ after: the nine setters are setServiceTimeTrackingMode (storage.ts :9769), setAppointmentCancelReasons (:9786),
-setTicketReopenReasons (:9811), setMaterialUnits (:9856) and setApplicationAreas (:9864) through writeMaterialList
-(:9868), setInvoiceOnFinalizeMode (:9896), setAttachServiceReportToInvoices (:9920), setDispatchBoardSettings (:9958,
-up to four keys), setBillingDefaults (:10005, upsert or DELETE on null) - NONE takes an actor and none writes
-audit_logs (0 recordAuditLogTx / auditChangeTx / auditCreatedTx in that block); each needs an `actor` parameter from
-its route (the nine PATCH /api/settings/* routes :2976-3146) and an org-wide History read (the audit read is
-`GET /api/audit-logs?entityType=&entityId=`; where a Settings-wide history shows is a product call - a small "Recent
-changes" list on the Settings page, or nothing visible yet - say which); DB today: 7 rows / 7 keys
-(appointment_cancel_reschedule_reasons, service_time_tracking_mode = PROMPT_FOR_TIMEOUT - changed through the
-UNGATED PATCH on 2026-07-13 -, invoice_on_finalize = PROMPT, ticket_reopen_reasons, attach_service_report_to_invoices =
-true, dispatch_view_interval_minutes = 60, dispatch_snap_minutes = 15); never stored: material_units, application_areas,
-the two dispatch hour keys, default_billing_profile_template_id. And GATE the one ungated settings write,
-`PATCH /api/settings/service-time-tracking` (:2976) with MANAGE_SETTINGS like its eight siblings (the Settings card's
-select :3363 is ungated on the client too - disable it below Manage Settings, dev rule 6);
-(4) seed.ts versus the DB - recommend record and leave: the seed (server/seed.ts :66 the four templates Card on File /
-ACH Autopay / Net 30 Invoice / Due on Receipt; :57 the six service types including "Warranty Callback" CALLBACK; :76 Jake
-Miller / Sam Torres as users since Pass 38) runs only on an org with no customers (seed.ts :10-11) and the dev DB's
-customers date from 2026-03-08, so nothing in it ever ran here: the DB holds 2 templates (COD invoice_terms
-DUE_ON_RECEIPT sort 0, Test Net 15 NET_15) and 6 SERVICE types (no CALLBACK / PRODUCTION type - "One-Time GPC" among
-them); the row's "reconcile" is a statement that the seed is a demo for an empty org and the dev DB is the owner's
-data, nothing to merge - unless I say otherwise;
-(5) the ungated writes - this is the product decision the roadmap has deferred since Pass 27 ("a gate per route is
-C5.8's call"), and the row's "the only Settings reference data still open to every role" was WRONG: the Pass 39
-inventory counted 125 POST / PATCH / PUT / DELETE routes in routes.ts, 63 gated, 62 ungated, of which 4 are 405 stubs
-and 1 a no-write preview - 57 UNGATED WRITING ROUTES. Recommend this pass gates the SETTINGS reference data only
-(MANAGE_SETTINGS, the Pass 24 service-types precedent, the client's Add / Edit disabled below it): the agreement
-templates POST / PATCH (routes.ts :2375 / :2387; the Settings card's Add / Edit at settings.tsx ~:3293-3340 ignore
-`canManageSettings` :2146), the target pests and material products POST / PATCH, the billing plans POST / PATCH, the
-agreement cancellation policies POST / PATCH, the opportunity dispositions POST / PATCH and the opportunity categories
-PATCH, and the service-time-tracking PATCH of item (3) - and RECORDS the rest for the owner to sequence as their own
-rows, since each is a workflow decision, not hygiene: the customer-data edits (customers / locations / contacts /
-billing profiles / notes - every role may today), the per-service cancel and the appointment disposition (who may
-cancel), the crew and composition routes, the agreements POST / PATCH / cancel / link, the opportunities PATCH /
-disposition / convert, the service record POST (POST_SERVICE_TICKET exists and NO route reads it), the technician
-preferences PUT / DELETE, the communications POST, and the MONEY READS (every invoice / payment / credit / statement /
-aging / balance / tax GET is open to every role; VIEW_COST_MARGIN_LTV is read by NOTHING; VIEW_PRODUCTION_VALUE gates
-only the two production-value-entries GETs; `/api/dev/account-invariants` has a TODO to gate it). The inventory's full
-table (route, line, what it writes) is in the Pass 39 inventory file the Pass 38 session saved - cite it in the
-record, don't re-derive it; say plainly which routes you gated and that the rest are listed, not decided;
-(6) `service_types.category` - recommend record and leave as the free-text display grouping (schema.ts :166; the
-ServiceTypeForm input settings.tsx :189, the Category input :238, placeholder "e.g., General, Termite, Wildlife"; the list badge; no
-filter, grouping or report reads it; DB: Commercial 1 / General 2 / Rodent 1 / Termite 2); the Pass 35 agreement types
-(PEST_CONTROL / TERMITE / MOSQUITO / WILDLIFE / EVALUATION / ANNUAL) describe a PROGRAM, the category a service
-offering's shelf - Termite is the one exact overlap; a dropdown over the agreement types would force Rodent /
-Commercial into keys that do not exist. Say if you take the other option (the category reads the list);
-(7) the client `Technician` -> `UserSummary` sweep Pass 38 left - recommend DO it here if the pass has room, since it is
-mechanical: the nine files importing `Technician` from @shared/schema (batch-invoice-dialog.tsx :23,
-draft-invoice-for-visit-dialog.tsx :10, service-completion-dialog.tsx :26, technician-preferences.tsx :14,
-customer-detail.tsx :104, schedule.tsx :89, service-ticket-review.tsx :42, services.tsx :41, technician-work.tsx :34)
-read `displayName` / `licenseId` / `status` / `color` of the `TechnicianSummary` projection `GET /api/technicians`
-answers; the sweep would have them read `GET /api/users` filtered by `isTechnicianUser` through
-`technicianSummariesFromUsers` (shared/technicians.ts) or read `userDisplayName` directly, and retire the facade
-and the `Technician` alias - a behaviour-free change; else record it. Also from Pass 38's record: schema.ts
-`users.email .unique()` versus the DB's `lower(email)` index (declare it as the index; a db:push database would get a
-plain unique constraint today), and `POST_SERVICE_TICKET` / `VIEW_COST_MARGIN_LTV` read by no route (keep them as
-seeded permissions with their descriptions saying "not checked by any route yet", or gate the ticket post with the
-first - say which);
-(8) what the pass does NOT do: the password / invite flow (C5.9), Smart Schedule, the org timezone (C5.5), any
-workflow gate beyond the Settings reference data unless I say so.
+This row is the FIRST money-provider pass and most of it is design the owner has not decided. Decide and state,
+in the pass, which of these you take, with the recommendations from the Pass 40 inventory the Pass 39 session
+saved (pass40-inventory.md §9 - read it whole):
+(1) the Stripe account model - recommend a per-org provider-account ROW (provider, mode test | live, the
+credentials, a nullable connectedAccountId), the adapter built per org from that row, never a process env key;
+Heritage starts on its own Stripe account; platform Connect later is a data change plus onboarding, not a
+refactor. Ask whether a PestFlow platform Stripe account exists or is planned.
+(2) where the secret key lives - NOT `organizations` (GET /api/organization answers the whole row to every
+role: routes.ts :3283, storage.ts getOrganization :10041) and NOT `app_settings` (open GETs); recommend a
+dedicated org-scoped table (e.g. payment_provider_accounts, org_id NOT NULL from creation like payments), the
+secret and the webhook secret encrypted at rest with an env master key (a new .env.example variable, documented
+in PROJECT_MAP.md), write-only from a Settings "Payments" card (MANAGE_SETTINGS) whose read answers only
+connected / mode / account id / publishable key, audited by its own entity (not `app_setting` - the row is a
+credential, not a setting).
+(3) test mode - recommend an explicit per-org mode (test | live) and `livemode` on every payment_methods row, a
+"Test mode" badge on the Settings card and beside every card shown; the dev DB uses test keys only.
+(4) who may add / remove a card - no permission exists; TAKE_PAYMENT_FIELD is held by technicians; recommend a
+31st permission MANAGE_PAYMENT_METHODS ("Add or remove a card / bank account on file") granted to the seeded
+support / manager / admin through SEEDED_PROFILE_GRANTS (server/role-profile-bootstrap.ts :12, Pass 38's
+precedent), not technician; last4 visible to every role on the customer screen (B18). Ask whether field capture
+at the visit is wanted now - if yes, the technician too.
+(5) the three legacy columns `billing_profiles.cardOnFileToken` / `achToken` / `lastFour` (shared/schema.ts
+:117-120; the dev DB's one `last_four` = '4242' on "Corporate Card" is seed data from c5ca743 with no token
+behind it) - recommend a NEW `payment_methods` table per V1 §1.2 (org, account, location?, provider,
+providerCustomerId, providerPaymentMethodId, type card | ach, brand, last4, expMonth, expYear, isDefault,
+status, livemode, timestamps), a nullable `billing_profiles.defaultPaymentMethodId`, the three legacy columns
+left UNREAD and dropped by a later hygiene pass (say so), because: an account can hold several cards; profile
+rows are whole-row-snapshotted into audit_logs (storage.ts createBillingProfile :4500 / updateBillingProfile
+:4515 - auditCreatedTx / auditChangeTx) which every role reads (GET /api/audit-logs :1527 is open); and the full
+profile row is returned by two open GETs (routes.ts :1441 and :1446 - the second read by the technician ticket
+header, service-completion-dialog.tsx). Ignore or clear the '4242' and say which.
+(6) the Stripe Customer - recommend one per PestFlow ACCOUNT in a small mapping table (org, accountId,
+provider, mode, providerCustomerId) so a second card reuses it; name / email from the customer and the primary
+contact (billing_profiles has no billingEmail).
+(7) the capture flow and scope - recommend: the server creates a SetupIntent (usage off_session) for the
+account's customer; the client mounts Stripe's Payment Element (@stripe/stripe-js + @stripe/react-stripe-js,
+loaded from js.stripe.com - SAQ-A; there is no CSP to change, client/index.html has only the module script); on
+success the client posts the SetupIntent id; the server retrieves it, checks `succeeded`, reads brand / last4 /
+exp and inserts the payment_methods row. No webhook in C6.1 (webhooks and the outbox worker are C6.2's, roadmap
+:440). CARD ONLY in C6.1; ACH (us_bank_account, mandate, micro-deposit verification) an explicit follow-up unless
+I say both. New dependencies: stripe (server), @stripe/stripe-js and @stripe/react-stripe-js (client) - name the
+versions you pin.
+(8) the port's shape - recommend extending server/integrations/payments/types.ts (:31 PaymentProvider -
+createCustomer / attachPaymentMethod / charge / refund / handleWebhook; :12 PaymentMethodRef has label / lastFour
+only, no brand / expiry / type; no SetupIntent / detach / retrieve) with createSetupIntent(orgCtx, customerRef)
+-> { clientSecret, setupIntentId }, retrieveSetupIntent, detachPaymentMethod, a PaymentMethodRef { type, brand,
+last4, expMonth, expYear, livemode }, and a getPaymentProvider(orgId) factory; the vendor SDK only under
+providers/stripe.ts (V1 :140 - the domain imports types.ts alone; no providers/ directory exists today); name
+the row type StoredPaymentMethod or PaymentInstrument, never PaymentMethod (shared/payments.ts :15 already
+exports that name for the CASH | CHECK | OTHER | CARD | ACH enum).
+(9) what the billing profile shows - recommend: in Edit Location's account-default and override blocks
+(client/src/pages/customer-detail.tsx BillingProfileFields :187; the "Card and bank details are not captured
+yet" note :230 for card / ach types) "Visa •••• 4242 · exp 04/28" (plus "Expired" when past), Add card / Make
+default / Remove (a soft status plus a Stripe detach, never a delete), "No card on file" when the type is card
+and none exists; the header chip (~:4432) may append "•••• 4242"; the ticket / appointment card icon and "last
+four behind a click" stay C6.2. Projections carry display fields only, never provider ids
+(shared/billing-profile-defaults.ts BillingProfileSummary's "never the tokens" rule).
+(10) billingType card / ach - recommend keeping `billingType` as the payer arrangement (no migration); C6.2
+adds autoChargeOnFile (B19, V1 :264). Ask whether a "card" profile with no card on file should warn or be
+refused.
+(11) audit - recommend a new AuditEntityType payment_method (created / status_changed, not revertable;
+snapshots brand / last4 / expiry / status / isDefault / livemode, never provider ids) and a
+payment_provider_account entity for the credentials row (the secret never in a snapshot); the client
+invalidation entry (client/src/lib/invalidate-audit-views.ts REVERTED_ENTITY_KEY_PREFIXES).
+(12) what the pass does NOT do: charging (C6.2), webhooks and the outbox worker (C6.2), the "pay this invoice"
+magic link (C6.2), email (C6.3), ACH unless I say so, the legacy column drop, C5.5 / C5.9 / C5.10, Smart Schedule.
 
-Ground truth today (line numbers from the working tree at the end of Pass 38; they drift, the names do not; the
-inventory came from a read-only Explore subagent run DURING Pass 38 and was re-grepped on the finished tree):
-- shared/schema.ts: `customers.defaultBillingProfileId` :21 and `locations.billingProfileId` :71 (plain varchar, no FK;
-  the comment ~:94-100 calls them dead); `billingProfileTemplates` :78; `billingProfiles` :102 (accountId :105 NOT NULL
-  -> accounts, locationId, templateId :107 -> billingProfileTemplates - declared, not in the DB); `serviceTypes` :155
-  with `category` :166; `users` :1359 (since Pass 38: phone, licenseId, color, technicianNotes, technicianStatus);
-  `insertCustomerSchema` :1413 (omits orgId / id / createdAt only); `insertLocationSchema` :1416. No bootstrap creates
-  customers, locations, billing_profiles or service_types - they exist only through db:push (the two dead columns came
-  from commit c5ca743, 2026-02-22; f4d43c8, 2026-07-15, removed their seed writes).
-- DB today (run the SQL, never trust a doc's data claim): 50 public tables (technicians gone since Pass 38);
-  billing_profiles 2 (1 account default, 1 override), pg_constraint on it = the pkey only, indexes pkey /
-  account_id_idx / location_id_idx / org_id_idx (no template_id index); locations with billing_profile_id set 1 / 14,
-  customers with default_billing_profile_id set 1 / 10 (both agree with the billing_profiles rows); app_settings 7
-  rows / 7 keys (above); service_types 6, all work_kind SERVICE; agreement_types 6 active; billing_profile_templates 2;
-  users 6 after the owner's restart runs the Pass 38 migration (4 logins + Austin Lowe / John Doe minted, login
-  inactive); role_profile_permissions 77 (4 / 14 / 29 / 30). After Pass 38 merges and the owner restarts: the
-  technicians table drops and the users columns appear on the shared DB (the migration prints once); nothing else.
-- server/billing-profile-bootstrap.ts: the ADD COLUMN lines :31-42 (no REFERENCES), the backfill UPDATE :55-64 that
-  reads `l.billing_profile_id` on every boot. server/tenancy-bootstrap.ts `TABLES_REQUIRING_ORG_ID` :18 ("billing_profiles"
-  :23, no billing_profile_templates). server/index.ts boot order: organizations, tenancy early :91, auth :92,
-  technician users :97 (Pass 38), role profiles :101, ... tenancy :121, ..., seed, accounts, billing profiles :131.
-- server/storage.ts: createCustomer :3934 / updateCustomer :3944 (spread the body); createLocation :4310 /
-  createLocationWithPrimaryContact :4320; createBillingProfileTemplate :4403 / updateBillingProfileTemplate :4411;
-  assertBillingProfileRulesTx :4442 (no templateId check); syncLegacyLocationPointerTx :4481; createBillingProfile
-  :4496 / updateBillingProfile :4511; createServiceType :4709 / updateServiceType :4714 (category passed through);
-  the nine setters :9769-10005 (above); `getTechnicians` :4728 (the Pass 38 facade), createUser :6374 / updateUser
-  :6403 (Pass 38).
-- server/routes.ts: createLocationWithContactSchema :121 (the full insertLocationSchema); serviceTypeSchema :225;
-  billingProfileWriteSchema :440; userCreateSchema / userUpdateSchema :628 / :635 (Pass 38); POST /api/customers :985,
-  create-with-primary-location :1008, PATCH /api/customers/:id :1110, POST /api/locations :1218, PATCH /api/locations/:id
-  :1273, POST / PATCH /api/service-types :1626 / :1637 (MANAGE_SETTINGS - the precedent), POST / PATCH /api/users :1663 /
-  :1685, GET /api/technicians :1762, the work route :1773, POST / PATCH /api/agreement-templates :2375 / :2387 (no gate),
-  PATCH /api/settings/service-time-tracking :2976 (no gate), the eight gated settings PATCHes :2996-3146; the ungated
-  writing routes (57) and the money reads are listed with their pre-Pass-38 lines in the Pass 39 inventory
-  (scratchpad pass39-inventory.md §5 - re-grep). The comments that still name C5.6 for things deferred to C5.8:
-  grep "C5.6" in routes.ts (~11 sites).
-- Client: settings.tsx `canManageSettings` :2146; the Agreement Templates card title :3293 (its Add / Edit ungated); the
-  Service Time Tracking select :3363 (ungated); `ServiceTypeForm` :189; the Users card :3126 (Pass 38); the other
-  ungated Settings cards (client and server both open): Target Pests, Billing Plans, Material Products, Opportunity
-  Categories, Opportunity Dispositions, Agreement Cancellation Policies; gated on the server but working buttons on
-  the client: Tax Rates, Tax Rules, Organization Branding Save; Company Settings has inputs and no save.
-- shared/: audit.ts `AuditEntityType` :49 (18 members, no app_setting); billing-profile-defaults.ts (the setting key,
-  the error codes, the comment :10-16 on the mirror); technicians.ts (Pass 38: the projection, USER_ERROR_CODES);
-  users.ts (Pass 38: USER_STATUSES, normalizeUserEmail, splitDisplayName); permissions.ts (30 permissions;
-  POST_SERVICE_TICKET and VIEW_COST_MARGIN_LTV read by nothing).
-- Docs versus code, found by the inventory and left for you: the C5.8 row's "no reader since Pass 34" (the bootstrap
-  reads it) and "no reader at all" (three routes write it) - the row now says so; roadmap ~:4076-4077 and
-  CURRENT_FOCUS ~:1626 say billingProfileId "leaves every location body" (POST /api/locations still takes it); roadmap
-  ~:4075 credits the backfill to "Pass 11c" (the file's one commit is f4d43c8, Phase 1 unit 7); roadmap ~:4087 says
-  "the PATCH is MANAGE_SETTINGS like every settings write" (service-time-tracking is not); canon :114 lists Account
-  `defaultBillingProfileId` (accounts has no such column), canon ~:741 (Agreement) and ~:1553 (Invoice) list a
-  `billingProfileId` neither table has (invoices has the jsonb snapshot); CURRENT_FOCUS :639 / the roadmap describe
-  the matrix "gating cost / margin / LTV" (nothing enforces it); index.ts ~:105-109's comment says structure bootstraps
-  "must run before bootstrapTenancy()" (tenancy also runs early). Fix the ones your pass touches; list the rest.
-- Docs to carry: the C5.8 row (mark done with the as-built, item by item, built / recorded); canon §4 :282 (the
-  columns gone), :611 / :1064 and every "C5.8's call" sentence your gating decision settles (grep "C5.8" in the three
-  docs - the inventory lists 20 roadmap, 3 canon and 7 CURRENT_FOCUS sentences); §17 if `app_setting` joins the audit
-  entities; PROJECT_MAP.md if a bootstrap changes shape; a "Shipped in Pass 39" record; CURRENT_FOCUS's Pass 39 entry
-  and "Next up" (Phase 6's first row, C6.1, unless the owner sequences C5.5 or C5.9 - write the Phase 6 handoff unless
-  I say otherwise).
+Ground truth today (line numbers from the working tree at the end of Pass 39; they drift, the names do not; the
+inventory came from a read-only Explore subagent run at the START of Pass 39 and the lines below were re-grepped
+on the finished Pass 39 tree):
+- shared/schema.ts: `billingProfiles` :107 (accountId / locationId / templateId FKs - in the DB since Pass 39;
+  billingType :114 "card | ach | invoice_terms | cash | check", cardOnFileToken :117, achToken :118, lastFour :120;
+  no autoChargeOnFile / defaultPaymentMethodId / brand / expiry); `billingProfileTemplates` :81; `payments`
+  :1066 (method CASH | CHECK | OTHER now, CARD | ACH named; status PENDING default; customerId not accountId;
+  appointmentId; no providerPaymentId / paymentMethodId / serviceRecordId); `organizations` :1339 (name, slug,
+  status, logoUrl, primaryColorHex, remitTo*; no credentials); `outboxEvents` :1412 (port, eventType, payload,
+  status PENDING | PROCESSING | SENT | FAILED, attempts, lastError; 0 rows, no worker, no caller).
+- shared/payments.ts: PAYMENT_METHODS :14 (five), `type PaymentMethod` :15 (the naming hazard),
+  MANUAL_PAYMENT_METHODS :16, PAYMENT_STATUSES :27 (AUTHORIZED / CAPTURED / FAILED named "for Phase 2");
+  paymentHoldsValue is PENDING | CONFIRMED and paymentCountsAsPaid CONFIRMED only - a CAPTURED card payment
+  would count for nothing today (C6.2's decision; note it). shared/billing-profile-defaults.ts: BILLING_TYPES,
+  BILLING_PROFILE_ERROR_CODES (TEMPLATE_UNKNOWN since Pass 39), BillingProfileSummary "never the tokens".
+- server/integrations/: payments/types.ts (37 lines: PaymentCustomerRef, PaymentMethodRef :12, ChargeResult /
+  RefundResult, PaymentProvider :31; comment :1-5 "credentials are modeled per-org from day one"); outbox/index.ts
+  (recordOutboxEvent, no caller anywhere); accounting / crm / inventory types.ts. No providers/ directory. No
+  stripe package (package.json; script/build.ts :27 lists "stripe" in the esbuild bundle allowlist - inert, not
+  a dependency). No webhook route; express.json({ verify }) stores req.rawBody (server/index.ts :33-45) for a
+  future signature check; every /api route sits behind `app.use("/api", requireAuth, attachOrgStorage)` (index.ts
+  ~:104) - a webhook mounts before that line or outside /api and resolves its org from the event. No
+  access_tokens table or code; invoices.publicId exists (schema :999), locations has none.
+- server/storage.ts: createAccountDefaultProfileFromOrgDefaultTx :4023 (copies the template's billingType,
+  which can be "card"); getBillingProfilesForAccount :4438 (full rows); assertBillingProfileRulesTx :4451
+  (account / location / template / override / default rules; no token rule); createBillingProfile :4500 /
+  updateBillingProfile :4515 (whole-row audit snapshots); resolveBillingProfileForLocation :4545; the settings
+  write pattern upsertSettingTx :9785 (Pass 39: one transaction, an audit row on the key); getOrganization :10041
+  / updateOrganizationBranding :10046 (spreads the body); resolveInvoiceTermsForLocationTx :11567 (the invoice
+  snapshot - profileId, label, billingType, invoiceTerms, billingName, billingAddress, billTo, serviceLocation; no
+  tokens / lastFour); recordPayment :12889 (refuses CARD / ACH: "Only cash, check and other payments can be
+  recorded until card processing lands"); refundPayment :13435 (a manual record, nothing to a provider);
+  createOrgScopedStorage :14902 (the billing run's precedent for org-scoped work outside a request).
+- server/routes.ts: billingProfileWriteSchema :453 (omits the three token columns, strict); POST / PATCH
+  /api/billing-profile-templates :1417 (MANAGE_SETTINGS; the template routes do not enum-check billingType);
+  GET /api/accounts/:accountId/billing-profiles :1441 and GET /api/locations/:locationId/billing-profile :1446
+  (open, full rows); POST / PATCH /api/billing-profiles :1452 / :1467 (open; BillingProfileError 400); GET
+  /api/audit-logs :1527 (open; entityType alone allowed since Pass 39); PATCH /api/settings/billing-defaults
+  :3182 (the settings-route precedent: strict schema, MANAGE_SETTINGS, a coded 400); GET /api/organization :3283
+  (the whole row, every role) / PATCH /api/organization/branding :3289 (MANAGE_SETTINGS); recordPaymentSchema
+  :3555 (method z.enum(MANUAL_PAYMENT_METHODS) - CARD / ACH are a zod 400 before storage); POST /api/payments
+  :3709 (TAKE_PAYMENT_FIELD; the payment routes and gates are the inventory's §2 table - every mutation gated,
+  every read open).
+- server/role-profile-bootstrap.ts SEEDED_PROFILE_GRANTS :12 (the way a permission added after Pass 37's seed
+  reaches the seeded built-ins; Pass 38's VIEW_OTHER_TECHNICIAN_WORK is the one entry, printed once).
+  shared/permissions.ts: 30 permissions; the payment ones TAKE_PAYMENT_FIELD (technician holds it) / APPLY /
+  CONFIRM / CONFIRM_CASH / VOID / REFUND, ISSUE_CREDIT_MEMO; manager holds no MANAGE_SETTINGS; a new permission
+  needs PERMISSIONS, PERMISSION_LABELS, PERMISSION_DESCRIPTIONS, PERMISSION_GROUPS (exactly one group),
+  ROLE_PERMISSIONS and SEEDED_PROFILE_GRANTS.
+- server/index.ts boot order: outbox :115, payments :118, ..., tenancy (second) ~:123, ..., billing profiles
+  :133 - a payment_methods table referencing accounts / locations / billing_profiles boots after :118 and an FK
+  from billing_profiles to it after :133; a table born with org_id NOT NULL (server/payments-bootstrap.ts :12-50
+  is the CREATE TABLE precedent: inline REFERENCES, then the org / location / customer indexes) needs no
+  TABLES_REQUIRING_ORG_ID entry; declare it in shared/schema.ts too so db:push creates it.
+- Client: customer-detail.tsx BillingProfileFields :187 (Label; the Billing Type select over all five types,
+  card and ach selectable; the capture note :230 for card / ach), LocationBillingSelector :243, AddLocationDialog
+  :869, EditLocationDialog :1122 (the account-default block :1461, the override selector below it), the header
+  chip ~:4432; service-completion-dialog.tsx reads GET /api/locations/:id/billing-profile for the ticket header;
+  collect-payment-dialog.tsx / record-payment-dialog.tsx / pages/payments.tsx map MANUAL_PAYMENT_METHODS (no card
+  affordance anywhere; the only "on file" text is the capture note). settings.tsx: canManageSettings :2177,
+  Billing Profile Templates :2514 and Billing Defaults :2565 (a Payments card fits beside them; CreditCard icon),
+  the Organization Branding card's Save is not disabled below Manage Settings (server-gated only; a dev-rule-6
+  item under C5.10), Recent settings changes :3625 (Pass 39); client/src/lib/invalidate-audit-views.ts
+  REVERTED_ENTITY_KEY_PREFIXES (a new entity's reads).
+- DB today (run the SQL, never trust a doc's data claim): billing_profiles 2 - "Corporate Card" (dded27ea, card,
+  is_default, last_four '4242', no tokens; 18 of 79 invoices snapshot it) and "Westside Invoice" (8fa46a3a,
+  invoice_terms, the override) - with the three FKs and the template index since Pass 39; billing_profile_templates
+  2 (COD, Test Net 15), in TABLES_REQUIRING_ORG_ID since Pass 39; payments 30 (CASH 7 / CHECK 19 + 1 voided /
+  OTHER 3, none CARD / ACH), payment_applications 37, credit_memos 1; outbox_events 0; organizations 1 (Heritage,
+  71e445ab-8abc-4df4-ba10-2131d054e30f); 19 audit entity types (app_setting since Pass 39; no payment_method);
+  users 6; role_profile_permissions 77 (4 / 14 / 29 / 30). After Pass 39 merges and the owner restarts: the two
+  columns drop, the three FKs and the template index appear, the templates table gets its org index and default
+  (printed once); nothing else.
+- Docs versus code, found by the inventory and left for you: roadmap :309-310 and :53 say "nothing of it exists"
+  / "no provider port" (the port's TYPES and the outbox table exist; a provider, payment_methods, a caller and a
+  worker do not); :311-312 "the last four ... they are (payment_methods.last4 ...)" (no such table;
+  billing_profiles.last_four exists and is shown nowhere); V1 §0.4's port has no SetupIntent and PaymentMethodRef
+  no brand / expiry / type, and V1's providers/stripe.ts does not exist; V1 §1.2's billing_profiles fields
+  (billingContactId, billingEmail, deliveryMethod, paymentTermsDays, autoChargeOnFile, defaultPaymentMethodId,
+  taxExempt) - none exist; V1 §1.4's payments shape (accountId, serviceRecordId, providerPaymentId,
+  proofAttachmentId; no CONFIRMED) versus the code's; V1 :40 "Status: proposed. Nothing here is built yet."
+  (stale); canon §4 lists cardOnFileToken / achToken / lastFour as BillingProfile fields and §14 is silent on a
+  provider id; schema.ts's "no screen or route types them today" is true of writes but two GETs return them;
+  "Phase 2" in shared/payments.ts :11-13 / :24-25, collect-payment-dialog.tsx :31 and D5 means Phase 6;
+  server/org-bootstrap.ts :33 names "PATCH /api/organizations/:id/branding" (the route is
+  /api/organization/branding); PROJECT_MAP omits server/integrations/ and lists no payment env variable; roadmap
+  :92's "dead esbuild external" for nodemailer (it is the bundle allowlist, with stripe); V1 §1.8 wants publicId
+  on locations too (invoices only); seed.ts :67 "Recurring auto-charge to a saved card." promises C6.2. Fix the
+  ones your pass touches; list the rest.
+- Docs to carry: the C6.1 row (mark done with the as-built, decision by decision); canon §4 (the payment method
+  beside the profile; the legacy columns' status), §14 (a provider id if one lands), §17 (the new audit entities);
+  PROJECT_MAP.md (server/integrations/, the env variable, the new bootstrap); PLAN_BILLING_V1_1.md D5 ("Stripe
+  remains Phase 2" - say what landed); a "Shipped in Pass 40" record; CURRENT_FOCUS's Pass 40 entry and "Next up"
+  (C6.2 unless the owner sequences C5.5 / C5.9 / C5.10 - write the C6.2 handoff unless I say otherwise).
 
-Build per C5.8 as decided above: (1) the two column drops with their three prerequisites (the bootstrap backfill
-removed, the schemas omitting the fields, the mirror writer and its comments gone) - the copy-database recipe;
-(2) the three FKs plus the index, the guarded add, the templateId refusal, the tenancy entry; (3) the `app_setting`
-audit entity, an actor on every setter and route, the service-time-tracking gate (server and client); (4) recorded;
-(5) the Settings reference-data gates (server routes + client cards disabled below Manage Settings) and the recorded
-list of the rest; (6) recorded (or the dropdown, if taken); (7) the Technician sweep if room, the email index
-declaration; docs as above. Not touched: C5.9, C5.5, the workflow gates beyond Settings, Smart Schedule.
+Build per C6.1 as decided above: the provider-account table and its Settings "Payments" card (write-only
+secrets, encrypted at rest, audited), the port reshaped and providers/stripe.ts (the SDK imported nowhere else),
+the customer mapping table, payment_methods with its bootstrap (org_id NOT NULL from creation, inline FKs,
+indexes, declared in schema.ts), the 31st permission granted to the seeded built-ins, the SetupIntent routes
+(create / confirm) and the payment-method routes (list for an account / make default / remove), the billing
+profile's defaultPaymentMethodId, the card block in the location dialogs and last4 on the profile chip, the
+payment_method / payment_provider_account audit entities, the docs. Not touched: charging, webhooks, the outbox
+worker, the magic link, email, ACH (unless I say so), the legacy column drop, C5.5 / C5.9 / C5.10, Smart Schedule.
 
-Environment: Node 24.21.0, npm run dev:full (restart it before manually testing), DEV_NOTES.md for the DB backup /
-restore, the copy-database recipe and the PowerShell traps, gh logged in so the session can open the PR. Verify on
-PORT=5001 as the previous passes did: this pass DROPS COLUMNS and ADDS CONSTRAINTS - use the copy-database recipe
-(USE_COPY=1 in boot.sh: pg_dump, CREATE DATABASE pestflow_verify, restore, boot, PGDB=pestflow_verify for the smoke,
-DROP afterwards; rebuild counts.sql from pg_tables on the COPY after boot 1 and diff by name); the previous session's
-scratchpad (C:/Users/Austin/AppData/Local/Temp/claude/c--Dev-PestFlow/<session>/scratchpad - find the kit with
-`grep -l smoke38 */scratchpad/*`, not by mtime; it holds patch.cjs (absolute === FILE paths), boot.sh (re-point its
-S= line), stop.sh, counts.sql (50 tables), smoke38.mts (its helpers: login / api with Connection: close, auditRows,
-the cleanup chain derived from the DB by the fixture email, a --cleanup-only mode), replace-handoff.cjs (update its
-intro lines), pass39-inventory.md (the full inventory this prompt condenses - read it), fix-smoke*.cjs (the pattern
-for a counted text fix the Bash tool's quoting cannot carry)) is the starting kit. In a smoke test send `Connection:
-close` on every fetch, derive the cleanup from the DB by the fixture email, and clean a hard-deleted entity's audit
-rows by the customerId its snapshots carry. npm run check; double boot (boot 1 prints the column drops, the three FKs
-and the index, boot 2 prints only "serving on port 5001" with every table count unchanged by name); the pass's API
-smoke test as all four roles (before the boot, snapshot the two pointer values and the billing_profiles rows; after
-the migration: the columns gone from information_schema, the three FKs in pg_constraint, the index, every
-billing_profiles row unchanged; a customer / location POST carrying the dead field answers 400 (strict) or ignores it -
-say which; a billing profile POST with an unknown templateId 400 with the code; every settings PATCH as every role
-(403 x3 for service-time-tracking now, the others as before) writing its `app_setting` audit row with the key and the
-value before / after and never a row on an unchanged save; the Settings reference-data writes 403 for tech / support /
-manager and 200 for admin (snapshot and restore the rows the smoke owns - the Pass 31 app_settings pattern); a fixture
-customer / location created and deleted, counts back at baseline) and a Vite 200 on every touched client module;
-state plainly what was not rendered - the disabled Settings controls and every refusal toast cannot be judged without
-a browser.
+Environment: Node 24.21.0, npm run dev:full (restart it before manually testing), DEV_NOTES.md for the DB backup
+/ restore, the copy-database recipe and the PowerShell traps, gh logged in so the session can open the PR. Verify
+on PORT=5001 as the previous passes did: this pass ADDS tables and columns - use the copy-database recipe
+(USE_COPY=1 in boot.sh: pg_dump, CREATE DATABASE pestflow_verify, restore, boot, PGDB=pestflow_verify for the
+smoke, DROP afterwards; rebuild counts.sql from pg_tables on the COPY after boot 1 and diff by name - the pass
+adds tables); the previous session's scratchpad (C:/Users/Austin/AppData/Local/Temp/claude/c--Dev-PestFlow/
+<session>/scratchpad - find the kit with `grep -l smoke39 */scratchpad/*`, not by mtime; it holds patch.cjs
+(absolute === FILE paths), boot.sh (re-point its S= line), stop.sh, counts.sql (50 tables), smoke39.mts (its
+helpers: login / api with Connection: close, auditRows, sqlError for an expected SQL refusal, the settings
+snapshot / restore, the cleanup chain derived from the DB by the fixture email, a --cleanup-only mode),
+replace-handoff.cjs (update its intro lines), pass40-inventory.md (the full inventory this prompt condenses -
+read it), fix-replace-handoff.cjs (the pattern for a counted text fix the Bash tool's quoting cannot carry)) is
+the starting kit. In a smoke test send `Connection: close` on every fetch, derive the cleanup from the DB by the
+fixture email, and clean a hard-deleted entity's audit rows by the customerId its snapshots carry. Stripe: the
+smoke cannot reach Stripe without a key - test the provider behind the port with a FAKE provider (the port is the
+seam: a smoke-only implementation registered for the test org, or the real one against a test key the owner
+supplies - say which; never commit a key); exercise the SetupIntent confirm path with a stubbed retrieve, the
+refusals (no provider configured, a foreign account, a non-succeeded intent, a second default), the permission
+(403 for the roles without it), the audit rows, last4 on the compat read, and that no provider id reaches any
+read the client gets. npm run check; double boot (boot 1 prints the new tables / columns / grant, boot 2 only
+"serving on port 5001" with every table count unchanged by name); the pass's API smoke test as all four roles; a
+Vite 200 on every touched client module; state plainly what was not rendered - the Payment Element and every
+card affordance cannot be judged without a browser and a key.
 
 Working agreement as always: one pass, one branch, update CURRENT_FOCUS and the roadmap's pass table at the end,
-replace the handoff prompt at the end of CURRENT_FOCUS.md with the one for the next pass (Phase 6's C6.1 unless I say
+replace the handoff prompt at the end of CURRENT_FOCUS.md with the one for the next pass (C6.2 unless I say
 otherwise), push, open the PR and stop. I merge.
 ```

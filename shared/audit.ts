@@ -45,7 +45,16 @@
  *  user's profile assignment writes `update` on the user with `role` before
  *  and after - the first `user` rows; the snapshot never carries the
  *  password hash. Org-wide like the types; neither is revertable - a
- *  permission change is undone by hand on the Roles card. */
+ *  permission change is undone by hand on the Roles card.
+ *  `app_setting` joined in Pass 39 (C5.8): every `app_settings` write (the
+ *  nine storage setters behind PATCH /api/settings/*) records `update` on
+ *  the setting's KEY as the entityId, the snapshots { key, value } with the
+ *  stored text before and after (null when the row did not exist, or when
+ *  the write deleted it - a cleared billing default), and nothing when the
+ *  value did not move. Org-wide, no location; read by entityType alone
+ *  (GET /api/audit-logs?entityType=app_setting) for the Settings page's
+ *  "Recent settings changes" list; never revertable - a setting is put back
+ *  by setting it (shared/app-settings.ts labels the keys). */
 export type AuditEntityType =
   | "customer"
   | "location"
@@ -64,7 +73,8 @@ export type AuditEntityType =
   | "opportunity"
   | "appointment"
   | "role_profile"
-  | "user";
+  | "user"
+  | "app_setting";
 
 /** One member per mutation in D7's Phase 1 scope list, plus the pre-existing
  *  `update` written by `updateLocationProfile()` (and, since Pass 8, by
@@ -240,6 +250,7 @@ const ENTITY_TYPE_LABELS: Record<AuditEntityType, string> = {
   appointment: "Appointment",
   role_profile: "Role profile",
   user: "User",
+  app_setting: "Setting",
 };
 
 const ACTION_LABELS: Record<AuditAction, string> = {

@@ -25,7 +25,8 @@
 // the technician status, `userId` the row's own id - the Pass 12 bridge
 // answered by identity now), served by storage's `getTechnicians` facade.
 // `shared/schema.ts` exports it under the old name `Technician`; the sweep of
-// the client from `Technician` to `UserSummary` is a later hygiene pass.
+// the client from `Technician` to `UserSummary` was left by Pass 39 (C5.8) and
+// is recorded on PLAN_ROADMAP_V2.md C5.9 (the users pass) - behaviour-free.
 import { userDisplayName } from "./users";
 
 export const TECHNICIAN_STATUSES = ["ACTIVE", "INACTIVE", "TERMINATED"] as const;

@@ -27,15 +27,19 @@ Mechanical reference only — stack, entry points, directories, environment. For
   `users.ts` - the display name, the login-status vocabulary, the email helpers -, `technicians.ts` -
   the technician status vocabulary and the `TechnicianSummary` projection `GET /api/technicians`
   answers since Pass 38 (a technician is a users row) -, `technician-preferences.ts`,
-  `appointment-crew.ts`, `money.ts`, `production-value.ts`, `audit.ts`)
+  `appointment-crew.ts`, `money.ts`, `production-value.ts`, `audit.ts`, `app-settings.ts` - the settings keys
+  labelled for the Settings page's "Recent settings changes" list, Pass 39)
 - `script/` — build/util scripts
 
 ## Migration convention
 No `drizzle-kit generate`/`migrations/` directory. The core tables come from `npm run db:push` on a
 fresh database; every later schema change is hand-written idempotent SQL in `server/*-bootstrap.ts`
 files (`CREATE TABLE IF NOT EXISTS`, `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`, guarded backfills,
-and - Pass 38's `technician-users-bootstrap.ts` - a one-time table merge that returns silently once
-the old table is gone), run in sequence on every server boot via `server/index.ts`. This is why
+a one-time table merge that returns silently once the old table is gone - Pass 38's
+`technician-users-bootstrap.ts` - and a guarded column drop or foreign-key add - Pass 39's
+`billing-profile-bootstrap.ts`: `DROP COLUMN` behind a column-exists check, `ADD CONSTRAINT` behind a
+`pg_constraint` check by column, each printed once and silent after), run in sequence on every server
+boot via `server/index.ts`. This is why
 every pass's verification includes booting the server twice — the second boot is what proves the
 migration is actually idempotent, not just correct on a fresh database.
 
