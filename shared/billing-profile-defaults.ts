@@ -15,6 +15,8 @@
 // DROPPED in Pass 39 (C5.8) - the bootstrap carried any surviving reverse
 // pointer onto location_id once before the drop.
 
+import type { PaymentMethodDisplay } from "./payment-methods";
+
 /** billing_profiles.billing_type / billing_profile_templates.billing_type. */
 export const BILLING_TYPES = ["card", "ach", "invoice_terms", "cash", "check"] as const;
 export type BillingType = (typeof BILLING_TYPES)[number];
@@ -35,6 +37,8 @@ export const BILLING_PROFILE_ERROR_CODES = {
   DEFAULT_EXISTS: "BILLING_PROFILE_DEFAULT_EXISTS",
   /** Pass 39 (C5.8): `templateId` names no billing profile template of the org - refused 400 before the insert, since the foreign key would make it a 500. */
   TEMPLATE_UNKNOWN: "BILLING_PROFILE_TEMPLATE_UNKNOWN",
+  /** Pass 40 (C6.1): `defaultPaymentMethodId` names no ACTIVE card of the profile's account (another account's, a removed one, or none) - refused 400 before the insert. */
+  PAYMENT_METHOD_UNKNOWN: "BILLING_PROFILE_PAYMENT_METHOD_UNKNOWN",
 } as const;
 export type BillingProfileErrorCode = (typeof BILLING_PROFILE_ERROR_CODES)[keyof typeof BILLING_PROFILE_ERROR_CODES];
 
@@ -95,12 +99,13 @@ export function normalizeBillingDefaults(values: { defaultBillingProfileTemplate
 export const BILLING_PROFILE_SOURCES = ["ACCOUNT_DEFAULT", "LOCATION_OVERRIDE", "NONE"] as const;
 export type BillingProfileSource = (typeof BILLING_PROFILE_SOURCES)[number];
 
-/** The fields the chip, the badges and the ticket header print - never the tokens. */
+/** The fields the chip, the badges and the ticket header print - never the tokens. `paymentMethod` (Pass 40, C6.1) is the card the profile resolves to: brand, last four, expiry, the test flag - never a provider id. */
 export interface BillingProfileSummary {
   profileId: string;
   label: string;
   billingType: string;
   invoiceTerms: string | null;
+  paymentMethod: PaymentMethodDisplay | null;
 }
 
 export interface LocationBillingProjection {
@@ -109,18 +114,22 @@ export interface LocationBillingProjection {
   label: string | null;
   billingType: string | null;
   invoiceTerms: string | null;
+  /** Pass 40 (C6.1): the card on file the resolved profile charges / shows - its own pointer, else the account's default card, else null. */
+  paymentMethod: PaymentMethodDisplay | null;
 }
 
-export const NO_BILLING_PROFILE: LocationBillingProjection = { source: "NONE", profileId: null, label: null, billingType: null, invoiceTerms: null };
+export const NO_BILLING_PROFILE: LocationBillingProjection = { source: "NONE", profileId: null, label: null, billingType: null, invoiceTerms: null, paymentMethod: null };
 
 /**
  * The resolver's answer for one location as a projection: the profile's
  * locationId equal to the location's means an override, any other row is
- * the account default, nothing is NONE.
+ * the account default, nothing is NONE. The card (Pass 40) is resolved by
+ * the caller from the account's cards (resolveProfilePaymentMethod).
  */
 export function projectLocationBilling(
   locationId: string,
   profile: { id: string; locationId: string | null; label: string; billingType: string; invoiceTerms: string | null } | null | undefined,
+  paymentMethod: PaymentMethodDisplay | null = null,
 ): LocationBillingProjection {
   if (!profile) return NO_BILLING_PROFILE;
   return {
@@ -129,6 +138,7 @@ export function projectLocationBilling(
     label: profile.label,
     billingType: profile.billingType,
     invoiceTerms: profile.invoiceTerms,
+    paymentMethod,
   };
 }
 

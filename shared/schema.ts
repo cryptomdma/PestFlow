@@ -1,5 +1,5 @@
 ﻿import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, integer, boolean, timestamp, decimal, jsonb, date, primaryKey, uniqueIndex, index, type AnyPgColumn } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, integer, boolean, timestamp, decimal, jsonb, date, primaryKey, uniqueIndex, index, foreignKey, type AnyPgColumn } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 import { relations } from "drizzle-orm";
@@ -75,6 +75,98 @@ export const locations = pgTable("locations", {
   source: text("source"),
 });
 
+// Pass 40 (PLAN_ROADMAP_V2.md C6.1; PLAN_BILLING_V1.md §0.4): the org's
+// payment provider account - the credentials the provider adapter is built
+// from, per org, never a process-wide key. One row per (org, provider); the
+// secret key and the webhook signing secret are stored ENCRYPTED
+// (server/integrations/payments/credentials.ts, env PAYMENT_CREDENTIALS_KEY)
+// beside a short fingerprint so a rotation shows in the audit diff; the row
+// is written only by Settings -> Payments (MANAGE_SETTINGS) and no read
+// answers more than configured / mode / publishable key / connected account
+// (shared/payment-methods.ts PaymentProviderAccountSummary). `mode` is the
+// org's explicit test | live; `connectedAccountId` is the Stripe Connect
+// account the requests act as (null = the org's own account) - the platform
+// model later is a data change here, not a refactor. A disconnect clears
+// the secrets and sets `inactive`; the row is never deleted. Created by
+// server/payment-methods-bootstrap.ts with org_id NOT NULL from day one.
+export const paymentProviderAccounts = pgTable("payment_provider_accounts", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: varchar("org_id").notNull(),
+  provider: text("provider").notNull().default("stripe"), // stripe (fake on a dev boot that allows it)
+  mode: text("mode").notNull().default("test"), // test | live
+  publishableKey: text("publishable_key"),
+  secretKeyEncrypted: text("secret_key_encrypted"),
+  secretKeyFingerprint: text("secret_key_fingerprint"),
+  webhookSecretEncrypted: text("webhook_secret_encrypted"),
+  webhookSecretFingerprint: text("webhook_secret_fingerprint"),
+  connectedAccountId: text("connected_account_id"),
+  status: text("status").notNull().default("active"), // active | inactive
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => ({
+  orgProvider: uniqueIndex("payment_provider_accounts_org_provider_uidx").on(table.orgId, table.provider),
+}));
+
+// Pass 40 (C6.1): one provider Customer per PestFlow ACCOUNT, per provider
+// and mode (a test-mode customer is not a live one), so a second card reuses
+// it and every card of the account sits under one customer at the provider.
+// Written once by the first SetupIntent; the provider id never reaches a
+// read.
+export const paymentProviderCustomers = pgTable("payment_provider_customers", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: varchar("org_id").notNull(),
+  accountId: varchar("account_id").notNull().references(() => accounts.id),
+  provider: text("provider").notNull(),
+  mode: text("mode").notNull(), // test | live
+  providerCustomerId: text("provider_customer_id").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => ({
+  accountProviderMode: uniqueIndex("payment_provider_customers_account_provider_mode_uidx").on(table.orgId, table.accountId, table.provider, table.mode),
+}));
+
+// Pass 40 (C6.1; PLAN_BILLING_V1.md §1.2, B18): the card on file - the
+// tokenized instrument. Belongs to the ACCOUNT (a profile picks one through
+// billing_profiles.defaultPaymentMethodId; the account's `isDefault` card is
+// what a profile with no pointer resolves to); `locationId` is a note of
+// where it was added, never a scope. The row carries the provider's tokens
+// (`providerCustomerId`, `providerPaymentMethodId`) and DISPLAY fields only
+// (brand, last4, expiry): no card number, CVV or bank credential ever
+// touches PestFlow - the client mounts the provider's own form (PCI SAQ-A).
+// The tokens never leave storage: every read answers
+// StoredPaymentMethodSummary (shared/payment-methods.ts) and the audit
+// snapshot is the display fields. `status` removed = detached at the
+// provider, the row kept (never deleted); `livemode` says which mode's card
+// it is. The row type is StoredPaymentMethod, never PaymentMethod
+// (shared/payments.ts owns that name for the ledger's instrument enum).
+export const paymentMethods = pgTable("payment_methods", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: varchar("org_id").notNull(),
+  accountId: varchar("account_id").notNull().references(() => accounts.id),
+  locationId: varchar("location_id").references(() => locations.id),
+  provider: text("provider").notNull(),
+  providerCustomerId: text("provider_customer_id").notNull(),
+  providerPaymentMethodId: text("provider_payment_method_id").notNull(),
+  type: text("type").notNull().default("card"), // card | ach (ach is a later pass)
+  brand: text("brand"),
+  last4: text("last4").notNull(),
+  expMonth: integer("exp_month"),
+  expYear: integer("exp_year"),
+  isDefault: boolean("is_default").notNull().default(false),
+  status: text("status").notNull().default("active"), // active | removed
+  livemode: boolean("livemode").notNull().default(false),
+  addedByUserId: varchar("added_by_user_id"),
+  addedByLabel: text("added_by_label"),
+  removedAt: timestamp("removed_at"),
+  removedByUserId: varchar("removed_by_user_id"),
+  removedByLabel: text("removed_by_label"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => ({
+  providerMethod: uniqueIndex("payment_methods_provider_method_uidx").on(table.orgId, table.providerPaymentMethodId),
+  accountIdx: index("payment_methods_account_id_idx").on(table.accountId),
+  locationIdx: index("payment_methods_location_id_idx").on(table.locationId),
+}));
+
 // Org-level reusable presets, Settings-configurable (same shape as
 // ServiceType/TargetPest). A billing_profiles instance may optionally be
 // created from one of these; the template itself never bills anything.
@@ -102,8 +194,17 @@ export const billingProfileTemplates = pgTable("billing_profile_templates", {
 // dropped in Pass 39 (C5.8). The three foreign keys declared here exist on a
 // db:push database from creation and are added to an established one by
 // server/billing-profile-bootstrap.ts under the same names (Pass 39).
-// `cardOnFileToken` / `achToken` / `lastFour` are Phase 6's (C6.1): no screen
-// or route types them today (the dev DB's one `lastFour` is legacy seed data).
+// `cardOnFileToken` / `achToken` / `lastFour` are LEGACY and unread: Pass 40
+// (C6.1) put the card on file in its own table (payment_methods above - an
+// account can hold several, and this row is whole-row-snapshotted into
+// audit_logs and returned by two open GETs), so no screen or route reads or
+// writes them (the dev DB's one `lastFour` is seed data with no token behind
+// it); a later hygiene pass drops them. `defaultPaymentMethodId` (Pass 40) is
+// the profile's pointer at one of its account's ACTIVE cards - null = the
+// account's default card - checked by assertBillingProfileRulesTx (400
+// BILLING_PROFILE_PAYMENT_METHOD_UNKNOWN) and cleared when the card is
+// removed; the key is named explicitly because db:push's derived name would
+// exceed Postgres's 63 characters (the bootstrap uses the same name).
 export const billingProfiles = pgTable("billing_profiles", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   orgId: varchar("org_id").notNull(),
@@ -118,11 +219,15 @@ export const billingProfiles = pgTable("billing_profiles", {
   achToken: text("ach_token"),
   invoiceTerms: text("invoice_terms"),
   lastFour: text("last_four"),
+  defaultPaymentMethodId: varchar("default_payment_method_id"),
   isDefault: boolean("is_default").notNull().default(false),
   status: text("status").notNull().default("active"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
-});
+}, (table) => ({
+  defaultPaymentMethod: foreignKey({ name: "billing_profiles_default_payment_method_fk", columns: [table.defaultPaymentMethodId], foreignColumns: [paymentMethods.id] }),
+  defaultPaymentMethodIdx: index("billing_profiles_default_payment_method_id_idx").on(table.defaultPaymentMethodId),
+}));
 
 export const customerNotes = pgTable("customer_notes", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -1493,6 +1598,14 @@ export type BillingProfileTemplate = typeof billingProfileTemplates.$inferSelect
 export type InsertBillingProfileTemplate = z.infer<typeof insertBillingProfileTemplateSchema>;
 export type BillingProfile = typeof billingProfiles.$inferSelect;
 export type InsertBillingProfile = z.infer<typeof insertBillingProfileSchema>;
+// Pass 40 (C6.1): written by storage alone (never from a request body), so
+// no drizzle-zod insert schema - the select and insert row types only. The
+// card row is StoredPaymentMethod: shared/payments.ts owns `PaymentMethod`.
+export type PaymentProviderAccount = typeof paymentProviderAccounts.$inferSelect;
+export type InsertPaymentProviderAccount = typeof paymentProviderAccounts.$inferInsert;
+export type PaymentProviderCustomer = typeof paymentProviderCustomers.$inferSelect;
+export type StoredPaymentMethod = typeof paymentMethods.$inferSelect;
+export type InsertStoredPaymentMethod = typeof paymentMethods.$inferInsert;
 export type CustomerNote = typeof customerNotes.$inferSelect;
 export type InsertCustomerNote = z.infer<typeof insertCustomerNoteSchema>;
 export type NoteRevision = typeof noteRevisions.$inferSelect;

@@ -12,6 +12,8 @@ import { ROLE_PROFILE_SEED } from "@shared/role-profiles";
 const SEEDED_PROFILE_GRANTS: ReadonlyArray<{ permission: Permission; keys: readonly BuiltInRole[]; addedIn: string }> = [
   // Pass 38 (C5.7): open another technician's day on the Tech View.
   { permission: PERMISSIONS.VIEW_OTHER_TECHNICIAN_WORK, keys: ["support", "manager", "admin"], addedIn: "Pass 38" },
+  // Pass 40 (C6.1): add, default or remove a card on file.
+  { permission: PERMISSIONS.MANAGE_PAYMENT_METHODS, keys: ["support", "manager", "admin"], addedIn: "Pass 40" },
 ];
 
 // Pass 37 (PLAN_ROADMAP_V2.md C5.6; B16): the role-profile tables and the

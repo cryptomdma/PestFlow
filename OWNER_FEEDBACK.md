@@ -53,6 +53,10 @@ Product owner feedback from hands-on testing — notes for the dev to review, qu
   - Optional: hyperlink the Next Due date to perform the same action.
   - Intent: avoid increasing the size/span of the current agreement unnecessarily.
 - [ ] **FB-007 — Cancel agreement still requires manual reason input**
+- [ ] **FB-023 - isolate payment type per agreement**
+  - Example: property mgr agrees to pay for termites and rodents, but leaves pest control as the tenants responsibility. However, tenant wants an agreement with monthly billing.
+    - The pest control agreement should be able to isolate a specific CC on file (once built)
+  > **Review (2026-10-09):** QUALIFIED — not built in Pass 40 (C6.1, the pass that built the card on file; your word: build none unless told). What exists now: cards belong to the ACCOUNT (`payment_methods`, Edit Location → Cards on file), and a billing profile may point at one of its account's cards (`billing_profiles.defaultPaymentMethodId`, "Card for this profile"); nothing charges yet. The cheap half of this note - an agreement naming a specific card on file (`agreements.paymentMethodId`, the card belonging to the agreement location's account, charged ahead of the profile's card) - fits C6.2's auto-charge, where the charge resolution order is decided. The example is more than a card choice: the tenant is a different PAYER, and today the invoice's Bill To comes from the location's billing profile and the account holds one Stripe Customer, so the tenant's card would sit under the property manager's customer. That half is "a billing profile (payer) per agreement" - please confirm whether you want it, since it changes what an invoice snapshots. Roadmap: `PLAN_ROADMAP_V2.md` Phase 6 table, the C6.2 row's notes.
 
 ## New Service
 

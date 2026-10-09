@@ -37,7 +37,10 @@
 > and Phase 1 (billing core / invoicing). It is written to be measured against
 > `CANONICAL_DOMAIN_RULES_V1.md` and should be promoted into that canon once accepted.
 >
-> Status: proposed. Nothing here is built yet.
+> Status: the historical architecture plan (2026-09). Phases 0 and 1 are built (PLAN_BILLING_V1_1.md D1-D9); the
+> rest lands pass by pass under PLAN_ROADMAP_V2.md, which records what was built as specified here and what was
+> decided differently - §0.4's payments port and §1.2's `payment_methods` landed in Pass 40 (C6.1) with a
+> SetupIntent capture the port sketch below did not name.
 
 ---
 

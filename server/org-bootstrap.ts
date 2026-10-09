@@ -30,7 +30,7 @@ export async function bootstrapOrganizations(): Promise<void> {
   await db.execute(sql`ALTER TABLE organizations ADD COLUMN IF NOT EXISTS remit_to_email text`);
   await db.execute(sql`ALTER TABLE organizations ADD COLUMN IF NOT EXISTS remit_to_phone text`);
   // Sensible starting values, not a claim of real business data - editable
-  // via PATCH /api/organizations/:id/branding, never overwritten once set.
+  // via PATCH /api/organization/branding, never overwritten once set.
   await db.execute(sql`
     UPDATE organizations
     SET remit_to_name = name, primary_color_hex = '#2563eb'

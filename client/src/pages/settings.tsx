@@ -54,6 +54,7 @@ import { DEFAULT_BILLING_DEFAULTS, describeBillingType, type BillingDefaults } f
 import { AGREEMENT_UNITS, AGREEMENT_UNIT_LABELS, SCHEDULING_MODES, SCHEDULING_MODE_LABELS, describeAgreementCadence, describeAgreementTerm, describeAgreementTypeUsage, describeSchedulingMode, deriveAgreementTypeKey, type AgreementTypeUsage } from "@shared/agreement-types";
 import { invalidateAuditViews } from "@/lib/invalidate-audit-views";
 import { AuditLogEntryCard, type AuditLogEntry } from "@/components/audit-log-entry-card";
+import { PaymentProviderSettingsCard } from "@/components/payment-provider-settings-card";
 import { describeAppSettingKey } from "@shared/app-settings";
 import { describeInvoiceTerms } from "@shared/invoice-detail";
 import { isOnList, matchListEntry } from "@shared/material-lists";
@@ -2594,6 +2595,10 @@ export default function Settings() {
           {!canManageSettings ? <p className="text-xs text-muted-foreground">Only {settingsManagers} can change this setting (Manage Settings).</p> : null}
         </CardContent>
       </Card>
+
+      {/* Pass 40 (C6.1): the payment provider account - Stripe keys, write-only, encrypted at rest;
+          the read never carries a secret. Beside the billing cards it serves. */}
+      <PaymentProviderSettingsCard canManageSettings={canManageSettings} settingsManagers={settingsManagers} />
 
       <Card>
         <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">

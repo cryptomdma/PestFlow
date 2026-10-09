@@ -50,7 +50,7 @@ are calibrated to Phase 1's: Pass 6 (four tables, routes, three dialogs) is the 
 | Pre-payments / deposits (half-down at scheduling) | DONE | an unapplied payment designated to the agreement (`payments.designatedAgreementId`, `schema.ts:738`, D4); offered first by the D4 prompt and the field's "COA available" |
 | Payment application (+ release) UI | DONE | `ApplySourceDialog` (`location-ledger-panel.tsx:102-175`) applies one payment or credit memo to a chosen invoice; Release exists on applications; the D4 "Apply location balance" prompt fires after Generate and from open rows |
 | Invoice generation checks location unapplied balance and prompts | DONE | Pass 6, `apply-location-balance-prompt.tsx`, wired into `invoice-on-finalize-prompt.tsx:20` |
-| Card / ACH / auto-draft framework | ABSENT | enums named, route refuses them (Pass 6); no `payment_methods`, no provider port |
+| Card / ACH / auto-draft framework | PARTIAL — Pass 40 (2026-10-09, C6.1): the provider port, the Stripe adapter, the per-org provider account and the card on file | `server/integrations/payments/` (types, `providers/stripe.ts`, the factory), `payment_provider_accounts` (encrypted keys, Settings → Payments), `payment_provider_customers`, `payment_methods` captured by Stripe's own form (SetupIntent) and shown on the customer screen; charging, auto-draft and ACH capture are C6.2 / later - `POST /api/payments` still refuses CARD / ACH. See "Shipped in Pass 40" at the end of Part D. Was: enums named, route refuses them (Pass 6); the port's types and the outbox table existed, nothing else |
 | Widen the New Service modal | DONE — Pass 36 (2026-10-07, C5.4; `OWNER_FEEDBACK.md` FB-010) | `<DialogContent className="max-w-2xl">` (`dialog-service-form`, `ServicesTab` in `customer-detail.tsx`) - the width of the customer screen's Service Details dialog; the one dialog serves New Service and Edit Service. Was: a bare `<DialogContent>` (:3780 at the time; `:3045` had drifted) taking `ui/dialog.tsx`'s default `max-w-lg` (this row said `sm:max-w-lg`; the default has no breakpoint prefix) |
 | COA applied by support, role-gated | DONE | `APPLY_PAYMENT` is support+ (`permissions.ts:60,76`); technician cannot apply |
 | COA "auto-adjusts the service price with notation" | **REJECTED by D6** | COA is a payment application; Price / COA / Due today is what ships (Pass 7). See B3. |
@@ -88,8 +88,8 @@ are calibrated to Phase 1's: Pass 6 (four tables, routes, three dialogs) is the 
 | Service → invoice link | PARTIAL | Services tab Invoice column switches to the Invoices tab without selecting the row (`customer-detail.tsx:3108-3135`); `ServiceDetailModal` shows number + status, no link (`:2750-2759`); Ticket Review shows nothing |
 | Void in the modal | ABSENT (Void is inline) | `invoices.tsx:499-509` |
 | Payment collection from the invoice: cash / check | DONE | Record Payment on both surfaces, applies directly when an invoice is given |
-| … card on file / process card | ABSENT (Phase 6) | route refuses CARD / ACH |
-| "Send to customer" — email | ABSENT | no transport anywhere; `nodemailer` appears only as a dead esbuild external (`script/build.ts:22`) |
+| … card on file / process card | PARTIAL — Pass 40 (C6.1): the card on file is captured and shown on the customer screen; "Charge card on file" / "Process card" are C6.2 | route still refuses CARD / ACH |
+| "Send to customer" — email | ABSENT | no transport anywhere; `nodemailer` appears only in the esbuild bundle allowlist (`script/build.ts`, beside `stripe` - a real dependency since Pass 40), not as a transport |
 | … — print | ABSENT as an affordance, trivially available | the PDF opens in a new tab; no `window.print`, no print stylesheet |
 | Batch Invoice on the Invoices screen | DONE — Pass 13 (2026-09-24) | `BatchInvoiceDialog` (`client/src/components/batch-invoice-dialog.tsx`) behind the Invoices screen's header button; result rows open the invoice modal; Send All kept; Service Ticket Review lost the button and dialog. See "Shipped in Pass 13" at the end of Part D. Was: lived on Ticket Review (`service-ticket-review.tsx:407-417, 666-755`) |
 | Batch by route / technician, grouped by date | DONE — Pass 13 (2026-09-24) | `technicianId` on `GET /api/invoices/batch-preview` and `POST /api/invoices/batch-generate` (`BatchInvoiceFilters`, `shared/batch-invoice.ts`); the preview groups technician → service date → visit (`groupBatchInvoicePreview`), a "route" being a technician on a day since `appointments` carry no route columns. Was: date range only; the page's Technician filter was not passed (`:345-348`) |
@@ -129,7 +129,7 @@ are calibrated to Phase 1's: Pass 6 (four tables, routes, three dialogs) is the 
 | Application area as multi-select | PARTIAL | single-select from the product's `allowedApplicationAreas[]` else free text (`:663-674`); areas serviced derived across lines (`:308`); no org-level area list (per-product comma text, `settings.tsx:296`) |
 | Generate Proposal | ABSENT | no `proposal` anywhere |
 | Ticket / appointment details: due vs prepaid, Price / COA / Due today, designation | DONE | Pass 7 (`ServiceBillingBlock` at `technician-work.tsx:686`, `VisitDueTodayTotal` at `:754`, since Pass 29's edits) |
-| … billing plan/profile display, card-on-file icon | PARTIAL / ABSENT | plan pill on agreement card + location profile (Pass 7); nothing on the ticket; no card icon (no `payment_methods`) |
+| … billing plan/profile display, card-on-file icon | PARTIAL | plan pill on agreement card + location profile (Pass 7); the customer screen's billing chip and location line print the card on file ("· Visa •••• 4242") since Pass 40 (C6.1); nothing on the ticket; the card icon on the ticket / appointment details and "last four behind a click" are C6.2 |
 | Post-ticket sequence: finish → collect → post | DONE, with D8's labels not the notes' | Pass 7.5 (see B1); the collect step's "preview / print / send service summary" is the service report document — built as Pass 22 (C3.5): Preview in the collect step, Open / Download on the review modal and the Services tab; "send" waits for C6.3 |
 | Appointment status "Scheduled → Pending" | **REJECTED (Q4 / D1a)** | no fifth status; the feature is the reschedule-to-queue action (see B2) |
 | Appointment Details (tech): service price = sum of due services | DONE | `VisitDueTodayTotal` (`technician-work.tsx:754`) |
@@ -307,9 +307,14 @@ details — both exist). Each is one unit below.
 
 **B18. "API ready for Stripe or other processor… framework for card, auto-draft, ACH."** The framework
 is V1 §0.4's provider port (`server/integrations/payments/`), org-level credentials, and tokenized
-`payment_methods`. Nothing of it exists; the enums are named and refused. Phase 6, with a PCI rule:
-PestFlow never sees a card number. **Owner:** agreed; the **last four digits must be visible** — they
-are (`payment_methods.last4`, shown on the billing profile and behind the card icon).
+`payment_methods`. **Built in Pass 40 (C6.1, 2026-10-09):** the port and the Stripe adapter (the only
+file importing the SDK), the per-org provider account (`payment_provider_accounts` - keys encrypted at
+rest, Settings → Payments, Connect-ready by data), one provider Customer per PestFlow account, and the
+card on file captured by Stripe's own Payment Element through a SetupIntent (PestFlow never sees a card
+number - the PCI rule holds). Charging and auto-draft are C6.2; ACH capture is a later pass; the CARD /
+ACH payment methods stay refused until C6.2. **Owner:** agreed; the **last four digits must be visible** —
+they are (`payment_methods.last4`: the customer screen's billing chip and Edit Location's Cards on file
+list, for every role; behind the card icon on the ticket in C6.2).
 
 **B19. "Batch: if CC on file and appropriate billing profile selected, auto-process with a
 confirmation."** Needs Phase 6 (cards) and C5.2 (a billing profile the location actually selects,
@@ -436,8 +441,8 @@ zones from C4.1b, and only the last exists by then.
 
 | # | Unit | Notes covered | Depends on |
 |---|---|---|---|
-| C6.1 | **Payment provider port** (`server/integrations/payments/`, Stripe first, org-level credentials, Connect-ready), `payment_methods` (tokens, brand, **last4** shown on the billing profile, expiry), SetupIntent capture from the billing profile; PCI: no card number ever touches PestFlow. | Stripe framework; card on file | C5.2 |
-| C6.2 | **Charge from the invoice** (modal: "Charge card on file" / "Process card" → PaymentIntent → payment CAPTURED → applied), refunds through the provider, webhooks via a transactional outbox; **batch auto-charge** with the confirmation prompt (billing profile `autoChargeOnFile`); "pay this invoice" magic link (`access_tokens`, V1 §1.8). Card icon on the ticket and appointment details, last four behind a click, permission-gated. | Process CC; auto-process in batch; CC icon | C6.1, C2.1a, C2.3 |
+| C6.1 (**Pass 40**) — **done** (`feature/phase-6-payment-provider-port`, 2026-10-09; see "Shipped in Pass 40" at the end of Part D) | **Payment provider port** (`server/integrations/payments/`, Stripe first, org-level credentials, Connect-ready), `payment_methods` (tokens, brand, **last4** shown on the billing profile, expiry), SetupIntent capture from the billing profile; PCI: no card number ever touches PestFlow. As built, decision by decision: **(1) the account model** - a per-org provider-account ROW (`payment_provider_accounts`: provider, mode test \| live, the keys, a nullable `connectedAccountId`), the adapter built per request from that row by `server/integrations/payments/index.ts`, never a process env key; Heritage starts on its own Stripe account; Stripe Connect later is a data change (the connected account id becomes the Stripe-Account header) plus onboarding, not a refactor. **(2) where the secret lives** - that table, born `org_id NOT NULL` (not `organizations`, whose GET answers every role; not `app_settings`): the secret key and the webhook signing secret AES-256-GCM under env `PAYMENT_CREDENTIALS_KEY` (`.env.example`, PROJECT_MAP) with an 8-hex fingerprint beside each; write-only from Settings → **Payments** (`PUT` / `DELETE /api/payment-provider`, MANAGE_SETTINGS; a blank secret keeps the stored one, a mode change or a reconnect needs that mode's key - 400 `PAYMENT_PROVIDER_SECRET_REQUIRED`; a live key under test mode 400 `_MODE_MISMATCH`, a key of the wrong shape 400 `_KEY_INVALID`, no master key 503 `PAYMENT_CREDENTIALS_KEY_MISSING`) whose read (`GET`, open) answers configured / provider / mode / publishable key / connected account / hasWebhookSecret / encryptionReady - never a secret; a disconnect clears the secrets and keeps the row `inactive`; audited as its own entity `payment_provider_account`. **(3) test mode** - the explicit per-org `mode`, `livemode` on every card row, "Test mode" badges on the Payments card, the Add card dialog and beside every test card; the dev DB holds test keys only. **(4) who** - the 31st permission `MANAGE_PAYMENT_METHODS` ("Manage cards on file"; support / manager / admin by default through SEEDED_PROFILE_GRANTS: 4 / 15 / 30 / 31), the last four open to every role (B18); field capture at the visit not built - the owner's call. **(5) the row** - `payment_methods` per V1 §1.2 (org, account, location?, provider, the two provider ids, type card \| ach, brand, last4, expMonth, expYear, isDefault, status active \| removed, livemode, the added / removed stamps) with `billing_profiles.defaultPaymentMethodId` (foreign key `billing_profiles_default_payment_method_fk`, named explicitly because db:push's derived name exceeds Postgres's 63 characters) checked by `assertBillingProfileRulesTx` - an ACTIVE card of the profile's account or 400 `BILLING_PROFILE_PAYMENT_METHOD_UNKNOWN`, cleared inside a removal, never put back by a revert; the three legacy columns `cardOnFileToken` / `achToken` / `lastFour` left UNREAD (the one `'4242'` ignored: seed data with no token behind it; a later hygiene pass drops the three). **(6) the Stripe Customer** - one per PestFlow account per provider and mode in `payment_provider_customers`, minted by the first session (name from the company or the person, the customer's email or the primary contact's), reused after, the id never answered. **(7) the capture flow** - `POST /api/accounts/:accountId/setup-intents` (MANAGE_PAYMENT_METHODS: a SetupIntent, usage off_session, card only, metadata pestflowOrgId / pestflowAccountId; 409 `PAYMENT_PROVIDER_NOT_CONFIGURED` without a provider) → the client mounts Stripe's Payment Element (`@stripe/stripe-js` 9.17.0 / `@stripe/react-stripe-js` 6.12.0, loaded from js.stripe.com only when the dialog opens - SAQ-A) → `stripe.confirmSetup` in the browser → `POST /api/accounts/:accountId/payment-methods { setupIntentId, makeDefault?, billingProfileId?, locationId? }`, which reads the intent back from the provider (never the body's word): the account's own customer (400 `PAYMENT_METHOD_INTENT_MISMATCH`), succeeded (400 `PAYMENT_METHOD_SETUP_INCOMPLETE` with `details.status`), a card (400 `PAYMENT_METHOD_TYPE_UNSUPPORTED`), the location the account's (400 `PAYMENT_METHOD_LOCATION_MISMATCH`), idempotent on the provider's method id, the first active card the account's default; no webhook (C6.2's); ACH not captured. **(8) the port** - `types.ts` reshaped (createCustomer / createSetupIntent / retrieveSetupIntent / detachPaymentMethod; `PaymentMethodRef` with type / brand / last4 / expiry / livemode; `PaymentProviderError` with a status and a code; charge / refund / handleWebhook declared and answering 501 `PAYMENT_PROVIDER_NOT_IMPLEMENTED` until C6.2), the `stripe` SDK 22.6.2 imported by `providers/stripe.ts` alone, a `providers/fake.ts` in-process double the route accepts only under `PAYMENT_PROVIDER_FAKE_ALLOWED=1` outside production (the smoke test's provider), the row type `StoredPaymentMethod` (shared/payments.ts keeps `PaymentMethod`). **(9) what the profile shows** - Edit Location's Billing block gains a **Cards on file** list (account-level: "Visa •••• 4242 · exp 04/28", Default / Expired / Test mode badges, Make default, Remove behind a confirm - a soft status plus a provider detach, never a delete -, Add card; disabled with the reason when no provider is connected or the role lacks the permission) and each profile's fields a **Card for this profile** select (the pointer; "Account default card" = null); the header chip and the location line append "· Visa •••• 4242" from `LocationBillingProjection.paymentMethod` (display fields only - `resolveProfilePaymentMethod`: the pointer, else the account's default); the ticket / appointment icon and "last four behind a click" stay C6.2. **(10)** `billingType` stays the payer arrangement (no migration); a card-type profile with no card on file WARNS (an amber note in the block), not refused - the owner decides. **(11) audit** - `payment_method` (`created`; `update` on isDefault; `status_changed` on removal; display fields, never a provider id; on the customer-level History and the location it was noted against) and `payment_provider_account` (`created` / `update` / `status_changed`; the fingerprints, never a key; listed on the Payments card); neither revertable; the `payment_method` prefixes in `invalidate-audit-views.ts`. **(12) not done:** charging, webhooks, the outbox worker, the magic link, email, ACH, the legacy column drop, C5.5 / C5.9 / C5.10, Smart Schedule; the Payment Element and every card affordance are unrendered (no browser, no key - the smoke test drove the port through the fake provider). | Stripe framework; card on file | C5.2 |
+| C6.2 | **Charge from the invoice** (modal: "Charge card on file" / "Process card" → PaymentIntent → payment CAPTURED → applied), refunds through the provider, webhooks via a transactional outbox; **batch auto-charge** with the confirmation prompt (billing profile `autoChargeOnFile`); "pay this invoice" magic link (`access_tokens`, V1 §1.8). Card icon on the ticket and appointment details, last four behind a click, permission-gated. Pass 40's notes for this row: `paymentHoldsValue` / `paymentCountsAsPaid` (`shared/payments.ts`) know PENDING and CONFIRMED only, so a CAPTURED card payment counts for nothing until they learn it; the webhook signing secret is already stored (encrypted) on `payment_provider_accounts` and `handleWebhook(rawBody, signature)` is on the port; the card a profile charges is `resolveProfilePaymentMethod` (its pointer, else the account's default); **FB-023** (a per-agreement card - `agreements.paymentMethodId`, charged before the profile's; the payer-split half of that note is a billing-profile-per-agreement question for the owner) joins the auto-charge work here. | Process CC; auto-process in batch; CC icon | C6.1, C2.1a, C2.3 |
 | C6.3 | **Email delivery**: an email port (Resend / SES) + outbox; "Send to customer" in the modal sends the PDF to the billing contact; batch send emails; statements and service reports by email. | Send to customer (email) | C2.1a, C2.5, C3.5 |
 
 ### Phase 7 — Compensation engine (V1's "Phase 2.5")
@@ -4728,6 +4733,106 @@ RecentSettingsChanges   // GET /api/audit-logs?entityType=app_setting&limit=20, 
   profile (both routes) and 400-by-zod once restored, cleanup to baseline (+4 sessions); Vite 200 on
   settings.tsx, customer-detail.tsx, app-settings.ts, audit.ts, billing-profile-defaults.ts, schema.ts,
   permissions.ts and technicians.ts.
+
+**Shipped in Pass 40** (`feature/phase-6-payment-provider-port`, 2026-10-09) — the C6.1 row as built, the first
+Phase 6 row: the provider port and the Stripe adapter, the per-org provider account, the provider customer
+mapping, the card on file, a 31st permission, two audit entities, one Settings card, one block in Edit
+Location. Signatures:
+
+```ts
+// shared/payment-methods.ts (new)
+export const PAYMENT_PROVIDERS = ["stripe"] as const;  export const FAKE_PAYMENT_PROVIDER = "fake";
+export const PAYMENT_PROVIDER_MODES = ["test", "live"] as const;
+export const STORED_PAYMENT_METHOD_TYPES = ["card", "ach"] as const;  // ach named, not captured
+export const STORED_PAYMENT_METHOD_STATUSES = ["active", "removed"] as const;
+export const PAYMENT_PROVIDER_ERROR_CODES = { NOT_CONFIGURED (409), UNSUPPORTED (400), KEY_INVALID (400), MODE_MISMATCH (400),
+  SECRET_REQUIRED (400), ENCRYPTION_KEY_MISSING (503 PAYMENT_CREDENTIALS_KEY_MISSING), REQUEST_FAILED (502), NOT_IMPLEMENTED (501) };
+export const PAYMENT_METHOD_ERROR_CODES = { ACCOUNT_NOT_FOUND (404), NOT_FOUND (404), SETUP_INCOMPLETE (400, details.status),
+  INTENT_MISMATCH (400), TYPE_UNSUPPORTED (400), LOCATION_MISMATCH (400), REMOVED (409) };
+export interface PaymentProviderAccountSummary { configured; provider; mode; publishableKey; connectedAccountId; hasWebhookSecret; status; encryptionReady; updatedAt }
+export interface PaymentProviderAccountInput { provider; mode; publishableKey?; secretKey?; webhookSecret?; connectedAccountId? }  // the PUT body
+export interface PaymentMethodDisplay { id; type; brand; last4; expMonth; expYear; isDefault; status; livemode }   // never a provider id
+export interface StoredPaymentMethodSummary extends PaymentMethodDisplay { accountId; locationId; addedByLabel; createdAt; removedAt }
+export interface SetupIntentSession { setupIntentId; clientSecret; provider; mode; publishableKey; livemode }
+export interface ConfirmPaymentMethodInput { setupIntentId; makeDefault?; billingProfileId?; locationId? }
+describeStoredPaymentMethod(m)           // "Visa •••• 4242 · exp 04/28" / "No card on file"
+describeCardBrand, formatCardExpiry, isPaymentMethodExpired(m, now), describePaymentProvider, describePaymentProviderMode
+stripeSecretKeyMode(key) / stripePublishableKeyMode(key)  // "test" | "live" | null from the sk_/rk_/pk_ prefix
+pickDefaultPaymentMethod(list)           // the active default, else the oldest active, else null
+resolveProfilePaymentMethod(profile, list)  // the profile's pointer when active, else pickDefaultPaymentMethod
+
+// shared/billing-profile-defaults.ts: BillingProfileSummary / LocationBillingProjection gain `paymentMethod: PaymentMethodDisplay | null`;
+//   projectLocationBilling(locationId, profile, paymentMethod = null); BILLING_PROFILE_ERROR_CODES.PAYMENT_METHOD_UNKNOWN.
+// shared/permissions.ts: PERMISSIONS.MANAGE_PAYMENT_METHODS = "manage_payment_methods" (Payments group; support / manager / admin;
+//   SEEDED_PROFILE_GRANTS "Pass 40" - the seed counts are 4 / 15 / 30 / 31).
+// shared/audit.ts: AuditEntityType += "payment_method" | "payment_provider_account" ("Card on file" / "Payment provider"; not revertable).
+// shared/schema.ts: paymentProviderAccounts, paymentProviderCustomers, paymentMethods (declared before billingProfiles);
+//   billingProfiles.defaultPaymentMethodId + foreignKey "billing_profiles_default_payment_method_fk" + its index;
+//   types PaymentProviderAccount, PaymentProviderCustomer, StoredPaymentMethod (no insert zod schemas - storage writes them).
+
+// server/integrations/payments/types.ts (the port, reshaped)
+export interface PaymentProviderCredentials { provider; mode; secretKey; publishableKey; webhookSecret; connectedAccountId }
+export interface PaymentMethodRef { externalPaymentMethodId; externalCustomerId; type; brand; last4; expMonth; expYear; livemode }
+export interface SetupIntentRef { setupIntentId; clientSecret; livemode }
+export interface SetupIntentResult { setupIntentId; status: SetupIntentStatus; livemode; externalCustomerId; paymentMethod: PaymentMethodRef | null }
+export class PaymentProviderError extends Error { status: 400 | 409 | 501 | 502 | 503; code; details? }
+export interface PaymentProvider { name; mode; createCustomer(input); createSetupIntent(customer, { types, metadata? }); retrieveSetupIntent(id);
+  detachPaymentMethod(id); charge(...) / refund(...) / handleWebhook(rawBody: Buffer, signature) /* C6.2: 501 until then */ }
+// server/integrations/payments/index.ts: createPaymentProvider(credentials) -> stripe | fake; isSupportedPaymentProvider(name);
+//   fakePaymentProviderAllowed() = NODE_ENV !== "production" && PAYMENT_PROVIDER_FAKE_ALLOWED === "1".
+// server/integrations/payments/providers/stripe.ts: createStripeProvider(credentials) - new Stripe(secretKey, { stripeAccount? });
+//   customers.create / setupIntents.create({ usage: "off_session", payment_method_types }) / setupIntents.retrieve(id, { expand: ["payment_method"] })
+//   / paymentMethods.detach; every Stripe failure -> 502 REQUEST_FAILED with Stripe's message (never a key). The ONLY file importing `stripe`.
+// server/integrations/payments/providers/fake.ts: createFakePaymentProvider - cus_fake_n / seti_fake_n (succeeded, a Visa or Mastercard) /
+//   seti_fake_pending_<cus> / seti_fake_canceled_<cus> / an unknown id -> 502; per-process state.
+// server/integrations/payments/credentials.ts: encryptCredential / decryptCredential (AES-256-GCM, "v1:iv:tag:ct", env PAYMENT_CREDENTIALS_KEY -
+//   64 hex or base64 of 32 bytes), credentialsEncryptionReady(), describeCredentialsKeyProblem(), fingerprintCredential() (8 hex of SHA-256).
+
+// server/payment-methods-bootstrap.ts (after bootstrapBillingProfiles, every boot; each step printed once, silent after)
+//   CREATE TABLE payment_provider_accounts / payment_provider_customers / payment_methods (org_id NOT NULL; the FKs under db:push's names),
+//   their unique and plain indexes; ALTER TABLE billing_profiles ADD COLUMN default_payment_method_id; ADD CONSTRAINT
+//   billing_profiles_default_payment_method_fk (orphans printed and skipped); a WARN on every boot while PAYMENT_CREDENTIALS_KEY is unset.
+
+// server/storage.ts (IStorage; every write takes the actor)
+getPaymentProviderAccount(): Promise<PaymentProviderAccountSummary>
+setPaymentProviderAccount(input, actor)          // validate the key shapes against the mode, encrypt, upsert on (org, provider); audit created / update
+disconnectPaymentProviderAccount(actor)          // secrets cleared, status inactive; audit status_changed; 409 when none
+getPaymentMethodsForAccount(accountId, includeRemoved = false): Promise<StoredPaymentMethodSummary[]>
+createSetupIntentForAccount(accountId, actor): Promise<SetupIntentSession>   // requirePaymentProviderTx + ensureProviderCustomer + provider.createSetupIntent
+confirmSetupIntentForAccount(accountId, input, actor): Promise<StoredPaymentMethodSummary>  // retrieve, the four refusals, insert (first = default), audit created
+setDefaultPaymentMethod(id, actor) / removePaymentMethod(id, actor)   // demote the others (audit each); detach when the connected provider is the card's,
+                                                                      // status removed, profiles' pointers cleared (their own audit rows), the oldest active promoted
+// private: requirePaymentProviderTx(reader) -> { provider, account } (409 NOT_CONFIGURED), toPaymentProviderCredentials(row) (decrypt),
+//   ensureProviderCustomer(provider, account) (find-or-create outside any transaction), listActivePaymentMethodsTx, setPaymentMethodDefaultTx,
+//   setBillingProfilePaymentMethodTx; assertBillingProfileRulesTx checks `defaultPaymentMethodId`; getCustomerDetailCompat fills
+//   `billing.paymentMethod` / `accountDefault.paymentMethod`; the two History reads collect `payment_method` refs; PaymentMethodError.
+
+// server/routes.ts
+GET  /api/payment-provider                               (open)              -> PaymentProviderAccountSummary
+PUT  /api/payment-provider                               (MANAGE_SETTINGS)   strict { provider, mode, publishableKey?, secretKey?, webhookSecret?, connectedAccountId? }
+DELETE /api/payment-provider                             (MANAGE_SETTINGS)   -> the summary, disconnected
+GET  /api/accounts/:accountId/payment-methods            (open)              ?includeRemoved=true -> StoredPaymentMethodSummary[]
+POST /api/accounts/:accountId/setup-intents              (MANAGE_PAYMENT_METHODS) -> 201 SetupIntentSession
+POST /api/accounts/:accountId/payment-methods            (MANAGE_PAYMENT_METHODS) strict ConfirmPaymentMethodInput -> 201 the summary
+POST /api/payment-methods/:id/make-default               (MANAGE_PAYMENT_METHODS)
+POST /api/payment-methods/:id/remove                     (MANAGE_PAYMENT_METHODS)   never a DELETE
+// billingProfileWriteSchema gains defaultPaymentMethodId (nullable); respondPaymentError answers { code, message, details? } under the status.
+
+// client
+// components/payment-methods-block.tsx: PaymentMethodsBlock({ accountId, idPrefix, warnNoCard }), PaymentMethodSelect({ value, onChange, methods, idPrefix }),
+//   useAccountPaymentMethods(accountId), usePaymentProviderSummary(); AddCardDialog -> POST setup-intents, loadStripe(publishableKey) once per key,
+//   <Elements options={{ clientSecret }}> + <PaymentElement>, stripe.confirmSetup({ elements, redirect: "if_required" }), POST payment-methods.
+// components/payment-provider-settings-card.tsx: PaymentProviderSettingsCard({ canManageSettings, settingsManagers }) - the Payments card.
+// pages/customer-detail.tsx: BillingProfileFormState.defaultPaymentMethodId; BillingProfileFields / LocationBillingSelector take `paymentMethods?`;
+//   EditLocationDialog renders the block; the header chip and the location line append the card. lib/invalidate-audit-views.ts: invalidatePaymentMethodViews().
+```
+
+Verified on PORT=5001 against a COPY of the dev DB (`pestflow_verify`, dropped afterwards) with `PAYMENT_PROVIDER_FAKE_ALLOWED=1`
+and a throwaway `PAYMENT_CREDENTIALS_KEY`: `npm run check` clean; boot 1 printed the grant, the three tables, the column and
+the key; boot 2 only the serving line with every count unchanged by name across the 53 tables; 99 smoke assertions on the
+second run (the first lost one to the fake provider's pending intent carrying no customer - the double, not the server);
+Vite 200 on the two pages, the two new components, the two client libs and the six shared modules. Not rendered: the Payment
+Element, the Cards on file block, the card select, the Payments card and every refusal toast (no browser, no Stripe key).
 
 ## Part E — Decision log
 

@@ -28,8 +28,9 @@ import { FileText } from "lucide-react";
 // agreement as intent (D4). The field never applies money to an invoice; the
 // office does (APPLY_PAYMENT), and cash is confirmed only by a role holding
 // CONFIRM_CASH_PAYMENT - the built-in manager and admin (D5; Pass 37 profiles).
-// Card / ACH wait for Phase 2. Signatures and a printable customer copy are
-// not built.
+// Card / ACH charging waits for PLAN_ROADMAP_V2.md C6.2 (a card on file is
+// captured on the customer screen since Pass 40, C6.1). Signatures and a
+// printable customer copy are not built.
 
 /**
  * The one agreement a visit's money is for, when there is exactly one: the

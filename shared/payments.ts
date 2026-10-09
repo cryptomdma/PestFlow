@@ -10,7 +10,8 @@
 
 /** CASH | CHECK | OTHER are the Phase 1 manual instruments. CARD and ACH are
  *  named so the column vocabulary is complete, but nothing records them until
- *  Stripe lands in Phase 2 - the route refuses them. */
+ *  charging through the provider lands (PLAN_ROADMAP_V2.md C6.2; the provider
+ *  port and the card on file are Pass 40's, C6.1) - the route refuses them. */
 export const PAYMENT_METHODS = ["CASH", "CHECK", "OTHER", "CARD", "ACH"] as const;
 export type PaymentMethod = (typeof PAYMENT_METHODS)[number];
 export const MANUAL_PAYMENT_METHODS = ["CASH", "CHECK", "OTHER"] as const;
@@ -21,8 +22,11 @@ export const MANUAL_PAYMENT_METHODS = ["CASH", "CHECK", "OTHER"] as const;
  * CONFIRMED: the office confirmed it cleared / was banked; it now counts.
  * VOIDED: recorded in error; carries no value and can hold no applications.
  * REFUNDED: money returned to the customer; likewise holds no applications.
- * AUTHORIZED / CAPTURED / FAILED are the card states for Phase 2 and are
- * listed only so the vocabulary is stable when they arrive.
+ * AUTHORIZED / CAPTURED / FAILED are the card states for C6.2 (charging
+ * through the provider) and are listed only so the vocabulary is stable when
+ * they arrive. Note for that pass: paymentHoldsValue and paymentCountsAsPaid
+ * below know PENDING and CONFIRMED only, so a CAPTURED card payment would
+ * count for nothing until they learn it (or the charge posts CONFIRMED).
  */
 export const PAYMENT_STATUSES = ["PENDING", "CONFIRMED", "VOIDED", "REFUNDED", "AUTHORIZED", "CAPTURED", "FAILED"] as const;
 export type PaymentStatus = (typeof PAYMENT_STATUSES)[number];

@@ -54,7 +54,20 @@
  *  value did not move. Org-wide, no location; read by entityType alone
  *  (GET /api/audit-logs?entityType=app_setting) for the Settings page's
  *  "Recent settings changes" list; never revertable - a setting is put back
- *  by setting it (shared/app-settings.ts labels the keys). */
+ *  by setting it (shared/app-settings.ts labels the keys).
+ *  `payment_method` and `payment_provider_account` joined in Pass 40 (C6.1):
+ *  a card on file stored (`created`), made the default or demoted
+ *  (`update` on isDefault) or removed (`status_changed`), and the org's
+ *  provider account connected (`created`), re-keyed or re-moded (`update`)
+ *  or disconnected (`status_changed`). The snapshots are DISPLAY fields -
+ *  brand, last four, expiry, default, status, test flag for a card;
+ *  provider, mode, publishable key, connected account, status and a short
+ *  fingerprint of each secret for the account - never a provider id, never
+ *  a key (shared/payment-methods.ts). A card's rows sit with its account on
+ *  the customer-level History (and on the location it was noted against);
+ *  the provider account's rows are org-wide, read by entityType alone for
+ *  the Settings Payments card. Neither is revertable: a card is removed and
+ *  re-added through the provider, a provider is reconnected by hand. */
 export type AuditEntityType =
   | "customer"
   | "location"
@@ -74,7 +87,9 @@ export type AuditEntityType =
   | "appointment"
   | "role_profile"
   | "user"
-  | "app_setting";
+  | "app_setting"
+  | "payment_method"
+  | "payment_provider_account";
 
 /** One member per mutation in D7's Phase 1 scope list, plus the pre-existing
  *  `update` written by `updateLocationProfile()` (and, since Pass 8, by
@@ -251,6 +266,8 @@ const ENTITY_TYPE_LABELS: Record<AuditEntityType, string> = {
   role_profile: "Role profile",
   user: "User",
   app_setting: "Setting",
+  payment_method: "Card on file",
+  payment_provider_account: "Payment provider",
 };
 
 const ACTION_LABELS: Record<AuditAction, string> = {

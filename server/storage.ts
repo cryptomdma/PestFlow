@@ -28,6 +28,9 @@ import {
   productionValueEntries,
   noteRevisions,
   users,
+  paymentProviderAccounts,
+  paymentProviderCustomers,
+  paymentMethods,
   type User, type InsertUser, type UserSummary,
   type Account,
   type Customer, type InsertCustomer,
@@ -61,6 +64,7 @@ import {
   type Communication, type InsertCommunication,
   type BillingProfile, type InsertBillingProfile,
   type BillingProfileTemplate, type InsertBillingProfileTemplate,
+  type PaymentProviderAccount, type PaymentProviderCustomer, type StoredPaymentMethod,
   type TaxRate, type InsertTaxRate,
   type TaxRule, type InsertTaxRule,
   type TaxExemptionCertificate, type InsertTaxExemptionCertificate,
@@ -73,6 +77,26 @@ import {
   type AuditLog,
 } from "@shared/schema";
 import { db } from "./db";
+import {
+  FAKE_PAYMENT_PROVIDER,
+  PAYMENT_METHOD_ERROR_CODES,
+  PAYMENT_PROVIDER_ERROR_CODES,
+  resolveProfilePaymentMethod,
+  stripePublishableKeyMode,
+  stripeSecretKeyMode,
+  type ConfirmPaymentMethodInput,
+  type PaymentMethodDisplay,
+  type PaymentMethodErrorCode,
+  type PaymentProviderAccountInput,
+  type PaymentProviderAccountSummary,
+  type PaymentProviderMode,
+  type PaymentProviderName,
+  type SetupIntentSession,
+  type StoredPaymentMethodSummary,
+} from "@shared/payment-methods";
+import { createPaymentProvider, isSupportedPaymentProvider } from "./integrations/payments/index";
+import { credentialsEncryptionReady, decryptCredential, encryptCredential, fingerprintCredential } from "./integrations/payments/credentials";
+import { PaymentProviderError, type PaymentProvider, type PaymentProviderCredentials } from "./integrations/payments/types";
 import { eq, and, or, inArray, notInArray, sql, gt, gte, lte, lt, asc, desc, ne, isNull, isNotNull, ilike, like, count, sum, max, type SQL } from "drizzle-orm";
 import {
   AUDIT_LOG_DEFAULT_LIMIT,
@@ -411,8 +435,60 @@ function pickAccountDefaultProfile(profiles: BillingProfile[]): BillingProfile |
   return accountLevel.find((profile) => profile.isDefault) ?? accountLevel[0];
 }
 
-function summarizeBillingProfile(profile: BillingProfile): BillingProfileSummary {
-  return { profileId: profile.id, label: profile.label, billingType: profile.billingType, invoiceTerms: profile.invoiceTerms };
+function summarizeBillingProfile(profile: BillingProfile, paymentMethod: PaymentMethodDisplay | null = null): BillingProfileSummary {
+  return { profileId: profile.id, label: profile.label, billingType: profile.billingType, invoiceTerms: profile.invoiceTerms, paymentMethod };
+}
+
+// Pass 40 (C6.1): the card on file as every read answers it - the display
+// fields and the row's own ids, never the provider's (the tokens stay here).
+function summarizeStoredPaymentMethod(row: StoredPaymentMethod): StoredPaymentMethodSummary {
+  return {
+    id: row.id,
+    accountId: row.accountId,
+    locationId: row.locationId,
+    type: row.type === "ach" ? "ach" : "card",
+    brand: row.brand,
+    last4: row.last4,
+    expMonth: row.expMonth,
+    expYear: row.expYear,
+    isDefault: row.isDefault,
+    status: row.status === "removed" ? "removed" : "active",
+    livemode: row.livemode,
+    addedByLabel: row.addedByLabel,
+    createdAt: row.createdAt,
+    removedAt: row.removedAt,
+  };
+}
+
+/** The audit snapshot of a card: the display fields; never providerCustomerId / providerPaymentMethodId (canon §17, shared/audit.ts). */
+function paymentMethodAuditSnapshot(row: StoredPaymentMethod): Record<string, unknown> {
+  return {
+    accountId: row.accountId,
+    locationId: row.locationId,
+    type: row.type,
+    brand: row.brand,
+    last4: row.last4,
+    expMonth: row.expMonth,
+    expYear: row.expYear,
+    isDefault: row.isDefault,
+    status: row.status,
+    livemode: row.livemode,
+    addedByLabel: row.addedByLabel,
+    removedAt: row.removedAt,
+  };
+}
+
+/** The audit snapshot of the provider account: never a key - the fingerprints say a secret moved. */
+function paymentProviderAccountAuditSnapshot(row: PaymentProviderAccount): Record<string, unknown> {
+  return {
+    provider: row.provider,
+    mode: row.mode,
+    publishableKey: row.publishableKey,
+    connectedAccountId: row.connectedAccountId,
+    status: row.status,
+    secretKeyFingerprint: row.secretKeyFingerprint,
+    webhookSecretFingerprint: row.webhookSecretFingerprint,
+  };
 }
 
 export interface AccountInvariantSummary {
@@ -549,7 +625,9 @@ const REVERT_ENTITY_STRIPPED_FIELDS: Record<RevertableAuditEntityType, string[]>
   // are Phase 6's capture, never a replay.
   location: ["customerId", "accountId", "billingProfileId"],
   contact: ["customerId", "locationId"],
-  billing_profile: ["accountId", "cardOnFileToken", "achToken", "lastFour"],
+  // Pass 40 (C6.1): the card pointer is managed by the card buttons (a
+  // removed card clears it inside the removal), never by a History replay.
+  billing_profile: ["accountId", "cardOnFileToken", "achToken", "lastFour", "defaultPaymentMethodId"],
   billing_profile_template: [],
   agreement_template: [],
   agreement: ["customerId", "locationId", "soldBy", "billingPlanSnapshot", "nextBillingDate", "contractUploadedAt", "expectedServiceCount"],
@@ -1183,6 +1261,17 @@ export class BillingProfileError extends Error {
   }
 }
 
+// Pass 40 (C6.1): a card-on-file write the rules refuse (the codes in
+// shared/payment-methods.ts PAYMENT_METHOD_ERROR_CODES). The route answers
+// { code, message, details? } under `status`. A provider-side failure or a
+// configuration gap is PaymentProviderError (integrations/payments/types.ts).
+export class PaymentMethodError extends Error {
+  constructor(readonly status: 400 | 404 | 409, readonly code: PaymentMethodErrorCode, message: string, readonly details?: Record<string, unknown>) {
+    super(message);
+    this.name = "PaymentMethodError";
+  }
+}
+
 // Pass 36 (C5.4): a contact write the primary rule refuses (400 with the code
 // from shared/contacts.ts) - the location's only primary contact made
 // non-primary, or moved to another location.
@@ -1751,6 +1840,19 @@ export interface IStorage {
   createBillingProfile(data: InsertBillingProfile, actor?: AuditActor | null): Promise<BillingProfile>;
   updateBillingProfile(id: string, data: Partial<InsertBillingProfile>, actor?: AuditActor | null, audit?: AuditChangeOptions): Promise<BillingProfile | undefined>;
   resolveBillingProfileForLocation(locationId: string): Promise<BillingProfile | undefined>;
+
+  // Pass 40 (C6.1): the payment provider account (Settings -> Payments; the
+  // read never carries a secret), the SetupIntent session and its confirm,
+  // and the cards on file (display fields only - the provider ids never
+  // leave storage). Every write takes the session's actor.
+  getPaymentProviderAccount(): Promise<PaymentProviderAccountSummary>;
+  setPaymentProviderAccount(input: PaymentProviderAccountInput, actor?: AuditActor | null): Promise<PaymentProviderAccountSummary>;
+  disconnectPaymentProviderAccount(actor?: AuditActor | null): Promise<PaymentProviderAccountSummary>;
+  getPaymentMethodsForAccount(accountId: string, includeRemoved?: boolean): Promise<StoredPaymentMethodSummary[]>;
+  createSetupIntentForAccount(accountId: string, actor?: AuditActor | null): Promise<SetupIntentSession>;
+  confirmSetupIntentForAccount(accountId: string, input: ConfirmPaymentMethodInput, actor?: AuditActor | null): Promise<StoredPaymentMethodSummary>;
+  setDefaultPaymentMethod(paymentMethodId: string, actor?: AuditActor | null): Promise<StoredPaymentMethodSummary>;
+  removePaymentMethod(paymentMethodId: string, actor?: AuditActor | null): Promise<StoredPaymentMethodSummary>;
 
   getNotesByLocation(locationId: string): Promise<CustomerNote[]>;
   getSharedNotes(customerId: string): Promise<CustomerNote[]>;
@@ -2489,11 +2591,23 @@ export class DatabaseStorage implements IStorage {
           ? or(eq(billingProfiles.locationId, locationId), and(eq(billingProfiles.accountId, location.accountId), isNull(billingProfiles.locationId)))
           : eq(billingProfiles.locationId, locationId),
       ));
+    // Pass 40 (C6.1): the cards on file, on the profiles' rule - the ones
+    // noted against this location and the account's location-less ones.
+    const locationPaymentMethods = await db
+      .select({ id: paymentMethods.id, locationId: paymentMethods.locationId })
+      .from(paymentMethods)
+      .where(and(
+        eq(paymentMethods.orgId, this.orgId),
+        location.accountId
+          ? or(eq(paymentMethods.locationId, locationId), and(eq(paymentMethods.accountId, location.accountId), isNull(paymentMethods.locationId)))
+          : eq(paymentMethods.locationId, locationId),
+      ));
 
     const refs: AuditRef[] = [
       { entityType: "location", entityId: locationId, locationId },
       { entityType: "customer", entityId: location.customerId, locationId: null },
       ...locationBillingProfiles.map((profile): AuditRef => ({ entityType: "billing_profile", entityId: profile.id, locationId: profile.locationId })),
+      ...locationPaymentMethods.map((method): AuditRef => ({ entityType: "payment_method", entityId: method.id, locationId: method.locationId })),
       ...(await this.collectLocationAuditRefs([locationId])),
     ];
     return this.queryAuditLogsForRefs(refs, limit);
@@ -2532,12 +2646,18 @@ export class DatabaseStorage implements IStorage {
     const accountProfiles = account
       ? await db.select({ id: billingProfiles.id, locationId: billingProfiles.locationId }).from(billingProfiles).where(and(eq(billingProfiles.orgId, this.orgId), eq(billingProfiles.accountId, account.id)))
       : [];
+    // Pass 40 (C6.1): every card of the account - an account-level row
+    // unless it was noted against one of the locations.
+    const accountPaymentMethods = account
+      ? await db.select({ id: paymentMethods.id, locationId: paymentMethods.locationId }).from(paymentMethods).where(and(eq(paymentMethods.orgId, this.orgId), eq(paymentMethods.accountId, account.id)))
+      : [];
 
     const refs: AuditRef[] = [
       { entityType: "customer", entityId: customerId, locationId: null },
       ...customerLocations.map((location): AuditRef => ({ entityType: "location", entityId: location.id, locationId: location.id })),
       ...accountContacts.map((contact): AuditRef => ({ entityType: "contact", entityId: contact.id, locationId: null })),
       ...accountProfiles.map((profile): AuditRef => ({ entityType: "billing_profile", entityId: profile.id, locationId: profile.locationId && nameById.has(profile.locationId) ? profile.locationId : null })),
+      ...accountPaymentMethods.map((method): AuditRef => ({ entityType: "payment_method", entityId: method.id, locationId: method.locationId && nameById.has(method.locationId) ? method.locationId : null })),
       ...(await this.collectLocationAuditRefs(Array.from(nameById.keys()))),
     ];
     const locationByRef = new Map<string, string | null>(refs.map((ref): [string, string | null] => [`${ref.entityType}:${ref.entityId}`, ref.locationId]));
@@ -4131,6 +4251,9 @@ export class DatabaseStorage implements IStorage {
       .from(billingProfiles)
       .where(and(eq(billingProfiles.orgId, this.orgId), eq(billingProfiles.accountId, account.id), eq(billingProfiles.status, "active")));
     const accountDefault = pickAccountDefaultProfile(activeProfiles);
+    // Pass 40 (C6.1): the account's active cards, so the chip can print the
+    // card the resolved profile charges (its pointer, else the default).
+    const accountCards = (await this.listActivePaymentMethodsTx(db, account.id)).map(summarizeStoredPaymentMethod);
     const locationIds = new Set(relatedLocations.map((location) => location.id));
     const billingOverrideLocationIds = activeProfiles
       .map((profile) => profile.locationId)
@@ -4142,8 +4265,8 @@ export class DatabaseStorage implements IStorage {
       primaryLocation,
       selectedLocation,
       relatedLocations,
-      billing: projectLocationBilling(selectedLocation.id, resolvedProfile),
-      accountDefault: accountDefault ? summarizeBillingProfile(accountDefault) : null,
+      billing: projectLocationBilling(selectedLocation.id, resolvedProfile, resolveProfilePaymentMethod(resolvedProfile, accountCards)),
+      accountDefault: accountDefault ? summarizeBillingProfile(accountDefault, resolveProfilePaymentMethod(accountDefault, accountCards)) : null,
       billingOverrideLocationIds: Array.from(new Set(billingOverrideLocationIds)),
     };
   }
@@ -4450,7 +4573,7 @@ export class DatabaseStorage implements IStorage {
   // resolver already filters on active.
   private async assertBillingProfileRulesTx(
     tx: DbTransaction,
-    next: { id?: string; accountId: string; locationId: string | null; templateId: string | null; isDefault: boolean; status: string },
+    next: { id?: string; accountId: string; locationId: string | null; templateId: string | null; defaultPaymentMethodId: string | null; isDefault: boolean; status: string },
   ): Promise<void> {
     const [account] = await tx.select({ id: accounts.id }).from(accounts).where(and(eq(accounts.orgId, this.orgId), eq(accounts.id, next.accountId)));
     if (!account) {
@@ -4467,6 +4590,19 @@ export class DatabaseStorage implements IStorage {
         .where(and(eq(billingProfileTemplates.orgId, this.orgId), eq(billingProfileTemplates.id, next.templateId)));
       if (!template) {
         throw new BillingProfileError(BILLING_PROFILE_ERROR_CODES.TEMPLATE_UNKNOWN, "The billing profile template was not found");
+      }
+    }
+    // Pass 40 (C6.1): the card pointer names an ACTIVE card of this account
+    // - another account's card, a removed one or an unknown id is refused
+    // before the foreign key could make it a 500 (and before a profile could
+    // charge a card its customer never gave).
+    if (next.defaultPaymentMethodId) {
+      const [method] = await tx
+        .select({ id: paymentMethods.id, accountId: paymentMethods.accountId, status: paymentMethods.status })
+        .from(paymentMethods)
+        .where(and(eq(paymentMethods.orgId, this.orgId), eq(paymentMethods.id, next.defaultPaymentMethodId)));
+      if (!method || method.accountId !== next.accountId || method.status !== "active") {
+        throw new BillingProfileError(BILLING_PROFILE_ERROR_CODES.PAYMENT_METHOD_UNKNOWN, "The card is not an active card on file for this billing profile's account");
       }
     }
     if (next.locationId) {
@@ -4503,6 +4639,7 @@ export class DatabaseStorage implements IStorage {
         accountId: data.accountId,
         locationId: data.locationId ?? null,
         templateId: data.templateId ?? null,
+        defaultPaymentMethodId: data.defaultPaymentMethodId ?? null,
         isDefault: data.isDefault ?? false,
         status: data.status ?? "active",
       });
@@ -4523,6 +4660,7 @@ export class DatabaseStorage implements IStorage {
         accountId: data.accountId ?? existing.accountId,
         locationId: data.locationId === undefined ? existing.locationId : data.locationId,
         templateId: data.templateId === undefined ? existing.templateId : data.templateId,
+        defaultPaymentMethodId: data.defaultPaymentMethodId === undefined ? existing.defaultPaymentMethodId : data.defaultPaymentMethodId,
         isDefault: data.isDefault ?? existing.isDefault,
         status: data.status ?? existing.status,
       });
@@ -4572,6 +4710,466 @@ export class DatabaseStorage implements IStorage {
       .from(billingProfiles)
       .where(and(eq(billingProfiles.orgId, this.orgId), eq(billingProfiles.accountId, location.accountId), isNull(billingProfiles.locationId), eq(billingProfiles.status, "active")));
     return pickAccountDefaultProfile(accountProfiles);
+  }
+
+  // =========================================================================
+  // Pass 40 (PLAN_ROADMAP_V2.md C6.1): the payment provider account and the
+  // cards on file. PLAN_BILLING_V1.md §0.4 - the adapter is built per org
+  // from the payment_provider_accounts row (never a process key), through
+  // integrations/payments/index.ts (the domain never touches a vendor SDK);
+  // §1.2 - the card is a payment_methods row of the ACCOUNT carrying the
+  // provider's tokens and display fields, no card number ever (the client
+  // mounts the provider's form against a SetupIntent's client secret). The
+  // tokens never leave this class: every answer is a summary. Audit (canon
+  // §17): payment_provider_account created / update / status_changed with
+  // the fingerprints, payment_method created / update / status_changed with
+  // the display fields.
+  // =========================================================================
+
+  private summarizePaymentProviderAccount(row: PaymentProviderAccount | undefined): PaymentProviderAccountSummary {
+    const configured = !!row && row.status === "active" && !!row.secretKeyEncrypted;
+    return {
+      configured,
+      provider: row?.provider ?? null,
+      mode: row ? (row.mode === "live" ? "live" : "test") : null,
+      publishableKey: row?.publishableKey ?? null,
+      connectedAccountId: row?.connectedAccountId ?? null,
+      hasWebhookSecret: !!row?.webhookSecretEncrypted,
+      status: row ? (row.status === "inactive" ? "inactive" : "active") : null,
+      encryptionReady: credentialsEncryptionReady(),
+      updatedAt: row?.updatedAt ?? null,
+    };
+  }
+
+  private async readActivePaymentProviderAccountTx(reader: DbReader): Promise<PaymentProviderAccount | undefined> {
+    const [row] = await reader
+      .select()
+      .from(paymentProviderAccounts)
+      .where(and(eq(paymentProviderAccounts.orgId, this.orgId), eq(paymentProviderAccounts.status, "active")))
+      .orderBy(desc(paymentProviderAccounts.updatedAt))
+      .limit(1);
+    return row;
+  }
+
+  private toPaymentProviderCredentials(row: PaymentProviderAccount): PaymentProviderCredentials {
+    if (!row.secretKeyEncrypted) {
+      throw new PaymentProviderError(409, PAYMENT_PROVIDER_ERROR_CODES.NOT_CONFIGURED, "The payment provider has no secret key - connect it under Settings -> Payments");
+    }
+    return {
+      provider: row.provider as PaymentProviderName,
+      mode: row.mode === "live" ? "live" : "test",
+      secretKey: decryptCredential(row.secretKeyEncrypted),
+      publishableKey: row.publishableKey,
+      webhookSecret: row.webhookSecretEncrypted ? decryptCredential(row.webhookSecretEncrypted) : null,
+      connectedAccountId: row.connectedAccountId,
+    };
+  }
+
+  /** The adapter for the org's connected provider, or 409 PAYMENT_PROVIDER_NOT_CONFIGURED. */
+  private async requirePaymentProviderTx(reader: DbReader): Promise<{ provider: PaymentProvider; account: PaymentProviderAccount }> {
+    const row = await this.readActivePaymentProviderAccountTx(reader);
+    if (!row || !row.secretKeyEncrypted) {
+      throw new PaymentProviderError(409, PAYMENT_PROVIDER_ERROR_CODES.NOT_CONFIGURED, "No payment provider is connected - connect one under Settings -> Payments before adding a card");
+    }
+    return { provider: createPaymentProvider(this.toPaymentProviderCredentials(row)), account: row };
+  }
+
+  async getPaymentProviderAccount(): Promise<PaymentProviderAccountSummary> {
+    const [row] = await db
+      .select()
+      .from(paymentProviderAccounts)
+      .where(eq(paymentProviderAccounts.orgId, this.orgId))
+      .orderBy(desc(paymentProviderAccounts.status), desc(paymentProviderAccounts.updatedAt))
+      .limit(1);
+    return this.summarizePaymentProviderAccount(row);
+  }
+
+  // The one write into payment_provider_accounts. The keys are checked
+  // against the provider's own shapes and the row's mode (a live key under
+  // test mode is refused, as are two keys of different modes), the secret is
+  // required on a first save, after a disconnect and on a mode change (the
+  // stored one is that mode's), and absent otherwise keeps the stored one -
+  // so a Save that only changes the publishable key never needs the secret
+  // pasted again. Encrypted before the row is touched; 503 when the server
+  // cannot encrypt.
+  async setPaymentProviderAccount(input: PaymentProviderAccountInput, actor?: AuditActor | null): Promise<PaymentProviderAccountSummary> {
+    const provider = input.provider.trim();
+    if (!isSupportedPaymentProvider(provider)) {
+      throw new PaymentProviderError(
+        400,
+        PAYMENT_PROVIDER_ERROR_CODES.UNSUPPORTED,
+        provider === FAKE_PAYMENT_PROVIDER
+          ? "The fake payment provider is only available on a dev boot started with PAYMENT_PROVIDER_FAKE_ALLOWED=1"
+          : `"${provider}" is not a supported payment provider`,
+      );
+    }
+    const mode: PaymentProviderMode = input.mode === "live" ? "live" : "test";
+    const secretKey = input.secretKey?.trim() || undefined;
+    const publishableKey = input.publishableKey?.trim() || null;
+    if (provider === "stripe") {
+      if (secretKey) {
+        const keyMode = stripeSecretKeyMode(secretKey);
+        if (!keyMode) {
+          throw new PaymentProviderError(400, PAYMENT_PROVIDER_ERROR_CODES.KEY_INVALID, "The secret key should be a Stripe secret (sk_test_... / sk_live_...) or restricted (rk_...) key");
+        }
+        if (keyMode !== mode) {
+          throw new PaymentProviderError(400, PAYMENT_PROVIDER_ERROR_CODES.MODE_MISMATCH, `The secret key is a ${keyMode}-mode key; the account is set to ${mode} mode`);
+        }
+      }
+      if (publishableKey) {
+        const keyMode = stripePublishableKeyMode(publishableKey);
+        if (!keyMode) {
+          throw new PaymentProviderError(400, PAYMENT_PROVIDER_ERROR_CODES.KEY_INVALID, "The publishable key should be a Stripe publishable key (pk_test_... / pk_live_...)");
+        }
+        if (keyMode !== mode) {
+          throw new PaymentProviderError(400, PAYMENT_PROVIDER_ERROR_CODES.MODE_MISMATCH, `The publishable key is a ${keyMode}-mode key; the account is set to ${mode} mode`);
+        }
+      }
+    }
+    if (!credentialsEncryptionReady()) {
+      throw new PaymentProviderError(503, PAYMENT_PROVIDER_ERROR_CODES.ENCRYPTION_KEY_MISSING, "The server has no usable PAYMENT_CREDENTIALS_KEY, so provider keys cannot be stored - set it in .env and restart");
+    }
+
+    return db.transaction(async (tx) => {
+      const [existing] = await tx
+        .select()
+        .from(paymentProviderAccounts)
+        .where(and(eq(paymentProviderAccounts.orgId, this.orgId), eq(paymentProviderAccounts.provider, provider)));
+      const storedUsable = !!existing && existing.status === "active" && !!existing.secretKeyEncrypted && existing.mode === mode;
+      if (!secretKey && !storedUsable) {
+        throw new PaymentProviderError(
+          400,
+          PAYMENT_PROVIDER_ERROR_CODES.SECRET_REQUIRED,
+          !existing || existing.status !== "active" || !existing.secretKeyEncrypted
+            ? "A secret key is required to connect the provider"
+            : `Switching to ${mode} mode needs that mode's secret key`,
+        );
+      }
+      const secretKeyEncrypted = secretKey ? encryptCredential(secretKey) : existing!.secretKeyEncrypted;
+      const secretKeyFingerprint = secretKey ? fingerprintCredential(secretKey) : existing!.secretKeyFingerprint;
+      const webhookSecret = input.webhookSecret === undefined ? undefined : input.webhookSecret?.trim() || null;
+      const webhookSecretEncrypted = webhookSecret === undefined ? (storedUsable ? existing!.webhookSecretEncrypted : null) : webhookSecret ? encryptCredential(webhookSecret) : null;
+      const webhookSecretFingerprint = webhookSecret === undefined ? (storedUsable ? existing!.webhookSecretFingerprint : null) : webhookSecret ? fingerprintCredential(webhookSecret) : null;
+      const connectedAccountId = input.connectedAccountId === undefined ? existing?.connectedAccountId ?? null : input.connectedAccountId?.trim() || null;
+      const values = {
+        mode,
+        publishableKey,
+        secretKeyEncrypted,
+        secretKeyFingerprint,
+        webhookSecretEncrypted,
+        webhookSecretFingerprint,
+        connectedAccountId,
+        status: "active",
+        updatedAt: new Date(),
+      };
+      const [row] = await tx
+        .insert(paymentProviderAccounts)
+        .values({ orgId: this.orgId, provider, ...values })
+        .onConflictDoUpdate({ target: [paymentProviderAccounts.orgId, paymentProviderAccounts.provider], set: values })
+        .returning();
+      if (existing) {
+        await this.auditChangeTx(tx, "payment_provider_account", row.id, paymentProviderAccountAuditSnapshot(existing), paymentProviderAccountAuditSnapshot(row), actor);
+      } else {
+        await this.auditCreatedTx(tx, "payment_provider_account", row.id, paymentProviderAccountAuditSnapshot(row), actor);
+      }
+      return this.summarizePaymentProviderAccount(row);
+    });
+  }
+
+  // Disconnect: the secrets are cleared and the row made inactive - kept,
+  // never deleted, so its history and the cards captured under it stay
+  // explicable. The cards themselves are untouched (their tokens live at the
+  // provider; a reconnect to the same account finds them again).
+  async disconnectPaymentProviderAccount(actor?: AuditActor | null): Promise<PaymentProviderAccountSummary> {
+    return db.transaction(async (tx) => {
+      const existing = await this.readActivePaymentProviderAccountTx(tx);
+      if (!existing) {
+        throw new PaymentProviderError(409, PAYMENT_PROVIDER_ERROR_CODES.NOT_CONFIGURED, "No payment provider is connected");
+      }
+      const [row] = await tx
+        .update(paymentProviderAccounts)
+        .set({ status: "inactive", secretKeyEncrypted: null, secretKeyFingerprint: null, webhookSecretEncrypted: null, webhookSecretFingerprint: null, updatedAt: new Date() })
+        .where(and(eq(paymentProviderAccounts.orgId, this.orgId), eq(paymentProviderAccounts.id, existing.id)))
+        .returning();
+      await this.auditChangeTx(tx, "payment_provider_account", row.id, paymentProviderAccountAuditSnapshot(existing), paymentProviderAccountAuditSnapshot(row), actor);
+      return this.summarizePaymentProviderAccount(row);
+    });
+  }
+
+  private async requireAccountTx(reader: DbReader, accountId: string): Promise<Account> {
+    const [account] = await reader.select().from(accounts).where(and(eq(accounts.orgId, this.orgId), eq(accounts.id, accountId)));
+    if (!account) {
+      throw new PaymentMethodError(404, PAYMENT_METHOD_ERROR_CODES.ACCOUNT_NOT_FOUND, "Account not found");
+    }
+    return account;
+  }
+
+  // One provider customer per account, provider and mode. Found, or created
+  // at the provider (name and email from the customer, the primary contact's
+  // email when the customer has none) and recorded - outside any transaction,
+  // so a network call never holds a lock; the unique index makes a race
+  // harmless (the loser re-reads the winner's row and its own provider
+  // customer is left unused).
+  private async ensureProviderCustomer(provider: PaymentProvider, account: Account): Promise<PaymentProviderCustomer> {
+    const where = and(
+      eq(paymentProviderCustomers.orgId, this.orgId),
+      eq(paymentProviderCustomers.accountId, account.id),
+      eq(paymentProviderCustomers.provider, provider.name),
+      eq(paymentProviderCustomers.mode, provider.mode),
+    );
+    const [existing] = await db.select().from(paymentProviderCustomers).where(where);
+    if (existing) return existing;
+
+    const [customer] = account.legacyCustomerId
+      ? await db.select().from(customers).where(and(eq(customers.orgId, this.orgId), eq(customers.id, account.legacyCustomerId)))
+      : [];
+    let email = customer?.email?.trim() || null;
+    if (!email && account.legacyCustomerId) {
+      const [contact] = await db
+        .select({ email: contacts.email })
+        .from(contacts)
+        .where(and(eq(contacts.orgId, this.orgId), eq(contacts.customerId, account.legacyCustomerId), eq(contacts.isPrimary, true)));
+      email = contact?.email?.trim() || null;
+    }
+    const personName = `${customer?.firstName ?? ""} ${customer?.lastName ?? ""}`.trim();
+    const name = customer?.companyName?.trim() || personName || "PestFlow customer";
+    const ref = await provider.createCustomer({
+      name,
+      email,
+      description: `PestFlow account ${account.id}`,
+      metadata: { pestflowOrgId: this.orgId, pestflowAccountId: account.id },
+    });
+    await db
+      .insert(paymentProviderCustomers)
+      .values({ orgId: this.orgId, accountId: account.id, provider: provider.name, mode: provider.mode, providerCustomerId: ref.externalCustomerId })
+      .onConflictDoNothing();
+    const [row] = await db.select().from(paymentProviderCustomers).where(where);
+    return row;
+  }
+
+  // The session the client's card form needs: a SetupIntent (off_session,
+  // card only) for the account's provider customer. Nothing is stored for the
+  // intent itself - the confirm reads it back from the provider by id.
+  async createSetupIntentForAccount(accountId: string, actor?: AuditActor | null): Promise<SetupIntentSession> {
+    const { provider, account: providerAccount } = await this.requirePaymentProviderTx(db);
+    const account = await this.requireAccountTx(db, accountId);
+    const mapping = await this.ensureProviderCustomer(provider, account);
+    const intent = await provider.createSetupIntent(
+      { externalCustomerId: mapping.providerCustomerId },
+      { types: ["card"], metadata: { pestflowOrgId: this.orgId, pestflowAccountId: account.id, pestflowUserId: actor?.userId ?? "" } },
+    );
+    return {
+      setupIntentId: intent.setupIntentId,
+      clientSecret: intent.clientSecret,
+      provider: provider.name,
+      mode: provider.mode,
+      publishableKey: providerAccount.publishableKey,
+      livemode: intent.livemode,
+    };
+  }
+
+  private async listActivePaymentMethodsTx(reader: DbReader, accountId: string): Promise<StoredPaymentMethod[]> {
+    return reader
+      .select()
+      .from(paymentMethods)
+      .where(and(eq(paymentMethods.orgId, this.orgId), eq(paymentMethods.accountId, accountId), eq(paymentMethods.status, "active")))
+      .orderBy(asc(paymentMethods.createdAt));
+  }
+
+  async getPaymentMethodsForAccount(accountId: string, includeRemoved = false): Promise<StoredPaymentMethodSummary[]> {
+    const rows = await db
+      .select()
+      .from(paymentMethods)
+      .where(and(eq(paymentMethods.orgId, this.orgId), eq(paymentMethods.accountId, accountId), includeRemoved ? undefined : eq(paymentMethods.status, "active")))
+      .orderBy(asc(paymentMethods.createdAt));
+    return rows.map(summarizeStoredPaymentMethod);
+  }
+
+  /** Demote the account's other active defaults and flag this row - each change its own `update` row. */
+  private async setPaymentMethodDefaultTx(tx: DbTransaction, row: StoredPaymentMethod, actor: AuditActor | null | undefined): Promise<StoredPaymentMethod> {
+    const others = await tx
+      .select()
+      .from(paymentMethods)
+      .where(and(eq(paymentMethods.orgId, this.orgId), eq(paymentMethods.accountId, row.accountId), eq(paymentMethods.isDefault, true), ne(paymentMethods.id, row.id)));
+    for (const other of others) {
+      const [demoted] = await tx
+        .update(paymentMethods)
+        .set({ isDefault: false, updatedAt: new Date() })
+        .where(and(eq(paymentMethods.orgId, this.orgId), eq(paymentMethods.id, other.id)))
+        .returning();
+      await this.auditChangeTx(tx, "payment_method", other.id, paymentMethodAuditSnapshot(other), paymentMethodAuditSnapshot(demoted), actor);
+    }
+    if (row.isDefault) return row;
+    const [promoted] = await tx
+      .update(paymentMethods)
+      .set({ isDefault: true, updatedAt: new Date() })
+      .where(and(eq(paymentMethods.orgId, this.orgId), eq(paymentMethods.id, row.id)))
+      .returning();
+    await this.auditChangeTx(tx, "payment_method", row.id, paymentMethodAuditSnapshot(row), paymentMethodAuditSnapshot(promoted), actor);
+    return promoted;
+  }
+
+  /** Point a billing profile of the account at a card - the profile's own audit row records it. */
+  private async setBillingProfilePaymentMethodTx(tx: DbTransaction, profileId: string, accountId: string, paymentMethodId: string | null, actor: AuditActor | null | undefined): Promise<void> {
+    const [profile] = await tx.select().from(billingProfiles).where(and(eq(billingProfiles.orgId, this.orgId), eq(billingProfiles.id, profileId)));
+    if (!profile || profile.accountId !== accountId) {
+      throw new BillingProfileError(BILLING_PROFILE_ERROR_CODES.ACCOUNT_NOT_FOUND, "The billing profile does not belong to this account");
+    }
+    if (profile.defaultPaymentMethodId === paymentMethodId) return;
+    const [updated] = await tx
+      .update(billingProfiles)
+      .set({ defaultPaymentMethodId: paymentMethodId, updatedAt: new Date() })
+      .where(and(eq(billingProfiles.orgId, this.orgId), eq(billingProfiles.id, profileId)))
+      .returning();
+    await this.auditChangeTx(tx, "billing_profile", profile.id, profile, updated, actor);
+  }
+
+  // The confirm: the client's card form reported success, so the intent is
+  // read back from the provider (never trusted from the body) - it must be
+  // the account's own customer's, succeeded, and a card - and the display
+  // fields become the row. Idempotent on the provider's method id: a second
+  // confirm of the same intent answers the same row. The account's first
+  // active card is its default whatever the body says.
+  async confirmSetupIntentForAccount(accountId: string, input: ConfirmPaymentMethodInput, actor?: AuditActor | null): Promise<StoredPaymentMethodSummary> {
+    const { provider } = await this.requirePaymentProviderTx(db);
+    const account = await this.requireAccountTx(db, accountId);
+    const locationId = input.locationId ?? null;
+    if (locationId) {
+      const [location] = await db.select({ accountId: locations.accountId }).from(locations).where(and(eq(locations.orgId, this.orgId), eq(locations.id, locationId)));
+      if (!location || location.accountId !== account.id) {
+        throw new PaymentMethodError(400, PAYMENT_METHOD_ERROR_CODES.LOCATION_MISMATCH, "The location does not belong to this account");
+      }
+    }
+    const [mapping] = await db
+      .select()
+      .from(paymentProviderCustomers)
+      .where(and(
+        eq(paymentProviderCustomers.orgId, this.orgId),
+        eq(paymentProviderCustomers.accountId, account.id),
+        eq(paymentProviderCustomers.provider, provider.name),
+        eq(paymentProviderCustomers.mode, provider.mode),
+      ));
+    if (!mapping) {
+      throw new PaymentMethodError(400, PAYMENT_METHOD_ERROR_CODES.INTENT_MISMATCH, "This account has no provider customer yet - start the card capture again");
+    }
+    const result = await provider.retrieveSetupIntent(input.setupIntentId.trim());
+    if (result.externalCustomerId !== mapping.providerCustomerId) {
+      throw new PaymentMethodError(400, PAYMENT_METHOD_ERROR_CODES.INTENT_MISMATCH, "The card capture does not belong to this account");
+    }
+    if (result.status !== "succeeded" || !result.paymentMethod) {
+      throw new PaymentMethodError(400, PAYMENT_METHOD_ERROR_CODES.SETUP_INCOMPLETE, `The card was not saved at the provider (status: ${result.status})`, { status: result.status });
+    }
+    const captured = result.paymentMethod;
+    if (captured.type !== "card") {
+      throw new PaymentMethodError(400, PAYMENT_METHOD_ERROR_CODES.TYPE_UNSUPPORTED, "Only a card can be stored for now - bank accounts are a later pass");
+    }
+
+    return db.transaction(async (tx) => {
+      const [existing] = await tx
+        .select()
+        .from(paymentMethods)
+        .where(and(eq(paymentMethods.orgId, this.orgId), eq(paymentMethods.providerPaymentMethodId, captured.externalPaymentMethodId)));
+      let row: StoredPaymentMethod;
+      if (existing) {
+        if (existing.accountId !== account.id) {
+          throw new PaymentMethodError(400, PAYMENT_METHOD_ERROR_CODES.INTENT_MISMATCH, "The card is already on file for another account");
+        }
+        row = existing;
+      } else {
+        const active = await this.listActivePaymentMethodsTx(tx, account.id);
+        const [inserted] = await tx
+          .insert(paymentMethods)
+          .values({
+            orgId: this.orgId,
+            accountId: account.id,
+            locationId,
+            provider: provider.name,
+            providerCustomerId: mapping.providerCustomerId,
+            providerPaymentMethodId: captured.externalPaymentMethodId,
+            type: "card",
+            brand: captured.brand,
+            last4: captured.last4,
+            expMonth: captured.expMonth,
+            expYear: captured.expYear,
+            isDefault: active.length === 0,
+            status: "active",
+            livemode: result.livemode,
+            addedByUserId: actor?.userId ?? null,
+            addedByLabel: actor?.actorLabel ?? null,
+          })
+          .returning();
+        await this.auditCreatedTx(tx, "payment_method", inserted.id, paymentMethodAuditSnapshot(inserted), actor);
+        row = inserted;
+      }
+      if (input.makeDefault && !row.isDefault && row.status === "active") {
+        row = await this.setPaymentMethodDefaultTx(tx, row, actor);
+      }
+      if (input.billingProfileId) {
+        await this.setBillingProfilePaymentMethodTx(tx, input.billingProfileId, account.id, row.id, actor);
+      }
+      return summarizeStoredPaymentMethod(row);
+    });
+  }
+
+  async setDefaultPaymentMethod(paymentMethodId: string, actor?: AuditActor | null): Promise<StoredPaymentMethodSummary> {
+    return db.transaction(async (tx) => {
+      const [row] = await tx.select().from(paymentMethods).where(and(eq(paymentMethods.orgId, this.orgId), eq(paymentMethods.id, paymentMethodId)));
+      if (!row) {
+        throw new PaymentMethodError(404, PAYMENT_METHOD_ERROR_CODES.NOT_FOUND, "Card on file not found");
+      }
+      if (row.status !== "active") {
+        throw new PaymentMethodError(409, PAYMENT_METHOD_ERROR_CODES.REMOVED, "A removed card cannot be made the default");
+      }
+      return summarizeStoredPaymentMethod(await this.setPaymentMethodDefaultTx(tx, row, actor));
+    });
+  }
+
+  // Remove: detached at the provider first (when the connected provider is
+  // the card's - same provider, same mode; a card captured under a provider
+  // since disconnected is removed locally, its token useless without the
+  // keys), then the row is `removed` (kept), any billing profile pointing at
+  // it is cleared (each profile's own audit row says so) and, when it was
+  // the account's default, the oldest remaining active card is promoted. A
+  // provider refusal (502) leaves the row untouched.
+  async removePaymentMethod(paymentMethodId: string, actor?: AuditActor | null): Promise<StoredPaymentMethodSummary> {
+    const [row] = await db.select().from(paymentMethods).where(and(eq(paymentMethods.orgId, this.orgId), eq(paymentMethods.id, paymentMethodId)));
+    if (!row) {
+      throw new PaymentMethodError(404, PAYMENT_METHOD_ERROR_CODES.NOT_FOUND, "Card on file not found");
+    }
+    if (row.status === "removed") {
+      return summarizeStoredPaymentMethod(row);
+    }
+    const connected = await this.readActivePaymentProviderAccountTx(db);
+    if (connected && connected.secretKeyEncrypted && connected.provider === row.provider && (connected.mode === "live") === row.livemode) {
+      const provider = createPaymentProvider(this.toPaymentProviderCredentials(connected));
+      await provider.detachPaymentMethod(row.providerPaymentMethodId);
+    }
+
+    return db.transaction(async (tx) => {
+      const now = new Date();
+      const [removed] = await tx
+        .update(paymentMethods)
+        .set({ status: "removed", isDefault: false, removedAt: now, removedByUserId: actor?.userId ?? null, removedByLabel: actor?.actorLabel ?? null, updatedAt: now })
+        .where(and(eq(paymentMethods.orgId, this.orgId), eq(paymentMethods.id, row.id)))
+        .returning();
+      await this.auditChangeTx(tx, "payment_method", row.id, paymentMethodAuditSnapshot(row), paymentMethodAuditSnapshot(removed), actor);
+
+      const pointingProfiles = await tx
+        .select({ id: billingProfiles.id })
+        .from(billingProfiles)
+        .where(and(eq(billingProfiles.orgId, this.orgId), eq(billingProfiles.defaultPaymentMethodId, row.id)));
+      for (const profile of pointingProfiles) {
+        await this.setBillingProfilePaymentMethodTx(tx, profile.id, row.accountId, null, actor);
+      }
+
+      if (row.isDefault) {
+        const [next] = await this.listActivePaymentMethodsTx(tx, row.accountId);
+        if (next) {
+          await this.setPaymentMethodDefaultTx(tx, next, actor);
+        }
+      }
+      return summarizeStoredPaymentMethod(removed);
+    });
   }
 
   async getNotesByLocation(locationId: string): Promise<CustomerNote[]> {
