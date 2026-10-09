@@ -16,7 +16,7 @@ import { useAuth } from "@/hooks/use-auth";
 import { apiRequest, getApiErrorMessage } from "@/lib/queryClient";
 import { invalidateInvoiceViews } from "@/lib/invalidate-invoice-views";
 import { formatCents } from "@shared/money";
-import { can, PERMISSIONS } from "@shared/permissions";
+import { can, describePermissionHolders, PERMISSIONS } from "@shared/permissions";
 import {
   CASH_CONFIRM_NOTE,
   MANUAL_PAYMENT_METHODS,
@@ -195,7 +195,7 @@ function PaymentsList() {
         {summary ? (
           <>
             <SummaryTile icon={<Clock className="h-5 w-5 text-chart-3" />} label="Pending confirmation" cents={summary.pendingCents} count={summary.pendingCount} testId="text-summary-pending" />
-            <SummaryTile icon={<HandCoins className="h-5 w-5 text-chart-3" />} label="Pending cash" cents={summary.pendingCashCents} count={summary.pendingCashCount} note="confirmed by a manager or admin" testId="text-summary-pending-cash" />
+            <SummaryTile icon={<HandCoins className="h-5 w-5 text-chart-3" />} label="Pending cash" cents={summary.pendingCashCents} count={summary.pendingCashCount} note={`confirmed by ${describePermissionHolders(PERMISSIONS.CONFIRM_CASH_PAYMENT)}`} testId="text-summary-pending-cash" />
             <SummaryTile icon={<CheckCircle2 className="h-5 w-5 text-primary" />} label="Confirmed" cents={summary.confirmedCents} count={summary.confirmedCount} testId="text-summary-confirmed" />
           </>
         ) : (

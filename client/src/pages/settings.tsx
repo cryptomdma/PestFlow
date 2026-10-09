@@ -28,8 +28,10 @@ import { dollarsToCents, centsToDollars, centsToDollarString, formatCents } from
 import { describeBillingPlanBehavior } from "@shared/billing-plan";
 import { describeInitialCharge, initialChargeFromTemplate, initialChargeToTemplate } from "@shared/initial-charge";
 import { InitialChargeFormFields, initialChargeFieldsFrom, initialChargeFormStateFrom, validateInitialChargeFormState } from "@/components/initial-charge-fields";
-import { can, PERMISSIONS } from "@shared/permissions";
-import { describeUserRole, selectableUsers, userDisplayName } from "@shared/users";
+import { PERMISSION_DESCRIPTIONS, PERMISSION_GROUPS, PERMISSION_VALUES, PERMISSIONS, can, describePermission, describePermissionHolders } from "@shared/permissions";
+import { cloneRoleProfileName, deriveRoleProfileKey, describeRoleProfileUsage, type RoleProfileSummary } from "@shared/role-profiles";
+import { Checkbox } from "@/components/ui/checkbox";
+import { describeUserRole, selectableUsers, sortUsersByName, userDisplayName } from "@shared/users";
 import { OPPORTUNITY_SOURCES, OPPORTUNITY_WORK_TYPES, describeOpportunitySource, describeOpportunityWorkType } from "@shared/opportunities";
 import { describeZipCodes, normalizeZipCodes, splitZipCodeText } from "@shared/zones";
 import { ANY_MATCHER_LABEL, describeRuleMatchers, describeRuleProblems, sortAssignmentRules } from "@shared/opportunity-assignment";
@@ -57,7 +59,7 @@ import { ListMultiSelect } from "@/components/list-multi-select";
 import { Switch } from "@/components/ui/switch";
 import { ServiceWorkKindBadge } from "@/components/service-work-kind-badge";
 import { SERVICE_WORK_KINDS, describeServiceWorkKind, formatServiceWorkKind, normalizeServiceWorkKind, type ServiceWorkKind } from "@shared/service-kind";
-import { Plus, Settings as SettingsIcon, Wrench, FileText, Users, ShieldCheck, FlaskConical, Bug, CreditCard, CalendarClock, Percent, Scale, Building2, Receipt, MapPin, UserCheck, ArrowUp, ArrowDown, AlertTriangle, LayoutGrid, Tag } from "lucide-react";
+import { Plus, Settings as SettingsIcon, Wrench, FileText, Users, ShieldCheck, FlaskConical, Bug, CreditCard, CalendarClock, Percent, Scale, Building2, Receipt, MapPin, UserCheck, ArrowUp, ArrowDown, AlertTriangle, LayoutGrid, Tag, Shield, UserCog } from "lucide-react";
 import type { AgreementCancellationPolicy, AgreementTemplate, AgreementType, BillingPlan, BillingProfileTemplate, MaterialProduct, OpportunityAssignmentRule, OpportunityCategory, OpportunityDisposition, Organization, ServiceType, TargetPest, TaxRate, TaxRule, Technician, UserSummary, Zone } from "@shared/schema";
 
 // Pass 35 (C5.3): the unit labels live in shared/agreement-types.ts with the
@@ -76,6 +78,19 @@ type AgreementTypeRow = AgreementType & AgreementTypeUsage;
 
 function invalidateAgreementTypeViews() {
   queryClient.invalidateQueries({ predicate: (query) => String(query.queryKey[0]).startsWith("/api/agreement-types") });
+}
+
+// Pass 37 (C5.6): after a role profile or a user's assignment is written -
+// the Roles and Users cards, every user selector (the role names beside
+// them), and /api/auth/me, whose refetch refills the permission registry
+// can() reads (client/src/hooks/use-auth.ts).
+function invalidateRoleProfileViews() {
+  queryClient.invalidateQueries({
+    predicate: (query) => {
+      const key = String(query.queryKey[0] ?? "");
+      return key.startsWith("/api/role-profiles") || key.startsWith("/api/users") || key.startsWith("/api/auth/me");
+    },
+  });
 }
 
 function formatCancellationFee(policy: AgreementCancellationPolicy) {
@@ -1538,6 +1553,168 @@ function AgreementTypeMergeForm({ source, types, onClose }: { source: AgreementT
 // (shared/zones.ts). The list is typed one per line (commas work too); the
 // form previews what will be kept and what will be refused, by the same
 // normalization the server applies, so the save never surprises.
+// Pass 37 (PLAN_ROADMAP_V2.md C5.6; B16): a role profile - a named permission
+// set (shared/role-profiles.ts). Add derives the key from the name (upper
+// snake, previewed; the server derives the same one) and the key is fixed
+// once created; Edit changes the name, description, order, the permission
+// checklist and the active flag. The server refuses, and the form says why
+// beforehand: removing Manage Settings from the acting user's OWN profile or
+// making it inactive (409 ROLE_PROFILE_SELF_LOCKOUT - that checkbox and the
+// Active select are disabled), making a profile users hold inactive (409
+// ROLE_PROFILE_IN_USE - the Active select is disabled), and a write that
+// would leave no active profile with Manage Settings (409
+// ROLE_PROFILE_LAST_SETTINGS_MANAGER).
+function RoleProfileForm({ profile, ownRoleKey, onClose }: { profile?: RoleProfileSummary | null; ownRoleKey: string; onClose: () => void }) {
+  const { toast } = useToast();
+  const [form, setForm] = useState({
+    name: profile?.name ?? "",
+    description: profile?.description ?? "",
+    isActive: profile?.isActive ?? true,
+    sortOrder: profile?.sortOrder !== undefined ? String(profile.sortOrder) : "",
+  });
+  const [permissions, setPermissions] = useState<Set<string>>(() => new Set(profile?.permissions ?? []));
+  const isOwnProfile = !!profile && profile.key === ownRoleKey;
+  const inUse = !!profile && profile.userCount > 0;
+  const derivedKey = useMemo(() => deriveRoleProfileKey(form.name), [form.name]);
+  const togglePermission = (permission: string, checked: boolean) => {
+    setPermissions((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(permission);
+      else next.delete(permission);
+      return next;
+    });
+  };
+
+  const mutation = useMutation({
+    mutationFn: async () => {
+      const payload = {
+        name: form.name.trim(),
+        description: form.description.trim() || null,
+        permissions: Array.from(permissions),
+        isActive: form.isActive,
+        ...(form.sortOrder.trim() ? { sortOrder: parseInt(form.sortOrder, 10) } : {}),
+      };
+      const response = profile
+        ? await apiRequest("PATCH", `/api/role-profiles/${profile.id}`, payload)
+        : await apiRequest("POST", "/api/role-profiles", payload);
+      return response.json();
+    },
+    onSuccess: () => {
+      invalidateRoleProfileViews();
+      invalidateAuditViews();
+      toast({ title: profile ? "Role profile updated" : "Role profile created" });
+      onClose();
+    },
+    onError: (err: unknown) => toast({ title: "Role profile not saved", description: getApiErrorMessage(err), variant: "destructive" }),
+  });
+
+  return (
+    <form onSubmit={(e) => { e.preventDefault(); mutation.mutate(); }} className="space-y-4">
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="space-y-1.5"><Label>Name *</Label><Input value={form.name} onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))} data-testid="input-role-profile-name" /></div>
+        <div className="space-y-1.5">
+          <Label>Key</Label>
+          <Input value={profile ? profile.key : derivedKey} disabled title={profile ? "Keys are fixed once created" : "Derived from the name"} data-testid="input-role-profile-key" />
+        </div>
+      </div>
+      <div className="space-y-1.5"><Label>Description</Label><Textarea value={form.description} onChange={(e) => setForm((prev) => ({ ...prev, description: e.target.value }))} className="resize-none" rows={2} /></div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="space-y-1.5">
+          <Label>Active</Label>
+          <Select value={form.isActive ? "ACTIVE" : "INACTIVE"} onValueChange={(value) => setForm((prev) => ({ ...prev, isActive: value === "ACTIVE" }))} disabled={(inUse || isOwnProfile) && form.isActive}>
+            <SelectTrigger data-testid="select-role-profile-active"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="ACTIVE">Active</SelectItem>
+              <SelectItem value="INACTIVE">Inactive</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="space-y-1.5"><Label>Sort Order</Label><Input type="number" value={form.sortOrder} onChange={(e) => setForm((prev) => ({ ...prev, sortOrder: e.target.value }))} data-testid="input-role-profile-sort" /></div>
+      </div>
+      <div className="space-y-2" data-testid="checklist-role-profile-permissions">
+        <Label>Permissions ({permissions.size} of {PERMISSION_VALUES.length})</Label>
+        <div className="max-h-72 space-y-3 overflow-y-auto rounded-md border p-3">
+          {PERMISSION_GROUPS.map((group) => (
+            <div key={group.label}>
+              <p className="mb-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">{group.label}</p>
+              <div className="grid gap-1.5 sm:grid-cols-2">
+                {group.permissions.map((permission) => {
+                  const locked = isOwnProfile && permission === PERMISSIONS.MANAGE_SETTINGS && (profile?.permissions ?? []).includes(PERMISSIONS.MANAGE_SETTINGS);
+                  return (
+                    <label key={permission} className="flex items-start gap-2 text-sm" title={PERMISSION_DESCRIPTIONS[permission]}>
+                      <Checkbox checked={permissions.has(permission)} onCheckedChange={(checked) => togglePermission(permission, checked === true)} disabled={locked} className="mt-0.5" data-testid={`checkbox-permission-${permission}`} />
+                      <span>
+                        {describePermission(permission)}
+                        {locked ? <span className="block text-xs text-muted-foreground">Your own role - stays on</span> : null}
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+      <p className="text-xs text-muted-foreground" data-testid="text-role-profile-hint">
+        {isOwnProfile
+          ? "This is your own role: Manage Settings cannot be removed from it and it cannot be made inactive by you (another user with Manage Settings can do both)."
+          : inUse && profile
+            ? `${describeRoleProfileUsage(profile.userCount)} ${profile.userCount === 1 ? "holds" : "hold"} this role, so it cannot be made inactive here - move them to another role first (Users card).`
+            : "A permission change applies to every user on the role on their next request. An inactive role cannot be assigned; a role in use cannot be made inactive."}
+      </p>
+      <div className="flex justify-end gap-2">
+        <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
+        <Button type="submit" disabled={mutation.isPending || !form.name.trim() || (!profile && !derivedKey)} data-testid="button-save-role-profile">
+          {mutation.isPending ? "Saving..." : profile ? "Save Role" : "Create Role"}
+        </Button>
+      </div>
+    </form>
+  );
+}
+
+// Pass 37 (C5.6): clone a role - a copy with a new name (and so a new key),
+// the source's permissions and description, never built-in, nobody on it.
+// The C5.6 row's "cloneable": the way to start a custom role from a built-in.
+function RoleProfileCloneForm({ source, onClose }: { source: RoleProfileSummary; onClose: () => void }) {
+  const { toast } = useToast();
+  const [name, setName] = useState(cloneRoleProfileName(source.name));
+  const [description, setDescription] = useState(source.description ?? "");
+  const derivedKey = useMemo(() => deriveRoleProfileKey(name), [name]);
+
+  const mutation = useMutation({
+    mutationFn: async () => {
+      const response = await apiRequest("POST", `/api/role-profiles/${source.id}/clone`, { name: name.trim(), description: description.trim() || null });
+      return (await response.json()) as RoleProfileSummary;
+    },
+    onSuccess: (created) => {
+      invalidateRoleProfileViews();
+      invalidateAuditViews();
+      toast({ title: `Cloned "${source.name}" as "${created.name}"`, description: `${created.permissions.length} permissions copied; edit the new role to change them.` });
+      onClose();
+    },
+    onError: (err: unknown) => toast({ title: "Role not cloned", description: getApiErrorMessage(err), variant: "destructive" }),
+  });
+
+  return (
+    <form onSubmit={(e) => { e.preventDefault(); if (name.trim()) mutation.mutate(); }} className="space-y-4">
+      <p className="text-sm text-muted-foreground" data-testid="text-role-profile-clone-summary">
+        The copy starts with the {source.permissions.length} permissions of <span className="font-medium text-foreground">{source.name}</span> ({source.key}). It is not built-in, nobody holds it yet, and its key is derived from the name you give it.
+      </p>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="space-y-1.5"><Label>Name *</Label><Input value={name} onChange={(e) => setName(e.target.value)} data-testid="input-role-profile-clone-name" /></div>
+        <div className="space-y-1.5"><Label>Key</Label><Input value={derivedKey} disabled title="Derived from the name" data-testid="input-role-profile-clone-key" /></div>
+      </div>
+      <div className="space-y-1.5"><Label>Description</Label><Textarea value={description} onChange={(e) => setDescription(e.target.value)} className="resize-none" rows={2} /></div>
+      <div className="flex justify-end gap-2">
+        <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
+        <Button type="submit" disabled={!name.trim() || !derivedKey || mutation.isPending} data-testid="button-confirm-role-profile-clone">
+          {mutation.isPending ? "Cloning..." : "Clone Role"}
+        </Button>
+      </div>
+    </form>
+  );
+}
+
 function ZoneForm({ zone, onClose }: { zone?: Zone | null; onClose: () => void }) {
   const { toast } = useToast();
   const isEditMode = !!zone;
@@ -1817,6 +1994,10 @@ export default function Settings() {
   const [agreementTypeDialogOpen, setAgreementTypeDialogOpen] = useState(false);
   const [editingAgreementType, setEditingAgreementType] = useState<AgreementTypeRow | null>(null);
   const [mergingAgreementType, setMergingAgreementType] = useState<AgreementTypeRow | null>(null);
+  // Pass 37 (C5.6): the Roles card's dialog - Add / Edit (RoleProfileForm) or Clone (RoleProfileCloneForm).
+  const [roleProfileDialogOpen, setRoleProfileDialogOpen] = useState(false);
+  const [editingRoleProfile, setEditingRoleProfile] = useState<RoleProfileSummary | null>(null);
+  const [cloningRoleProfile, setCloningRoleProfile] = useState<RoleProfileSummary | null>(null);
   // Pass 26 (C4.1b): zones and assignment rules.
   const [zoneDialogOpen, setZoneDialogOpen] = useState(false);
   const [editingZone, setEditingZone] = useState<Zone | null>(null);
@@ -1850,6 +2031,21 @@ export default function Settings() {
   // Pass 35 (C5.3): every agreement type, inactive included - the card shows
   // what is off, and a template carrying a since-retired key still names it.
   const { data: agreementTypes, isLoading: agreementTypesLoading } = useQuery<AgreementTypeRow[]>({ queryKey: ["/api/agreement-types?includeInactive=true"] });
+  // Pass 37 (C5.6): every role profile, inactive included - the Roles card
+  // shows what is off, and a user on a since-retired key still names it.
+  const { data: roleProfiles, isLoading: roleProfilesLoading } = useQuery<RoleProfileSummary[]>({ queryKey: ["/api/role-profiles?includeInactive=true"] });
+  const updateUserRoleMutation = useMutation({
+    mutationFn: async ({ userId, role }: { userId: string; role: string }) => {
+      const response = await apiRequest("PATCH", `/api/users/${userId}`, { role });
+      return (await response.json()) as UserSummary;
+    },
+    onSuccess: (updated) => {
+      invalidateRoleProfileViews();
+      invalidateAuditViews();
+      toast({ title: `${userDisplayName(updated)} is now ${describeUserRole(updated.role)}`, description: "Applies on their next request - no new login needed." });
+    },
+    onError: (err: unknown) => toast({ title: "Role not changed", description: getApiErrorMessage(err), variant: "destructive" }),
+  });
   const { data: cancellationPolicies, isLoading: policiesLoading } = useQuery<AgreementCancellationPolicy[]>({ queryKey: ["/api/agreement-cancellation-policies?includeInactive=true"] });
   const { data: opportunityDispositions, isLoading: dispositionsLoading } = useQuery<OpportunityDisposition[]>({ queryKey: ["/api/opportunity-dispositions?includeInactive=true"] });
   const { data: opportunityCategories, isLoading: categoriesLoading } = useQuery<OpportunityCategory[]>({ queryKey: ["/api/opportunity-categories?includeInactive=true"] });
@@ -1889,6 +2085,11 @@ export default function Settings() {
   // select is disabled - not hidden - for everyone else (dev behavior rule 6).
   const { user } = useAuth();
   const canManageSettings = can(user?.role ?? "", PERMISSIONS.MANAGE_SETTINGS);
+  // Pass 37 (C5.6): the refusal copy names the role profiles holding Manage
+  // Settings (the registry's names - "Admin" by default, the office's own
+  // once it has them) instead of a fixed "admin".
+  const settingsManagers = describePermissionHolders(PERMISSIONS.MANAGE_SETTINGS);
+  const settingsManagedBy = `Managed by ${settingsManagers} (Manage Settings)`;
   const { data: invoiceOnFinalize } = useQuery<{ mode: string }>({ queryKey: ["/api/settings/invoice-on-finalize"] });
   const invoiceOnFinalizeMode = normalizeInvoiceOnFinalizeMode(invoiceOnFinalize?.mode);
   useEffect(() => {
@@ -2089,6 +2290,13 @@ export default function Settings() {
       setMergingAgreementType(null);
     }
   };
+  const closeRoleProfileDialog = (open: boolean) => {
+    setRoleProfileDialogOpen(open);
+    if (!open) {
+      setEditingRoleProfile(null);
+      setCloningRoleProfile(null);
+    }
+  };
 
   const closePolicyDialog = (open: boolean) => {
     setPolicyDialogOpen(open);
@@ -2117,7 +2325,7 @@ export default function Settings() {
               <DialogContent><DialogHeader><DialogTitle>{editingServiceType ? "Edit Service Type" : "New Service Type"}</DialogTitle></DialogHeader><ServiceTypeForm serviceType={editingServiceType} onClose={() => { setDialogOpen(false); setEditingServiceType(null); }} /></DialogContent>
             </Dialog>
           ) : (
-            <p className="text-xs text-muted-foreground" data-testid="text-service-types-admin-only">Admins manage service types.</p>
+            <p className="text-xs text-muted-foreground" data-testid="text-service-types-admin-only">Service types are managed by {settingsManagers} (Manage Settings).</p>
           )}
         </CardHeader>
         <CardContent>
@@ -2146,7 +2354,7 @@ export default function Settings() {
                   <div className="flex items-center gap-3 shrink-0 text-sm">
                     {st.defaultPriceCents != null && <span className="font-semibold">{formatCents(st.defaultPriceCents)}</span>}
                     {st.estimatedDuration && <span className="text-xs text-muted-foreground">{st.estimatedDuration} min</span>}
-                    <Button variant="outline" size="sm" onClick={() => { setEditingServiceType(st); setDialogOpen(true); }} disabled={!canManageSettings} title={canManageSettings ? undefined : "Admins manage service types"}>
+                    <Button variant="outline" size="sm" onClick={() => { setEditingServiceType(st); setDialogOpen(true); }} disabled={!canManageSettings} title={canManageSettings ? undefined : settingsManagedBy}>
                       Edit
                     </Button>
                   </div>
@@ -2210,7 +2418,7 @@ export default function Settings() {
               </DialogContent>
             </Dialog>
           ) : (
-            <p className="text-xs text-muted-foreground" data-testid="text-billing-profile-templates-admin-only">Admins manage billing profile templates.</p>
+            <p className="text-xs text-muted-foreground" data-testid="text-billing-profile-templates-admin-only">Billing profile templates are managed by {settingsManagers} (Manage Settings).</p>
           )}
         </CardHeader>
         <CardContent>
@@ -2234,7 +2442,7 @@ export default function Settings() {
                     {template.description && <p className="mt-0.5 text-xs text-muted-foreground">{template.description}</p>}
                     {template.defaultInvoiceTerms && <p className="mt-0.5 text-xs text-muted-foreground">Terms: {template.defaultInvoiceTerms.replace(/_/g, " ")}</p>}
                   </div>
-                  <Button variant="outline" size="sm" onClick={() => { setEditingBillingProfileTemplate(template); setBillingProfileTemplateDialogOpen(true); }} disabled={!canManageSettings} title={canManageSettings ? undefined : "Admins manage billing profile templates"}>Edit</Button>
+                  <Button variant="outline" size="sm" onClick={() => { setEditingBillingProfileTemplate(template); setBillingProfileTemplateDialogOpen(true); }} disabled={!canManageSettings} title={canManageSettings ? undefined : settingsManagedBy}>Edit</Button>
                 </div>
               ))}
             </div>
@@ -2278,7 +2486,7 @@ export default function Settings() {
               <p className="text-xs text-destructive" data-testid="text-default-billing-template-inactive">This template is inactive, so new customers get no billing profile until another is chosen.</p>
             ) : null}
           </div>
-          {!canManageSettings ? <p className="text-xs text-muted-foreground">Only an admin can change this setting.</p> : null}
+          {!canManageSettings ? <p className="text-xs text-muted-foreground">Only {settingsManagers} can change this setting (Manage Settings).</p> : null}
         </CardContent>
       </Card>
 
@@ -2434,7 +2642,7 @@ export default function Settings() {
           <p className="text-xs text-muted-foreground">
             Visit invoices only. Agreements billed on a schedule are invoiced by the nightly billing run regardless, and their services appear on the visit invoice at $0. "Send" marks the invoice sent - there is no email delivery yet.
           </p>
-          {!canManageSettings ? <p className="text-xs text-muted-foreground">Only an admin can change this setting.</p> : null}
+          {!canManageSettings ? <p className="text-xs text-muted-foreground">Only {settingsManagers} can change this setting (Manage Settings).</p> : null}
         </CardContent>
       </Card>
 
@@ -2464,7 +2672,7 @@ export default function Settings() {
           <p className="text-xs text-muted-foreground">
             An invoice PDF is rendered once, on its first Open, Download or Mark Sent, and keeps what it rendered: changing this affects invoice PDFs rendered from now on, not those already produced.
           </p>
-          {!canManageSettings ? <p className="text-xs text-muted-foreground">Only an admin can change this setting.</p> : null}
+          {!canManageSettings ? <p className="text-xs text-muted-foreground">Only {settingsManagers} can change this setting (Manage Settings).</p> : null}
         </CardContent>
       </Card>
 
@@ -2493,7 +2701,7 @@ export default function Settings() {
             <p className="text-xs text-muted-foreground">
               One unit per line. Technicians pick a material's unit from this list on the ticket, and a product's default unit comes from it. A unit already recorded on a ticket or a product that is not on this list stays as written and is shown marked; a spelling that differs only in case is saved as it is written here.
             </p>
-            {!canManageSettings ? <p className="text-xs text-muted-foreground">Only an admin can change this list.</p> : null}
+            {!canManageSettings ? <p className="text-xs text-muted-foreground">Only {settingsManagers} can change this list (Manage Settings).</p> : null}
           </div>
           <Button
             type="button"
@@ -2524,7 +2732,7 @@ export default function Settings() {
             <p className="text-xs text-muted-foreground">
               One area per line. A material product's allowed areas are picked from this list, and a technician picks a material's areas from the product's allowed areas (this whole list when the product has none). Areas serviced on a ticket are derived from what was picked. An area already recorded that is not on this list stays as written and is shown marked.
             </p>
-            {!canManageSettings ? <p className="text-xs text-muted-foreground">Only an admin can change this list.</p> : null}
+            {!canManageSettings ? <p className="text-xs text-muted-foreground">Only {settingsManagers} can change this list (Manage Settings).</p> : null}
           </div>
           <Button
             type="button"
@@ -2635,7 +2843,7 @@ export default function Settings() {
               </DialogContent>
             </Dialog>
           ) : (
-            <p className="text-xs text-muted-foreground" data-testid="text-zones-admin-only">Admins manage zones.</p>
+            <p className="text-xs text-muted-foreground" data-testid="text-zones-admin-only">Zones are managed by {settingsManagers} (Manage Settings).</p>
           )}
         </CardHeader>
         <CardContent>
@@ -2661,7 +2869,7 @@ export default function Settings() {
                     </div>
                     <p className="mt-0.5 text-xs text-muted-foreground">{describeZipCodes(zone.zipCodes)}{zone.notes ? ` | ${zone.notes}` : ""}</p>
                   </div>
-                  <Button variant="outline" size="sm" onClick={() => { setEditingZone(zone); setZoneDialogOpen(true); }} disabled={!canManageSettings} title={canManageSettings ? undefined : "Admins manage zones"}>
+                  <Button variant="outline" size="sm" onClick={() => { setEditingZone(zone); setZoneDialogOpen(true); }} disabled={!canManageSettings} title={canManageSettings ? undefined : settingsManagedBy}>
                     Edit
                   </Button>
                 </div>
@@ -2692,7 +2900,7 @@ export default function Settings() {
               </DialogContent>
             </Dialog>
           ) : (
-            <p className="text-xs text-muted-foreground" data-testid="text-assignment-admin-only">Admins manage assignment rules.</p>
+            <p className="text-xs text-muted-foreground" data-testid="text-assignment-admin-only">Assignment rules are managed by {settingsManagers} (Manage Settings).</p>
           )}
         </CardHeader>
         <CardContent>
@@ -2733,7 +2941,7 @@ export default function Settings() {
                       <Button type="button" variant="ghost" size="sm" title="Move down" disabled={!canManageSettings || index === orderedRules.length - 1 || reorderRulesMutation.isPending} onClick={() => moveRule(index, 1)} data-testid={`button-rule-down-${rule.id}`}>
                         <ArrowDown className="h-3 w-3" />
                       </Button>
-                      <Button variant="outline" size="sm" onClick={() => { setEditingRule(rule); setRuleDialogOpen(true); }} disabled={!canManageSettings} title={canManageSettings ? undefined : "Admins manage assignment rules"}>
+                      <Button variant="outline" size="sm" onClick={() => { setEditingRule(rule); setRuleDialogOpen(true); }} disabled={!canManageSettings} title={canManageSettings ? undefined : settingsManagedBy}>
                         Edit
                       </Button>
                     </div>
@@ -2835,6 +3043,117 @@ export default function Settings() {
         </CardContent>
       </Card>
 
+      {/* Pass 37 (C5.6; B16): role profiles - the org's roles as permission
+          sets. Reads are open; every write is MANAGE_SETTINGS; nothing is
+          deleted (a role is made inactive once nobody holds it). */}
+      <Card data-testid="card-role-profiles">
+        <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
+          <CardTitle className="text-base font-semibold flex items-center gap-2"><Shield className="h-4 w-4" /> Roles</CardTitle>
+          {canManageSettings ? (
+            <Dialog open={roleProfileDialogOpen} onOpenChange={closeRoleProfileDialog}>
+              <DialogTrigger asChild><Button size="sm" data-testid="button-add-role-profile" onClick={() => { setEditingRoleProfile(null); setCloningRoleProfile(null); }}><Plus className="h-3 w-3 mr-1" /> Add Role</Button></DialogTrigger>
+              <DialogContent className="max-w-2xl">
+                <DialogHeader><DialogTitle>{cloningRoleProfile ? `Clone "${cloningRoleProfile.name}"` : editingRoleProfile ? "Edit Role" : "New Role"}</DialogTitle></DialogHeader>
+                {cloningRoleProfile ? (
+                  <RoleProfileCloneForm source={cloningRoleProfile} onClose={() => closeRoleProfileDialog(false)} />
+                ) : (
+                  <RoleProfileForm profile={editingRoleProfile} ownRoleKey={user?.role ?? ""} onClose={() => closeRoleProfileDialog(false)} />
+                )}
+              </DialogContent>
+            </Dialog>
+          ) : (
+            <p className="text-xs text-muted-foreground" data-testid="text-role-profiles-admin-only">Roles are managed by {settingsManagers} (Manage Settings).</p>
+          )}
+        </CardHeader>
+        <CardContent>
+          <p className="mb-3 text-xs text-muted-foreground">
+            A role is a named set of permissions; every user holds one (Users, below). The four built-in roles can be renamed and edited but never removed; clone one to start a new role from it. A role in use cannot be made inactive, and Manage Settings cannot be taken from your own role.
+          </p>
+          {roleProfilesLoading ? (
+            <div className="space-y-2">{[1, 2, 3, 4].map((i) => <Skeleton key={i} className="h-14" />)}</div>
+          ) : !roleProfiles?.length ? (
+            <div className="text-center py-8">
+              <Shield className="h-8 w-8 mx-auto text-muted-foreground/30 mb-2" />
+              <p className="text-sm text-muted-foreground">No roles seeded - restart the server to run the bootstrap</p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {roleProfiles.map((profile) => (
+                <div key={profile.id} className="flex items-center justify-between gap-3 rounded-md bg-muted/50 p-3" data-testid={`row-role-profile-${profile.key}`}>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-sm font-medium">{profile.name}</span>
+                      {profile.isBuiltIn ? <Badge variant="outline" className="text-xs">Built-in</Badge> : null}
+                      <Badge variant={profile.isActive ? "secondary" : "outline"} className="text-xs">{profile.isActive ? "Active" : "Inactive"}</Badge>
+                      {profile.key === user?.role ? <Badge variant="outline" className="text-xs">Your role</Badge> : null}
+                    </div>
+                    <p className="mt-0.5 text-xs text-muted-foreground">Key: {profile.key} | {profile.permissions.length} of {PERMISSION_VALUES.length} permissions | {describeRoleProfileUsage(profile.userCount)} | Sort: {profile.sortOrder}</p>
+                    {profile.description && <p className="mt-0.5 text-xs text-muted-foreground">{profile.description}</p>}
+                  </div>
+                  {canManageSettings ? (
+                    <div className="flex items-center gap-2 shrink-0">
+                      <Button variant="outline" size="sm" onClick={() => { setCloningRoleProfile(null); setEditingRoleProfile(profile); setRoleProfileDialogOpen(true); }} data-testid={`button-edit-role-profile-${profile.key}`}>Edit</Button>
+                      <Button variant="ghost" size="sm" onClick={() => { setEditingRoleProfile(null); setCloningRoleProfile(profile); setRoleProfileDialogOpen(true); }} data-testid={`button-clone-role-profile-${profile.key}`}>Clone</Button>
+                    </div>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Pass 37 (C5.6): the org's users and the role each holds - the one
+          users write (PATCH /api/users/:id { role }). No create, password or
+          status flow here: those are the auth bootstrap's until a later pass. */}
+      <Card data-testid="card-users">
+        <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
+          <CardTitle className="text-base font-semibold flex items-center gap-2"><UserCog className="h-4 w-4" /> Users</CardTitle>
+          {!canManageSettings ? <p className="text-xs text-muted-foreground" data-testid="text-users-admin-only">Roles are assigned by {settingsManagers} (Manage Settings).</p> : null}
+        </CardHeader>
+        <CardContent>
+          <p className="mb-3 text-xs text-muted-foreground">
+            Who holds which role. A change applies on the user's next request - no new login needed. You cannot move yourself off a role with Manage Settings. Creating users and setting passwords are not here yet.
+          </p>
+          {!orgUsers ? (
+            <div className="space-y-2">{[1, 2, 3].map((i) => <Skeleton key={i} className="h-14" />)}</div>
+          ) : !orgUsers.length ? (
+            <div className="text-center py-8">
+              <UserCog className="h-8 w-8 mx-auto text-muted-foreground/30 mb-2" />
+              <p className="text-sm text-muted-foreground">No users</p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {sortUsersByName(orgUsers).map((orgUser) => (
+                <div key={orgUser.id} className="flex items-center justify-between gap-3 rounded-md bg-muted/50 p-3" data-testid={`row-user-${orgUser.id}`}>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-sm font-medium">{userDisplayName(orgUser)}</span>
+                      <Badge variant={orgUser.status === "active" ? "secondary" : "outline"} className="text-xs">{orgUser.status === "active" ? "Active" : orgUser.status}</Badge>
+                      {orgUser.id === user?.id ? <Badge variant="outline" className="text-xs">You</Badge> : null}
+                    </div>
+                    <p className="mt-0.5 text-xs text-muted-foreground">{orgUser.email}</p>
+                  </div>
+                  <div className="w-48 shrink-0">
+                    <Select value={orgUser.role} onValueChange={(role) => updateUserRoleMutation.mutate({ userId: orgUser.id, role })} disabled={!canManageSettings || updateUserRoleMutation.isPending}>
+                      <SelectTrigger data-testid={`select-user-role-${orgUser.id}`}><SelectValue placeholder="Pick a role" /></SelectTrigger>
+                      <SelectContent>
+                        {(roleProfiles ?? []).filter((profile) => profile.isActive || profile.key === orgUser.role).map((profile) => (
+                          <SelectItem key={profile.key} value={profile.key}>{profile.name}{profile.isActive ? "" : " (inactive)"}</SelectItem>
+                        ))}
+                        {roleProfiles && !roleProfiles.some((profile) => profile.key === orgUser.role) ? (
+                          <SelectItem value={orgUser.role}>{orgUser.role} (not a role)</SelectItem>
+                        ) : null}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
       <Card>
         <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
           <CardTitle className="text-base font-semibold flex items-center gap-2"><ShieldCheck className="h-4 w-4" /> Agreement Cancellation Policies</CardTitle>
@@ -2892,7 +3211,7 @@ export default function Settings() {
               </DialogContent>
             </Dialog>
           ) : (
-            <p className="text-xs text-muted-foreground" data-testid="text-agreement-types-admin-only">Admins manage agreement types.</p>
+            <p className="text-xs text-muted-foreground" data-testid="text-agreement-types-admin-only">Agreement types are managed by {settingsManagers} (Manage Settings).</p>
           )}
         </CardHeader>
         <CardContent>
@@ -3043,7 +3362,7 @@ export default function Settings() {
             <p className="text-xs text-muted-foreground">
               One reason per line. Required when the office cancels an appointment or a single service, and when a technician cancels or requests a reschedule from the route view.
             </p>
-            {!canManageSettings ? <p className="text-xs text-muted-foreground">Only an admin can change this list.</p> : null}
+            {!canManageSettings ? <p className="text-xs text-muted-foreground">Only {settingsManagers} can change this list (Manage Settings).</p> : null}
           </div>
           <Button
             type="button"
@@ -3142,7 +3461,7 @@ export default function Settings() {
           <p className="text-xs text-muted-foreground">
             The hours and the view interval are the board's defaults each time it loads; the Window popover on the Dispatch Board changes them for that session only. The snap has no session override.
           </p>
-          {!canManageSettings ? <p className="text-xs text-muted-foreground">Only an admin can change this setting.</p> : null}
+          {!canManageSettings ? <p className="text-xs text-muted-foreground">Only {settingsManagers} can change this setting (Manage Settings).</p> : null}
         </CardContent>
       </Card>
 
@@ -3169,7 +3488,7 @@ export default function Settings() {
             <p className="text-xs text-muted-foreground">
               One reason per line. The office picks one when reopening a posted or finalized ticket from Service Ticket Review. "Other" is always offered last there and needs the reason typed out (manager or admin); it is not a line on this list.
             </p>
-            {!canManageSettings ? <p className="text-xs text-muted-foreground">Only an admin can change this list.</p> : null}
+            {!canManageSettings ? <p className="text-xs text-muted-foreground">Only {settingsManagers} can change this list (Manage Settings).</p> : null}
           </div>
           <Button
             type="button"

@@ -64,7 +64,7 @@ import {
   type InvoiceOnFinalizePromptState,
 } from "@/components/invoice-on-finalize-prompt";
 import { useAuth } from "@/hooks/use-auth";
-import { can, PERMISSIONS } from "@shared/permissions";
+import { can, describePermissionHolders, PERMISSIONS } from "@shared/permissions";
 import { formatReopenReason } from "@shared/ticket-reopen";
 import { formatApplicationAreas, formatTargetPests } from "@shared/material-lists";
 import { selectableUsers, userDisplayName } from "@shared/users";
@@ -2384,7 +2384,7 @@ function AgreementForm({
         <p className="text-xs text-muted-foreground">
           {canAssignSaleCredit
             ? "Defaults to whoever creates the agreement. Changing it assigns sale credit to that user and is recorded in the agreement's history."
-            : "Defaults to you. Only a manager or admin can credit the sale to someone else."}
+            : `Defaults to you. Only ${describePermissionHolders(PERMISSIONS.ASSIGN_SALE_CREDIT)} can credit the sale to someone else.`}
         </p>
       </div>
       <div className="space-y-1">
@@ -3075,11 +3075,11 @@ function ServiceForm({
   // (403 SERVICE_TYPE_LOCKED). Before this pass the Select was offered to
   // every role and the PATCH wrote it. Disabled with the reason, never hidden.
   const canChangeType = !isEditMode || !service?.agreementId || can(user?.role ?? "", PERMISSIONS.ADJUST_PRICE_AGREEMENT);
-  const typeLockReason = canChangeType ? null : "An agreement service's type is locked - a manager or an admin may change it.";
+  const typeLockReason = canChangeType ? null : `An agreement service's type is locked - ${describePermissionHolders(PERMISSIONS.ADJUST_PRICE_AGREEMENT)} may change it.`;
   const kindDisabledReason = kindFrozen
     ? "Frozen - this service's ticket is finalized, so its kind is history."
     : !canChangeKind
-      ? (service?.agreementId ? "An agreement service's kind is locked - a manager or an admin may change it." : "Your role may not change a service's kind.")
+      ? (service?.agreementId ? `An agreement service's kind is locked - ${describePermissionHolders(PERMISSIONS.ADJUST_PRICE_AGREEMENT)} may change it.` : "Your role may not change a service's kind.")
       : null;
   const hasUnansweredCallback = serviceLines.some((line) => line.serviceTypeId && normalizeServiceWorkKind(line.workKind) === "CALLBACK" && !line.answersServiceId);
 

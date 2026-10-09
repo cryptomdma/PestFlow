@@ -608,7 +608,8 @@ for that Service and nothing else:
   the reason, the effect and the opportunities touched. A status change to `CANCELLED` through the
   generic Service update is refused (409 `SERVICE_CANCEL_REQUIRED`), as is detaching a placed Service
   (`SERVICE_REMOVE_REQUIRED`) - the Pass 27 precedent for `CANCELED` on the Appointment.
-* Ungated like the disposition (who may cancel is C5.6). The reasons list's write is
+* Ungated like the disposition (who may cancel has no permission yet - a gate per route is C5.8's
+  call; Pass 37's role profiles would hold it). The reasons list's write is
   `MANAGE_SETTINGS` since this pass, now that two flows read it.
 
 Do not flatten all cancellation scenarios into generic Opportunity logic.
@@ -709,7 +710,7 @@ Pass 12; the compensation entry in `CURRENT_FOCUS.md`), and it is the payee a
   Technicians) that lets a technician's production credit (`technicianId`) and their sale credit
   meet on one person.
 * It defaults to the session user at creation. Naming anyone else, or nobody, at creation, and any
-  later change, needs `ASSIGN_SALE_CREDIT` (manager+); a change is recorded in the audit log (§17)
+  later change, needs `ASSIGN_SALE_CREDIT` (a profile holding it - the built-in manager and admin do); a change is recorded in the audit log (§17)
   as an `update` on the Agreement with the sold-by before and after, the users named.
 * Null means **not recorded**: the agreements sold before Pass 12 keep it, never guessed from
   `createdByUserId`. Template propagation never touches it.
@@ -881,7 +882,7 @@ conversion is refused rather than silently re-kinded.
 **The instance override is the price's rule.** Setting a Service's kind away from
 its type's default, or changing it or its link later, needs the price's
 permission — `ADJUST_PRICE_NON_AGREEMENT` (every role) on a non-agreement
-Service, `ADJUST_PRICE_AGREEMENT` (manager+) on an agreement one — because the
+Service, `ADJUST_PRICE_AGREEMENT` (manager and admin by default) on an agreement one — because the
 kind decides what the price decides: whether the line is $0. A change is
 refused (409 `SERVICE_KIND_LOCKED`) once the ticket is finalized (its production
 entry was written from the kind) or the visit is invoiced (its line is frozen);
@@ -1058,7 +1059,7 @@ visit's `appointment_composition_changed` row records the add's `origin` and `fl
 as a "Field-added - review" badge (quiet "Field-added" once reviewed) on the dispatch sheet's
 composition block, the location's Services tab, Service Ticket Review and the technician's own row,
 with **Mark reviewed** beside it for the office. No new permission: the origin is open to every role
-(the surface decides, the flag is the control; who may is C5.6). The ticket's `FLAGGED_FOR_REVIEW`
+(the surface decides, the flag is the control; a permission is C5.8's call per route). The ticket's `FLAGGED_FOR_REVIEW`
 (§12) is untouched - it stays the invoice-driven flag on the ticket, and this one lives on the
 Service.
 
@@ -1111,7 +1112,7 @@ When a Service Ticket is posted, the system must copy the technician display nam
 
 An Appointment can be marked completed only when all Services linked to that Appointment have posted Service Records, unless a future explicit close/exception workflow is built.
 
-Technician posting and office finalization are distinct lifecycle steps. Technician posting creates the compliance record and sends it to office review. Office finalization is the authoritative completion event: it marks the Service completed, locks the ticket, makes the Service Record billing-ready, advances agreement recurrence when applicable, and allows downstream reporting/billing workflows. Reopen behavior is role-gated (`REOPEN_TICKET`, support+) and must capture a reopen reason: since Pass 17 (PLAN_ROADMAP_V2 C3.2) a reason from the office's settings list (`ticket_reopen_reasons`) or "Other" with the reason typed out, which only a manager+ may choose (`REOPEN_TICKET_OTHER`); the ticket carries the code and the text, a ticket reopened before the list existed carries its text alone, and a reopen is recorded in the audit log (§17) as `ticket_reopened` with the ticket before and after, the reason included (PLAN_BILLING_V1.1 D7).
+Technician posting and office finalization are distinct lifecycle steps. Technician posting creates the compliance record and sends it to office review. Office finalization is the authoritative completion event: it marks the Service completed, locks the ticket, makes the Service Record billing-ready, advances agreement recurrence when applicable, and allows downstream reporting/billing workflows. Reopen behavior is role-gated (`REOPEN_TICKET`, support+) and must capture a reopen reason: since Pass 17 (PLAN_ROADMAP_V2 C3.2) a reason from the office's settings list (`ticket_reopen_reasons`) or "Other" with the reason typed out, which only a profile holding `REOPEN_TICKET_OTHER` may choose (the built-in manager and admin); the ticket carries the code and the text, a ticket reopened before the list existed carries its text alone, and a reopen is recorded in the audit log (§17) as `ticket_reopened` with the ticket before and after, the reason included (PLAN_BILLING_V1.1 D7).
 
 Ticket status vocabulary is `OFFICE_REVIEW_PENDING | FLAGGED_FOR_REVIEW | FINALIZED | REOPENED`.
 `FLAGGED_FOR_REVIEW` (PLAN_BILLING_V1.1 D3) is a pending ticket on a visit whose invoice was issued
@@ -1662,7 +1663,8 @@ Internal staff user.
 * lastName
 * email
 * phone nullable
-* role (`admin` | `manager` | `support` | `technician`)
+* role - the KEY of one of the org's role profiles (see "Role profile" below); the four built-in keys are
+  `admin` | `manager` | `support` | `technician`, and the office's own profiles add theirs
 * status
 * hireDate nullable
 * homeAddress nullable
@@ -1694,6 +1696,27 @@ Examples:
   (Pass 12) is the nullable bridge from a technician profile to its login, one technician per user.
 * `technician_preferences` and `appointment_technicians` (Pass 30) key on `technicians.id` like every
   other technician reference; C5.7 rewires them with the rest.
+
+### Role profile (Pass 37, C5.6)
+
+A **role profile** is the org's own definition of a role: a named set of permissions
+(`role_profiles` + one `role_profile_permissions` row per permission, `shared/role-profiles.ts`),
+kept in Settings → Roles. Every user holds exactly one, by its key in `users.role`; `can(role,
+permission)` (`shared/permissions.ts`) answers from the org's profiles (a process-level registry the
+server fills at boot and after every profile write, and the client fills from `/api/auth/me`), falling
+back to the built-in defaults only while the registry is empty. Rules:
+
+* The four built-in profiles (`admin`, `manager`, `support`, `technician`) are seeded per org from the
+  built-in defaults (`ROLE_PERMISSIONS`), marked `isBuiltIn`, and may be renamed, edited, cloned and
+  made inactive (once no user holds them) - never deleted; no profile is ever deleted.
+* A profile with users on it cannot be made inactive; a user is assigned only an active profile.
+* The acting user cannot remove Manage Settings from the profile their own role names, make that
+  profile inactive, or move themselves to a profile without it; and no write may leave the org with
+  no active profile holding Manage Settings.
+* Every profile write and every assignment is recorded in the audit log (§17); none is revertable.
+* Where this document says "manager+" / "support+" / "admin", read: the built-in profile named holds
+  the permission by default, and the office may give it to any profile.
+* The registry is per process, not per org (exact with one organization); keying it by org is Phase 9.
 
 ---
 
@@ -1730,14 +1753,18 @@ agreement template, appointment and service write `created` / `update` / `status
 an unchanged save leaves no row. Since Pass 35 (C5.3) the settings-managed agreement types list writes its
 own rows too (`agreement_type`: `created` / `update`, and `agreement_type_merged` when one type is merged into
 another - with one `update` per agreement and template that moved); it is the first reference list with a
-trail and is not revertable. There is no `account` entity: the account's facts are logged on the
+trail and is not revertable. Since Pass 37 (C5.6) the role profiles (`role_profile`: `created` - a clone's row
+naming its source under `clonedFrom` - and `update`, the permission list in both snapshots so the diff names what
+moved) and the users' profile assignments (`user`: `update` with `role` before and after, never the password
+hash) write theirs; neither is revertable. There is no `account` entity: the account's facts are logged on the
 location whose primary flag moved or on the customer. `service_records`' content edits are D9's
 `ticket_edited`; a price change is Pass 8's `price_overridden`.
 
 Since Pass 33 (C5.1b) the customer screen reads the log two ways - the location's slice (the History
 tab) and the customer's rollup (every location of the account plus the account-level rows: the
 customer's own, the account's billing profiles with no location) - and offers **Revert** on a row to a
-manager+ (`REVERT_HISTORY`, a configurable permission once C5.6's role profiles exist). A revert is the
+a profile holding `REVERT_HISTORY` (the built-in manager and admin; any profile the office gives it to since
+Pass 37's role profiles, C5.6). A revert is the
 `reverted` action: the fields the source row changed are put back through the entity's own write path
 (a customer, location, contact, billing profile, template or agreement update), which records one
 `reverted` row with the same whole-row snapshots, the after naming the source row; the log itself is

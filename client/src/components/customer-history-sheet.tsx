@@ -23,7 +23,8 @@ import { AUDIT_LOG_MAX_LIMIT, describeAuditEntityType } from "@shared/audit";
 // the stream in place. Reads /api/audit-logs?customerId= at the read's
 // maximum and says so when it got exactly that many (paging is a later
 // pass). Revert on a row is the same control as on the location tab: shown
-// to a manager+ (REVERT_HISTORY) on the rows the shared rule allows.
+// to a role holding REVERT_HISTORY (the built-in manager and admin; any
+// profile the office gives it to since Pass 37) on the rows the shared rule allows.
 
 const ACCOUNT_FILTER = "account";
 const ALL_FILTER = "all";

@@ -734,6 +734,41 @@ export const agreementTypes = pgTable("agreement_types", {
   orgKey: uniqueIndex("agreement_types_org_key_uidx").on(table.orgId, table.key),
 }));
 
+// Pass 37 (PLAN_ROADMAP_V2.md C5.6; B16): role profiles - the org's roles
+// as permission sets (shared/role-profiles.ts), kept in Settings -> Roles.
+// `key` is what users.role holds (the assignment; there is no
+// users.role_profile_id): the four built-in profiles keep the keys the
+// users rows already carried ("admin" / "manager" / "support" /
+// "technician"), the office's own derive upper snake keys from their names.
+// One role_profile_permissions row per permission a profile holds (the
+// value is one of shared/permissions.ts PERMISSIONS). A profile is never
+// deleted (made inactive, once no user holds it); a built-in is never
+// deleted either but may be renamed and edited. Created by
+// server/role-profile-bootstrap.ts, which also seeds the four per org.
+export const roleProfiles = pgTable("role_profiles", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: varchar("org_id").notNull(),
+  key: text("key").notNull(),
+  name: text("name").notNull(),
+  description: text("description"),
+  isBuiltIn: boolean("is_built_in").notNull().default(false),
+  isActive: boolean("is_active").notNull().default(true),
+  sortOrder: integer("sort_order").notNull().default(0),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => ({
+  orgKey: uniqueIndex("role_profiles_org_key_uidx").on(table.orgId, table.key),
+}));
+
+export const roleProfilePermissions = pgTable("role_profile_permissions", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: varchar("org_id").notNull(),
+  profileId: varchar("profile_id").notNull().references(() => roleProfiles.id, { onDelete: "cascade" }),
+  permission: text("permission").notNull(),
+}, (table) => ({
+  profilePermission: uniqueIndex("role_profile_permissions_profile_permission_uidx").on(table.profileId, table.permission),
+}));
+
 // Pass 26 (PLAN_ROADMAP_V2.md C4.1b): zones - named zip-code lists the
 // office keeps in Settings -> Zones (shared/zones.ts). zip_codes holds
 // unique five-digit ZIPs, normalized and refused otherwise by storage. The
@@ -1401,6 +1436,7 @@ export const insertOpportunitySchema = createInsertSchema(opportunities).omit({ 
 export const insertOpportunityDispositionSchema = createInsertSchema(opportunityDispositions).omit({ orgId: true, id: true, createdAt: true, updatedAt: true });
 export const insertOpportunityCategorySchema = createInsertSchema(opportunityCategories).omit({ orgId: true, id: true, createdAt: true, updatedAt: true });
 export const insertAgreementTypeSchema = createInsertSchema(agreementTypes).omit({ orgId: true, id: true, createdAt: true, updatedAt: true });
+export const insertRoleProfileSchema = createInsertSchema(roleProfiles).omit({ orgId: true, id: true, createdAt: true, updatedAt: true });
 export const insertZoneSchema = createInsertSchema(zones).omit({ orgId: true, id: true, createdAt: true, updatedAt: true });
 export const insertOpportunityAssignmentRuleSchema = createInsertSchema(opportunityAssignmentRules).omit({ orgId: true, id: true, createdAt: true, updatedAt: true });
 export const insertOpportunityActivitySchema = createInsertSchema(opportunityActivities).omit({ orgId: true, id: true, createdAt: true });
@@ -1469,6 +1505,9 @@ export type OpportunityCategory = typeof opportunityCategories.$inferSelect;
 export type InsertOpportunityCategory = z.infer<typeof insertOpportunityCategorySchema>;
 export type AgreementType = typeof agreementTypes.$inferSelect;
 export type InsertAgreementType = z.infer<typeof insertAgreementTypeSchema>;
+export type RoleProfile = typeof roleProfiles.$inferSelect;
+export type InsertRoleProfile = z.infer<typeof insertRoleProfileSchema>;
+export type RoleProfilePermission = typeof roleProfilePermissions.$inferSelect;
 export type Zone = typeof zones.$inferSelect;
 export type InsertZone = z.infer<typeof insertZoneSchema>;
 export type OpportunityAssignmentRule = typeof opportunityAssignmentRules.$inferSelect;
