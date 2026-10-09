@@ -1,7 +1,9 @@
 import { db } from "./db";
-import { customers, contacts, locations, serviceTypes, technicians, services, appointments, serviceRecords, productApplications, invoices, communications, customerNotes, agreementTemplates, agreementCancellationPolicies, billingProfileTemplates } from "@shared/schema";
+import { customers, contacts, locations, serviceTypes, users, services, appointments, serviceRecords, productApplications, invoices, communications, customerNotes, agreementTemplates, agreementCancellationPolicies, billingProfileTemplates } from "@shared/schema";
 import { and, eq } from "drizzle-orm";
+import { randomBytes } from "crypto";
 import { getHeritageOrgId } from "./org-bootstrap";
+import { hashPassword } from "./password";
 
 export async function seedDatabase() {
   const orgId = await getHeritageOrgId();
@@ -68,9 +70,12 @@ export async function seedDatabase() {
     { name: "Due on Receipt", description: "Emailed invoice, due immediately.", billingType: "invoice_terms", defaultInvoiceTerms: "DUE_ON_RECEIPT", sortOrder: 4 },
   ].map(withOrg));
 
-  const [tech1, tech2] = await db.insert(technicians).values([
-    { displayName: "Jake Miller", licenseId: "TX-PCO-1001", status: "ACTIVE", email: "jake@pestflow.local", color: "#2563eb" },
-    { displayName: "Sam Torres", licenseId: "TX-PCO-1002", status: "ACTIVE", email: "sam@pestflow.local", color: "#16a34a" },
+  // Pass 38 (C5.7): the two demo technicians are users rows with a technician
+  // status - field-only (login inactive, an unusable hash, no password) until
+  // the office turns a login on; every placement and ticket below names them.
+  const [tech1, tech2] = await db.insert(users).values([
+    { firstName: "Jake", lastName: "Miller", email: "jake@pestflow.local", passwordHash: await hashPassword(randomBytes(32).toString("hex")), role: "technician", status: "inactive", licenseId: "TX-PCO-1001", color: "#2563eb", technicianStatus: "ACTIVE" },
+    { firstName: "Sam", lastName: "Torres", email: "sam@pestflow.local", passwordHash: await hashPassword(randomBytes(32).toString("hex")), role: "technician", status: "inactive", licenseId: "TX-PCO-1002", color: "#16a34a", technicianStatus: "ACTIVE" },
   ].map(withOrg)).returning();
 
   const [noFeePolicy, annualPolicy, seasonalPolicy, termitePolicy] = await db.insert(agreementCancellationPolicies).values([

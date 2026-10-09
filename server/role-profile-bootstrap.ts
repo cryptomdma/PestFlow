@@ -1,7 +1,18 @@
 import { sql } from "drizzle-orm";
 import { db } from "./db";
-import { isPermission, setPermissionMatrix, type Permission, type PermissionMatrixEntry } from "@shared/permissions";
+import { isPermission, PERMISSIONS, setPermissionMatrix, type BuiltInRole, type Permission, type PermissionMatrixEntry } from "@shared/permissions";
 import { ROLE_PROFILE_SEED } from "@shared/role-profiles";
+
+// A permission added AFTER an org's profiles were seeded is granted here to
+// the seeded built-in profiles that should hold it (the rule in the comment
+// below): an INSERT per (built-in key, permission) guarded by the profile's
+// key and is_built_in, ON CONFLICT DO NOTHING, printed once when it inserts.
+// ROLE_PERMISSIONS seeds a NEW org only; the office's own profiles and a
+// built-in the office edited are never touched beyond the one row added.
+const SEEDED_PROFILE_GRANTS: ReadonlyArray<{ permission: Permission; keys: readonly BuiltInRole[]; addedIn: string }> = [
+  // Pass 38 (C5.7): open another technician's day on the Tech View.
+  { permission: PERMISSIONS.VIEW_OTHER_TECHNICIAN_WORK, keys: ["support", "manager", "admin"], addedIn: "Pass 38" },
+];
 
 // Pass 37 (PLAN_ROADMAP_V2.md C5.6; B16): the role-profile tables and the
 // per-org seed of the four built-in profiles, on Pass 35's
@@ -91,6 +102,23 @@ export async function bootstrapRoleProfiles(): Promise<void> {
     `);
     for (const orphan of orphans.rows as Array<{ email: string; role: string }>) {
       console.warn(`[role-profile-bootstrap] user ${orphan.email} holds role "${orphan.role}", which is not an active role profile of org "${org.name}" - they have no permissions until Settings -> Users assigns one`);
+    }
+    // The later-added permissions, granted to the seeded built-ins once.
+    for (const grant of SEEDED_PROFILE_GRANTS) {
+      const granted: string[] = [];
+      for (const key of grant.keys) {
+        const result = await db.execute(sql`
+          INSERT INTO role_profile_permissions (org_id, profile_id, permission)
+          SELECT p.org_id, p.id, ${grant.permission} FROM role_profiles p
+          WHERE p.org_id = ${org.id} AND p.key = ${key} AND p.is_built_in
+          ON CONFLICT (profile_id, permission) DO NOTHING
+        `);
+        if (result.rowCount) granted.push(key);
+      }
+      if (granted.length) {
+        seededAny = true;
+        console.log(`[role-profile-bootstrap] ${grant.addedIn}: ${grant.permission} granted to the seeded built-in profile(s) ${granted.join(", ")} of org "${org.name}"`);
+      }
     }
   }
 

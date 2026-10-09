@@ -3,7 +3,7 @@ import { createServer, type Server } from "http";
 import {
   insertCustomerSchema, insertContactSchema, insertLocationSchema,
   insertServiceTypeSchema, insertAppointmentSchema, insertServiceRecordSchema,
-  insertTechnicianSchema, insertServiceSchema,
+  insertServiceSchema,
   insertProductApplicationSchema, insertMaterialProductSchema, insertInvoiceSchema, insertCommunicationSchema,
   insertBillingProfileSchema,
   insertBillingProfileTemplateSchema,
@@ -31,7 +31,9 @@ import {
 import { ZodError, z } from "zod";
 import type { Request } from "express";
 import { requirePermission } from "./auth";
-import { AgreementTypeError, AppointmentCrewError, AppointmentDispositionError, BillingDefaultsError, BillingProfileError, ContactError, DispatchBoardSettingsError, DraftInvoiceDecisionRequiredError, HistoryRevertError, OpportunityAssignmentError, PlacementRefusedError, PrefinalizationIssueError, RoleProfileError, ServiceCompositionError, ServiceKindError, StatementRefusedError, TechnicianPreferenceError, TicketEditError, TicketLockedError, TicketReopenError, VisitBillingDraftError } from "./storage";
+import { AgreementTypeError, AppointmentCrewError, AppointmentDispositionError, BillingDefaultsError, BillingProfileError, ContactError, DispatchBoardSettingsError, DraftInvoiceDecisionRequiredError, HistoryRevertError, OpportunityAssignmentError, PlacementRefusedError, PrefinalizationIssueError, RoleProfileError, ServiceCompositionError, ServiceKindError, StatementRefusedError, TechnicianPreferenceError, TicketEditError, TicketLockedError, TicketReopenError, UserError, VisitBillingDraftError } from "./storage";
+import { TECHNICIAN_STATUSES, USER_ERROR_CODES } from "@shared/technicians";
+import { USER_STATUSES } from "@shared/users";
 import { HISTORY_REVERT_CODES, type RevertableAuditEntityType } from "@shared/audit";
 import {
   MAX_EXCLUSION_OVERRIDE_REASON_LENGTH,
@@ -211,7 +213,6 @@ export async function registerRoutes(
     }
     return value;
   }, z.coerce.date().nullable());
-  const technicianStatusSchema = z.enum(["ACTIVE", "INACTIVE", "TERMINATED"]);
   const serviceStatusSchema = z.enum(["DRAFT", "PENDING_SCHEDULING", "SCHEDULED", "COMPLETED", "CANCELLED"]);
   // Single-L CANCELED is intentional and distinct from serviceStatusSchema's
   // CANCELLED - appointments and services keep separate vocabularies.
@@ -226,23 +227,6 @@ export async function registerRoutes(
   });
   // Pass 36 (C5.4): one list with the client's labels (shared/agreement-types.ts SCHEDULING_MODES).
   const agreementSchedulingModeSchema = z.enum(SCHEDULING_MODES);
-  // Pass 12: userId is the technician -> user bridge (C2.2); an empty string
-  // is refused rather than stored, null clears the link.
-  const technicianSchema = insertTechnicianSchema.extend({
-    status: technicianStatusSchema,
-    userId: z.string().min(1).nullable().optional(),
-  }).superRefine((value, ctx) => {
-    if (!value.displayName?.trim()) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["displayName"], message: "displayName is required" });
-    }
-    if (!value.licenseId?.trim()) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["licenseId"], message: "licenseId is required" });
-    }
-  });
-  const updateTechnicianSchema = insertTechnicianSchema.extend({
-    status: technicianStatusSchema.optional(),
-    userId: z.string().min(1).nullable().optional(),
-  }).partial();
   const serviceSchema = insertServiceSchema.extend({
     status: serviceStatusSchema,
     source: serviceSourceSchema,
@@ -629,8 +613,38 @@ export async function registerRoutes(
     name: z.string().max(ROLE_PROFILE_NAME_MAX_LENGTH),
     description: z.string().trim().max(ROLE_PROFILE_DESCRIPTION_MAX_LENGTH).nullable().optional(),
   }).strict();
-  const userRoleSchema = z.object({ role: z.string().trim().min(1).max(ROLE_PROFILE_KEY_MAX_LENGTH) }).strict();
+  // Pass 38 (C5.7): the users write bodies - strict, so a client cannot
+  // slip in a password hash or an id. The technician block rides along;
+  // technicianStatus null means "not a technician". The blank-name, email
+  // and history rules are storage's (UserError, for the code).
+  const technicianStatusSchema = z.enum(TECHNICIAN_STATUSES);
+  const userTechnicianFields = {
+    phone: z.string().trim().max(40).nullable().optional(),
+    licenseId: z.string().trim().max(80).nullable().optional(),
+    color: z.string().trim().max(20).nullable().optional(),
+    technicianNotes: z.string().trim().max(2000).nullable().optional(),
+    technicianStatus: technicianStatusSchema.nullable().optional(),
+  };
+  const userCreateSchema = z.object({
+    firstName: z.string().max(80),
+    lastName: z.string().max(80).optional().default(""),
+    email: z.string().max(200),
+    role: z.string().trim().min(1).max(ROLE_PROFILE_KEY_MAX_LENGTH),
+    ...userTechnicianFields,
+  }).strict();
+  const userUpdateSchema = z.object({
+    firstName: z.string().max(80).optional(),
+    lastName: z.string().max(80).optional(),
+    email: z.string().max(200).optional(),
+    role: z.string().trim().min(1).max(ROLE_PROFILE_KEY_MAX_LENGTH).optional(),
+    status: z.enum(USER_STATUSES).optional(),
+    ...userTechnicianFields,
+  }).strict();
   const respondRoleProfileError = (res: any, e: unknown): boolean => {
+    if (e instanceof UserError) {
+      res.status(e.status).json({ code: e.code, message: e.message });
+      return true;
+    }
     if (!(e instanceof RoleProfileError)) return false;
     res.status(e.status).json({ code: e.code, message: e.message });
     return true;
@@ -1633,24 +1647,46 @@ export async function registerRoutes(
   });
 
   // Users (Pass 12): the org's people, for the sold-by selector on the
-  // agreement form and the technician -> user bridge in Settings. Names,
-  // roles and status only - the password hash never leaves the storage.
+  // agreement form and the Users card. Names, roles, status and - since Pass
+  // 38 - the technician block; the password hash never leaves the storage.
   app.get("/api/users", async (req, res) => {
     res.json(await req.storage.getUsers());
   });
 
-  // Pass 37 (C5.6): assign a user a role profile - the one users write
-  // route. MANAGE_SETTINGS; the role must be an ACTIVE profile key of the
-  // org (400 ROLE_PROFILE_UNKNOWN); the acting user cannot move THEMSELVES
-  // to a profile without Manage Settings (409 ROLE_PROFILE_SELF_LOCKOUT).
+  // Pass 38 (C5.7): create a user - a person, their role (an ACTIVE profile
+  // key, 400 ROLE_PROFILE_UNKNOWN) and, when technicianStatus is set, their
+  // technician block. MANAGE_SETTINGS. The row is created with status
+  // 'inactive' and NO password (an unusable hash): a password / invite flow
+  // is a later pass, and a field-only technician never needs one. 400
+  // USER_NAME_REQUIRED / USER_EMAIL_INVALID / USER_EMAIL_TAKEN /
+  // USER_STATUS_INVALID. Audited `user` created.
+  app.post("/api/users", requirePermission(PERMISSIONS.MANAGE_SETTINGS), async (req, res) => {
+    try {
+      const validated = userCreateSchema.parse(req.body);
+      const data = await req.storage.createUser(validated, roleProfileWriteContext(req));
+      res.status(201).json(data);
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      if (respondRoleProfileError(res, e)) return;
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  // Pass 37 (C5.6) added this for the role alone; since Pass 38 (C5.7) it
+  // is the users write: name, email, login status, role and the technician
+  // block, each optional and strict. MANAGE_SETTINGS; the role must be an
+  // ACTIVE profile key of the org (400 ROLE_PROFILE_UNKNOWN); the acting
+  // user cannot move THEMSELVES to a profile without Manage Settings (409
+  // ROLE_PROFILE_SELF_LOCKOUT) or turn their own login off (409
+  // USER_SELF_DEACTIVATE); a user with field history cannot be made "not a
+  // technician" (409 TECHNICIAN_HAS_HISTORY - Terminated retires them).
   // Takes effect on the user's next request (deserializeUser re-reads the
-  // row). No create, password or status flow here - those are the auth
-  // bootstrap's (server/auth-bootstrap.ts) until a later pass.
+  // row). No password flow here - a later pass.
   app.patch("/api/users/:id", requirePermission(PERMISSIONS.MANAGE_SETTINGS), async (req, res) => {
     try {
-      const validated = userRoleSchema.parse(req.body);
-      const data = await req.storage.updateUserRole(req.params.id, validated.role, roleProfileWriteContext(req));
-      if (!data) return res.status(404).json({ code: ROLE_PROFILE_ERROR_CODES.USER_NOT_FOUND, message: "User not found" });
+      const validated = userUpdateSchema.parse(req.body);
+      const data = await req.storage.updateUser(req.params.id, validated, roleProfileWriteContext(req));
+      if (!data) return res.status(404).json({ code: USER_ERROR_CODES.NOT_FOUND, message: "User not found" });
       res.json(data);
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
@@ -1717,38 +1753,31 @@ export async function registerRoutes(
     });
   });
 
-  // Technicians
+  // Technicians (Pass 38, C5.7): a technician is a users row with a
+  // technician status; this read is the facade over users in the old row
+  // shape (shared/technicians.ts TechnicianSummary), open to every role as
+  // every read is. The writes POST / PATCH /api/technicians are GONE - a
+  // technician is created and edited through POST / PATCH /api/users above
+  // (MANAGE_SETTINGS; the old routes were open to every role).
   app.get("/api/technicians", async (req, res) => {
     const includeInactive = req.query.includeInactive === "true";
     const data = await req.storage.getTechnicians(includeInactive);
     res.json(data);
   });
 
-  app.post("/api/technicians", async (req, res) => {
-    try {
-      const validated = technicianSchema.parse(req.body);
-      const data = await req.storage.createTechnician(validated);
-      res.status(201).json(data);
-    } catch (e: any) {
-      if (e instanceof ZodError) return handleZodError(res, e);
-      res.status(400).json({ message: e.message });
-    }
-  });
-
-  app.patch("/api/technicians/:id", async (req, res) => {
-    try {
-      const validated = updateTechnicianSchema.parse(req.body);
-      const data = await req.storage.updateTechnician(req.params.id, validated);
-      if (!data) return res.status(404).json({ message: "Technician not found" });
-      res.json(data);
-    } catch (e: any) {
-      if (e instanceof ZodError) return handleZodError(res, e);
-      res.status(400).json({ message: e.message });
-    }
-  });
-
+  // The technician's day. Pass 38 (C5.7): the session user reads their own;
+  // another technician's needs VIEW_OTHER_TECHNICIAN_WORK (support, manager
+  // and admin by default) - 403 TECHNICIAN_WORK_FORBIDDEN otherwise. The
+  // Tech View defaults to the session user and shows the picker only to a
+  // role holding it.
   app.get("/api/technicians/:id/work", async (req, res) => {
     try {
+      if (req.params.id !== req.user!.id && !can(req.user!.role, PERMISSIONS.VIEW_OTHER_TECHNICIAN_WORK)) {
+        return res.status(403).json({
+          code: "TECHNICIAN_WORK_FORBIDDEN",
+          message: `Only your own day is yours to open - another technician's needs ${describePermissionHolders(PERMISSIONS.VIEW_OTHER_TECHNICIAN_WORK)} (View another technician's day)`,
+        });
+      }
       const date = typeof req.query.date === "string" && req.query.date
         ? req.query.date
         : new Date().toISOString().slice(0, 10);

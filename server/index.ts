@@ -11,6 +11,7 @@ import { bootstrapAgreements } from "./agreement-bootstrap";
 import { bootstrapServiceSchedulingFoundation } from "./service-scheduling-bootstrap";
 import { bootstrapAuth } from "./auth-bootstrap";
 import { bootstrapRoleProfiles } from "./role-profile-bootstrap";
+import { bootstrapTechnicianUsers } from "./technician-users-bootstrap";
 import { setupAuth, registerAuthRoutes, requireAuth, attachOrgStorage } from "./auth";
 import { bootstrapOrganizations } from "./org-bootstrap";
 import { bootstrapTenancy } from "./tenancy-bootstrap";
@@ -89,6 +90,11 @@ app.use((req, res, next) => {
   // its Heritage default before they run. No-op on an established database.
   await bootstrapTenancy().catch((e) => console.error("Tenancy bootstrap (early) error:", e));
   await bootstrapAuth().catch((e) => console.error("Auth bootstrap error:", e));
+  // Pass 38 (C5.7): technicians are users - the one-time merge of the
+  // technicians table into users (mint / remap, the five FKs re-pointed, the
+  // table dropped). After auth (it owns users and its columns), before the
+  // role profiles (the minted users hold the technician role).
+  await bootstrapTechnicianUsers().catch((e) => console.error("Technician users bootstrap error:", e));
   // Pass 37 (C5.6): the role-profile tables, the per-org seed of the four
   // built-in profiles and the permission registry can() reads - before any
   // route is served (raw SQL only; the tables carry org_id from creation).

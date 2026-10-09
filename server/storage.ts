@@ -2,7 +2,6 @@ import {
   auditLogs,
   accounts,
   customers, contacts, locations, serviceTypes, appointments,
-  technicians,
   services,
   opportunities,
   opportunityActivities,
@@ -35,7 +34,7 @@ import {
   type Contact, type InsertContact,
   type Location, type InsertLocation,
   type ServiceType, type InsertServiceType,
-  type Technician, type InsertTechnician,
+  type Technician,
   type Service, type InsertService,
   type Appointment, type InsertAppointment,
   type AgreementCancellationPolicy, type InsertAgreementCancellationPolicy,
@@ -211,7 +210,10 @@ import {
 } from "@shared/service-kind";
 import { formatCents } from "@shared/money";
 import { buildBillingPlanSnapshot as buildSharedBillingPlanSnapshot, isScheduleBilledPlan } from "@shared/billing-plan";
-import { sortUsersByName, userDisplayName } from "@shared/users";
+import { isPlausibleUserEmail, isUserStatus, normalizeUserEmail, sortUsersByName, userDisplayName } from "@shared/users";
+import { USER_ERROR_CODES, describeTechnicianHistory, isTechnicianStatus, technicianSummariesFromUsers, type UserErrorCode } from "@shared/technicians";
+import { hashPassword } from "./password";
+import { randomBytes } from "crypto";
 import { taxonomyForSource, type OpportunityWorkType } from "@shared/opportunities";
 import { describeAssignmentRule, resolveAssignmentRule, sortAssignmentRules } from "@shared/opportunity-assignment";
 import { normalizeZipCodes } from "@shared/zones";
@@ -1157,6 +1159,18 @@ export class RoleProfileError extends Error {
   }
 }
 
+// Pass 38 (C5.7): a users write the rules refuse - a blank name, a bad or
+// taken email, a status outside its list, the acting user turning their own
+// login off, or a technician with field history made "not a technician"
+// (shared/technicians.ts USER_ERROR_CODES). The role's own refusals stay
+// RoleProfileError. The route answers { code, message }.
+export class UserError extends Error {
+  constructor(readonly status: 400 | 404 | 409, readonly code: UserErrorCode, message: string) {
+    super(message);
+    this.name = "UserError";
+  }
+}
+
 // Pass 34 (C5.2): a billing profile write the rules refuse (400 with the
 // code from shared/billing-profile-defaults.ts).
 export class BillingProfileError extends Error {
@@ -1465,6 +1479,39 @@ export interface RoleProfileWriteContext {
   actorUserId?: string | null;
 }
 
+// Pass 38 (C5.7): the users write surface - a person and, when
+// technicianStatus is set, their technician block (shared/technicians.ts).
+// A created user has NO password (status 'inactive', an unusable hash): a
+// password / invite flow is a later pass; a field-only technician never
+// needs one.
+export interface UserCreateInput {
+  firstName: string;
+  lastName: string;
+  email: string;
+  /** An ACTIVE role profile key of the org. */
+  role: string;
+  phone?: string | null;
+  licenseId?: string | null;
+  color?: string | null;
+  technicianNotes?: string | null;
+  technicianStatus?: string | null;
+}
+
+export interface UserUpdateInput {
+  firstName?: string;
+  lastName?: string;
+  email?: string;
+  role?: string;
+  /** The LOGIN flag: active | inactive. */
+  status?: string;
+  phone?: string | null;
+  licenseId?: string | null;
+  color?: string | null;
+  technicianNotes?: string | null;
+  /** The FIELD flag: ACTIVE | INACTIVE | TERMINATED, or null for "not a technician" (refused while the user has field history). */
+  technicianStatus?: string | null;
+}
+
 export interface AgreementTypeMergeResult {
   /** The source, retired. */
   source: AgreementType;
@@ -1710,12 +1757,16 @@ export interface IStorage {
   getServiceTypes(): Promise<ServiceType[]>;
   createServiceType(data: InsertServiceType): Promise<ServiceType>;
 
+  // Pass 38 (C5.7): the technicians facade - the org's users with a
+  // technician status, projected to the old row shape (ACTIVE only unless asked).
   getTechnicians(includeInactive?: boolean): Promise<Technician[]>;
-  createTechnician(data: InsertTechnician): Promise<Technician>;
-  updateTechnician(id: string, data: Partial<InsertTechnician>): Promise<Technician | undefined>;
   // Pass 12: the org's users, sanitized - for the sold-by selector and the
-  // technician -> user bridge. Never the password hash.
+  // Users card. Never the password hash.
   getUsers(): Promise<UserSummary[]>;
+  // Pass 38 (C5.7): the users writes - a person with their technician block;
+  // the role through the Pass 37 rules. Audited `user` created / update.
+  createUser(data: UserCreateInput, context?: RoleProfileWriteContext): Promise<UserSummary>;
+  updateUser(userId: string, data: UserUpdateInput, context?: RoleProfileWriteContext): Promise<UserSummary | undefined>;
 
   getServices(): Promise<Service[]>;
   getServicesByLocation(locationId: string): Promise<Service[]>;
@@ -1769,7 +1820,6 @@ export interface IStorage {
   createRoleProfile(data: RoleProfileInput, context?: RoleProfileWriteContext): Promise<RoleProfileSummary>;
   updateRoleProfile(id: string, data: RoleProfileUpdateInput, context?: RoleProfileWriteContext): Promise<RoleProfileSummary | undefined>;
   cloneRoleProfile(id: string, data: RoleProfileCloneInput, context?: RoleProfileWriteContext): Promise<RoleProfileSummary | undefined>;
-  updateUserRole(userId: string, role: string, context?: RoleProfileWriteContext): Promise<UserSummary | undefined>;
 
   getAgreementTemplates(): Promise<AgreementTemplate[]>;
   getAgreementTemplate(id: string): Promise<AgreementTemplate | undefined>;
@@ -3052,30 +3102,24 @@ export class DatabaseStorage implements IStorage {
     return this.computeNextBillingDateForPlan(plan, anchorDate, anchorDate === startDate ? initialCharge : null);
   }
 
-  private normalizeTechnicianInsert(data: InsertTechnician): InsertTechnician {
-    return {
-      ...data,
-      displayName: data.displayName.trim(),
-      licenseId: data.licenseId.trim(),
-      status: data.status || "ACTIVE",
-      email: data.email?.trim() || null,
-      phone: data.phone?.trim() || null,
-      color: data.color?.trim() || null,
-      notes: data.notes?.trim() || null,
-      userId: data.userId || null,
-    };
-  }
-
-  private normalizeTechnicianUpdate(data: Partial<InsertTechnician>): Partial<InsertTechnician> {
-    const payload: Partial<InsertTechnician> = { ...data };
-    if (data.displayName !== undefined) payload.displayName = data.displayName.trim();
-    if (data.licenseId !== undefined) payload.licenseId = data.licenseId.trim();
-    if (data.email !== undefined) payload.email = data.email?.trim() || null;
-    if (data.phone !== undefined) payload.phone = data.phone?.trim() || null;
-    if (data.color !== undefined) payload.color = data.color?.trim() || null;
-    if (data.notes !== undefined) payload.notes = data.notes?.trim() || null;
-    if (data.userId !== undefined) payload.userId = data.userId || null;
-    return payload;
+  // Pass 38 (C5.7): a technician's name and license for a snapshot, a label
+  // or a crew row - read from the users row (a technician is a user). With
+  // `technicianOnly` the user must carry a technician status (the writers'
+  // check: a preference, a crew row or a ticket names a technician, not any
+  // login); without it any user of the org answers (a label for a row that
+  // already names them).
+  private async technicianProfileTx(
+    reader: Pick<typeof db, "select">,
+    technicianId: string | null | undefined,
+    technicianOnly = false,
+  ): Promise<{ id: string; displayName: string; licenseId: string | null; status: string | null } | undefined> {
+    if (!technicianId) return undefined;
+    const [row] = await reader
+      .select({ id: users.id, firstName: users.firstName, lastName: users.lastName, licenseId: users.licenseId, technicianStatus: users.technicianStatus })
+      .from(users)
+      .where(and(eq(users.orgId, this.orgId), eq(users.id, technicianId), technicianOnly ? isNotNull(users.technicianStatus) : sql`true`));
+    if (!row) return undefined;
+    return { id: row.id, displayName: userDisplayName(row), licenseId: row.licenseId ?? null, status: row.technicianStatus ?? null };
   }
 
   private normalizeServiceInsert(data: InsertService): InsertService {
@@ -3285,9 +3329,7 @@ export class DatabaseStorage implements IStorage {
       technicianId = linkedAppointment?.assignedTechnicianId || null;
     }
 
-    const technician = technicianId
-      ? (await tx.select().from(technicians).where(and(eq(technicians.orgId, this.orgId), eq(technicians.id, technicianId))))[0]
-      : undefined;
+    const technician = await this.technicianProfileTx(tx, technicianId);
 
     return {
       technicianId,
@@ -4674,47 +4716,27 @@ export class DatabaseStorage implements IStorage {
     return serviceType;
   }
 
+  // Pass 38 (C5.7): the technicians FACADE. The technicians table is gone; a
+  // technician is a users row whose technicianStatus is set, answered in the
+  // old row's shape (shared/technicians.ts TechnicianSummary - displayName
+  // derived, status = the technician status, userId = the row's own id) so
+  // the ten client readers of GET /api/technicians and every shared helper
+  // keyed on a technician id read on unchanged. ACTIVE only unless asked;
+  // the board asks for every row and keeps an inactive one while it holds
+  // visits. The hash is never in the projection. Writes go through
+  // createUser / updateUser below - there is no technician write any more.
   async getTechnicians(includeInactive = false): Promise<Technician[]> {
-    const allTechnicians = await db.select().from(technicians).where(eq(technicians.orgId, this.orgId));
-    if (includeInactive) {
-      return allTechnicians;
-    }
-    return allTechnicians.filter((technician) => technician.status === "ACTIVE");
-  }
-
-  async createTechnician(data: InsertTechnician): Promise<Technician> {
-    const payload = this.normalizeTechnicianInsert(data);
-    await this.assertTechnicianUserLink(payload.userId, undefined);
-    const [technician] = await db.insert(technicians).values({ ...payload, orgId: this.orgId }).returning();
-    return technician;
-  }
-
-  async updateTechnician(id: string, data: Partial<InsertTechnician>): Promise<Technician | undefined> {
-    const payload = this.normalizeTechnicianUpdate(data);
-    if (payload.userId !== undefined) {
-      await this.assertTechnicianUserLink(payload.userId, id);
-    }
-    const [technician] = await db.update(technicians).set({ ...payload, updatedAt: new Date() }).where(and(eq(technicians.orgId, this.orgId), eq(technicians.id, id))).returning();
-    return technician;
-  }
-
-  // Pass 12: the technician -> user bridge. The user must be one of this
-  // org's and linked to no OTHER technician (the partial unique index would
-  // refuse that anyway; this says why). Null clears the link.
-  private async assertTechnicianUserLink(userId: string | null | undefined, technicianId: string | undefined): Promise<void> {
-    if (!userId) return;
-    await this.assertOrgUserTx(db, userId, "Linked user");
-    const [taken] = await db
-      .select({ id: technicians.id, displayName: technicians.displayName })
-      .from(technicians)
-      .where(and(eq(technicians.orgId, this.orgId), eq(technicians.userId, userId), technicianId ? ne(technicians.id, technicianId) : sql`true`));
-    if (taken) {
-      throw new Error(`That user is already linked to technician ${taken.displayName}`);
-    }
+    const rows = await db
+      .select()
+      .from(users)
+      .where(and(eq(users.orgId, this.orgId), isNotNull(users.technicianStatus)));
+    return technicianSummariesFromUsers(rows, includeInactive);
   }
 
   // Pass 12: the org's users, sanitized at the query - the hash column is
-  // never selected - in the order every user selector lists them.
+  // never selected - in the order every user selector lists them. Since
+  // Pass 38 the row carries the technician block (phone, licenseId, color,
+  // technicianNotes, technicianStatus).
   async getUsers(): Promise<UserSummary[]> {
     const rows = await db
       .select({
@@ -4725,6 +4747,11 @@ export class DatabaseStorage implements IStorage {
         email: users.email,
         role: users.role,
         status: users.status,
+        phone: users.phone,
+        licenseId: users.licenseId,
+        color: users.color,
+        technicianNotes: users.technicianNotes,
+        technicianStatus: users.technicianStatus,
         createdAt: users.createdAt,
         updatedAt: users.updatedAt,
       })
@@ -6237,40 +6264,193 @@ export class DatabaseStorage implements IStorage {
 
   // The one users write: the profile assignment. The role must be an ACTIVE
   // profile of the org; the acting user cannot move THEMSELVES to a profile
-  // without Manage Settings. Audited as `update` on the user (role before
-  // and after, never the hash); an unchanged assignment writes nothing.
-  async updateUserRole(userId: string, role: string, context?: RoleProfileWriteContext): Promise<UserSummary | undefined> {
+  // without Manage Settings. Since Pass 38 (C5.7) the role is one field of
+  // the users write below; this resolves and checks the profile key for it.
+  private async resolveRoleProfileForUserTx(tx: DbTransaction, existing: User | null, role: string, context?: RoleProfileWriteContext): Promise<string> {
+    const [profile] = await tx.select().from(roleProfiles).where(and(eq(roleProfiles.orgId, this.orgId), eq(roleProfiles.key, role)));
+    if (!profile) {
+      throw new RoleProfileError(400, ROLE_PROFILE_ERROR_CODES.UNKNOWN, `"${role}" is not a role profile of this organization`);
+    }
+    if (!profile.isActive) {
+      throw new RoleProfileError(400, ROLE_PROFILE_ERROR_CODES.UNKNOWN, `"${profile.name}" is inactive - pick an active role profile`);
+    }
+    if (existing && existing.role !== profile.key && context?.actorUserId && context.actorUserId === existing.id) {
+      const permissions = (await this.roleProfilePermissionsTx(tx, [profile.id])).get(profile.id) ?? [];
+      if (!holdsManageSettings(permissions)) {
+        throw new RoleProfileError(
+          409,
+          ROLE_PROFILE_ERROR_CODES.SELF_LOCKOUT,
+          `"${profile.name}" has no Manage Settings - you cannot move yourself off a profile that has it (another user with Manage Settings can)`,
+        );
+      }
+    }
+    return profile.key;
+  }
+
+  // Pass 38 (C5.7): the users write surface. One person per row: the name,
+  // the email (trimmed, lowercased, unique whatever the case), the LOGIN
+  // flag (status), the role (the Pass 37 rules above) and the technician
+  // block - phone, licenseId, color, technicianNotes and technicianStatus,
+  // the FIELD flag (shared/technicians.ts). A created user has no password:
+  // status 'inactive' and an unusable hash until a password / invite flow
+  // exists (a later pass) - a field-only technician never needs one. The
+  // refusals: USER_NAME_REQUIRED / USER_EMAIL_INVALID / USER_EMAIL_TAKEN /
+  // USER_STATUS_INVALID (400), USER_SELF_DEACTIVATE (409: the acting user
+  // cannot turn their own login off), TECHNICIAN_HAS_HISTORY (409: a user
+  // the visits, tickets, crew rows, preferences or production entries name
+  // stays a technician - Terminated is the way to retire them), plus the
+  // role's own. Audited `user` created / update with the whole row minus
+  // the hash; an update that changes nothing writes nothing.
+  private normalizeUserName(value: string | undefined, label: string, required: boolean): string {
+    const trimmed = (value ?? "").trim();
+    if (required && !trimmed) {
+      throw new UserError(400, USER_ERROR_CODES.NAME_REQUIRED, `${label} is required`);
+    }
+    return trimmed;
+  }
+
+  private async claimUserEmailTx(tx: DbTransaction, value: string | undefined, exceptUserId: string | null): Promise<string> {
+    const email = normalizeUserEmail(value);
+    if (!email || !isPlausibleUserEmail(email)) {
+      throw new UserError(400, USER_ERROR_CODES.EMAIL_INVALID, "A valid email is required");
+    }
+    const [taken] = await tx
+      .select({ id: users.id })
+      .from(users)
+      .where(and(sql`lower(${users.email}) = ${email}`, exceptUserId ? ne(users.id, exceptUserId) : sql`true`));
+    if (taken) {
+      throw new UserError(400, USER_ERROR_CODES.EMAIL_TAKEN, `${email} already belongs to another user`);
+    }
+    return email;
+  }
+
+  private normalizeTechnicianStatus(value: string | null | undefined): string | null {
+    if (value === null || value === undefined || value === "") return null;
+    if (!isTechnicianStatus(value)) {
+      throw new UserError(400, USER_ERROR_CODES.STATUS_INVALID, `"${value}" is not a technician status (ACTIVE, INACTIVE or TERMINATED)`);
+    }
+    return value;
+  }
+
+  // What keeps a technician a technician: every row that names the user as
+  // one (the five FK columns and the bare ledger column).
+  private async technicianHistoryTx(reader: Pick<typeof db, "select">, userId: string) {
+    const countOf = async (table: any, column: any): Promise<number> => {
+      const [row] = await reader.select({ n: count() }).from(table).where(and(eq(table.orgId, this.orgId), eq(column, userId)));
+      return Number(row?.n ?? 0);
+    };
+    return {
+      visits: await countOf(appointments, appointments.assignedTechnicianId),
+      services: await countOf(services, services.assignedTechnicianId),
+      tickets: await countOf(serviceRecords, serviceRecords.technicianId),
+      crew: await countOf(appointmentTechnicians, appointmentTechnicians.technicianId),
+      preferences: await countOf(technicianPreferences, technicianPreferences.technicianId),
+      production: await countOf(productionValueEntries, productionValueEntries.technicianId),
+    };
+  }
+
+  // Rule (b) for people (the Pass 37 guard is for profiles): after a login
+  // or role change at least one ACTIVE user on an ACTIVE profile holding
+  // Manage Settings must remain. Defense in depth - the actor must hold
+  // Manage Settings to write, cannot turn their own login off and cannot
+  // move themselves off Manage Settings, so no API request reaches this.
+  private async assertActiveSettingsManagerRemainsTx(tx: DbTransaction): Promise<void> {
+    const [row] = await tx
+      .select({ id: users.id })
+      .from(users)
+      .innerJoin(roleProfiles, and(eq(roleProfiles.orgId, users.orgId), eq(roleProfiles.key, users.role)))
+      .innerJoin(roleProfilePermissions, eq(roleProfilePermissions.profileId, roleProfiles.id))
+      .where(and(eq(users.orgId, this.orgId), eq(users.status, "active"), eq(roleProfiles.isActive, true), eq(roleProfilePermissions.permission, PERMISSIONS.MANAGE_SETTINGS)))
+      .limit(1);
+    if (!row) {
+      throw new RoleProfileError(
+        409,
+        ROLE_PROFILE_ERROR_CODES.LAST_SETTINGS_MANAGER,
+        "This would leave no active user with Manage Settings - nobody could manage Settings afterwards",
+      );
+    }
+  }
+
+  async createUser(data: UserCreateInput, context?: RoleProfileWriteContext): Promise<UserSummary> {
+    const created = await db.transaction(async (tx) => {
+      const firstName = this.normalizeUserName(data.firstName, "First name", true);
+      const lastName = this.normalizeUserName(data.lastName, "Last name", false);
+      const email = await this.claimUserEmailTx(tx, data.email, null);
+      const role = await this.resolveRoleProfileForUserTx(tx, null, data.role, context);
+      const [row] = await tx
+        .insert(users)
+        .values({
+          orgId: this.orgId,
+          firstName,
+          lastName,
+          email,
+          passwordHash: await hashPassword(randomBytes(32).toString("hex")),
+          role,
+          status: "inactive",
+          phone: data.phone?.trim() || null,
+          licenseId: data.licenseId?.trim() || null,
+          color: data.color?.trim() || null,
+          technicianNotes: data.technicianNotes?.trim() || null,
+          technicianStatus: this.normalizeTechnicianStatus(data.technicianStatus),
+        })
+        .returning();
+      await this.auditCreatedTx(tx, "user", row.id, this.userAuditSnapshot(row), context?.actor);
+      return row;
+    });
+    return this.userAuditSnapshot(created);
+  }
+
+  async updateUser(userId: string, data: UserUpdateInput, context?: RoleProfileWriteContext): Promise<UserSummary | undefined> {
     const updated = await db.transaction(async (tx) => {
       const [existing] = await tx.select().from(users).where(and(eq(users.orgId, this.orgId), eq(users.id, userId)));
       if (!existing) {
         return undefined;
       }
-      const [profile] = await tx.select().from(roleProfiles).where(and(eq(roleProfiles.orgId, this.orgId), eq(roleProfiles.key, role)));
-      if (!profile) {
-        throw new RoleProfileError(400, ROLE_PROFILE_ERROR_CODES.UNKNOWN, `"${role}" is not a role profile of this organization`);
-      }
-      if (!profile.isActive) {
-        throw new RoleProfileError(400, ROLE_PROFILE_ERROR_CODES.UNKNOWN, `"${profile.name}" is inactive - pick an active role profile`);
-      }
-      if (existing.role === profile.key) {
-        return existing;
-      }
-      if (context?.actorUserId && context.actorUserId === existing.id) {
-        const permissions = (await this.roleProfilePermissionsTx(tx, [profile.id])).get(profile.id) ?? [];
-        if (!holdsManageSettings(permissions)) {
-          throw new RoleProfileError(
-            409,
-            ROLE_PROFILE_ERROR_CODES.SELF_LOCKOUT,
-            `"${profile.name}" has no Manage Settings - you cannot move yourself off a profile that has it (another user with Manage Settings can)`,
-          );
+      const patch: Partial<InsertUser> = {};
+      if (data.firstName !== undefined) patch.firstName = this.normalizeUserName(data.firstName, "First name", true);
+      if (data.lastName !== undefined) patch.lastName = this.normalizeUserName(data.lastName, "Last name", false);
+      if (data.email !== undefined) patch.email = await this.claimUserEmailTx(tx, data.email, existing.id);
+      if (data.status !== undefined) {
+        if (!isUserStatus(data.status)) {
+          throw new UserError(400, USER_ERROR_CODES.STATUS_INVALID, `"${data.status}" is not a login status (active or inactive)`);
         }
+        if (data.status !== "active" && context?.actorUserId && context.actorUserId === existing.id) {
+          throw new UserError(409, USER_ERROR_CODES.SELF_DEACTIVATE, "You cannot turn your own login off (another user with Manage Settings can)");
+        }
+        patch.status = data.status;
+      }
+      if (data.role !== undefined) patch.role = await this.resolveRoleProfileForUserTx(tx, existing, data.role, context);
+      if (data.phone !== undefined) patch.phone = data.phone?.trim() || null;
+      if (data.licenseId !== undefined) patch.licenseId = data.licenseId?.trim() || null;
+      if (data.color !== undefined) patch.color = data.color?.trim() || null;
+      if (data.technicianNotes !== undefined) patch.technicianNotes = data.technicianNotes?.trim() || null;
+      if (data.technicianStatus !== undefined) {
+        const next = this.normalizeTechnicianStatus(data.technicianStatus);
+        if (next === null && existing.technicianStatus !== null) {
+          const history = await this.technicianHistoryTx(tx, existing.id);
+          if (Object.values(history).some((n) => n > 0)) {
+            throw new UserError(
+              409,
+              USER_ERROR_CODES.TECHNICIAN_HAS_HISTORY,
+              `${userDisplayName(existing)} has field history (${describeTechnicianHistory(history)}) and stays a technician - mark them Terminated instead`,
+            );
+          }
+        }
+        patch.technicianStatus = next;
+      }
+      const changed = (Object.keys(patch) as Array<keyof InsertUser>).filter((key) => patch[key] !== (existing as unknown as Record<string, unknown>)[key]);
+      if (!changed.length) {
+        return existing;
       }
       const [row] = await tx
         .update(users)
-        .set({ role: profile.key, updatedAt: new Date() })
+        .set({ ...patch, updatedAt: new Date() })
         .where(and(eq(users.orgId, this.orgId), eq(users.id, userId)))
         .returning();
       await this.auditChangeTx(tx, "user", row.id, this.userAuditSnapshot(existing), this.userAuditSnapshot(row), context?.actor);
+      if (changed.includes("status") || changed.includes("role")) {
+        await this.assertActiveSettingsManagerRemainsTx(tx);
+      }
       return row;
     });
     return updated ? this.userAuditSnapshot(updated) : undefined;
@@ -7094,12 +7274,14 @@ export class DatabaseStorage implements IStorage {
   // shared/technician-preferences.ts and shared/appointment-crew.ts.
   // ---------------------------------------------------------------------
 
+  // Every user of the org by id -> "First Last" (Pass 38: a technician is a
+  // user; a row that names one keeps naming them whatever their status now).
   private async technicianNameMapTx(tx: DbReader): Promise<Map<string, string>> {
     const rows = await tx
-      .select({ id: technicians.id, displayName: technicians.displayName })
-      .from(technicians)
-      .where(eq(technicians.orgId, this.orgId));
-    return new Map(rows.map((row) => [row.id, row.displayName]));
+      .select({ id: users.id, firstName: users.firstName, lastName: users.lastName })
+      .from(users)
+      .where(eq(users.orgId, this.orgId));
+    return new Map(rows.map((row) => [row.id, userDisplayName(row)]));
   }
 
   // The rows the resolve rule reads for some locations and their accounts.
@@ -7428,10 +7610,7 @@ export class DatabaseStorage implements IStorage {
           throw new TechnicianPreferenceError(409, ACCOUNT_SCOPE_PRIMARY_ONLY, "A preference for all locations is set on the primary location");
         }
       }
-      const [technician] = await tx
-        .select({ id: technicians.id, displayName: technicians.displayName })
-        .from(technicians)
-        .where(and(eq(technicians.orgId, this.orgId), eq(technicians.id, input.technicianId)));
+      const technician = await this.technicianProfileTx(tx, input.technicianId, true);
       if (!technician) {
         throw new TechnicianPreferenceError(404, TECHNICIAN_NOT_FOUND, "Technician not found");
       }
@@ -7531,14 +7710,15 @@ export class DatabaseStorage implements IStorage {
         technicianId: appointmentTechnicians.technicianId,
         role: appointmentTechnicians.role,
         createdAt: appointmentTechnicians.createdAt,
-        technicianName: technicians.displayName,
+        firstName: users.firstName,
+        lastName: users.lastName,
       })
       .from(appointmentTechnicians)
-      .leftJoin(technicians, eq(technicians.id, appointmentTechnicians.technicianId))
+      .leftJoin(users, eq(users.id, appointmentTechnicians.technicianId))
       .where(and(eq(appointmentTechnicians.orgId, this.orgId), eq(appointmentTechnicians.appointmentId, appointmentId)));
     const members: AppointmentCrewMember[] = rows.map((row) => ({
       technicianId: row.technicianId,
-      technicianName: row.technicianName ?? "Unknown technician",
+      technicianName: row.firstName !== null ? userDisplayName({ firstName: row.firstName, lastName: row.lastName ?? "" }) : "Unknown technician",
       role: row.role === "LEAD" ? "LEAD" : "SUPPORT",
       createdAt: row.createdAt,
     }));
@@ -7608,10 +7788,7 @@ export class DatabaseStorage implements IStorage {
       if (!appointment.assignedTechnicianId) {
         throw new AppointmentCrewError(409, CREW_LEAD_REQUIRED, "Assign the visit's technician first - a support technician joins a lead");
       }
-      const [technician] = await tx
-        .select({ id: technicians.id, displayName: technicians.displayName })
-        .from(technicians)
-        .where(and(eq(technicians.orgId, this.orgId), eq(technicians.id, input.technicianId)));
+      const technician = await this.technicianProfileTx(tx, input.technicianId, true);
       if (!technician) {
         throw new AppointmentCrewError(404, TECHNICIAN_NOT_FOUND, "Technician not found");
       }
@@ -8865,9 +9042,7 @@ export class DatabaseStorage implements IStorage {
       let technicianName = existingRecord.technicianName;
       let technicianLicenseNumber = existingRecord.technicianLicenseNumber;
       if (technicianId !== existingRecord.technicianId) {
-        const [technician] = technicianId
-          ? await tx.select().from(technicians).where(and(eq(technicians.orgId, this.orgId), eq(technicians.id, technicianId)))
-          : [undefined];
+        const technician = await this.technicianProfileTx(tx, technicianId, true);
         if (technicianId && !technician) {
           throw new Error("Technician not found");
         }
@@ -10120,11 +10295,7 @@ export class DatabaseStorage implements IStorage {
     // name a ticket recorded (a technician row may have been deactivated).
     let technicianLabel: string | null = null;
     if (appointment?.assignedTechnicianId) {
-      const [technician] = await db
-        .select()
-        .from(technicians)
-        .where(and(eq(technicians.orgId, this.orgId), eq(technicians.id, appointment.assignedTechnicianId)));
-      technicianLabel = technician?.displayName ?? null;
+      technicianLabel = (await this.technicianProfileTx(db, appointment.assignedTechnicianId))?.displayName ?? null;
     }
     if (!technicianLabel) {
       technicianLabel = records.find((record) => record.technicianName)?.technicianName ?? null;
@@ -14246,7 +14417,7 @@ export class DatabaseStorage implements IStorage {
     let technicianName = record.technicianName?.trim() || null;
     let technicianLicenseNumber = record.technicianLicenseNumber?.trim() || null;
     if (!technicianName && !technicianLicenseNumber && record.technicianId) {
-      const [technician] = await reader.select().from(technicians).where(and(eq(technicians.orgId, this.orgId), eq(technicians.id, record.technicianId)));
+      const technician = await this.technicianProfileTx(reader, record.technicianId);
       technicianName = technician?.displayName ?? null;
       technicianLicenseNumber = technician?.licenseId ?? null;
     }

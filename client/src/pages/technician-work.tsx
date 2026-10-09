@@ -32,6 +32,7 @@ import {
 } from "@shared/appointment-composition";
 import { AlertTriangle, Banknote, CalendarDays, CheckCircle2, ClipboardList, Clock3, MapPin, Navigation, Plus } from "lucide-react";
 import type { Appointment, Customer, CustomerNote, Location, Service, ServiceRecord, ServiceType, Technician } from "@shared/schema";
+import { isTechnicianUser } from "@shared/technicians";
 
 interface TechnicianWorkService {
   service: Service;
@@ -136,6 +137,18 @@ export default function TechnicianWork() {
   const { toast } = useToast();
   const { user } = useAuth();
   const canCollect = can(user?.role ?? "", PERMISSIONS.TAKE_PAYMENT_FIELD);
+  // Pass 38 (C5.7): the session user IS the technician when their login
+  // carries a technician status - the page opens on their own day (the
+  // ticket's default technician and the production credit follow), and the
+  // picker is offered only to a role holding VIEW_OTHER_TECHNICIAN_WORK
+  // (support, manager, admin by default); the work route refuses the rest
+  // (403), so nothing here can reach another technician's day without it.
+  const sessionIsTechnician = isTechnicianUser(user);
+  const canViewOthers = can(user?.role ?? "", PERMISSIONS.VIEW_OTHER_TECHNICIAN_WORK);
+  const sessionUserId = user?.id;
+  useEffect(() => {
+    if (sessionUserId && sessionIsTechnician) setSelectedTechnicianId((current) => current || sessionUserId);
+  }, [sessionUserId, sessionIsTechnician]);
 
   const { data: technicians, isLoading: techniciansLoading } = useQuery<Technician[]>({ queryKey: ["/api/technicians?includeInactive=true"] });
   const { data: serviceTypes } = useQuery<ServiceType[]>({ queryKey: ["/api/service-types"] });
@@ -412,18 +425,26 @@ export default function TechnicianWork() {
             <Label>Technician</Label>
             {techniciansLoading ? (
               <Skeleton className="h-10 w-full" />
-            ) : (
+            ) : canViewOthers ? (
               <Select value={selectedTechnicianId || "NONE"} onValueChange={(value) => setSelectedTechnicianId(value === "NONE" ? "" : value)}>
-                <SelectTrigger><SelectValue placeholder="Select technician" /></SelectTrigger>
+                <SelectTrigger data-testid="select-work-technician"><SelectValue placeholder="Select technician" /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="NONE">Select technician</SelectItem>
-                  {activeTechnicians.map((technician) => (
+                  {(selectedTechnician && !activeTechnicians.some((technician) => technician.id === selectedTechnician.id) ? [selectedTechnician, ...activeTechnicians] : activeTechnicians).map((technician) => (
                     <SelectItem key={technician.id} value={technician.id}>
-                      {technician.displayName} ({technician.licenseId})
+                      {technician.displayName} ({technician.licenseId || "no license"}){technician.id === sessionUserId ? " - you" : ""}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
+            ) : sessionIsTechnician ? (
+              <p className="flex h-10 items-center rounded-md border bg-muted/40 px-3 text-sm" data-testid="text-work-technician-self">
+                {selectedTechnician?.displayName ?? "You"}{selectedTechnician?.licenseId ? ` (${selectedTechnician.licenseId})` : ""} - your day
+              </p>
+            ) : (
+              <p className="flex h-10 items-center rounded-md border bg-muted/40 px-3 text-sm text-muted-foreground" data-testid="text-work-technician-none">
+                Your login is not a field technician.
+              </p>
             )}
           </div>
           <div className="space-y-2">
@@ -442,7 +463,9 @@ export default function TechnicianWork() {
         <Card>
           <CardContent className="flex flex-col items-center gap-2 py-10 text-center text-sm text-muted-foreground">
             <ClipboardList className="h-8 w-8 text-muted-foreground/40" />
-            Select a technician to view scheduled work.
+            {canViewOthers
+              ? "Select a technician to view scheduled work."
+              : "Your login is not a field technician, and your role cannot open another technician's day (View another technician's day). Settings -> Users sets both."}
           </CardContent>
         </Card>
       ) : visitsLoading ? (
