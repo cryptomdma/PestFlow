@@ -123,6 +123,15 @@ export const PERMISSIONS = {
   // custom field profile cloned from Technician inherits the lock through
   // the permission, not the name). Support, manager and admin hold it.
   EDIT_ANY_SERVICE_INSTRUCTIONS: "edit_any_service_instructions",
+  // Pass 38 (C5.7): open ANOTHER technician's day on the Tech View (GET
+  // /api/technicians/:id/work for an id that is not the session user's).
+  // Without it a technician sees their own day only - the page defaults to
+  // the session user and hides the picker; the office (support, manager,
+  // admin by default) keeps the picker. The first permission added after
+  // Pass 37's seed: the bootstrap grants it to the seeded built-in profiles
+  // that should hold it (server/role-profile-bootstrap.ts), since
+  // ROLE_PERMISSIONS below seeds only a NEW org.
+  VIEW_OTHER_TECHNICIAN_WORK: "view_other_technician_work",
   MANAGE_SETTINGS: "manage_settings",
 } as const;
 
@@ -167,6 +176,7 @@ export const PERMISSION_LABELS: Record<Permission, string> = {
   view_cost_margin_ltv: "View cost, margin and LTV",
   view_production_value: "View production value",
   edit_any_service_instructions: "Edit any service instructions",
+  view_other_technician_work: "View another technician's day",
   manage_settings: "Manage Settings",
 };
 
@@ -199,7 +209,8 @@ export const PERMISSION_DESCRIPTIONS: Record<Permission, string> = {
   view_cost_margin_ltv: "Read cost, margin and lifetime value figures (not checked by any screen yet).",
   view_production_value: "Read the production value ledger.",
   edit_any_service_instructions: "Change a service's instructions whoever added it; without it, only on a service you added in the field.",
-  manage_settings: "Every Settings card - reference lists, templates, zones, rules, role profiles and user assignments.",
+  view_other_technician_work: "Open any technician's day on the Tech View; without it, only your own.",
+  manage_settings: "Every Settings card - reference lists, templates, zones, rules, role profiles, users and technicians.",
 };
 
 /** The checklist's grouping on the Roles card. Every permission appears in exactly one group. */
@@ -244,7 +255,7 @@ export const PERMISSION_GROUPS: ReadonlyArray<{ label: string; permissions: read
   },
   {
     label: "Sales and scheduling",
-    permissions: [PERMISSIONS.ASSIGN_SALE_CREDIT, PERMISSIONS.ASSIGN_OPPORTUNITY, PERMISSIONS.OVERRIDE_TECHNICIAN_EXCLUSION],
+    permissions: [PERMISSIONS.ASSIGN_SALE_CREDIT, PERMISSIONS.ASSIGN_OPPORTUNITY, PERMISSIONS.OVERRIDE_TECHNICIAN_EXCLUSION, PERMISSIONS.VIEW_OTHER_TECHNICIAN_WORK],
   },
   {
     label: "Reports",
@@ -269,7 +280,10 @@ export function describePermission(permission: string): string {
 // here, and since Pass 37 the office refines them per profile in Settings.
 // Exported since Pass 37: the seed (shared/role-profiles.ts) and the smoke
 // test's parity check read it. Editing this record changes what a NEW org is
-// seeded with, never an existing org's profiles (those are rows).
+// seeded with, never an existing org's profiles (those are rows) - a
+// permission added later is granted to the seeded built-ins by
+// server/role-profile-bootstrap.ts SEEDED_PROFILE_GRANTS (Pass 38 was the
+// first: technician 4 / support 14 / manager 29 / admin 30).
 export const ROLE_PERMISSIONS: Record<BuiltInRole, ReadonlySet<Permission>> = {
   technician: new Set<Permission>([
     PERMISSIONS.POST_SERVICE_TICKET,
@@ -291,6 +305,7 @@ export const ROLE_PERMISSIONS: Record<BuiltInRole, ReadonlySet<Permission>> = {
     PERMISSIONS.APPLY_PAYMENT,
     PERMISSIONS.CONFIRM_PAYMENT,
     PERMISSIONS.EDIT_ANY_SERVICE_INSTRUCTIONS,
+    PERMISSIONS.VIEW_OTHER_TECHNICIAN_WORK,
   ]),
   manager: new Set<Permission>([
     PERMISSIONS.POST_SERVICE_TICKET,
@@ -321,6 +336,7 @@ export const ROLE_PERMISSIONS: Record<BuiltInRole, ReadonlySet<Permission>> = {
     PERMISSIONS.VIEW_COST_MARGIN_LTV,
     PERMISSIONS.VIEW_PRODUCTION_VALUE,
     PERMISSIONS.EDIT_ANY_SERVICE_INSTRUCTIONS,
+    PERMISSIONS.VIEW_OTHER_TECHNICIAN_WORK,
   ]),
   admin: new Set<Permission>(Object.values(PERMISSIONS)),
 };

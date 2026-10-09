@@ -59,8 +59,9 @@ import { ListMultiSelect } from "@/components/list-multi-select";
 import { Switch } from "@/components/ui/switch";
 import { ServiceWorkKindBadge } from "@/components/service-work-kind-badge";
 import { SERVICE_WORK_KINDS, describeServiceWorkKind, formatServiceWorkKind, normalizeServiceWorkKind, type ServiceWorkKind } from "@shared/service-kind";
-import { Plus, Settings as SettingsIcon, Wrench, FileText, Users, ShieldCheck, FlaskConical, Bug, CreditCard, CalendarClock, Percent, Scale, Building2, Receipt, MapPin, UserCheck, ArrowUp, ArrowDown, AlertTriangle, LayoutGrid, Tag, Shield, UserCog } from "lucide-react";
-import type { AgreementCancellationPolicy, AgreementTemplate, AgreementType, BillingPlan, BillingProfileTemplate, MaterialProduct, OpportunityAssignmentRule, OpportunityCategory, OpportunityDisposition, Organization, ServiceType, TargetPest, TaxRate, TaxRule, Technician, UserSummary, Zone } from "@shared/schema";
+import { Plus, Settings as SettingsIcon, Wrench, FileText, ShieldCheck, FlaskConical, Bug, CreditCard, CalendarClock, Percent, Scale, Building2, Receipt, MapPin, UserCheck, ArrowUp, ArrowDown, AlertTriangle, LayoutGrid, Tag, Shield, UserCog } from "lucide-react";
+import type { AgreementCancellationPolicy, AgreementTemplate, AgreementType, BillingPlan, BillingProfileTemplate, MaterialProduct, OpportunityAssignmentRule, OpportunityCategory, OpportunityDisposition, Organization, ServiceType, TargetPest, TaxRate, TaxRule, UserSummary, Zone } from "@shared/schema";
+import { DEFAULT_TECHNICIAN_COLOR, NOT_A_TECHNICIAN_LABEL, TECHNICIAN_STATUSES, TECHNICIAN_STATUS_LABELS, describeTechnicianStatus, isTechnicianUser } from "@shared/technicians";
 
 // Pass 35 (C5.3): the unit labels live in shared/agreement-types.ts with the
 // unit list itself (DAY | WEEK | MONTH | QUARTER | YEAR - CUSTOM retired), so
@@ -90,6 +91,18 @@ function invalidateRoleProfileViews() {
       const key = String(query.queryKey[0] ?? "");
       return key.startsWith("/api/role-profiles") || key.startsWith("/api/users") || key.startsWith("/api/auth/me");
     },
+  });
+}
+
+// Pass 38 (C5.7): a users write changes the technicians too (a technician is
+// a user), and every reader of GET /api/technicians keys on the string with
+// its query ("/api/technicians?includeInactive=true" - staleTime Infinity),
+// so the old card's `["/api/technicians"]` invalidation never refreshed the
+// board or the pickers until a reload. Match the prefix, as the audit views do.
+function invalidateUserViews() {
+  invalidateRoleProfileViews();
+  queryClient.invalidateQueries({
+    predicate: (query) => String(query.queryKey[0] ?? "").startsWith("/api/technicians"),
   });
 }
 
@@ -940,95 +953,140 @@ function OpportunityDispositionForm({ disposition, onClose }: { disposition?: Op
   );
 }
 
-function TechnicianForm({ technician, onClose }: { technician?: Technician | null; onClose: () => void }) {
+// Pass 38 (C5.7): one form for a person - the Users card's Add / Edit. The
+// login block (name, email, phone, role, login status) and, when "Field
+// technician" is set, the technician block (license, colour, notes) that
+// lived on the old Technicians card. A created user has no password: the
+// server creates it with the login off, so the form says so; a field-only
+// technician never needs one. The role goes through the Pass 37 rules, the
+// login status refuses turning yourself off, and a technician with field
+// history cannot become "not a technician" (the server's refusal, toasted).
+function UserForm({ user: editing, roleProfiles, selfId, onClose }: { user?: UserSummary | null; roleProfiles: RoleProfileSummary[]; selfId: string | null | undefined; onClose: () => void }) {
   const { toast } = useToast();
-  const isEditMode = !!technician;
-  // Pass 12: the technician -> user bridge (technicians.userId). Active users
-  // plus the one already linked, so an inactive login still names itself.
-  const { data: users } = useQuery<UserSummary[]>({ queryKey: ["/api/users"] });
-  const linkableUsers = useMemo(() => selectableUsers(users ?? [], technician?.userId), [users, technician?.userId]);
+  const isEditMode = !!editing;
+  const isSelf = !!editing && editing.id === selfId;
+  const activeProfiles = roleProfiles.filter((profile) => profile.isActive || profile.key === editing?.role);
   const [form, setForm] = useState({
-    displayName: technician?.displayName ?? "",
-    licenseId: technician?.licenseId ?? "",
-    status: technician?.status ?? "ACTIVE",
-    email: technician?.email ?? "",
-    phone: technician?.phone ?? "",
-    color: technician?.color ?? "",
-    notes: technician?.notes ?? "",
-    userId: technician?.userId ?? "",
+    firstName: editing?.firstName ?? "",
+    lastName: editing?.lastName ?? "",
+    email: editing?.email ?? "",
+    phone: editing?.phone ?? "",
+    role: editing?.role ?? (roleProfiles.find((profile) => profile.isActive && profile.key === "technician")?.key ?? roleProfiles.find((profile) => profile.isActive)?.key ?? ""),
+    status: editing?.status ?? "inactive",
+    technicianStatus: editing?.technicianStatus ?? "",
+    licenseId: editing?.licenseId ?? "",
+    color: editing?.color ?? "",
+    technicianNotes: editing?.technicianNotes ?? "",
   });
+  const isTechnician = form.technicianStatus !== "";
 
   const mutation = useMutation({
     mutationFn: async (data: typeof form) => {
-      const payload = {
-        displayName: data.displayName.trim(),
-        licenseId: data.licenseId.trim(),
-        status: data.status,
-        email: data.email.trim() || null,
+      const person = {
+        firstName: data.firstName.trim(),
+        lastName: data.lastName.trim(),
+        email: data.email.trim(),
+        role: data.role,
         phone: data.phone.trim() || null,
+        licenseId: data.licenseId.trim() || null,
         color: data.color.trim() || null,
-        notes: data.notes.trim() || null,
-        userId: data.userId || null,
+        technicianNotes: data.technicianNotes.trim() || null,
+        technicianStatus: data.technicianStatus || null,
       };
       const response = isEditMode
-        ? await apiRequest("PATCH", `/api/technicians/${technician.id}`, payload)
-        : await apiRequest("POST", "/api/technicians", payload);
-      return response.json();
+        ? await apiRequest("PATCH", `/api/users/${editing.id}`, { ...person, status: data.status })
+        : await apiRequest("POST", "/api/users", person);
+      return (await response.json()) as UserSummary;
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/technicians"] });
-      toast({ title: isEditMode ? "Technician updated" : "Technician created" });
+    onSuccess: (saved) => {
+      invalidateUserViews();
+      invalidateAuditViews();
+      toast({
+        title: isEditMode ? `${userDisplayName(saved)} updated` : `${userDisplayName(saved)} created`,
+        description: isEditMode
+          ? "Applies on their next request - no new login needed."
+          : "No password yet, so the login stays off until a password flow exists; a field technician still appears on the board and the pickers.",
+      });
       onClose();
     },
-    onError: (err: Error) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+    onError: (err: unknown) => toast({ title: isEditMode ? "User not saved" : "User not created", description: getApiErrorMessage(err), variant: "destructive" }),
   });
 
   return (
-    <form onSubmit={(e) => { e.preventDefault(); mutation.mutate(form); }} className="space-y-4">
+    <form onSubmit={(e) => { e.preventDefault(); mutation.mutate(form); }} className="space-y-4" data-testid="form-user">
       <div className="grid gap-3 sm:grid-cols-2">
-        <div className="space-y-1.5"><Label>Name</Label><Input value={form.displayName} onChange={(e) => setForm((prev) => ({ ...prev, displayName: e.target.value }))} /></div>
-        <div className="space-y-1.5"><Label>License ID</Label><Input value={form.licenseId} onChange={(e) => setForm((prev) => ({ ...prev, licenseId: e.target.value }))} /></div>
+        <div className="space-y-1.5"><Label>First name</Label><Input data-testid="input-user-first-name" value={form.firstName} onChange={(e) => setForm((prev) => ({ ...prev, firstName: e.target.value }))} /></div>
+        <div className="space-y-1.5"><Label>Last name</Label><Input data-testid="input-user-last-name" value={form.lastName} onChange={(e) => setForm((prev) => ({ ...prev, lastName: e.target.value }))} /></div>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="space-y-1.5"><Label>Email</Label><Input data-testid="input-user-email" type="email" value={form.email} onChange={(e) => setForm((prev) => ({ ...prev, email: e.target.value }))} /></div>
+        <div className="space-y-1.5"><Label>Phone</Label><Input data-testid="input-user-phone" value={form.phone} onChange={(e) => setForm((prev) => ({ ...prev, phone: e.target.value }))} /></div>
       </div>
       <div className="grid gap-3 sm:grid-cols-2">
         <div className="space-y-1.5">
-          <Label>Status</Label>
-          <Select value={form.status} onValueChange={(value) => setForm((prev) => ({ ...prev, status: value }))}>
-            <SelectTrigger><SelectValue /></SelectTrigger>
+          <Label>Role</Label>
+          <Select value={form.role} onValueChange={(value) => setForm((prev) => ({ ...prev, role: value }))}>
+            <SelectTrigger data-testid="select-user-form-role"><SelectValue placeholder="Pick a role" /></SelectTrigger>
             <SelectContent>
-              <SelectItem value="ACTIVE">Active</SelectItem>
-              <SelectItem value="INACTIVE">Inactive</SelectItem>
-              <SelectItem value="TERMINATED">Terminated</SelectItem>
+              {activeProfiles.map((profile) => (
+                <SelectItem key={profile.key} value={profile.key}>{profile.name}{profile.isActive ? "" : " (inactive)"}</SelectItem>
+              ))}
             </SelectContent>
           </Select>
         </div>
-        <div className="space-y-1.5"><Label>Color</Label><Input placeholder="#2563eb" value={form.color} onChange={(e) => setForm((prev) => ({ ...prev, color: e.target.value }))} /></div>
-      </div>
-      <div className="grid gap-3 sm:grid-cols-2">
-        <div className="space-y-1.5"><Label>Email</Label><Input value={form.email} onChange={(e) => setForm((prev) => ({ ...prev, email: e.target.value }))} /></div>
-        <div className="space-y-1.5"><Label>Phone</Label><Input value={form.phone} onChange={(e) => setForm((prev) => ({ ...prev, phone: e.target.value }))} /></div>
+        <div className="space-y-1.5">
+          <Label>Login</Label>
+          <Select value={isEditMode ? form.status : "inactive"} onValueChange={(value) => setForm((prev) => ({ ...prev, status: value }))} disabled={!isEditMode || isSelf}>
+            <SelectTrigger data-testid="select-user-login-status"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="active">Active - may sign in</SelectItem>
+              <SelectItem value="inactive">Inactive - cannot sign in</SelectItem>
+            </SelectContent>
+          </Select>
+          <p className="text-xs text-muted-foreground" data-testid="text-user-login-hint">
+            {!isEditMode
+              ? "Created with the login off: no password can be set yet (a later pass). A field technician needs none."
+              : isSelf
+                ? "You cannot turn your own login off."
+                : "Whether this person may sign in. A technician who never signs in stays Inactive here and Active below."}
+          </p>
+        </div>
       </div>
       <div className="space-y-1.5">
-        <Label>Linked user</Label>
-        <Select value={form.userId || "NONE"} onValueChange={(value) => setForm((prev) => ({ ...prev, userId: value === "NONE" ? "" : value }))}>
-          <SelectTrigger data-testid="select-technician-user"><SelectValue placeholder="No linked user" /></SelectTrigger>
+        <Label>Field technician</Label>
+        <Select value={form.technicianStatus || "NONE"} onValueChange={(value) => setForm((prev) => ({ ...prev, technicianStatus: value === "NONE" ? "" : value }))}>
+          <SelectTrigger data-testid="select-user-technician-status"><SelectValue /></SelectTrigger>
           <SelectContent>
-            <SelectItem value="NONE">No linked user</SelectItem>
-            {linkableUsers.map((user) => (
-              <SelectItem key={user.id} value={user.id}>
-                {userDisplayName(user)} ({describeUserRole(user.role)}){user.status === "active" ? "" : " (inactive)"}
-              </SelectItem>
+            <SelectItem value="NONE">{NOT_A_TECHNICIAN_LABEL}</SelectItem>
+            {TECHNICIAN_STATUSES.map((status) => (
+              <SelectItem key={status} value={status}>{TECHNICIAN_STATUS_LABELS[status]}</SelectItem>
             ))}
           </SelectContent>
         </Select>
         <p className="text-xs text-muted-foreground">
-          The login this technician signs in with. Sale credit is recorded per user and production credit per technician; this link is how the two meet on one person. One user per technician.
+          Active technicians are offered on the dispatch board, the pickers and the Tech View; an Inactive or Terminated one stays on the board only while they hold visits. A technician with field history cannot become "{NOT_A_TECHNICIAN_LABEL}" - mark them Terminated.
         </p>
       </div>
-      <div className="space-y-1.5"><Label>Notes</Label><Textarea value={form.notes} onChange={(e) => setForm((prev) => ({ ...prev, notes: e.target.value }))} className="resize-none" /></div>
+      {isTechnician ? (
+        <div className="space-y-3 rounded-md border bg-muted/30 p-3" data-testid="block-user-technician">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="space-y-1.5"><Label>License ID</Label><Input data-testid="input-user-license" value={form.licenseId} onChange={(e) => setForm((prev) => ({ ...prev, licenseId: e.target.value }))} /><p className="text-xs text-muted-foreground">Copied onto every ticket they post, with the name.</p></div>
+            <div className="space-y-1.5">
+              <Label>Colour</Label>
+              <div className="flex items-center gap-2">
+                <span className="h-4 w-4 shrink-0 rounded-full border" style={{ backgroundColor: form.color.trim() || DEFAULT_TECHNICIAN_COLOR }} />
+                <Input data-testid="input-user-color" placeholder={DEFAULT_TECHNICIAN_COLOR} value={form.color} onChange={(e) => setForm((prev) => ({ ...prev, color: e.target.value }))} />
+              </div>
+              <p className="text-xs text-muted-foreground">The dot on their dispatch board row.</p>
+            </div>
+          </div>
+          <div className="space-y-1.5"><Label>Technician notes</Label><Textarea data-testid="textarea-user-technician-notes" value={form.technicianNotes} onChange={(e) => setForm((prev) => ({ ...prev, technicianNotes: e.target.value }))} className="resize-none" /></div>
+        </div>
+      ) : null}
       <div className="flex justify-end gap-2">
         <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
-        <Button type="submit" disabled={mutation.isPending || !form.displayName.trim() || !form.licenseId.trim()}>
-          {mutation.isPending ? "Saving..." : isEditMode ? "Save Technician" : "Create Technician"}
+        <Button type="submit" data-testid="button-save-user" disabled={mutation.isPending || !form.firstName.trim() || !form.email.trim() || !form.role}>
+          {mutation.isPending ? "Saving..." : isEditMode ? "Save User" : "Create User"}
         </Button>
       </div>
     </form>
@@ -1980,8 +2038,10 @@ export default function Settings() {
   const { toast } = useToast();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingServiceType, setEditingServiceType] = useState<ServiceType | null>(null);
-  const [technicianDialogOpen, setTechnicianDialogOpen] = useState(false);
-  const [editingTechnician, setEditingTechnician] = useState<Technician | null>(null);
+  // Pass 38 (C5.7): the Users card's Add / Edit dialog (the Technicians card
+  // merged into it - a technician is a user).
+  const [userDialogOpen, setUserDialogOpen] = useState(false);
+  const [editingUser, setEditingUser] = useState<UserSummary | null>(null);
   const [templateDialogOpen, setTemplateDialogOpen] = useState(false);
   const [editingTemplate, setEditingTemplate] = useState<AgreementTemplate | null>(null);
   const [policyDialogOpen, setPolicyDialogOpen] = useState(false);
@@ -2021,8 +2081,7 @@ export default function Settings() {
   const [materialUnitsText, setMaterialUnitsText] = useState("");
   const [applicationAreasText, setApplicationAreasText] = useState("");
   const { data: serviceTypes, isLoading } = useQuery<ServiceType[]>({ queryKey: ["/api/service-types"] });
-  const { data: technicians, isLoading: techniciansLoading } = useQuery<Technician[]>({ queryKey: ["/api/technicians?includeInactive=true"] });
-  // Pass 12: the technician rows name their linked user.
+  // Pass 12: the org's users; since Pass 38 each row carries its technician block too.
   const { data: orgUsers } = useQuery<UserSummary[]>({ queryKey: ["/api/users"] });
   const orgUserById = useMemo(() => new Map((orgUsers ?? []).map((user) => [user.id, user])), [orgUsers]);
   const { data: materialProducts, isLoading: materialProductsLoading } = useQuery<MaterialProduct[]>({ queryKey: ["/api/material-products?includeInactive=true"] });
@@ -2040,7 +2099,7 @@ export default function Settings() {
       return (await response.json()) as UserSummary;
     },
     onSuccess: (updated) => {
-      invalidateRoleProfileViews();
+      invalidateUserViews();
       invalidateAuditViews();
       toast({ title: `${userDisplayName(updated)} is now ${describeUserRole(updated.role)}`, description: "Applies on their next request - no new login needed." });
     },
@@ -2271,9 +2330,9 @@ export default function Settings() {
     setTemplateDialogOpen(true);
   };
 
-  const closeTechnicianDialog = (open: boolean) => {
-    setTechnicianDialogOpen(open);
-    if (!open) setEditingTechnician(null);
+  const closeUserDialog = (open: boolean) => {
+    setUserDialogOpen(open);
+    if (!open) setEditingUser(null);
   };
 
   const closeTemplateDialog = (open: boolean) => {
@@ -2998,51 +3057,6 @@ export default function Settings() {
         </CardContent>
       </Card>
 
-      <Card>
-        <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
-          <CardTitle className="text-base font-semibold flex items-center gap-2"><Users className="h-4 w-4" /> Technicians</CardTitle>
-          <Dialog open={technicianDialogOpen} onOpenChange={closeTechnicianDialog}>
-            <DialogTrigger asChild><Button size="sm" onClick={() => setEditingTechnician(null)}><Plus className="h-3 w-3 mr-1" /> Add Technician</Button></DialogTrigger>
-            <DialogContent>
-              <DialogHeader><DialogTitle>{editingTechnician ? "Edit Technician" : "New Technician"}</DialogTitle></DialogHeader>
-              <TechnicianForm technician={editingTechnician} onClose={() => closeTechnicianDialog(false)} />
-            </DialogContent>
-          </Dialog>
-        </CardHeader>
-        <CardContent>
-          {techniciansLoading ? (
-            <div className="space-y-2">{[1, 2, 3].map((i) => <Skeleton key={i} className="h-16" />)}</div>
-          ) : !technicians || technicians.length === 0 ? (
-            <div className="text-center py-8">
-              <Users className="h-8 w-8 mx-auto text-muted-foreground/30 mb-2" />
-              <p className="text-sm text-muted-foreground">No technicians configured</p>
-            </div>
-          ) : (
-            <div className="space-y-2">
-              {technicians.map((technician) => (
-                <div key={technician.id} className="flex items-center justify-between gap-3 rounded-md bg-muted/50 p-3">
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="text-sm font-medium">{technician.displayName}</span>
-                      <Badge variant={technician.status === "ACTIVE" ? "secondary" : "outline"} className={`text-xs ${technician.status === "ACTIVE" ? "bg-primary/10 text-primary" : ""}`}>{technician.status}</Badge>
-                      <Badge variant="outline" className="text-xs">{technician.licenseId}</Badge>
-                    </div>
-                    <p className="text-xs text-muted-foreground mt-0.5">
-                      {technician.email || "No email"} {technician.phone ? `| ${technician.phone}` : ""}
-                      {" | "}
-                      {technician.userId ? `Linked to ${userDisplayName(orgUserById.get(technician.userId)) || "unknown user"}` : "No linked user"}
-                    </p>
-                  </div>
-                  <Button variant="outline" size="sm" onClick={() => { setEditingTechnician(technician); setTechnicianDialogOpen(true); }}>
-                    Edit
-                  </Button>
-                </div>
-              ))}
-            </div>
-          )}
-        </CardContent>
-      </Card>
-
       {/* Pass 37 (C5.6; B16): role profiles - the org's roles as permission
           sets. Reads are open; every write is MANAGE_SETTINGS; nothing is
           deleted (a role is made inactive once nobody holds it). */}
@@ -3103,17 +3117,30 @@ export default function Settings() {
         </CardContent>
       </Card>
 
-      {/* Pass 37 (C5.6): the org's users and the role each holds - the one
-          users write (PATCH /api/users/:id { role }). No create, password or
-          status flow here: those are the auth bootstrap's until a later pass. */}
+      {/* Pass 37 (C5.6): the org's users and the role each holds. Pass 38
+          (C5.7): the one card for a PERSON - the old Technicians card merged
+          in, since a technician is a users row with a technician status: Add
+          / Edit (POST / PATCH /api/users) carry the name, email, phone, role,
+          login status and the technician block. No password flow yet: a
+          created user's login is off until a later pass builds one. */}
       <Card data-testid="card-users">
         <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0">
-          <CardTitle className="text-base font-semibold flex items-center gap-2"><UserCog className="h-4 w-4" /> Users</CardTitle>
-          {!canManageSettings ? <p className="text-xs text-muted-foreground" data-testid="text-users-admin-only">Roles are assigned by {settingsManagers} (Manage Settings).</p> : null}
+          <CardTitle className="text-base font-semibold flex items-center gap-2"><UserCog className="h-4 w-4" /> Users and technicians</CardTitle>
+          {canManageSettings ? (
+            <Dialog open={userDialogOpen} onOpenChange={closeUserDialog}>
+              <DialogTrigger asChild><Button size="sm" data-testid="button-add-user" onClick={() => setEditingUser(null)}><Plus className="h-3 w-3 mr-1" /> Add User</Button></DialogTrigger>
+              <DialogContent className="max-w-2xl">
+                <DialogHeader><DialogTitle>{editingUser ? `Edit ${userDisplayName(editingUser)}` : "New User"}</DialogTitle></DialogHeader>
+                <UserForm user={editingUser} roleProfiles={roleProfiles ?? []} selfId={user?.id} onClose={() => closeUserDialog(false)} />
+              </DialogContent>
+            </Dialog>
+          ) : (
+            <p className="text-xs text-muted-foreground" data-testid="text-users-admin-only">Users and technicians are managed by {settingsManagers} (Manage Settings).</p>
+          )}
         </CardHeader>
         <CardContent>
           <p className="mb-3 text-xs text-muted-foreground">
-            Who holds which role. A change applies on the user's next request - no new login needed. You cannot move yourself off a role with Manage Settings. Creating users and setting passwords are not here yet.
+            Every person, office and field, is a user; a field technician is a user with a technician status (license, colour and notes on Edit). The login status says who may sign in, the technician status who is offered on the board - a technician who never signs in is Inactive as a login and Active in the field. A role change applies on the user's next request. You cannot move yourself off a role with Manage Settings or turn your own login off. Passwords are not set here yet.
           </p>
           {!orgUsers ? (
             <div className="space-y-2">{[1, 2, 3].map((i) => <Skeleton key={i} className="h-14" />)}</div>
@@ -3129,11 +3156,22 @@ export default function Settings() {
                   <div className="min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className="text-sm font-medium">{userDisplayName(orgUser)}</span>
-                      <Badge variant={orgUser.status === "active" ? "secondary" : "outline"} className="text-xs">{orgUser.status === "active" ? "Active" : orgUser.status}</Badge>
+                      <Badge variant={orgUser.status === "active" ? "secondary" : "outline"} className="text-xs" title="Login status">{orgUser.status === "active" ? "Login active" : "Login inactive"}</Badge>
+                      {isTechnicianUser(orgUser) ? (
+                        <Badge variant={orgUser.technicianStatus === "ACTIVE" ? "secondary" : "outline"} className={`text-xs ${orgUser.technicianStatus === "ACTIVE" ? "bg-primary/10 text-primary" : ""}`} title="Technician status" data-testid={`badge-user-technician-${orgUser.id}`}>
+                          <span className="mr-1 inline-block h-2 w-2 rounded-full" style={{ backgroundColor: orgUser.color || DEFAULT_TECHNICIAN_COLOR }} />
+                          Technician: {describeTechnicianStatus(orgUser.technicianStatus)}{orgUser.licenseId ? ` - ${orgUser.licenseId}` : " - no license"}
+                        </Badge>
+                      ) : null}
                       {orgUser.id === user?.id ? <Badge variant="outline" className="text-xs">You</Badge> : null}
                     </div>
-                    <p className="mt-0.5 text-xs text-muted-foreground">{orgUser.email}</p>
+                    <p className="mt-0.5 text-xs text-muted-foreground">{orgUser.email}{orgUser.phone ? ` | ${orgUser.phone}` : ""}</p>
                   </div>
+                  {canManageSettings ? (
+                    <Button variant="outline" size="sm" className="shrink-0" data-testid={`button-edit-user-${orgUser.id}`} onClick={() => { setEditingUser(orgUser); setUserDialogOpen(true); }}>
+                      Edit
+                    </Button>
+                  ) : null}
                   <div className="w-48 shrink-0">
                     <Select value={orgUser.role} onValueChange={(role) => updateUserRoleMutation.mutate({ userId: orgUser.id, role })} disabled={!canManageSettings || updateUserRoleMutation.isPending}>
                       <SelectTrigger data-testid={`select-user-role-${orgUser.id}`}><SelectValue placeholder="Pick a role" /></SelectTrigger>

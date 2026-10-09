@@ -3,6 +3,7 @@ import { pgTable, text, varchar, integer, boolean, timestamp, decimal, jsonb, da
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 import { relations } from "drizzle-orm";
+import type { TechnicianSummary } from "./technicians";
 
 export const customers = pgTable("customers", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -175,29 +176,14 @@ export const serviceTypes = pgTable("service_types", {
   workKind: text("work_kind").notNull().default("SERVICE"),
 });
 
-export const technicians = pgTable("technicians", {
-  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  orgId: varchar("org_id").notNull(),
-  displayName: text("display_name").notNull(),
-  licenseId: text("license_id").notNull(),
-  status: text("status").notNull().default("ACTIVE"),
-  email: text("email"),
-  phone: text("phone"),
-  color: text("color"),
-  notes: text("notes"),
-  // The bridge to the login identity (PLAN_ROADMAP_V2.md C2.2, Pass 12).
-  // Technicians and users are separate tables today; the owner's decision
-  // is one identity table for everyone, built as C5.7 (Pass 38), which
-  // rewires every technician FK and uses this column as its migration key.
-  // Until then: nullable, at most one technician per user (partial unique
-  // index in service-scheduling-bootstrap.ts), set from Settings ->
-  // Technicians. Sale attribution (agreements.soldByUserId) is a users FK,
-  // so this is how a technician's production credit and their commission
-  // will resolve to one person.
-  userId: varchar("user_id").references(() => users.id),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-  updatedAt: timestamp("updated_at").defaultNow().notNull(),
-});
+// Pass 38 (PLAN_ROADMAP_V2.md C5.7; Part E answer 2): the `technicians` table
+// is GONE. A technician is a `users` row whose `technicianStatus` is set
+// (shared/technicians.ts holds the vocabulary and the `TechnicianSummary`
+// projection GET /api/technicians still answers); every column that named a
+// technician - services / appointments / service_records / the preferences /
+// the crew - references users(id) now, and the migration
+// (server/technician-users-bootstrap.ts) minted a users row per unlinked
+// technician under the SAME id, so none of those rows moved.
 
 export const services = pgTable("services", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -225,7 +211,8 @@ export const services = pgTable("services", {
   expectedDurationMinutes: integer("expected_duration_minutes"),
   priceCents: integer("price_cents"),
   status: text("status").notNull().default("PENDING_SCHEDULING"),
-  assignedTechnicianId: varchar("assigned_technician_id").references(() => technicians.id),
+  // Pass 38 (C5.7): a users FK - a technician is a user (shared/technicians.ts).
+  assignedTechnicianId: varchar("assigned_technician_id").references(() => users.id),
   source: text("source").notNull().default("MANUAL"),
   schedulingMode: text("scheduling_mode"),
   notes: text("notes"),
@@ -274,7 +261,8 @@ export const appointments = pgTable("appointments", {
   serviceId: varchar("service_id"),
   agreementId: varchar("agreement_id"),
   serviceTypeId: varchar("service_type_id").references(() => serviceTypes.id),
-  assignedTechnicianId: varchar("assigned_technician_id").references(() => technicians.id),
+  // Pass 38 (C5.7): a users FK - a technician is a user (shared/technicians.ts).
+  assignedTechnicianId: varchar("assigned_technician_id").references(() => users.id),
   source: text("source").notNull().default("MANUAL"),
   generatedForDate: date("generated_for_date"),
   scheduledDate: timestamp("scheduled_date").notNull(),
@@ -478,9 +466,9 @@ export const agreements = pgTable("agreements", {
   // Sale attribution (PLAN_ROADMAP_V2.md C2.2, Pass 12; the compensation
   // entry in CURRENT_FOCUS.md): who SOLD this agreement - comp basis that
   // cannot be reconstructed later, and the payee COMMISSION_ON_NEW_AGREEMENT
-  // will resolve (Phase 7). A users FK, never a technicians one (owner: one
-  // identity table for everyone; technicians.userId is the bridge until
-  // C5.7). Defaults to the session user at creation; any other value, at
+  // will resolve (Phase 7). A users FK (owner: one identity table for
+  // everyone - since Pass 38 / C5.7 a technician IS a users row, so sale and
+  // production credit meet on one id). Defaults to the session user at creation; any other value, at
   // creation or later, needs ASSIGN_SALE_CREDIT (manager+) and a change is
   // recorded in audit_logs as an `update` on the agreement. Null on the
   // rows sold before this pass - "not recorded", never guessed from
@@ -552,7 +540,9 @@ export const serviceRecords = pgTable("service_records", {
   locationId: varchar("location_id").references(() => locations.id),
   serviceTypeId: varchar("service_type_id").references(() => serviceTypes.id),
   serviceDate: timestamp("service_date").notNull(),
-  technicianId: varchar("technician_id").references(() => technicians.id),
+  // Pass 38 (C5.7): a users FK; the name and license beside it stay the
+  // compliance snapshot copied at post (canon §12), never re-read.
+  technicianId: varchar("technician_id").references(() => users.id),
   technicianName: text("technician_name"),
   technicianLicenseNumber: text("technician_license_number"),
   notes: text("notes"),
@@ -829,7 +819,7 @@ export const technicianPreferences = pgTable("technician_preferences", {
   scopeType: text("scope_type").notNull(),
   accountId: varchar("account_id").references(() => accounts.id),
   locationId: varchar("location_id").references(() => locations.id),
-  technicianId: varchar("technician_id").notNull().references(() => technicians.id),
+  technicianId: varchar("technician_id").notNull().references(() => users.id),
   kind: text("kind").notNull(),
   note: text("note"),
   createdByUserId: varchar("created_by_user_id").references(() => users.id),
@@ -848,7 +838,7 @@ export const appointmentTechnicians = pgTable("appointment_technicians", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   orgId: varchar("org_id").notNull(),
   appointmentId: varchar("appointment_id").notNull().references(() => appointments.id),
-  technicianId: varchar("technician_id").notNull().references(() => technicians.id),
+  technicianId: varchar("technician_id").notNull().references(() => users.id),
   role: text("role").notNull(),
   createdByUserId: varchar("created_by_user_id").references(() => users.id),
   createdAt: timestamp("created_at").defaultNow().notNull(),
@@ -1352,6 +1342,20 @@ export const organizations = pgTable("organizations", {
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
+// One identity table for everyone, office and field (owner decision 2,
+// 2026-09-19; PLAN_ROADMAP_V2.md C2.2 then C5.7). `role` is a role profile's
+// KEY (Pass 37, shared/role-profiles.ts); `status` is the LOGIN flag
+// (server/auth.ts refuses a login that is not "active"). Since Pass 38 the
+// technician profile lives here too (shared/technicians.ts): `technicianStatus`
+// (ACTIVE | INACTIVE | TERMINATED; NULL = not a technician - the marker, no
+// boolean) is the FIELD-availability flag the board and the pickers filter
+// on, deliberately separate from the login flag (a technician who never signs
+// in is inactive as a login and ACTIVE in the field), with `licenseId`,
+// `color` (the board's row dot) and `technicianNotes` beside it; `phone` is
+// any user's. `displayName` is NOT stored - it is "First Last"
+// (shared/users.ts userDisplayName). The email's uniqueness in the DB is the
+// auth bootstrap's lower(email) index, not this `.unique()` (noted since Pass
+// 36; C5.8).
 export const users = pgTable("users", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   orgId: varchar("org_id").notNull(),
@@ -1361,6 +1365,11 @@ export const users = pgTable("users", {
   passwordHash: text("password_hash").notNull(),
   role: text("role").notNull().default("admin"),
   status: text("status").notNull().default("active"),
+  phone: text("phone"),
+  licenseId: text("license_id"),
+  color: text("color"),
+  technicianNotes: text("technician_notes"),
+  technicianStatus: text("technician_status"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
@@ -1410,7 +1419,6 @@ export const insertBillingProfileSchema = createInsertSchema(billingProfiles).om
 export const insertCustomerNoteSchema = createInsertSchema(customerNotes).omit({ orgId: true, id: true, createdAt: true, updatedAt: true });
 export const insertNoteRevisionSchema = createInsertSchema(noteRevisions).omit({ orgId: true, id: true, createdAt: true });
 export const insertServiceTypeSchema = createInsertSchema(serviceTypes).omit({ orgId: true, id: true });
-export const insertTechnicianSchema = createInsertSchema(technicians).omit({ orgId: true, id: true, createdAt: true, updatedAt: true });
 // lastAppointmentId is the disposition's to write (Pass 27), never a client's.
 export const insertServiceSchema = createInsertSchema(services).omit({
   orgId: true,
@@ -1479,8 +1487,8 @@ export type NoteRevision = typeof noteRevisions.$inferSelect;
 export type InsertNoteRevision = z.infer<typeof insertNoteRevisionSchema>;
 export type ServiceType = typeof serviceTypes.$inferSelect;
 export type InsertServiceType = z.infer<typeof insertServiceTypeSchema>;
-export type Technician = typeof technicians.$inferSelect;
-export type InsertTechnician = z.infer<typeof insertTechnicianSchema>;
+/** Pass 38 (C5.7): the old technicians row, projected from a users row (shared/technicians.ts). The name stays so the client's readers need no sweep. */
+export type Technician = TechnicianSummary;
 export type Service = typeof services.$inferSelect;
 export type InsertService = z.infer<typeof insertServiceSchema>;
 export type Appointment = typeof appointments.$inferSelect;

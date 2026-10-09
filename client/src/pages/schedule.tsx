@@ -87,6 +87,7 @@ import {
   Users,
 } from "lucide-react";
 import type { Appointment, Customer, Location, Opportunity, Service, ServiceRecord, ServiceType, Technician } from "@shared/schema";
+import { DEFAULT_TECHNICIAN_COLOR } from "@shared/technicians";
 import {
   describeAppointmentStatus,
   isBoardPlacement,
@@ -2078,7 +2079,7 @@ export default function Schedule() {
                   <div key={technician.id} className="grid border-b last:border-b-0" style={{ gridTemplateColumns: boardGridTemplate }}>
                     <div className="border-r px-3 py-3">
                       <div className="flex items-center gap-2">
-                        <span className="h-3 w-3 rounded-full" style={{ backgroundColor: technician.color || "#2563eb" }} />
+                        <span className="h-3 w-3 rounded-full" style={{ backgroundColor: technician.color || DEFAULT_TECHNICIAN_COLOR }} />
                         <div>
                           <div className="flex items-center gap-2">
                             <p className="text-sm font-medium">{technician.displayName}</p>

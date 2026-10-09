@@ -704,11 +704,11 @@ Who sold an Agreement is comp basis that cannot be reconstructed later (PLAN_ROA
 Pass 12; the compensation entry in `CURRENT_FOCUS.md`), and it is the payee a
 `COMMISSION_ON_NEW_AGREEMENT` component resolves once the comp engine exists (Phase 7).
 
-* `soldByUserId` is a **users** FK, never a technicians one. The owner's decision (2026-09-19) is one
-  identity table for everyone, office and field; until C5.7 merges the two tables,
-  `technicians.userId` is the nullable bridge (at most one technician per user, set in Settings →
-  Technicians) that lets a technician's production credit (`technicianId`) and their sale credit
-  meet on one person.
+* `soldByUserId` is a **users** FK. The owner's decision (2026-09-19) is one identity table for
+  everyone, office and field - built in Pass 38 (C5.7): a technician IS a users row (§16), so a
+  technician's production credit (`technicianId`, the same users id) and their sale credit meet on one
+  person with no bridge. (Pass 12's `technicians.userId` was that bridge until the merge; it was never
+  linked on the dev DB and is gone with the table.)
 * It defaults to the session user at creation. Naming anyone else, or nobody, at creation, and any
   later change, needs `ASSIGN_SALE_CREDIT` (a profile holding it - the built-in manager and admin do); a change is recorded in the audit log (§17)
   as an `update` on the Agreement with the sold-by before and after, the users named.
@@ -946,7 +946,8 @@ A scheduled dispatch placement for one or more Services.
   see "Composition" below)
 * agreementId nullable — plain varchar, no FK
 * serviceTypeId nullable — the representative's type
-* assignedTechnicianId nullable; assignedTo nullable (the technician's display name at placement).
+* assignedTechnicianId nullable - a **users** FK since Pass 38 (the technician is a User, §16);
+  assignedTo nullable (the technician's display name at placement, text).
   Since Pass 30 the technician is also the visit's **LEAD** in its crew (`appointment_technicians`,
   Scheduling Rules §4), and a technician the customer EXCLUDED is refused at placement (§3)
 * source (`MANUAL` | `AGREEMENT_GENERATED` | `AGREEMENT_INITIAL`); generatedForDate nullable
@@ -1041,7 +1042,8 @@ add route with `origin: "FIELD"` (the default is `OFFICE`), which turns on three
 add does not carry: (1) **one-time work only** - a new MANUAL Service at the visit's location with the
 type's duration and price as defaults; a queued Service, agreement or not, is the office's to place
 (400 `FIELD_ADD_NEW_ONLY`); (2) the Service is **attributed to the session user**
-(`addedInFieldByUserId` - never the technician picker, whose row is unlinked to a login until C5.7)
+(`addedInFieldByUserId` - the session user; since Pass 38 the Tech View's technician IS the session
+user for a technician login, so the two agree)
 and so **flagged for office review** (Part E answer 7: yes, without approval, flagged) until the office
 marks it reviewed through `POST /api/services/:id/field-review` (`FINALIZE_TICKET`, support and above
 - the office's review permission, so a technician cannot clear their own flag; one
@@ -1108,7 +1110,7 @@ The compliance and completion record for one performed Service.
 
 Service Records are tied to Services. Posting one Service Ticket in a multi-service Appointment should not automatically post or finalize sibling Services.
 
-When a Service Ticket is posted, the system must copy the technician display name and license number onto the Service Record. Historical compliance rendering must not rely only on live Technician profile joins because technician profiles can change later.
+When a Service Ticket is posted, the system must copy the technician display name and license number onto the Service Record. Historical compliance rendering must not rely only on live Technician profile joins because technician profiles can change later. Since Pass 38 (C5.7) `technicianId` is a **users** FK and the copy is read from the users row (`userDisplayName`, `licenseId`); the three technician fields are listed as required above, but the column is nullable and the dev DB holds 5 tickets of 77 with no technician id (3 with no name, 5 with no license - rows from before the snapshot existed, named "Jake Miller" where named at all); they are history and are not backfilled.
 
 An Appointment can be marked completed only when all Services linked to that Appointment have posted Service Records, unless a future explicit close/exception workflow is built.
 
@@ -1654,48 +1656,68 @@ Room should be left for:
 
 ### Definition
 
-Internal staff user.
+A person at the company, office or field: **one identity table for everyone** (owner decision 2,
+2026-09-19; built as PLAN_ROADMAP_V2.md C5.7, Pass 38). A technician is a User whose technician status
+is set; there is no separate technicians table.
 
-### Required fields
+### Fields as built (`users` in `shared/schema.ts`; this list was corrected in Pass 38 to what exists)
 
-* id
-* firstName
-* lastName
-* email
-* phone nullable
+* id, orgId
+* firstName, lastName - the display name is **derived**, "First Last" (`shared/users.ts`
+  `userDisplayName`), never stored; it is what every technician picker, board row, crew list and
+  ticket snapshot prints
+* email - unique whatever the case (the auth bootstrap's `lower(email)` index); trimmed and lowercased
+  on every write
+* passwordHash - never leaves the storage: not in `GET /api/users`, `/api/auth/me` or an audit snapshot
 * role - the KEY of one of the org's role profiles (see "Role profile" below); the four built-in keys are
   `admin` | `manager` | `support` | `technician`, and the office's own profiles add theirs
-* status
-* hireDate nullable
-* homeAddress nullable
-* licenseNumber nullable
-* trainingStatus nullable
-* serviceArea nullable
-* forcePasswordReset boolean
-* createdAt
-* updatedAt
+* status (`active` | `inactive`) - the **LOGIN flag**: only an `active` user may sign in
+  (`server/auth.ts`). A user created from Settings → Users, or minted by the Pass 38 migration, starts
+  `inactive` with an unusable password hash - no password flow exists yet (C5.9), and a field-only
+  technician never needs one
+* phone nullable
+* **The technician block** (Pass 38): `technicianStatus` (`ACTIVE` | `INACTIVE` | `TERMINATED`,
+  `shared/technicians.ts`; **NULL means "not a technician"** - the column is the marker, there is no
+  boolean) - the **FIELD-availability flag**: the dispatch board, the pickers and the Tech View offer a
+  technician while ACTIVE, the board keeps an INACTIVE / TERMINATED one only while they hold visits;
+  `licenseId` nullable - copied onto every ticket they post with the name (§12); `color` nullable - the
+  board's row dot (`DEFAULT_TECHNICIAN_COLOR` when none); `technicianNotes` nullable
+* createdAt, updatedAt
 
-### Optional skills
+The two statuses are deliberately separate and never folded: a technician who never signs in is
+`inactive` as a login and ACTIVE in the field; an office login that also runs routes is `active` and
+ACTIVE; a retired technician is TERMINATED (and their login turned off if they had one). Not on the row,
+although earlier drafts of this section listed them: `hireDate`, `homeAddress`, `licenseNumber` (the
+column is `licenseId`, the ticket's copy `technicianLicenseNumber`), `trainingStatus`, `serviceArea`,
+`forcePasswordReset` and `skills` (Smart Schedule's inputs, Phase 9, when they are built).
 
-* skills nullable
+### Canonical rules - technicians are users (Pass 38, C5.7)
 
-Examples:
-
-* GPC
-* Termite
-* Bed Bug
-* Mosquito
-* Exclusion
-* Rodents
-* Fire Ants
-
-### Notes
-
-* `technicians` is a separate table today; this section already puts the technician profile (license,
-  training, service area) on the User, which is where C5.7 moves it. Until then `technicians.userId`
-  (Pass 12) is the nullable bridge from a technician profile to its login, one technician per user.
-* `technician_preferences` and `appointment_technicians` (Pass 30) key on `technicians.id` like every
-  other technician reference; C5.7 rewires them with the rest.
+* Every column that names a technician - `services.assignedTechnicianId`,
+  `appointments.assignedTechnicianId`, `serviceRecords.technicianId`,
+  `technicianPreferences.technicianId`, `appointmentTechnicians.technicianId` - is a **users FK**;
+  `productionValueEntries.technicianId` is the same id without a constraint (a snapshot, by design).
+  The migration minted each old technician's users row **under the technician's own id**, so no
+  historical row moved and an id in an audit snapshot from before Pass 38 names the same person.
+* `GET /api/technicians` is a **facade**: the org's users with a technician status, projected to the
+  shape the old table had (`shared/technicians.ts` `TechnicianSummary`; `Technician` in
+  `shared/schema.ts` is that type) - ACTIVE only, every status with `?includeInactive=true`. There is
+  no technician write: a technician is created and edited as a user (`POST` / `PATCH /api/users`,
+  Manage Settings), on the one Settings card for a person (Users and technicians).
+* A user with **field history** - any visit, service, ticket, crew row, customer preference or
+  production entry naming them - cannot be made "not a technician" (409 `TECHNICIAN_HAS_HISTORY`);
+  they are retired by TERMINATED, so the history keeps its person.
+* A writer that names a technician (a customer's preference, a crew member, a ticket's technician)
+  accepts only a user **with** a technician status (404 `TECHNICIAN_NOT_FOUND` for an office login); a
+  label lookup for a row that already names someone answers for any user.
+* On the Tech View the technician **is the session user** when their login has a technician status:
+  the day opens on them, the ticket's default technician and the production credit are theirs, and the
+  picker is offered only to a role holding `VIEW_OTHER_TECHNICIAN_WORK` (the built-in support, manager
+  and admin), which `GET /api/technicians/:id/work` requires for any day but one's own (403).
+* The acting user cannot turn their own login off (409 `USER_SELF_DEACTIVATE`); the Pass 37 rules on
+  the role stand through the wider write.
+* Every create and update is recorded in the audit log (§17, `user` `created` / `update`, the row
+  without its hash); neither is revertable.
 
 ### Role profile (Pass 37, C5.6)
 

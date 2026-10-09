@@ -24,7 +24,6 @@ const TABLES_REQUIRING_ORG_ID = [
   "customer_notes",
   "note_revisions",
   "service_types",
-  "technicians",
   "services",
   "appointments",
   "agreement_cancellation_policies",

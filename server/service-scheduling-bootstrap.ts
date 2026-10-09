@@ -30,32 +30,11 @@ async function tableExists(table: string): Promise<boolean> {
 }
 
 export async function bootstrapServiceSchedulingFoundation(): Promise<void> {
-  await db.execute(sql`
-    CREATE TABLE IF NOT EXISTS technicians (
-      id varchar PRIMARY KEY DEFAULT gen_random_uuid(),
-      display_name text NOT NULL,
-      license_id text NOT NULL,
-      status text NOT NULL DEFAULT 'ACTIVE',
-      email text,
-      phone text,
-      color text,
-      notes text,
-      user_id varchar REFERENCES users(id),
-      created_at timestamp NOT NULL DEFAULT now(),
-      updated_at timestamp NOT NULL DEFAULT now()
-    )
-  `);
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS technicians_status_idx ON technicians (status)`);
-  // Pass 12 (PLAN_ROADMAP_V2.md C2.2): the bridge from a technician profile
-  // to its login identity, nullable, at most one technician per user. The
-  // owner's decision is one users table for everyone (C5.7, Pass 38, which
-  // rewires every technician FK and uses this column as its key); until then
-  // this is what lets a technician's production credit (technicianId) and
-  // their sale credit (agreements.soldByUserId, a users FK) meet on one
-  // person. users exists by now: auth-bootstrap runs before this one.
-  await db.execute(sql`ALTER TABLE technicians ADD COLUMN IF NOT EXISTS user_id varchar REFERENCES users(id)`);
-  await db.execute(sql`CREATE UNIQUE INDEX IF NOT EXISTS technicians_user_id_uidx ON technicians (user_id) WHERE user_id IS NOT NULL`);
-
+  // Pass 38 (C5.7): the `technicians` table this bootstrap used to create
+  // (Pass 12 added its users bridge) is gone - a technician is a users row
+  // with a technician status (shared/technicians.ts); every technician FK
+  // below references users(id). server/technician-users-bootstrap.ts moved
+  // an existing database's rows.
   await db.execute(sql`
     CREATE TABLE IF NOT EXISTS services (
       id varchar PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -70,7 +49,7 @@ export async function bootstrapServiceSchedulingFoundation(): Promise<void> {
       expected_duration_minutes integer,
       price numeric(10, 2),
       status text NOT NULL DEFAULT 'PENDING_SCHEDULING',
-      assigned_technician_id varchar REFERENCES technicians(id),
+      assigned_technician_id varchar REFERENCES users(id),
       source text NOT NULL DEFAULT 'MANUAL',
       scheduling_mode text,
       notes text,
@@ -367,8 +346,8 @@ export async function bootstrapServiceSchedulingFoundation(): Promise<void> {
 // once when created and quiet after:
 //   1. technician_preferences - PREFERRED / EXCLUDED, ACCOUNT or LOCATION
 //      scoped (shared/technician-preferences.ts), one row per technician per
-//      scope row (two partial unique indexes). FKs to accounts, locations,
-//      technicians and users: this bootstrap runs before
+//      scope row (two partial unique indexes). FKs to accounts, locations
+//      and users (the technician is a users row since Pass 38): this bootstrap runs before
 //      bootstrapCanonicalAccounts, but accounts and locations are never
 //      created by a bootstrap - they come from `db:push`, which creates this
 //      table too - so on any database this code can boot against, both
@@ -388,7 +367,7 @@ async function bootstrapTechnicianPreferencesAndCrew(): Promise<void> {
       scope_type text NOT NULL,
       account_id varchar REFERENCES accounts(id),
       location_id varchar REFERENCES locations(id),
-      technician_id varchar NOT NULL REFERENCES technicians(id),
+      technician_id varchar NOT NULL REFERENCES users(id),
       kind text NOT NULL,
       note text,
       created_by_user_id varchar REFERENCES users(id),
@@ -411,7 +390,7 @@ async function bootstrapTechnicianPreferencesAndCrew(): Promise<void> {
       id varchar PRIMARY KEY DEFAULT gen_random_uuid(),
       org_id varchar NOT NULL,
       appointment_id varchar NOT NULL REFERENCES appointments(id),
-      technician_id varchar NOT NULL REFERENCES technicians(id),
+      technician_id varchar NOT NULL REFERENCES users(id),
       role text NOT NULL,
       created_by_user_id varchar REFERENCES users(id),
       created_at timestamp NOT NULL DEFAULT now()
