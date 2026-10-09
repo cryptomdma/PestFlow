@@ -30,6 +30,8 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, getApiErrorMessage, queryClient } from "@/lib/queryClient";
 import { invalidateAuditViews, invalidateBillingProfileViews } from "@/lib/invalidate-audit-views";
+import { PaymentMethodSelect, PaymentMethodsBlock, useAccountPaymentMethods } from "@/components/payment-methods-block";
+import { describeStoredPaymentMethod, type StoredPaymentMethodSummary } from "@shared/payment-methods";
 import {
   BILLING_TYPES,
   INVOICE_TERMS,
@@ -119,17 +121,21 @@ interface CustomerDetailCompatResponse {
 
 // Pass 34 (C5.2): the fields a screen types on a billing profile - the label,
 // the type, the terms (when the type is invoice terms), the billing name and
-// the Bill To address. The card / ACH tokens and the last four are Phase 6's
-// capture (C6.1) and never appear here; the routes refuse them.
+// the Bill To address. Pass 40 (C6.1): the card the profile charges is a
+// POINTER at one of the account's cards on file (`defaultPaymentMethodId`,
+// "" = the account's default card); the cards themselves are captured by
+// the provider's own form (PaymentMethodsBlock) - no card detail is typed
+// here, and the legacy token columns are unread (the routes refuse them).
 interface BillingProfileFormState {
   label: string;
   billingType: string;
   invoiceTerms: string;
   billingName: string;
   billingAddress: string;
+  defaultPaymentMethodId: string;
 }
 
-const EMPTY_BILLING_PROFILE_FORM: BillingProfileFormState = { label: "", billingType: "invoice_terms", invoiceTerms: "", billingName: "", billingAddress: "" };
+const EMPTY_BILLING_PROFILE_FORM: BillingProfileFormState = { label: "", billingType: "invoice_terms", invoiceTerms: "", billingName: "", billingAddress: "", defaultPaymentMethodId: "" };
 
 function billingProfileFormFrom(profile: BillingProfile | null | undefined): BillingProfileFormState {
   if (!profile) return EMPTY_BILLING_PROFILE_FORM;
@@ -139,6 +145,7 @@ function billingProfileFormFrom(profile: BillingProfile | null | undefined): Bil
     invoiceTerms: profile.invoiceTerms ?? "",
     billingName: profile.billingName ?? "",
     billingAddress: profile.billingAddress ?? "",
+    defaultPaymentMethodId: profile.defaultPaymentMethodId ?? "",
   };
 }
 
@@ -151,6 +158,7 @@ function billingProfileFormFromTemplate(template: BillingProfileTemplate | null 
     invoiceTerms: template.billingType === "invoice_terms" ? template.defaultInvoiceTerms ?? "" : "",
     billingName: "",
     billingAddress: "",
+    defaultPaymentMethodId: "",
   };
 }
 
@@ -162,6 +170,7 @@ function billingProfilePayload(form: BillingProfileFormState) {
     invoiceTerms: form.billingType === "invoice_terms" && form.invoiceTerms ? form.invoiceTerms : null,
     billingName: form.billingName.trim() || null,
     billingAddress: form.billingAddress.trim() || null,
+    defaultPaymentMethodId: form.defaultPaymentMethodId || null,
   };
 }
 
@@ -171,7 +180,8 @@ function billingProfileFormChanged(form: BillingProfileFormState, profile: Billi
     || next.billingType !== profile.billingType
     || (next.invoiceTerms ?? null) !== (profile.invoiceTerms ?? null)
     || (next.billingName ?? null) !== (profile.billingName ?? null)
-    || (next.billingAddress ?? null) !== (profile.billingAddress ?? null);
+    || (next.billingAddress ?? null) !== (profile.billingAddress ?? null)
+    || (next.defaultPaymentMethodId ?? null) !== (profile.defaultPaymentMethodId ?? null);
 }
 
 /** The account's active default among its profiles: isDefault first, else the first account-level row (the resolver's order). */
@@ -184,7 +194,18 @@ function pickLocationOverrideProfile(profiles: BillingProfile[] | undefined, loc
   return (profiles ?? []).find((profile) => profile.locationId === locationId && profile.status === "active") ?? null;
 }
 
-function BillingProfileFields({ form, onChange, idPrefix }: { form: BillingProfileFormState; onChange: (next: BillingProfileFormState) => void; idPrefix: string }) {
+function BillingProfileFields({
+  form,
+  onChange,
+  idPrefix,
+  paymentMethods,
+}: {
+  form: BillingProfileFormState;
+  onChange: (next: BillingProfileFormState) => void;
+  idPrefix: string;
+  /** Pass 40 (C6.1): the account's active cards for the "Card for this profile" select; undefined where the account's cards are not loaded (Add Location). */
+  paymentMethods?: StoredPaymentMethodSummary[];
+}) {
   return (
     <div className="space-y-3">
       <div className="grid gap-3 sm:grid-cols-2">
@@ -226,9 +247,17 @@ function BillingProfileFields({ form, onChange, idPrefix }: { form: BillingProfi
         <Label htmlFor={`${idPrefix}-billing-address`}>Billing Address</Label>
         <Textarea id={`${idPrefix}-billing-address`} data-testid={`input-${idPrefix}-billing-address`} rows={2} placeholder="The Bill To address; blank uses the primary location's (an override's own location for an override)" value={form.billingAddress} onChange={(e) => onChange({ ...form, billingAddress: e.target.value })} />
       </div>
-      {(form.billingType === "card" || form.billingType === "ach") && (
+      {paymentMethods && paymentMethods.some((method) => method.status === "active") && (
+        <PaymentMethodSelect value={form.defaultPaymentMethodId} onChange={(next) => onChange({ ...form, defaultPaymentMethodId: next })} methods={paymentMethods} idPrefix={idPrefix} />
+      )}
+      {form.billingType === "card" && !paymentMethods && (
         <p className="text-xs text-muted-foreground" data-testid={`text-${idPrefix}-capture-note`}>
-          Card and bank details are not captured yet: this records the arrangement only. Capturing a card or account on file is a later phase.
+          Cards on file belong to the account and are added from Edit Location once the location exists.
+        </p>
+      )}
+      {form.billingType === "ach" && (
+        <p className="text-xs text-muted-foreground" data-testid={`text-${idPrefix}-capture-note`}>
+          Bank account details are not captured yet: this records the arrangement only. Capturing a bank account on file is a later pass.
         </p>
       )}
     </div>
@@ -248,6 +277,7 @@ function LocationBillingSelector({
   accountDefault,
   idPrefix,
   isPrimary,
+  paymentMethods,
 }: {
   mode: LocationBillingMode;
   onModeChange: (mode: LocationBillingMode) => void;
@@ -256,6 +286,8 @@ function LocationBillingSelector({
   accountDefault: { label: string; billingType: string; invoiceTerms: string | null } | null;
   idPrefix: string;
   isPrimary: boolean;
+  /** Pass 40 (C6.1): the account's cards for the override's card select (Edit Location only). */
+  paymentMethods?: StoredPaymentMethodSummary[];
 }) {
   const accountDefaultTerms = accountDefault ? describeBillingProfileTerms(accountDefault, describeInvoiceTerms) : null;
   return (
@@ -284,7 +316,7 @@ function LocationBillingSelector({
       </RadioGroup>
       {mode === "OVERRIDE" && (
         <div className="rounded-md border bg-muted/20 p-3">
-          <BillingProfileFields form={form} onChange={onFormChange} idPrefix={`${idPrefix}-override`} />
+          <BillingProfileFields form={form} onChange={onFormChange} idPrefix={`${idPrefix}-override`} paymentMethods={paymentMethods} />
         </div>
       )}
     </div>
@@ -1142,6 +1174,9 @@ function EditLocationDialog({
   // default template prefills a new account default, as customer creation
   // would have.
   const { data: accountProfiles } = useQuery<BillingProfile[]>({ queryKey: ["/api/accounts", accountId, "billing-profiles"], enabled: !!accountId });
+  // Pass 40 (C6.1): the account's cards on file - the block below the
+  // Billing heading manages them; each profile's fields pick one.
+  const { data: accountPaymentMethods } = useAccountPaymentMethods(accountId);
   const accountDefaultProfile = useMemo(() => pickAccountDefaultProfile(accountProfiles), [accountProfiles]);
   const overrideProfile = useMemo(() => pickLocationOverrideProfile(accountProfiles, location.id), [accountProfiles, location.id]);
   const { data: billingDefaults } = useQuery<BillingDefaults>({ queryKey: ["/api/settings/billing-defaults"], enabled: isPrimaryLocation && !!accountProfiles && !accountDefaultProfile });
@@ -1446,6 +1481,13 @@ function EditLocationDialog({
             : "How invoices for this location are billed."}
         </p>
       </div>
+      {accountId && accountProfiles && (
+        <PaymentMethodsBlock
+          accountId={accountId}
+          idPrefix="edit-location"
+          warnNoCard={(billingMode === "OVERRIDE" ? overrideForm.billingType : accountDefaultForm.billingType) === "card"}
+        />
+      )}
       {isPrimaryLocation && accountProfiles && (
         <div className="space-y-3 rounded-md border p-3" data-testid="block-account-billing-default">
           <div className="space-y-0.5">
@@ -1458,7 +1500,7 @@ function EditLocationDialog({
                   : "This account has no billing default yet. Saving with a label creates one; leave the label blank to keep none."}
             </p>
           </div>
-          <BillingProfileFields form={accountDefaultForm} onChange={setAccountDefaultForm} idPrefix="edit-account-default" />
+          <BillingProfileFields form={accountDefaultForm} onChange={setAccountDefaultForm} idPrefix="edit-account-default" paymentMethods={accountPaymentMethods ?? []} />
         </div>
       )}
       {accountProfiles ? (
@@ -1470,6 +1512,7 @@ function EditLocationDialog({
           accountDefault={accountDefaultProfile}
           idPrefix="edit-location-billing"
           isPrimary={isPrimaryLocation}
+          paymentMethods={accountPaymentMethods ?? []}
         />
       ) : (
         <Skeleton className="h-16" />
@@ -4431,6 +4474,8 @@ export default function CustomerDetail() {
                     )}
                     <Badge variant="secondary" className="text-xs" data-testid="chip-billing" title={locationBillingTerms ?? "No billing profile resolves for the selected location"}>
                       <CreditCard className="h-3 w-3 mr-1" /> Billing: {describeLocationBilling(locationBilling)}
+                      {/* Pass 40 (C6.1; B18): the card the profile charges - brand and last four, never a token. */}
+                      {locationBilling?.paymentMethod ? <span data-testid="chip-billing-card"> · {describeStoredPaymentMethod(locationBilling.paymentMethod)}</span> : null}
                     </Badge>
                     <CustomerAgingChips aging={customerAging} locationCount={allLocations?.length ?? 0} />
                     <TechnicianPreferenceChips entries={activeLocationPreferences?.accountRows ?? []} testIdPrefix="chip-account-technician-preference" />
@@ -4609,7 +4654,7 @@ export default function CustomerDetail() {
                 <div className="flex items-center gap-4 flex-wrap text-xs text-muted-foreground">
                   <span className="capitalize flex items-center gap-1"><Building2 className="h-3 w-3" /> {activeLocation.propertyType}</span>
                   {/* Pass 34 (C5.2): the location's resolved billing profile - what its invoices will carry. */}
-                  <span className="flex items-center gap-1" data-testid="text-location-billing"><CreditCard className="h-3 w-3" /> {describeLocationBilling(locationBilling)}{locationBillingTerms ? ` · ${locationBillingTerms}` : ""}</span>
+                  <span className="flex items-center gap-1" data-testid="text-location-billing"><CreditCard className="h-3 w-3" /> {describeLocationBilling(locationBilling)}{locationBillingTerms ? ` · ${locationBillingTerms}` : ""}{locationBilling?.paymentMethod ? ` · ${describeStoredPaymentMethod(locationBilling.paymentMethod)}` : ""}</span>
                   {activeLocation.source && <span>Source: {activeLocation.source}</span>}
                   {activeLocation.squareFootage && <span className="flex items-center gap-1"><Ruler className="h-3 w-3" /> {activeLocation.squareFootage.toLocaleString()} sq ft</span>}
                   {activeLocation.gateCode && <span className="flex items-center gap-1"><KeyRound className="h-3 w-3" /> Gate: {activeLocation.gateCode}</span>}

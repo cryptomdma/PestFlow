@@ -31,6 +31,17 @@ run `db:push` afterwards.
 `ON_ERROR_STOP=1` matters: without it a failing statement leaves a half-restored database that still
 looks like it worked. Keep dumps out of the repo (`*.sql` is not gitignored) and off OneDrive.
 
+## Payments (Stripe) locally - Pass 40 (C6.1)
+- Add `PAYMENT_CREDENTIALS_KEY` to `.env` (64 hex characters; `PROJECT_MAP.md` has the one-liner) and restart,
+  or Settings → Payments cannot store a key and every boot warns.
+- Connect a Stripe **test** account on Settings → Payments: mode Test, the `pk_test_...` publishable key and
+  the `sk_test_...` secret key from the Stripe dashboard. Never a live key on the dev database.
+- Then Edit Location on any customer shows "Cards on file" - Add card opens Stripe's own form (test card
+  4242 4242 4242 4242, any future expiry, any CVC). The card number never reaches PestFlow.
+- A smoke test without a key starts the server with `PAYMENT_PROVIDER_FAKE_ALLOWED=1` and connects
+  `provider: "fake"` through `PUT /api/payment-provider` (see the Pass 40 smoke test in the session's
+  scratchpad); the fake provider is refused without that flag and always in production.
+
 ## Known issues solved
 - Windows requires `cross-env` for NODE_ENV in scripts
 - `.env` must be loaded with `import "dotenv/config";`

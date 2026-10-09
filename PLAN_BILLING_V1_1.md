@@ -227,7 +227,12 @@ a real issued invoice at agreement start. Three tools, three jobs:
 
 ## D5. Payments-lite ships in Phase 1
 
-Stripe remains Phase 2. Phase 1 builds the ledger with manual instruments:
+Stripe remains Phase 2 (read: `PLAN_ROADMAP_V2.md` Phase 6). **Landed in Pass 40 (C6.1, 2026-10-09):** the
+provider port and the Stripe adapter, the per-org provider account (encrypted keys, Settings → Payments), one
+provider Customer per account and the card on file (`payment_methods`, captured by Stripe's own form through a
+SetupIntent - PestFlow never sees a card number). Still C6.2's: charging from the invoice, refunds through the
+provider, webhooks, batch auto-charge, the magic link; the CARD / ACH methods below stay refused until then.
+Phase 1 builds the ledger with manual instruments:
 
 - `payments` (append-only; CASH | CHECK | OTHER now; CARD/ACH enums present but unreachable until
   Phase 2), `payment_applications`, `credit_memos`, `credit_applications` — per v1 §1.4.

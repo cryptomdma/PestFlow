@@ -31,6 +31,10 @@ const REVERTED_ENTITY_KEY_PREFIXES: Record<string, string[]> = {
   billing_profile_template: ["/api/billing-profile-templates"],
   agreement_template: ["/api/agreement-templates"],
   agreement: ["/api/agreements", "/api/location-counts", "/api/services", "/api/appointments"],
+  // Pass 40 (C6.1): not revertable, listed for invalidatePaymentMethodViews
+  // - the account's cards (the dialogs' block), the compat read (the chip)
+  // and the resolved profile (the ticket header).
+  payment_method: ["/api/accounts", "/api/customer-detail-compat", "/api/locations"],
 };
 
 // Pass 34 (C5.2): after a billing profile is created, edited or retired from
@@ -40,6 +44,13 @@ const REVERTED_ENTITY_KEY_PREFIXES: Record<string, string[]> = {
 // header).
 export function invalidateBillingProfileViews() {
   invalidateRevertedEntityViews("billing_profile");
+}
+
+// Pass 40 (C6.1): after a card is added, made the default or removed - the
+// same reads a billing profile write refreshes, plus the account's cards.
+export function invalidatePaymentMethodViews() {
+  invalidateRevertedEntityViews("payment_method");
+  invalidateAuditViews();
 }
 
 export function invalidateRevertedEntityViews(entityType: string) {

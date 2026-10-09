@@ -38,8 +38,9 @@ Phase 5 row) is merged (PR #104); Pass 33 (customer-level History + Revert, C5.1
 Pass 34 (billing profile on the customer screen, C5.2) is merged (PR #106); Pass 35 (agreement vocabulary,
 C5.3) is merged (PR #107); Pass 36 (UI hygiene, C5.4) is merged (PR #108); Pass 37 (role profiles in Settings,
 C5.6) is merged (PR #109); Pass 38 (technicians are users, C5.7 - the last scheduled Phase 5 row) is merged
-(PR #110); Pass 39 (schema and settings hygiene, C5.8) is pushed, awaiting merge; **next pass: 40, the payment
-provider port** (C6.1, the first Phase 6 row), unless the owner sequences C5.5, C5.9 or C5.10 first. The roadmap
+(PR #110); Pass 39 (schema and settings hygiene, C5.8 - the last Phase 5 row built) is merged (PR #111); Pass 40
+(the payment provider port, C6.1 - the first Phase 6 row) is pushed, awaiting merge; **next pass: 41, charge from
+the invoice** (C6.2), unless the owner sequences C5.5, C5.9 or C5.10 first. The roadmap
 sequences every remaining item below; this file keeps the status pointer and, as its last
 section, the handoff prompt that starts the next session.
 
@@ -1849,7 +1850,7 @@ behavior under "Shipped in Pass 38" at the end of `PLAN_ROADMAP_V2.md` Part D. *
 merge prints the migration once** (the columns, Heritage Tech, the five drops, the two minted users, the five
 adds, the drop, the grant and the registry line) and nothing after.
 
-Pass 39 (`feature/phase-5-schema-settings-hygiene`, 2026-10-08, C5.8) pushed, awaiting merge. **Schema and
+Pass 39 (`feature/phase-5-schema-settings-hygiene`, 2026-10-08, C5.8) merged as PR #111. **Schema and
 settings hygiene** - the unscheduled Phase 5 list the owner sequenced after Pass 38; two column drops, three
 foreign keys, an audit entity, fourteen gates, one new card. **Decided (1), the dead pointers:** DROPPED, both -
 `locations.billing_profile_id` and `customers.default_billing_profile_id` - by the billing-profile bootstrap
@@ -1901,14 +1902,83 @@ owner's restart after the merge prints the migration once** (the two drops, the 
 nothing after. OWNER_FEEDBACK FB022 reviewed: QUALIFIED - most of it exists since Pass 38; the home / starting
 address joins C5.9.
 
-Next up: **Pass 40** — the payment provider port (`PLAN_ROADMAP_V2.md` Phase 6 table, C6.1 - the first Phase 6
+Pass 40 (`feature/phase-6-payment-provider-port`, 2026-10-09, C6.1) pushed, awaiting merge. **The payment
+provider port** - the first Phase 6 row; three tables, one column, a reshaped port and the Stripe adapter, a 31st
+permission, two audit entities, one Settings card, one block in Edit Location. **Decided (1), the account model:**
+a per-org provider-account ROW (`payment_provider_accounts`: provider, mode test | live, the keys, a nullable
+`connectedAccountId`) the adapter is built from per request (`server/integrations/payments/index.ts`), never a
+process env key; Heritage on its own Stripe account; Stripe Connect later is a data change (the connected
+account id becomes the Stripe-Account header) plus onboarding, not a refactor. **Decided (2), the secrets:** that
+table, born `org_id NOT NULL` - the secret key and the webhook signing secret AES-256-GCM under env
+`PAYMENT_CREDENTIALS_KEY` (`.env.example`, PROJECT_MAP, DEV_NOTES) with an 8-hex fingerprint beside each;
+write-only from Settings → **Payments** (`PUT` / `DELETE /api/payment-provider`, MANAGE_SETTINGS; a blank secret
+keeps the stored one, a mode change or a reconnect needs that mode's key) whose read answers configured / mode /
+publishable key / connected account / hasWebhookSecret / encryptionReady and never a secret; the boot WARNS every
+time while the env key is unset. **Decided (3), test mode:** explicit per-org `mode`, `livemode` on every card
+row, Test mode badges on the card, the dialog and beside every test card. **Decided (4), who:** the 31st
+permission `MANAGE_PAYMENT_METHODS` (support / manager / admin by default, SEEDED_PROFILE_GRANTS: 4 / 15 / 30 /
+31); the last four open to every role (B18); field capture at the visit NOT built - open for the owner.
+**Decided (5), the row:** `payment_methods` per V1 §1.2 (account-level; provider ids, type, brand, last4, expiry,
+isDefault, status active | removed, livemode, the stamps) and `billing_profiles.defaultPaymentMethodId` (the
+key named explicitly - db:push's derived name exceeds 63 characters; checked by `assertBillingProfileRulesTx`,
+400 `BILLING_PROFILE_PAYMENT_METHOD_UNKNOWN`; cleared inside a removal; never put back by a revert); the three
+legacy token columns left UNREAD and the one `'4242'` ignored (seed data with no token behind it - the hygiene
+pass that drops the columns takes it). **Decided (6), the Stripe Customer:** one per account per provider and
+mode (`payment_provider_customers`), minted by the first session outside any transaction, reused after.
+**Decided (7), the flow:** `POST /api/accounts/:accountId/setup-intents` (a SetupIntent, usage off_session,
+card only) → Stripe's Payment Element in the browser (`@stripe/stripe-js` 9.17.0 / `@stripe/react-stripe-js`
+6.12.0, loaded from js.stripe.com when the dialog opens) → `POST /api/accounts/:accountId/payment-methods`
+with the intent id, read back from the provider and refused unless it is the account's customer's, succeeded
+and a card (`PAYMENT_METHOD_INTENT_MISMATCH` / `_SETUP_INCOMPLETE` with the status / `_TYPE_UNSUPPORTED` /
+`_LOCATION_MISMATCH`); idempotent; the first active card the default; no webhook; ACH not captured. **Decided
+(8), the port:** `types.ts` reshaped (createCustomer / createSetupIntent / retrieveSetupIntent /
+detachPaymentMethod, `PaymentMethodRef` with brand / last4 / expiry / livemode, `PaymentProviderError`; charge /
+refund / handleWebhook declared, 501 until C6.2), the `stripe` SDK 22.6.2 imported by `providers/stripe.ts`
+alone, a `providers/fake.ts` double the route accepts only under `PAYMENT_PROVIDER_FAKE_ALLOWED=1` outside
+production (the smoke test's provider), the row type `StoredPaymentMethod`. **Decided (9), the screen:** Edit
+Location's Billing block gains an account-level **Cards on file** list ("Visa •••• 4242 · exp 04/28", Default /
+Expired / Test mode, Make default, Remove behind a confirm, Add card - disabled with the reason when no provider
+is connected or the role lacks the permission) and each profile's fields a **Card for this profile** select; the
+header chip and the location line append "· Visa •••• 4242" (`LocationBillingProjection.paymentMethod`, display
+fields only); the ticket / appointment icon stays C6.2. **Decided (10):** `billingType` stays the payer
+arrangement; a card-type profile with no card WARNS, not refused - the owner's call. **Decided (11), audit:**
+`payment_method` (created / update / status_changed; display fields, never a provider id; on the customer-level
+and location History) and `payment_provider_account` (the fingerprints, never a key; listed on the Payments
+card); neither revertable. **Decided (12), not done:** charging, webhooks, the outbox worker, the magic link,
+email, ACH, the legacy column drop, C5.5 / C5.9 / C5.10, Smart Schedule. **Found and fixed:** roadmap :53 / :91
+/ :132 ("no provider port", "no card icon") and B18 ("nothing of it exists"), :92's "dead esbuild external"
+(the bundle allowlist), canon §4's token fields and §14's "Phase 2", V1 :40's "nothing here is built yet", D5's
+"Stripe remains Phase 2", the "Phase 2" comments in `shared/payments.ts` and `collect-payment-dialog.tsx`,
+org-bootstrap's wrong branding route name; LEFT: V1 §1.2's other profile fields (billingContactId, billingEmail,
+deliveryMethod, paymentTermsDays, autoChargeOnFile, taxExempt - C6.2 / C6.3), V1 §1.4's payments shape, V1
+§1.8's locations.publicId, seed.ts :67's auto-charge promise (C6.2), the role-profile bootstrap's "once" comment
+(the grant re-inserts on every boot and prints once - a finding for the owner). **Verified** on PORT=5001
+against a COPY of the dev DB (`pestflow_verify`, dropped afterwards) with the fake provider allowed and a
+throwaway credentials key: `npm run check` clean; boot 1 printed the grant, the three tables, the column and the
+key, boot 2 only the serving line with every count unchanged by name across the 53 tables; **99 smoke
+assertions on the second run** (the first lost one to the fake double's pending intent carrying no customer,
+none to the code: the pure helpers, the migration, the provider account's eleven refusals and reads with the
+secret encrypted and never answered or snapshotted, the sessions, the confirm with every refusal, the pointer,
+make-default / remove / promotion, disconnect and reconnect, the owner's Corporate Card row untouched, cleanup
+to baseline); Vite 200 on the two pages, the two new components, the two client libs and the six shared
+modules. **Not rendered in a browser:** the Payment Element, the Cards on file block, the card select, the
+Payments card and every refusal toast - there is no Stripe key on this machine; after the merge, add
+`PAYMENT_CREDENTIALS_KEY` to `.env`, restart `npm run dev:full` (the server and the schema changed), connect a
+Stripe TEST account on Settings → Payments and try Add card on a customer's Edit Location with 4242 4242 4242
+4242. Signatures and behavior under "Shipped in Pass 40" at the end of `PLAN_ROADMAP_V2.md` Part D. **The
+owner's restart after the merge prints the migration once** (the grant, the three tables, the column, the key)
+and, until the env key is set, the `PAYMENT_CREDENTIALS_KEY is unset` warning on every boot. OWNER_FEEDBACK
+FB-023 reviewed: QUALIFIED - the per-agreement card pointer joins C6.2's auto-charge; the payer-split half is a
+billing-profile-per-agreement question for the owner.
+
+Next up: **Pass 41** — charge from the invoice (`PLAN_ROADMAP_V2.md` Phase 6 table, C6.2 - the second Phase 6
 row; the owner may sequence C5.5 (the org timezone), C5.9 (the password / invite flow, the sweep, the home
-address) or C5.10 (the workflow gates) ahead of it): the port and the Stripe provider under
-`server/integrations/payments/` (types only today, no `providers/`), org-level credentials in their own table
-(never on `organizations`, whose GET answers every role), `payment_methods` (tokens, brand, last4, expiry; the
-three legacy `billing_profiles` token columns left unread), SetupIntent capture from the billing profile, last4
-shown on the profile. The handoff prompt for Pass 40 is the last section of this file; the Pass 40 session
-writes the next one.
+address) or C5.10 (the workflow gates) ahead of it): "Charge card on file" / "Process card" on the invoice
+modal through a PaymentIntent on the card Pass 40 stored (the payment row's provider id and card pointer, the
+CAPTURED state that counts as paid), refunds through the provider, the webhook route and the outbox worker,
+batch auto-charge with the confirmation prompt (`autoChargeOnFile`), the "pay this invoice" magic link, the
+card icon on the ticket and appointment details, FB-023's per-agreement card. The handoff prompt for Pass 41 is
+the last section of this file; the Pass 41 session writes the next one.
 
 Phase 1's ordered plan, impact analysis, conflict resolutions, and per-pass verification steps live in
 `PLAN_BILLING_V1_1_EXECUTION.md` — read it when a pass builds on a Phase 1 helper (its "Shipped in
@@ -2166,231 +2236,257 @@ pointer and that prompt.
 
 Replaced at the end of every pass (`AGENT_WORKING_AGREEMENT.md`, the end-of-pass step). The owner
 pastes it verbatim to start the next session; it is also the last thing in the finishing session's
-final message. Written 2026-10-08, after Pass 39 was pushed as `feature/phase-5-schema-settings-hygiene`.
-Its ground truth came from a read-only Explore subagent's inventory of the working tree at the START of Pass 39
-(origin/main after PR #110, before Pass 39's edits), plus the SQL it ran, with the key file:line citations
-below re-grepped on the finished Pass 39 tree. They are that tree's, so run the SQL and grep the names
+final message. Written 2026-10-09, after Pass 40 was pushed as `feature/phase-6-payment-provider-port`.
+Its ground truth came from a read-only Explore subagent's inventory of the working tree at the START of Pass 40
+(origin/main after PR #111, before Pass 40's code), plus the SQL it ran, with the key file:line citations
+below re-grepped on the finished Pass 40 tree. They are that tree's, so run the SQL and grep the names
 before trusting any claim.
 
 ```text
-Start Pass 40 — Payment provider port (C6.1)
-(PLAN_ROADMAP_V2.md Phase 6 table, row C6.1 (grep `| C6.1 |`, :439 after Pass 39's doc edits; C6.2 :440 and C6.3
-:441 are the next two rows): "Payment provider port (server/integrations/payments/, Stripe first, org-level
-credentials, Connect-ready), payment_methods (tokens, brand, last4 shown on the billing profile, expiry),
-SetupIntent capture from the billing profile; PCI: no card number ever touches PestFlow."; B18 / B19 (roadmap
-:308-318: the owner agreed, "the last four digits must be visible"); PLAN_BILLING_V1.md §0.4 (:127-152 - the port
-rule :140 "the domain layer imports only types.ts", org-level credentials :144), §1.2 payment_methods (:235-246),
-the PCI rule (:248-250, "a hard rule, not a preference"), §1.4 (:368-404), §1.8 (:565-577); PLAN_BILLING_V1_1.md
-D5 (:228-243, "Stripe remains Phase 2" - read Phase 6); canon §4 BillingProfile and §14 Payment; dev rules 2, 3,
-4 and 6 (AGENT_WORKING_AGREEMENT.md). Phase order: Pass 39 (C5.8) closed the Phase 5 list except the unscheduled
-C5.5 (org timezone), C5.9 (the password / invite flow, now also the client Technician sweep and FB022's home
-address) and C5.10 (the workflow permission gates - a LIST for the owner to decide route by route); C6.1 is the
-first Phase 6 row and the next in phase order - say so in the handoff and let the owner pick. OWNER_FEEDBACK.md:
-no open item is this row (FB022 is C5.9; FB-001 / -003 / -004 / -005 / -006 / -007 / -008 / -009 / -011 / -012
-/ -016 / -017 are other surfaces; FB-002 is C3.8, FB-013 / -014 / -015 are C4.7, FB-020 is C4.6) - review any
-new item at the start and end, build none unless I say so. Read the CLAUDE.md docs in order first, and
+Start Pass 41 — Charge from the invoice (C6.2)
+(PLAN_ROADMAP_V2.md Phase 6 table, row C6.2 (grep `| C6.2 |`, :445 after Pass 40's doc edits; C6.1 :444 is the row
+just built, C6.3 :446 is email): "Charge from the invoice (modal: 'Charge card on file' / 'Process card' ->
+PaymentIntent -> payment CAPTURED -> applied), refunds through the provider, webhooks via a transactional outbox;
+batch auto-charge with the confirmation prompt (billing profile autoChargeOnFile); 'pay this invoice' magic link
+(access_tokens, V1 §1.8). Card icon on the ticket and appointment details, last four behind a click,
+permission-gated." plus the Pass 40 notes appended to the row (the CAPTURED predicates, the stored webhook secret,
+resolveProfilePaymentMethod, FB-023); B18 / B19 (roadmap :308-323: the owner agreed; "auto-process with a
+confirmation"); PLAN_BILLING_V1.md §0.4 (:130-155, the port rule :143), §1.4 (:371-407 - "Card -> Stripe
+PaymentIntent; approval/decline is authoritative", "Cards do not" need office confirmation), §1.8 (:568-580 - the
+magic link, "a portal-of-one"); PLAN_BILLING_V1_1.md D5 (:228-247, the Pass 40 note at :230); canon §4's "Card on
+file" (:296), §13 Invoice (:1378), §14 Payment (:1613 - the CARD / ACH methods and the C6.2 card states), §17
+(:1790); dev rules 2, 3, 4 and 6 (AGENT_WORKING_AGREEMENT.md). Phase order: Pass 40 (C6.1) built the port, the
+provider account and the card on file; C6.2 is the next Phase 6 row in order; C5.5 (org timezone), C5.9 (the
+password / invite flow, the client Technician sweep, FB022's home address) and C5.10 (the workflow gates - a LIST
+to decide route by route) are still unscheduled - say so in the handoff and let the owner pick. OWNER_FEEDBACK.md:
+FB-023 (:56, "isolate payment type per agreement") was reviewed QUALIFIED by Pass 40 into THIS row's notes (the
+per-agreement card pointer; the payer-split half is a billing-profile-per-agreement question - ask); FB-001 (:25,
+Apply Payment ahead of the Generate Invoice prompt) touches the same invoice actions and is still open; FB-002 is
+C3.8, FB-013 / -014 / -015 are C4.7, FB-020 is C4.6, FB022 is C5.9, the rest are other surfaces - review any new
+item at the start and end, build none unless I say so. Read the CLAUDE.md docs in order first, and
 OWNER_FEEDBACK.md (its review process applies at the start and end of the session); CURRENT_FOCUS.md's last
-entries (Pass 38, Pass 39 and "Next up") are the ones that matter.
+entries (Pass 39, Pass 40 and "Next up") are the ones that matter.
 
-Branch feature/phase-6-payment-provider-port from origin/main. Confirm main contains the Pass 39 merge
-(feature/phase-5-schema-settings-hygiene) before branching.
+Branch feature/phase-6-charge-from-invoice from origin/main. Confirm main contains the Pass 40 merge
+(feature/phase-6-payment-provider-port) before branching.
 
-This row is the FIRST money-provider pass and most of it is design the owner has not decided. Decide and state,
-in the pass, which of these you take, with the recommendations from the Pass 40 inventory the Pass 39 session
-saved (pass40-inventory.md §9 - read it whole):
-(1) the Stripe account model - recommend a per-org provider-account ROW (provider, mode test | live, the
-credentials, a nullable connectedAccountId), the adapter built per org from that row, never a process env key;
-Heritage starts on its own Stripe account; platform Connect later is a data change plus onboarding, not a
-refactor. Ask whether a PestFlow platform Stripe account exists or is planned.
-(2) where the secret key lives - NOT `organizations` (GET /api/organization answers the whole row to every
-role: routes.ts :3283, storage.ts getOrganization :10041) and NOT `app_settings` (open GETs); recommend a
-dedicated org-scoped table (e.g. payment_provider_accounts, org_id NOT NULL from creation like payments), the
-secret and the webhook secret encrypted at rest with an env master key (a new .env.example variable, documented
-in PROJECT_MAP.md), write-only from a Settings "Payments" card (MANAGE_SETTINGS) whose read answers only
-connected / mode / account id / publishable key, audited by its own entity (not `app_setting` - the row is a
-credential, not a setting).
-(3) test mode - recommend an explicit per-org mode (test | live) and `livemode` on every payment_methods row, a
-"Test mode" badge on the Settings card and beside every card shown; the dev DB uses test keys only.
-(4) who may add / remove a card - no permission exists; TAKE_PAYMENT_FIELD is held by technicians; recommend a
-31st permission MANAGE_PAYMENT_METHODS ("Add or remove a card / bank account on file") granted to the seeded
-support / manager / admin through SEEDED_PROFILE_GRANTS (server/role-profile-bootstrap.ts :12, Pass 38's
-precedent), not technician; last4 visible to every role on the customer screen (B18). Ask whether field capture
-at the visit is wanted now - if yes, the technician too.
-(5) the three legacy columns `billing_profiles.cardOnFileToken` / `achToken` / `lastFour` (shared/schema.ts
-:117-120; the dev DB's one `last_four` = '4242' on "Corporate Card" is seed data from c5ca743 with no token
-behind it) - recommend a NEW `payment_methods` table per V1 §1.2 (org, account, location?, provider,
-providerCustomerId, providerPaymentMethodId, type card | ach, brand, last4, expMonth, expYear, isDefault,
-status, livemode, timestamps), a nullable `billing_profiles.defaultPaymentMethodId`, the three legacy columns
-left UNREAD and dropped by a later hygiene pass (say so), because: an account can hold several cards; profile
-rows are whole-row-snapshotted into audit_logs (storage.ts createBillingProfile :4500 / updateBillingProfile
-:4515 - auditCreatedTx / auditChangeTx) which every role reads (GET /api/audit-logs :1527 is open); and the full
-profile row is returned by two open GETs (routes.ts :1441 and :1446 - the second read by the technician ticket
-header, service-completion-dialog.tsx). Ignore or clear the '4242' and say which.
-(6) the Stripe Customer - recommend one per PestFlow ACCOUNT in a small mapping table (org, accountId,
-provider, mode, providerCustomerId) so a second card reuses it; name / email from the customer and the primary
-contact (billing_profiles has no billingEmail).
-(7) the capture flow and scope - recommend: the server creates a SetupIntent (usage off_session) for the
-account's customer; the client mounts Stripe's Payment Element (@stripe/stripe-js + @stripe/react-stripe-js,
-loaded from js.stripe.com - SAQ-A; there is no CSP to change, client/index.html has only the module script); on
-success the client posts the SetupIntent id; the server retrieves it, checks `succeeded`, reads brand / last4 /
-exp and inserts the payment_methods row. No webhook in C6.1 (webhooks and the outbox worker are C6.2's, roadmap
-:440). CARD ONLY in C6.1; ACH (us_bank_account, mandate, micro-deposit verification) an explicit follow-up unless
-I say both. New dependencies: stripe (server), @stripe/stripe-js and @stripe/react-stripe-js (client) - name the
-versions you pin.
-(8) the port's shape - recommend extending server/integrations/payments/types.ts (:31 PaymentProvider -
-createCustomer / attachPaymentMethod / charge / refund / handleWebhook; :12 PaymentMethodRef has label / lastFour
-only, no brand / expiry / type; no SetupIntent / detach / retrieve) with createSetupIntent(orgCtx, customerRef)
--> { clientSecret, setupIntentId }, retrieveSetupIntent, detachPaymentMethod, a PaymentMethodRef { type, brand,
-last4, expMonth, expYear, livemode }, and a getPaymentProvider(orgId) factory; the vendor SDK only under
-providers/stripe.ts (V1 :140 - the domain imports types.ts alone; no providers/ directory exists today); name
-the row type StoredPaymentMethod or PaymentInstrument, never PaymentMethod (shared/payments.ts :15 already
-exports that name for the CASH | CHECK | OTHER | CARD | ACH enum).
-(9) what the billing profile shows - recommend: in Edit Location's account-default and override blocks
-(client/src/pages/customer-detail.tsx BillingProfileFields :187; the "Card and bank details are not captured
-yet" note :230 for card / ach types) "Visa •••• 4242 · exp 04/28" (plus "Expired" when past), Add card / Make
-default / Remove (a soft status plus a Stripe detach, never a delete), "No card on file" when the type is card
-and none exists; the header chip (~:4432) may append "•••• 4242"; the ticket / appointment card icon and "last
-four behind a click" stay C6.2. Projections carry display fields only, never provider ids
-(shared/billing-profile-defaults.ts BillingProfileSummary's "never the tokens" rule).
-(10) billingType card / ach - recommend keeping `billingType` as the payer arrangement (no migration); C6.2
-adds autoChargeOnFile (B19, V1 :264). Ask whether a "card" profile with no card on file should warn or be
-refused.
-(11) audit - recommend a new AuditEntityType payment_method (created / status_changed, not revertable;
-snapshots brand / last4 / expiry / status / isDefault / livemode, never provider ids) and a
-payment_provider_account entity for the credentials row (the secret never in a snapshot); the client
-invalidation entry (client/src/lib/invalidate-audit-views.ts REVERTED_ENTITY_KEY_PREFIXES).
-(12) what the pass does NOT do: charging (C6.2), webhooks and the outbox worker (C6.2), the "pay this invoice"
-magic link (C6.2), email (C6.3), ACH unless I say so, the legacy column drop, C5.5 / C5.9 / C5.10, Smart Schedule.
+This row is LARGE (five features: the charge, refunds, webhooks + the outbox worker, batch auto-charge, the magic
+link, plus the card icon) and most of it is design the owner has not decided. Decide and state, in the pass,
+which of these you take, with the recommendations from the Pass 41 inventory the Pass 40 session saved
+(pass41-inventory.md §9 - read it whole; it was taken on the tree BEFORE Pass 40's code, so its storage.ts /
+routes.ts lines are pre-Pass-40 and the Pass 40 symbols below are the finished tree's):
+(0) the SCOPE - recommend splitting the row: C6.2a (this pass) = the charge from the invoice modal on the card on
+file (server-side PaymentIntent, off_session, confirm: true), CAPTURED counting as paid, refunds through the
+provider, the webhook route + the inbound event table, the card icon and the last-four gate; C6.2b (the next
+pass) = the outbox worker, batch auto-charge with the confirmation prompt and `autoChargeOnFile`, the "pay this
+invoice" magic link (a customer-facing auth boundary - a pass of its own), FB-023's per-agreement card. Ask the
+owner; build 2a unless told both.
+(1) the payment row shape - recommend ADD COLUMN on `payments` (server/payments-bootstrap.ts :156's pattern):
+`provider_payment_id` (the PaymentIntent id, unique per org when not null), `payment_method_id` (FK to
+payment_methods), `provider_refund_id`, `failure_code` / `failure_message`, `idempotency_key` (unique; the
+payment's own id); keep provider ids out of every projection and strip them in the `payment_recorded` audit
+snapshot (recordPayment audits the WHOLE row, storage.ts :13487-13560; GET /api/audit-logs :1639 is open).
+(2) CAPTURED - recommend it counts as paid AT ONCE with no office confirmation (V1 :405-407): widen
+`paymentHoldsValue` to PENDING | CONFIRMED | CAPTURED and `paymentCountsAsPaid` to CONFIRMED | CAPTURED
+(shared/payments.ts :36-44) and fix every hard-coded "CONFIRMED" the inventory lists (storage.ts aging and the
+Payments tiles, refundPayment :14033, shared/aging.ts, shared/statements.ts, pages/payments.tsx :80-86 / :377,
+location-ledger-panel.tsx :625); make voidPayment (:13985) and confirmPayment (:13885) REFUSE provider-backed rows
+(a card payment is reversed by a refund, never voided or hand-confirmed). The zero-ripple alternative (post card
+charges as CONFIRMED) contradicts the roadmap and canon vocabulary - second choice.
+(3) the charge itself - recommend one storage method `chargeInvoiceWithStoredCard(invoiceId, { paymentMethodId?,
+actor })` behind `POST /api/invoices/:id/charge` (a NEW permission CHARGE_CARD, support / manager / admin, the
+APPLY_PAYMENT shape; the 32nd - PERMISSIONS, labels, descriptions, the Payments group, ROLE_PERMISSIONS,
+SEEDED_PROFILE_GRANTS): tx 1 locks the invoice (lockInvoiceTx :13315), takes the capacity the way
+assertApplicableTx (:13578) does (total minus every unreleased application, NOT balanceDueCents) and inserts the
+payment PENDING with method CARD, the card and the idempotency key; OUTSIDE any transaction `provider.charge(...)`
+(off_session: true, confirm: true, the idempotency key, metadata { pestflowOrgId, pestflowInvoiceId,
+pestflowPaymentId }); tx 2 on succeeded sets CAPTURED, applies (applyPaymentTx :13619 with null = as much as
+possible) and audits; on a decline FAILED with the code; on requires_action leaves it PENDING for the webhook. The
+card: `resolveProfilePaymentMethod(profile, cards)` (shared/payment-methods.ts :240 - the resolved profile's pointer,
+else the account's default) unless the body names one of the account's active cards. "Process card" (a new card
+on-session through the Payment Element) rides the same server-created intent; recommend it for 2b or as a
+stretch - the saved card is the money path the owner asked for.
+(4) the webhook - recommend `POST /webhooks/payments/stripe/:providerAccountId` mounted OUTSIDE /api inside
+registerRoutes (every /api route sits behind `app.use("/api", requireAuth, attachOrgStorage)` at server/index.ts
+:105; express.json's verify already stores req.rawBody :43); look the Pass 40 `payment_provider_accounts` row up by
+id UNSCOPED, verify the signature with ITS webhook signing secret (stored encrypted since Pass 40 -
+`webhook_secret_encrypted`, decrypted into PaymentProviderCredentials.webhookSecret by
+toPaymentProviderCredentials storage.ts :4754), then createOrgScopedStorage(row.orgId) (:15500); cross-check
+event.data.object.metadata.pestflowOrgId; with Connect later resolve by event.account; dedupe with a NEW inbound
+`payment_provider_events` table (unique (provider, event_id), payload, status, processedAt) written in the same
+transaction as the ledger change; handle payment_intent.succeeded / payment_failed and charge.refunded /
+refund.updated; actor SYSTEM_AUDIT_ACTOR. `handleWebhook(rawBody: Buffer, signature)` is on the port
+(server/integrations/payments/types.ts :114) and 501 in both adapters today (stripe.ts :153, fake.ts) - the Stripe
+one is `stripe.webhooks.constructEvent(rawBody, signature, webhookSecret)`.
+(5) the outbox worker (2b) - `outbox_events` (shared/schema.ts :1517; server/outbox-bootstrap.ts :9) has no
+available_at / locked_at / idempotency key and `recordOutboxEvent` (server/integrations/outbox/index.ts :11) has NO
+caller; recommend ADD COLUMNs, a node-cron job (`"*/30 * * * * *"`, { noOverlap: true }; node-cron 4.6 is
+installed, @types/node-cron is v3-era), `FOR UPDATE SKIP LOCKED` claims, exponential backoff into available_at,
+FAILED after N attempts; per-org work through createOrgScopedStorage (the billing-run precedent,
+server/jobs/billing-run.ts :82; its cron :100 has no overlap guard either - give it one).
+(6) autoChargeOnFile and the batch prompt (2b) - `billing_profiles.auto_charge_on_file boolean NOT NULL DEFAULT
+false` (the billing-profile bootstrap owns the table), in the profile form and the invoice snapshot
+(resolveInvoiceTermsForLocationTx :12165); after Generate the batch dialog's result view
+(client/src/components/batch-invoice-dialog.tsx, Send All :143) shows "Charge N cards on file, $X" and posts `POST
+/api/invoices/batch-charge { invoiceIds }` which enqueues outbox rows; the nightly billing run stays uncharged
+unless the owner says otherwise (it has no confirmation moment).
+(7) the magic link (2b) - a NEW `access_tokens` table (purpose VIEW_INVOICE | PAY_INVOICE, invoiceId, tokenHash -
+sha256 of 32 random bytes, the raw value never stored -, expiresAt, revokedAt, lastUsedAt, useCount,
+createdByUserId); `GET /public/pay/:token` (a customer-safe projection), `/public/pay/:token/document`, `POST
+/public/pay/:token/intent` outside /api and before the SPA catch-all; a client route `/pay/:token` ahead of the
+login gate (client/src/App.tsx :60 renders <Login /> for every path without a user); a new APP_BASE_URL env; rate
+limiting (none exists); `invoices.publicId` (schema :1113) is a stable reference, not a credential.
+(8) the card icon and the last-four gate - recommend a "card on file" icon (yes / no plus the brand) for everyone
+who sees the ticket header (service-completion-dialog.tsx :754 `text-ticket-billing-profile`, which reads the FULL
+billing_profiles row through GET /api/locations/:locationId/billing-profile routes.ts :1459 - add the card to that
+answer as display fields, never the token columns) and the dispatch sheet (pages/schedule.tsx :616
+`sheet-appointment-details`, the header :630-637) and the technician's Appointment Details
+(technician-work.tsx :533); the last four and expiry behind a click, lazily fetched, gated by a NEW
+VIEW_CARD_ON_FILE (support / manager / admin; ask whether technicians get it). Note the tension with B18 as Pass 40
+built it: the customer screen's billing chip (customer-detail.tsx :4478 `chip-billing-card`) and Edit Location's
+Cards on file list show the last four to EVERY role - the owner decides whether the chip stays open when the
+ticket gets a gate.
+(9) refunds - extend refundPayment (:14033): a provider-backed payment calls `provider.refund(externalChargeId,
+amountCents)` (the port :113; stripe.ts :149 is 501), stores provider_refund_id, sets REFUNDED and confirms via
+the webhook; whole-payment, release-first as today; CASH / CHECK refunds stay record-only; REFUND_PAYMENT gates it.
+(10) FB-023 (2b) - a nullable `agreements.payment_method_id` FK to payment_methods (the card belonging to the
+agreement location's account), the charge resolution order the agreement's card, then the profile's pointer,
+then the account default, then none; it applies to schedule-driven and initial-charge invoices through
+billing_events.invoiceId (invoices have no agreementId) and to a visit invoice only when every chargeable line's
+service shares the agreement; set payments.designatedAgreementId on the charge. The example in the note (property
+manager pays termites, the tenant pays pest control) is a different PAYER - ask whether a billing profile per
+agreement is the real ask before building the pointer.
+(11) two Pass 40 findings to fix here: the request logger (server/index.ts :64-80) prints EVERY /api JSON response
+body - Pass 40's SetupIntent client secret already lands in stdout (single-use, tied to one intent), and a
+PaymentIntent client secret would too: exclude `clientSecret` (and any `client_secret`) from the log line; and
+role-profile-bootstrap.ts's comments say a SEEDED_PROFILE_GRANTS grant happens "once" while the INSERT ... ON
+CONFLICT DO NOTHING re-runs on every boot (a grant the office removed from a built-in comes back at the next
+restart) - decide whether to keep (and say so) or guard it with a "granted" marker.
+(12) what the pass does NOT do: email (C6.3), ACH capture, the legacy billing_profiles token column drop, C5.5 /
+C5.9 / C5.10, Smart Schedule, whatever of (5)-(7) and (10) lands in 2b.
 
-Ground truth today (line numbers from the working tree at the end of Pass 39; they drift, the names do not; the
-inventory came from a read-only Explore subagent run at the START of Pass 39 and the lines below were re-grepped
-on the finished Pass 39 tree):
-- shared/schema.ts: `billingProfiles` :107 (accountId / locationId / templateId FKs - in the DB since Pass 39;
-  billingType :114 "card | ach | invoice_terms | cash | check", cardOnFileToken :117, achToken :118, lastFour :120;
-  no autoChargeOnFile / defaultPaymentMethodId / brand / expiry); `billingProfileTemplates` :81; `payments`
-  :1066 (method CASH | CHECK | OTHER now, CARD | ACH named; status PENDING default; customerId not accountId;
-  appointmentId; no providerPaymentId / paymentMethodId / serviceRecordId); `organizations` :1339 (name, slug,
-  status, logoUrl, primaryColorHex, remitTo*; no credentials); `outboxEvents` :1412 (port, eventType, payload,
-  status PENDING | PROCESSING | SENT | FAILED, attempts, lastError; 0 rows, no worker, no caller).
-- shared/payments.ts: PAYMENT_METHODS :14 (five), `type PaymentMethod` :15 (the naming hazard),
-  MANUAL_PAYMENT_METHODS :16, PAYMENT_STATUSES :27 (AUTHORIZED / CAPTURED / FAILED named "for Phase 2");
-  paymentHoldsValue is PENDING | CONFIRMED and paymentCountsAsPaid CONFIRMED only - a CAPTURED card payment
-  would count for nothing today (C6.2's decision; note it). shared/billing-profile-defaults.ts: BILLING_TYPES,
-  BILLING_PROFILE_ERROR_CODES (TEMPLATE_UNKNOWN since Pass 39), BillingProfileSummary "never the tokens".
-- server/integrations/: payments/types.ts (37 lines: PaymentCustomerRef, PaymentMethodRef :12, ChargeResult /
-  RefundResult, PaymentProvider :31; comment :1-5 "credentials are modeled per-org from day one"); outbox/index.ts
-  (recordOutboxEvent, no caller anywhere); accounting / crm / inventory types.ts. No providers/ directory. No
-  stripe package (package.json; script/build.ts :27 lists "stripe" in the esbuild bundle allowlist - inert, not
-  a dependency). No webhook route; express.json({ verify }) stores req.rawBody (server/index.ts :33-45) for a
-  future signature check; every /api route sits behind `app.use("/api", requireAuth, attachOrgStorage)` (index.ts
-  ~:104) - a webhook mounts before that line or outside /api and resolves its org from the event. No
-  access_tokens table or code; invoices.publicId exists (schema :999), locations has none.
-- server/storage.ts: createAccountDefaultProfileFromOrgDefaultTx :4023 (copies the template's billingType,
-  which can be "card"); getBillingProfilesForAccount :4438 (full rows); assertBillingProfileRulesTx :4451
-  (account / location / template / override / default rules; no token rule); createBillingProfile :4500 /
-  updateBillingProfile :4515 (whole-row audit snapshots); resolveBillingProfileForLocation :4545; the settings
-  write pattern upsertSettingTx :9785 (Pass 39: one transaction, an audit row on the key); getOrganization :10041
-  / updateOrganizationBranding :10046 (spreads the body); resolveInvoiceTermsForLocationTx :11567 (the invoice
-  snapshot - profileId, label, billingType, invoiceTerms, billingName, billingAddress, billTo, serviceLocation; no
-  tokens / lastFour); recordPayment :12889 (refuses CARD / ACH: "Only cash, check and other payments can be
-  recorded until card processing lands"); refundPayment :13435 (a manual record, nothing to a provider);
-  createOrgScopedStorage :14902 (the billing run's precedent for org-scoped work outside a request).
-- server/routes.ts: billingProfileWriteSchema :453 (omits the three token columns, strict); POST / PATCH
-  /api/billing-profile-templates :1417 (MANAGE_SETTINGS; the template routes do not enum-check billingType);
-  GET /api/accounts/:accountId/billing-profiles :1441 and GET /api/locations/:locationId/billing-profile :1446
-  (open, full rows); POST / PATCH /api/billing-profiles :1452 / :1467 (open; BillingProfileError 400); GET
-  /api/audit-logs :1527 (open; entityType alone allowed since Pass 39); PATCH /api/settings/billing-defaults
-  :3182 (the settings-route precedent: strict schema, MANAGE_SETTINGS, a coded 400); GET /api/organization :3283
-  (the whole row, every role) / PATCH /api/organization/branding :3289 (MANAGE_SETTINGS); recordPaymentSchema
-  :3555 (method z.enum(MANUAL_PAYMENT_METHODS) - CARD / ACH are a zod 400 before storage); POST /api/payments
-  :3709 (TAKE_PAYMENT_FIELD; the payment routes and gates are the inventory's §2 table - every mutation gated,
-  every read open).
-- server/role-profile-bootstrap.ts SEEDED_PROFILE_GRANTS :12 (the way a permission added after Pass 37's seed
-  reaches the seeded built-ins; Pass 38's VIEW_OTHER_TECHNICIAN_WORK is the one entry, printed once).
-  shared/permissions.ts: 30 permissions; the payment ones TAKE_PAYMENT_FIELD (technician holds it) / APPLY /
-  CONFIRM / CONFIRM_CASH / VOID / REFUND, ISSUE_CREDIT_MEMO; manager holds no MANAGE_SETTINGS; a new permission
-  needs PERMISSIONS, PERMISSION_LABELS, PERMISSION_DESCRIPTIONS, PERMISSION_GROUPS (exactly one group),
-  ROLE_PERMISSIONS and SEEDED_PROFILE_GRANTS.
-- server/index.ts boot order: outbox :115, payments :118, ..., tenancy (second) ~:123, ..., billing profiles
-  :133 - a payment_methods table referencing accounts / locations / billing_profiles boots after :118 and an FK
-  from billing_profiles to it after :133; a table born with org_id NOT NULL (server/payments-bootstrap.ts :12-50
-  is the CREATE TABLE precedent: inline REFERENCES, then the org / location / customer indexes) needs no
-  TABLES_REQUIRING_ORG_ID entry; declare it in shared/schema.ts too so db:push creates it.
-- Client: customer-detail.tsx BillingProfileFields :187 (Label; the Billing Type select over all five types,
-  card and ach selectable; the capture note :230 for card / ach), LocationBillingSelector :243, AddLocationDialog
-  :869, EditLocationDialog :1122 (the account-default block :1461, the override selector below it), the header
-  chip ~:4432; service-completion-dialog.tsx reads GET /api/locations/:id/billing-profile for the ticket header;
-  collect-payment-dialog.tsx / record-payment-dialog.tsx / pages/payments.tsx map MANUAL_PAYMENT_METHODS (no card
-  affordance anywhere; the only "on file" text is the capture note). settings.tsx: canManageSettings :2177,
-  Billing Profile Templates :2514 and Billing Defaults :2565 (a Payments card fits beside them; CreditCard icon),
-  the Organization Branding card's Save is not disabled below Manage Settings (server-gated only; a dev-rule-6
-  item under C5.10), Recent settings changes :3625 (Pass 39); client/src/lib/invalidate-audit-views.ts
-  REVERTED_ENTITY_KEY_PREFIXES (a new entity's reads).
-- DB today (run the SQL, never trust a doc's data claim): billing_profiles 2 - "Corporate Card" (dded27ea, card,
-  is_default, last_four '4242', no tokens; 18 of 79 invoices snapshot it) and "Westside Invoice" (8fa46a3a,
-  invoice_terms, the override) - with the three FKs and the template index since Pass 39; billing_profile_templates
-  2 (COD, Test Net 15), in TABLES_REQUIRING_ORG_ID since Pass 39; payments 30 (CASH 7 / CHECK 19 + 1 voided /
-  OTHER 3, none CARD / ACH), payment_applications 37, credit_memos 1; outbox_events 0; organizations 1 (Heritage,
-  71e445ab-8abc-4df4-ba10-2131d054e30f); 19 audit entity types (app_setting since Pass 39; no payment_method);
-  users 6; role_profile_permissions 77 (4 / 14 / 29 / 30). After Pass 39 merges and the owner restarts: the two
-  columns drop, the three FKs and the template index appear, the templates table gets its org index and default
-  (printed once); nothing else.
-- Docs versus code, found by the inventory and left for you: roadmap :309-310 and :53 say "nothing of it exists"
-  / "no provider port" (the port's TYPES and the outbox table exist; a provider, payment_methods, a caller and a
-  worker do not); :311-312 "the last four ... they are (payment_methods.last4 ...)" (no such table;
-  billing_profiles.last_four exists and is shown nowhere); V1 §0.4's port has no SetupIntent and PaymentMethodRef
-  no brand / expiry / type, and V1's providers/stripe.ts does not exist; V1 §1.2's billing_profiles fields
-  (billingContactId, billingEmail, deliveryMethod, paymentTermsDays, autoChargeOnFile, defaultPaymentMethodId,
-  taxExempt) - none exist; V1 §1.4's payments shape (accountId, serviceRecordId, providerPaymentId,
-  proofAttachmentId; no CONFIRMED) versus the code's; V1 :40 "Status: proposed. Nothing here is built yet."
-  (stale); canon §4 lists cardOnFileToken / achToken / lastFour as BillingProfile fields and §14 is silent on a
-  provider id; schema.ts's "no screen or route types them today" is true of writes but two GETs return them;
-  "Phase 2" in shared/payments.ts :11-13 / :24-25, collect-payment-dialog.tsx :31 and D5 means Phase 6;
-  server/org-bootstrap.ts :33 names "PATCH /api/organizations/:id/branding" (the route is
-  /api/organization/branding); PROJECT_MAP omits server/integrations/ and lists no payment env variable; roadmap
-  :92's "dead esbuild external" for nodemailer (it is the bundle allowlist, with stripe); V1 §1.8 wants publicId
-  on locations too (invoices only); seed.ts :67 "Recurring auto-charge to a saved card." promises C6.2. Fix the
-  ones your pass touches; list the rest.
-- Docs to carry: the C6.1 row (mark done with the as-built, decision by decision); canon §4 (the payment method
-  beside the profile; the legacy columns' status), §14 (a provider id if one lands), §17 (the new audit entities);
-  PROJECT_MAP.md (server/integrations/, the env variable, the new bootstrap); PLAN_BILLING_V1_1.md D5 ("Stripe
-  remains Phase 2" - say what landed); a "Shipped in Pass 40" record; CURRENT_FOCUS's Pass 40 entry and "Next up"
-  (C6.2 unless the owner sequences C5.5 / C5.9 / C5.10 - write the C6.2 handoff unless I say otherwise).
+Ground truth today (line numbers from the working tree at the end of Pass 40; they drift, the names do not):
+- Pass 40 built (see "Shipped in Pass 40", roadmap :4737-4836, for every signature): shared/payment-methods.ts
+  (PAYMENT_PROVIDER_ERROR_CODES :41, PAYMENT_METHOD_ERROR_CODES :62, PaymentProviderAccountSummary :91,
+  StoredPaymentMethodSummary :163 - display fields, never a provider id -, SetupIntentSession :172,
+  resolveProfilePaymentMethod :240); shared/schema.ts paymentProviderAccounts :92 (provider, mode, publishable_key,
+  secret_key_encrypted + fingerprint, webhook_secret_encrypted + fingerprint, connected_account_id, status),
+  paymentProviderCustomers :115, paymentMethods :141 (provider_customer_id, provider_payment_method_id, type,
+  brand, last4, exp_month / exp_year, is_default, status active | removed, livemode, the stamps),
+  billingProfiles.defaultPaymentMethodId :222 (FK billing_profiles_default_payment_method_fk);
+  shared/permissions.ts MANAGE_PAYMENT_METHODS :142 (the 31st; the Payments group :256; ROLE_PERMISSIONS :299;
+  SEEDED_PROFILE_GRANTS server/role-profile-bootstrap.ts :12-16 - add the next entry there); shared/audit.ts
+  payment_method :91 and payment_provider_account (the labels "Card on file" / "Payment provider"; neither
+  revertable); server/integrations/payments/types.ts (PaymentProviderError :86, PaymentProvider :98 - charge :112
+  / refund :113 / handleWebhook :114 declared, 501 in both adapters), index.ts (createPaymentProvider :27,
+  fakePaymentProviderAllowed :16), providers/stripe.ts (new Stripe(secretKey, { stripeAccount? }) :83, the 501s
+  :145-153 - the ONLY file importing `stripe` 22.6.2), providers/fake.ts (per-process doubles: cus_fake_n /
+  seti_fake_n succeeded / seti_fake_pending_<cus> / seti_fake_canceled_<cus>; charge / refund / webhook 501 -
+  extend it for the charge), credentials.ts (encrypt :56 / decrypt :65, env PAYMENT_CREDENTIALS_KEY :19);
+  server/payment-methods-bootstrap.ts :44 (after bootstrapBillingProfiles, server/index.ts :138);
+  server/storage.ts PaymentMethodError :1268, summarizeStoredPaymentMethod :444, paymentMethodAuditSnapshot :464,
+  assertBillingProfileRulesTx :4574 (the pointer rule), toPaymentProviderCredentials :4754,
+  requirePaymentProviderTx :4769 (409 NOT_CONFIGURED), getPaymentProviderAccount :4777 / set :4795 / disconnect
+  :4883, ensureProviderCustomer :4913, createSetupIntentForAccount :4953, confirmSetupIntentForAccount :5033,
+  setDefaultPaymentMethod :5114, removePaymentMethod :5134, getCustomerDetailCompat :4214 (billing.paymentMethod);
+  server/routes.ts billingProfileWriteSchema :455 (defaultPaymentMethodId), respondPaymentError :674, the
+  schemas :1503 / :1513, GET / PUT / DELETE /api/payment-provider :1522-1545, GET
+  /api/accounts/:accountId/payment-methods :1546, POST .../setup-intents :1551, POST .../payment-methods :1560,
+  make-default :1572, remove :1583; client/src/components/payment-methods-block.tsx (PaymentMethodsBlock,
+  PaymentMethodSelect, AddCardDialog with loadStripe / Elements / PaymentElement / confirmSetup),
+  payment-provider-settings-card.tsx (the Payments card), customer-detail.tsx BillingProfileFields :197,
+  LocationBillingSelector :272, EditLocationDialog :1154 with the block :1485, the chip :4478; settings.tsx the
+  card :2601; lib/invalidate-audit-views.ts invalidatePaymentMethodViews.
+- The ledger (pre-existing): shared/payments.ts PAYMENT_METHODS :15 / MANUAL :17 / PAYMENT_STATUSES :31 /
+  paymentHoldsValue :36 / paymentCountsAsPaid :42; shared/schema.ts payments :1171 (no provider id, no card
+  pointer, no idempotency key; customerId not accountId), invoices :1095 (publicId :1113, billingProfileSnapshot
+  :1117), outboxEvents :1517; server/storage.ts recordPayment :13487 (the CARD / ACH refusal :13489 - "Only cash,
+  check and other payments can be recorded until card processing lands"), assertApplicableTx :13578,
+  applyPaymentTx :13619, confirmPayment :13885, voidPayment :13985, refundPayment :14033 (CONFIRMED only, whole
+  payment, nothing to a provider), lockInvoiceTx :13315, sumInvoiceApplicationsTx :13347,
+  recomputeInvoiceRollupTx :13383, getInvoiceDetail :10832 (no accountId, no card), batchGenerateInvoicesForDateRange
+  :11546, batchSendInvoices :11610 (the sentAt stamp; no audit row, no delivery), resolveInvoiceTermsForLocationTx
+  :12165 (the snapshot); server/routes.ts recordPaymentSchema :3667 (method z.enum(MANUAL_PAYMENT_METHODS)), GET
+  /api/invoices/:id :3696 (open), POST /api/payments :3821 (TAKE_PAYMENT_FIELD), void :3875, refund :3887, batch
+  preview / generate / send :3555-3577, GET /api/invoices/:id/document :3976 (under /api, session-gated), POST
+  /api/billing-run :4167; server/index.ts rawBody :36-43, the logger :64-80, the /api gate :105, scheduleBillingRun
+  :140, registerRoutes :141; server/auth.ts trust proxy :67, the cookie :74 (httpOnly, secure in production, 7 days,
+  no sameSite); no route outside /api anywhere; no access_tokens / customerVisible / rate limiting / CSRF.
+- Client: invoice-detail-dialog.tsx gates :177-180 (canRecord TAKE_PAYMENT_FIELD, canApply, canVoid), the
+  snapshot read :312, the actions row `footer-invoice-actions` :608 (Record Payment :624 - "Charge card on file"
+  goes right after it, under the same issued-with-balance guard plus a location, the new permission and a card),
+  RecordPaymentDialog :656; invoice-document-actions.tsx Mark Sent :105 (batch-send :58; "There is no email delivery
+  yet" :67); batch-invoice-dialog.tsx result :85 / generate :125 / Send All :143; record-payment-dialog.tsx
+  MANUAL_PAYMENT_METHODS :177, applyToInvoiceId :114; collect-payment-dialog.tsx :226; payments.tsx
+  paymentStatusClass :80, Confirmed by :377; location-ledger-panel.tsx Refund :625-626; App.tsx :60.
+- DB today (run the SQL, never trust a doc's data claim; the figures below are the Pass 41 inventory's, taken on
+  2026-10-08): payments 38 (CASH 11 / CHECK 21 + 1 VOIDED / OTHER 5, no PENDING, no CARD, no REFUNDED),
+  payment_applications 49 (1 released), credit_memos 1; invoices 80 (OPEN 3 with 90,640 cents due,
+  PARTIALLY_PAID 1 with 4,720, PAID 70, VOID 6) - none of the open ones on the Corporate Card account (its 18
+  snapshotting invoices are 16 PAID / 2 VOID); billing_profiles 2 (Corporate Card: card, last_four '4242', no
+  pointer; Westside Invoice); invoice_on_finalize PROMPT; outbox_events 0; organizations 1 (Heritage,
+  71e445ab-8abc-4df4-ba10-2131d054e30f); 21 audit entity types after Pass 40 (payment_method /
+  payment_provider_account have no rows on the dev DB - the smoke ran on a copy); users 6; role_profile_permissions
+  4 / 14 / 29 / 30 until the owner's restart after the Pass 40 merge (then 4 / 15 / 30 / 31, and the three tables
+  plus the column and the key, printed once; the PAYMENT_CREDENTIALS_KEY warning on every boot until it is set).
+- Docs versus code, found by the inventory and left for you: V1 §1.4 (:371-407) gives payments accountId /
+  serviceRecordId / providerPaymentId and statuses without CONFIRMED - the code has customerId / appointmentId /
+  CONFIRMED and no provider id (fix §1.4 or canon §14 when the columns land); V1 :396 "auto-apply on invoice
+  generation" versus the D4 prompt; V1 §1.8's locations.publicId (invoices only), access_tokens and customerVisible
+  (absent); V1 §1.2's billingContactId / billingEmail / deliveryMethod / paymentTermsDays / autoChargeOnFile /
+  taxExempt (none exist; autoChargeOnFile is this row's); canon §13 (:1378) lists Invoice accountId, the old
+  status words (draft | posted | sent) and subtotal / taxAmount / totalAmount / paidAt - the code has no accountId,
+  DRAFT | OPEN | PARTIALLY_PAID | PAID | VOID, amountCents / taxCents / totalAmountCents / paidDate; roadmap :49
+  cites record-payment-dialog.tsx :96 (now :114); seed.ts :67 "Recurring auto-charge to a saved card." promises
+  this row; role-profile-bootstrap.ts's "once" (item 11). Fix the ones your pass touches; list the rest.
+- Docs to carry: the C6.2 row (mark done or split it into C6.2a / C6.2b with the as-built, decision by decision);
+  canon §14 (the provider id, the card pointer, CAPTURED), §13 if the invoice gains a charge affordance, §17 (any
+  new entity - the inbound events), §4's Card on file (the icon gate); PLAN_BILLING_V1_1.md D5 (what landed);
+  PROJECT_MAP.md (the webhook route outside /api, any new env - APP_BASE_URL -, the new bootstrap columns);
+  DEV_NOTES.md's "Payments (Stripe) locally" (the webhook forwarding - `stripe listen --forward-to` - for a test
+  key); a "Shipped in Pass 41" record; CURRENT_FOCUS's Pass 41 entry and "Next up" (C6.2b or C6.3 unless the
+  owner sequences C5.5 / C5.9 / C5.10 - write the next handoff).
 
-Build per C6.1 as decided above: the provider-account table and its Settings "Payments" card (write-only
-secrets, encrypted at rest, audited), the port reshaped and providers/stripe.ts (the SDK imported nowhere else),
-the customer mapping table, payment_methods with its bootstrap (org_id NOT NULL from creation, inline FKs,
-indexes, declared in schema.ts), the 31st permission granted to the seeded built-ins, the SetupIntent routes
-(create / confirm) and the payment-method routes (list for an account / make default / remove), the billing
-profile's defaultPaymentMethodId, the card block in the location dialogs and last4 on the profile chip, the
-payment_method / payment_provider_account audit entities, the docs. Not touched: charging, webhooks, the outbox
-worker, the magic link, email, ACH (unless I say so), the legacy column drop, C5.5 / C5.9 / C5.10, Smart Schedule.
+Build per C6.2 as decided above: the payments columns and their bootstrap, the CAPTURED predicates and the
+hard-coded sites, the 32nd permission granted to the seeded built-ins, `charge` / `refund` / `handleWebhook` in
+providers/stripe.ts (and the fake), `chargeInvoiceWithStoredCard` + `POST /api/invoices/:id/charge`, the
+provider-backed refund, the webhook route outside /api with the inbound event table and the signature check, the
+"Charge card on file" button on the invoice modal, the card icon on the ticket header / dispatch sheet / technician
+details with the last four behind a click and its gate, the audit rows (payment_recorded / payment_captured? -
+decide whether CAPTURED is `payment_confirmed`'s sibling or a new action - / payment_refunded with the provider's
+ids stripped), the docs; and 2b's items only if the owner says both. Not touched: email (C6.3), ACH, the legacy
+column drop, C5.5 / C5.9 / C5.10, Smart Schedule.
 
 Environment: Node 24.21.0, npm run dev:full (restart it before manually testing), DEV_NOTES.md for the DB backup
 / restore, the copy-database recipe and the PowerShell traps, gh logged in so the session can open the PR. Verify
-on PORT=5001 as the previous passes did: this pass ADDS tables and columns - use the copy-database recipe
+on PORT=5001 as the previous passes did: this pass ADDS columns and tables - use the copy-database recipe
 (USE_COPY=1 in boot.sh: pg_dump, CREATE DATABASE pestflow_verify, restore, boot, PGDB=pestflow_verify for the
-smoke, DROP afterwards; rebuild counts.sql from pg_tables on the COPY after boot 1 and diff by name - the pass
-adds tables); the previous session's scratchpad (C:/Users/Austin/AppData/Local/Temp/claude/c--Dev-PestFlow/
-<session>/scratchpad - find the kit with `grep -l smoke39 */scratchpad/*`, not by mtime; it holds patch.cjs
-(absolute === FILE paths), boot.sh (re-point its S= line), stop.sh, counts.sql (50 tables), smoke39.mts (its
-helpers: login / api with Connection: close, auditRows, sqlError for an expected SQL refusal, the settings
-snapshot / restore, the cleanup chain derived from the DB by the fixture email, a --cleanup-only mode),
-replace-handoff.cjs (update its intro lines), pass40-inventory.md (the full inventory this prompt condenses -
-read it), fix-replace-handoff.cjs (the pattern for a counted text fix the Bash tool's quoting cannot carry)) is
-the starting kit. In a smoke test send `Connection: close` on every fetch, derive the cleanup from the DB by the
-fixture email, and clean a hard-deleted entity's audit rows by the customerId its snapshots carry. Stripe: the
-smoke cannot reach Stripe without a key - test the provider behind the port with a FAKE provider (the port is the
-seam: a smoke-only implementation registered for the test org, or the real one against a test key the owner
-supplies - say which; never commit a key); exercise the SetupIntent confirm path with a stubbed retrieve, the
-refusals (no provider configured, a foreign account, a non-succeeded intent, a second default), the permission
-(403 for the roles without it), the audit rows, last4 on the compat read, and that no provider id reaches any
-read the client gets. npm run check; double boot (boot 1 prints the new tables / columns / grant, boot 2 only
-"serving on port 5001" with every table count unchanged by name); the pass's API smoke test as all four roles; a
-Vite 200 on every touched client module; state plainly what was not rendered - the Payment Element and every
-card affordance cannot be judged without a browser and a key.
+smoke, DROP afterwards; rebuild counts.sql from pg_tables on the COPY after boot 1 and diff by name); the previous
+session's scratchpad (C:/Users/Austin/AppData/Local/Temp/claude/c--Dev-PestFlow/<session>/scratchpad - find the kit
+with `grep -l smoke40 */scratchpad/*`, not by mtime; it holds patch.cjs (absolute === FILE paths), boot.sh
+(re-point its S= line; it already exports PAYMENT_CREDENTIALS_KEY and PAYMENT_PROVIDER_FAKE_ALLOWED=1 for the
+copy boot), stop.sh, counts.sql (53 tables), smoke40.mts (its helpers: login / api with Connection: close,
+auditRows, leaksProviderIds, the fixture through create-with-primary-location, the provider connected as `fake`
+through PUT /api/payment-provider, the cleanup chain derived from the DB by the fixture emails, a --cleanup-only
+mode), replace-handoff.cjs (update its intro lines - the fix-replace-handoff.cjs pattern), pass41-inventory.md (the
+full inventory this prompt condenses - read it), the Pass 40 spec files as the format precedent) is the starting
+kit. In a smoke test send `Connection: close` on every fetch, derive the cleanup from the DB by the fixture
+email, and clean a hard-deleted entity's audit rows by the customerId its snapshots carry; never export
+MSYS_NO_PATHCONV=1 in the shell that runs `npx tsx <scratchpad path>` (the path is left untranslated and tsx
+cannot find the file - run docker commands and tsx in separate Bash calls). Stripe: the smoke cannot reach Stripe
+without a key - extend providers/fake.ts with a deterministic charge (succeeded unless the amount ends in 05
+for a decline / 55 for requires_action, say which), refund and a constructEvent double, and drive the webhook
+route with a body the fake signs; the real adapter against a test key the owner supplies is the owner's manual
+test; never commit a key; exercise the charge path (the payment CAPTURED and applied, the invoice rollup, the
+decline FAILED with no application, the idempotent re-post, a foreign invoice, no card on file, no provider), the
+refund through the provider, the webhook (a bad signature 400, a duplicate event ignored, the succeeded event
+settling a PENDING charge), the permissions (403 for the roles without CHARGE_CARD), the audit rows with no provider
+id, the icon's lazy read and its gate as every role. npm run check; double boot (boot 1 prints the new columns /
+tables / grant, boot 2 only "serving on port 5001" with every table count unchanged by name); the pass's API smoke
+test as all four roles; a Vite 200 on every touched client module; state plainly what was not rendered - the
+charge button, the icon and the magic link page cannot be judged without a browser and a key.
 
 Working agreement as always: one pass, one branch, update CURRENT_FOCUS and the roadmap's pass table at the end,
-replace the handoff prompt at the end of CURRENT_FOCUS.md with the one for the next pass (C6.2 unless I say
-otherwise), push, open the PR and stop. I merge.
+replace the handoff prompt at the end of CURRENT_FOCUS.md with the one for the next pass (C6.2b or C6.3 unless I
+say otherwise), push, open the PR and stop. I merge.
 ```

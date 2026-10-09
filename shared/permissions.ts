@@ -132,6 +132,14 @@ export const PERMISSIONS = {
   // that should hold it (server/role-profile-bootstrap.ts), since
   // ROLE_PERMISSIONS below seeds only a NEW org.
   VIEW_OTHER_TECHNICIAN_WORK: "view_other_technician_work",
+  // Pass 40 (C6.1): add a card on file for an account (the SetupIntent
+  // session and its confirm), make one the default, or remove one. Support,
+  // manager and admin by default - office work on the customer's record;
+  // the technician's TAKE_PAYMENT_FIELD records money, it does not store an
+  // instrument (field capture at the visit is the owner's call, open). The
+  // last four stays visible to every role (B18): reads are open. Granted to
+  // the seeded built-ins by SEEDED_PROFILE_GRANTS (the Pass 38 rule).
+  MANAGE_PAYMENT_METHODS: "manage_payment_methods",
   MANAGE_SETTINGS: "manage_settings",
 } as const;
 
@@ -177,6 +185,7 @@ export const PERMISSION_LABELS: Record<Permission, string> = {
   view_production_value: "View production value",
   edit_any_service_instructions: "Edit any service instructions",
   view_other_technician_work: "View another technician's day",
+  manage_payment_methods: "Manage cards on file",
   manage_settings: "Manage Settings",
 };
 
@@ -210,7 +219,8 @@ export const PERMISSION_DESCRIPTIONS: Record<Permission, string> = {
   view_production_value: "Read the production value ledger.",
   edit_any_service_instructions: "Change a service's instructions whoever added it; without it, only on a service you added in the field.",
   view_other_technician_work: "Open any technician's day on the Tech View; without it, only your own.",
-  manage_settings: "Every Settings card - reference lists, templates, zones, rules, role profiles, users and technicians.",
+  manage_payment_methods: "Add a card on file for an account, make one the default or remove one (the last four is visible to everyone).",
+  manage_settings: "Every Settings card - reference lists, templates, zones, rules, role profiles, users and technicians, the payment provider.",
 };
 
 /** The checklist's grouping on the Roles card. Every permission appears in exactly one group. */
@@ -251,6 +261,7 @@ export const PERMISSION_GROUPS: ReadonlyArray<{ label: string; permissions: read
       PERMISSIONS.CONFIRM_CASH_PAYMENT,
       PERMISSIONS.VOID_PAYMENT,
       PERMISSIONS.REFUND_PAYMENT,
+      PERMISSIONS.MANAGE_PAYMENT_METHODS,
     ],
   },
   {
@@ -283,7 +294,8 @@ export function describePermission(permission: string): string {
 // seeded with, never an existing org's profiles (those are rows) - a
 // permission added later is granted to the seeded built-ins by
 // server/role-profile-bootstrap.ts SEEDED_PROFILE_GRANTS (Pass 38 was the
-// first: technician 4 / support 14 / manager 29 / admin 30).
+// first: technician 4 / support 14 / manager 29 / admin 30; Pass 40's
+// MANAGE_PAYMENT_METHODS makes it 4 / 15 / 30 / 31).
 export const ROLE_PERMISSIONS: Record<BuiltInRole, ReadonlySet<Permission>> = {
   technician: new Set<Permission>([
     PERMISSIONS.POST_SERVICE_TICKET,
@@ -306,6 +318,7 @@ export const ROLE_PERMISSIONS: Record<BuiltInRole, ReadonlySet<Permission>> = {
     PERMISSIONS.CONFIRM_PAYMENT,
     PERMISSIONS.EDIT_ANY_SERVICE_INSTRUCTIONS,
     PERMISSIONS.VIEW_OTHER_TECHNICIAN_WORK,
+    PERMISSIONS.MANAGE_PAYMENT_METHODS,
   ]),
   manager: new Set<Permission>([
     PERMISSIONS.POST_SERVICE_TICKET,
@@ -337,6 +350,7 @@ export const ROLE_PERMISSIONS: Record<BuiltInRole, ReadonlySet<Permission>> = {
     PERMISSIONS.VIEW_PRODUCTION_VALUE,
     PERMISSIONS.EDIT_ANY_SERVICE_INSTRUCTIONS,
     PERMISSIONS.VIEW_OTHER_TECHNICIAN_WORK,
+    PERMISSIONS.MANAGE_PAYMENT_METHODS,
   ]),
   admin: new Set<Permission>(Object.values(PERMISSIONS)),
 };

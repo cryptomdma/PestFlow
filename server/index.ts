@@ -18,6 +18,7 @@ import { bootstrapTenancy } from "./tenancy-bootstrap";
 import { bootstrapMoney } from "./money-bootstrap";
 import { bootstrapOutbox } from "./outbox-bootstrap";
 import { bootstrapBillingProfiles } from "./billing-profile-bootstrap";
+import { bootstrapPaymentMethods } from "./payment-methods-bootstrap";
 import { backfillExpectedServiceCounts } from "./production-value-backfill";
 import { bootstrapInvoices } from "./invoice-bootstrap";
 import { bootstrapPayments } from "./payments-bootstrap";
@@ -131,6 +132,10 @@ app.use((req, res, next) => {
   // Needs accounts.legacy_customer_id populated for its account_id backfill,
   // so it must run after bootstrapCanonicalAccounts().
   await bootstrapBillingProfiles().catch((e) => console.error("Billing profile bootstrap error:", e));
+  // Pass 40 (C6.1): the provider account, the provider customers and the
+  // cards on file, plus billing_profiles.default_payment_method_id - after
+  // the billing-profile bootstrap, which owns that table's shape.
+  await bootstrapPaymentMethods().catch((e) => console.error("Payment methods bootstrap error:", e));
   await bootstrapCanonicalNotes().catch((e) => console.error("Note bootstrap error:", e));
   scheduleBillingRun();
   await registerRoutes(httpServer, app);

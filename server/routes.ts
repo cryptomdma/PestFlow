@@ -31,7 +31,9 @@ import {
 import { ZodError, z } from "zod";
 import type { Request } from "express";
 import { requirePermission } from "./auth";
-import { AgreementTypeError, AppointmentCrewError, AppointmentDispositionError, BillingDefaultsError, BillingProfileError, ContactError, DispatchBoardSettingsError, DraftInvoiceDecisionRequiredError, HistoryRevertError, OpportunityAssignmentError, PlacementRefusedError, PrefinalizationIssueError, RoleProfileError, ServiceCompositionError, ServiceKindError, StatementRefusedError, TechnicianPreferenceError, TicketEditError, TicketLockedError, TicketReopenError, UserError, VisitBillingDraftError } from "./storage";
+import { AgreementTypeError, AppointmentCrewError, AppointmentDispositionError, BillingDefaultsError, BillingProfileError, ContactError, DispatchBoardSettingsError, DraftInvoiceDecisionRequiredError, HistoryRevertError, OpportunityAssignmentError, PaymentMethodError, PlacementRefusedError, PrefinalizationIssueError, RoleProfileError, ServiceCompositionError, ServiceKindError, StatementRefusedError, TechnicianPreferenceError, TicketEditError, TicketLockedError, TicketReopenError, UserError, VisitBillingDraftError } from "./storage";
+import { PaymentProviderError } from "./integrations/payments/types";
+import { PAYMENT_PROVIDER_MODES } from "@shared/payment-methods";
 import { TECHNICIAN_STATUSES, USER_ERROR_CODES } from "@shared/technicians";
 import { USER_STATUSES } from "@shared/users";
 import { HISTORY_REVERT_CODES, type RevertableAuditEntityType } from "@shared/audit";
@@ -457,6 +459,10 @@ export async function registerRoutes(
       billingType: z.enum(BILLING_TYPES).optional(),
       invoiceTerms: z.enum(INVOICE_TERMS).nullable().optional(),
       status: z.enum(BILLING_PROFILE_STATUSES).optional(),
+      // Pass 40 (C6.1): the profile's card - an ACTIVE card of its account
+      // (storage refuses any other, 400 BILLING_PROFILE_PAYMENT_METHOD_UNKNOWN);
+      // null = the account's default card.
+      defaultPaymentMethodId: z.string().trim().min(1).nullable().optional(),
     })
     .strict();
   const updateBillingProfileSchema = billingProfileWriteSchema.partial();
@@ -663,6 +669,13 @@ export async function registerRoutes(
     return true;
   };
   const roleProfileWriteContext = (req: Request) => ({ actor: getAuditActor(req), actorRole: req.user!.role, actorUserId: req.user!.id });
+  // Pass 40 (C6.1): a provider-side failure or configuration gap, or a
+  // card-on-file rule - both carry a status and a code.
+  const respondPaymentError = (res: any, e: unknown): boolean => {
+    if (!(e instanceof PaymentProviderError) && !(e instanceof PaymentMethodError)) return false;
+    res.status(e.status).json({ code: e.code, message: e.message, ...(e.details ? { details: e.details } : {}) });
+    return true;
+  };
   const cancellationFeeTypeSchema = z.enum(["NONE", "FLAT", "PERCENT_CONTRACT", "PERCENT_REMAINING", "MANUAL"]);
   const cancellationEffectiveDateModeSchema = z.enum(["IMMEDIATE", "END_OF_TERM", "CUSTOM"]);
   const agreementCancellationPolicySchema = insertAgreementCancellationPolicySchema.omit({
@@ -1473,6 +1486,105 @@ export async function registerRoutes(
     } catch (e: any) {
       if (e instanceof ZodError) return handleZodError(res, e);
       if (e instanceof BillingProfileError) return res.status(400).json({ code: e.code, message: e.message });
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  // Pass 40 (PLAN_ROADMAP_V2.md C6.1): the payment provider account and the
+  // cards on file. The provider account is Settings reference data
+  // (MANAGE_SETTINGS, write-only: the read answers configured / mode /
+  // publishable key / connected account, never a secret); a card is added
+  // in two steps - a SetupIntent session the client's card form consumes,
+  // then the confirm with the intent id, which the server reads back from
+  // the provider (never the body's word) - and made default or removed,
+  // all MANAGE_PAYMENT_METHODS (support, manager, admin by default). Reads
+  // are open: the last four is visible to every role (B18). Codes:
+  // shared/payment-methods.ts.
+  const paymentProviderAccountSchema = z
+    .object({
+      provider: z.string().trim().min(1),
+      mode: z.enum(PAYMENT_PROVIDER_MODES),
+      publishableKey: z.string().trim().nullable().optional(),
+      secretKey: z.string().trim().min(1).optional(),
+      webhookSecret: z.string().trim().nullable().optional(),
+      connectedAccountId: z.string().trim().nullable().optional(),
+    })
+    .strict();
+  const confirmPaymentMethodSchema = z
+    .object({
+      setupIntentId: z.string().trim().min(1),
+      makeDefault: z.boolean().optional(),
+      billingProfileId: z.string().trim().min(1).nullable().optional(),
+      locationId: z.string().trim().min(1).nullable().optional(),
+    })
+    .strict();
+
+  app.get("/api/payment-provider", async (req, res) => {
+    res.json(await req.storage.getPaymentProviderAccount());
+  });
+
+  app.put("/api/payment-provider", requirePermission(PERMISSIONS.MANAGE_SETTINGS), async (req, res) => {
+    try {
+      const validated = paymentProviderAccountSchema.parse(req.body);
+      res.json(await req.storage.setPaymentProviderAccount(validated, getAuditActor(req)));
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      if (respondPaymentError(res, e)) return;
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.delete("/api/payment-provider", requirePermission(PERMISSIONS.MANAGE_SETTINGS), async (req, res) => {
+    try {
+      res.json(await req.storage.disconnectPaymentProviderAccount(getAuditActor(req)));
+    } catch (e: any) {
+      if (respondPaymentError(res, e)) return;
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.get("/api/accounts/:accountId/payment-methods", async (req, res) => {
+    const includeRemoved = req.query.includeRemoved === "true";
+    res.json(await req.storage.getPaymentMethodsForAccount(req.params.accountId, includeRemoved));
+  });
+
+  app.post("/api/accounts/:accountId/setup-intents", requirePermission(PERMISSIONS.MANAGE_PAYMENT_METHODS), async (req, res) => {
+    try {
+      res.status(201).json(await req.storage.createSetupIntentForAccount(req.params.accountId, getAuditActor(req)));
+    } catch (e: any) {
+      if (respondPaymentError(res, e)) return;
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/accounts/:accountId/payment-methods", requirePermission(PERMISSIONS.MANAGE_PAYMENT_METHODS), async (req, res) => {
+    try {
+      const validated = confirmPaymentMethodSchema.parse(req.body);
+      res.status(201).json(await req.storage.confirmSetupIntentForAccount(req.params.accountId, validated, getAuditActor(req)));
+    } catch (e: any) {
+      if (e instanceof ZodError) return handleZodError(res, e);
+      if (respondPaymentError(res, e)) return;
+      if (e instanceof BillingProfileError) return res.status(400).json({ code: e.code, message: e.message });
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/payment-methods/:id/make-default", requirePermission(PERMISSIONS.MANAGE_PAYMENT_METHODS), async (req, res) => {
+    try {
+      res.json(await req.storage.setDefaultPaymentMethod(req.params.id, getAuditActor(req)));
+    } catch (e: any) {
+      if (respondPaymentError(res, e)) return;
+      res.status(400).json({ message: e.message });
+    }
+  });
+
+  // Remove is a POST, never a DELETE: the row stays (status removed) after
+  // the provider detaches the token.
+  app.post("/api/payment-methods/:id/remove", requirePermission(PERMISSIONS.MANAGE_PAYMENT_METHODS), async (req, res) => {
+    try {
+      res.json(await req.storage.removePaymentMethod(req.params.id, getAuditActor(req)));
+    } catch (e: any) {
+      if (respondPaymentError(res, e)) return;
       res.status(400).json({ message: e.message });
     }
   });

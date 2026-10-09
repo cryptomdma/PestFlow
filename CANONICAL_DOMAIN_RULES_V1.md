@@ -263,9 +263,14 @@ Billing information used by a location or inherited from the account context.
 * templateId (the org template the row was created from, if any)
 * billingName
 * billingAddress fields
-* cardOnFileToken
-* achToken
-* lastFour
+* defaultPaymentMethodId (Pass 40, C6.1 - the card on file this profile charges and shows, one of its
+  ACCOUNT's active cards (see "Card on file" below); null = the account's default card; refused 400
+  `BILLING_PROFILE_PAYMENT_METHOD_UNKNOWN` for another account's card, a removed one or an unknown id;
+  cleared inside a card's removal; never put back by a History revert)
+* cardOnFileToken, achToken, lastFour - LEGACY and UNREAD since Pass 40: the card on file lives in its
+  own entity below (an account holds several; this row is whole-row-snapshotted into the audit log
+  and returned by two open reads). No screen or route reads or writes them; a later hygiene pass drops
+  them.
 * invoiceTerms (`DUE_ON_RECEIPT` | `NET_15` | `NET_30` | `NET_60`)
 
 ### Canonical behavior
@@ -287,6 +292,37 @@ Billing information used by a location or inherited from the account context.
 * a new customer's account gets its default created from the org's default template
   (Settings -> Billing Defaults, `default_billing_profile_template_id`) when one is set; none set,
   the account starts with no profile and every invoice bills the primary location until one is given
+
+### Card on file (`payment_methods` - Pass 40, PLAN_ROADMAP_V2.md C6.1; PLAN_BILLING_V1.md §1.2, B18)
+
+The tokenized instrument, beside the profile and never inside it. It belongs to the **Account** (a
+profile picks one through `defaultPaymentMethodId`; the account's `isDefault` card is what a profile
+with no pointer resolves to - `resolveProfilePaymentMethod` in `shared/payment-methods.ts`);
+`locationId` is a note of where it was added, never a scope.
+
+* Required: id, orgId, accountId, provider (`stripe`), providerCustomerId, providerPaymentMethodId
+  (the provider's tokens - they never leave storage: every read answers the display fields alone),
+  type (`card` | `ach` - `ach` is named, not captured), last4, isDefault, status (`active` |
+  `removed` - removed is detached at the provider and kept, never deleted), livemode (the provider
+  mode the card was captured in), createdAt, updatedAt
+* Optional: locationId, brand, expMonth / expYear, addedByUserId / addedByLabel, removedAt /
+  removedByUserId / removedByLabel
+* **PCI, a hard rule:** no card number, CVV or bank credential ever touches PestFlow. The client
+  mounts the provider's own form (Stripe's Payment Element) against a SetupIntent the server created
+  for the account's provider customer; on success the server reads the intent back from the
+  provider and stores brand, last four and expiry with the tokens. The owner's rule (B18): the last
+  four is visible to every role - the customer screen's billing chip and Edit Location's Cards on
+  file list print it; no projection, audit snapshot or API answer carries a provider id.
+* One provider **Customer** per account, per provider and mode (`payment_provider_customers`),
+  minted by the first capture and reused; the org's **provider account** (`payment_provider_accounts`:
+  provider, mode test | live, the keys encrypted at rest under env `PAYMENT_CREDENTIALS_KEY`, a
+  nullable Stripe Connect account id) is Settings reference data (Settings → Payments, MANAGE_SETTINGS,
+  write-only for the secrets) - never on the organization row, never a process-wide key.
+* Who: adding a card, making one the default and removing one are `MANAGE_PAYMENT_METHODS` (support /
+  manager / admin by default); the first active card of an account is its default; removing the
+  default promotes the oldest remaining active card and clears every profile pointer at it.
+* Charging the card, refunds through the provider, webhooks and auto-charge are C6.2's; the CARD / ACH
+  payment methods on a Payment stay refused until then.
 
 ---
 
@@ -1585,10 +1621,13 @@ Money collection or recorded payment event.
 * id
 * customerId
 * locationId — the balance lives here (D4), so it is required
-* method (`CASH` | `CHECK` | `OTHER` now; `CARD` | `ACH` named for Phase 2)
+* method (`CASH` | `CHECK` | `OTHER` now; `CARD` | `ACH` named for PLAN_ROADMAP_V2.md C6.2 - charging
+  through the provider; the card on file itself exists since Pass 40, C6.1, as the Card on file entity
+  under §4, and a card Payment will name it and the provider's payment id in C6.2 - no such column yet)
 * amountCents
 * status (`PENDING` | `CONFIRMED` | `VOIDED` | `REFUNDED`; `AUTHORIZED` | `CAPTURED` | `FAILED` are
-  the Phase 2 card states)
+  the C6.2 card states - note for that pass: `paymentHoldsValue` / `paymentCountsAsPaid` know PENDING
+  and CONFIRMED only today)
 * receivedAt — when the money changed hands, entered; createdAt is when it was recorded
 * createdAt
 
@@ -1787,7 +1826,13 @@ moved) and the users' profile assignments (`user`: `update` with `role` before a
 hash) write theirs; neither is revertable. Since Pass 39 (C5.8) every `app_settings` write - the nine Settings
 setters behind `PATCH /api/settings/*` - records `app_setting`: `update` on the setting's KEY with the stored value
 before and after (null for a row that did not exist or was deleted), nothing on an unchanged save, never
-revertable (a setting is put back by setting it); the Settings page lists the recent rows org-wide. There is no
+revertable (a setting is put back by setting it); the Settings page lists the recent rows org-wide. Since Pass 40
+(C6.1) the card on file (`payment_method`: `created`, `update` when the default moves, `status_changed` when one is
+removed - the snapshots are the display fields, brand / last four / expiry / default / status / test flag, never a
+provider id; the rows sit with the account on the customer-level History and with the location a card was noted
+against) and the org's payment provider account (`payment_provider_account`: `created` / `update` /
+`status_changed` - provider, mode, publishable key, connected account, status and a short fingerprint per secret,
+never a key; org-wide, listed on the Settings Payments card) write theirs; neither is revertable. There is no
 `account` entity: the account's facts are logged on the
 location whose primary flag moved or on the customer. `service_records`' content edits are D9's
 `ticket_edited`; a price change is Pass 8's `price_overridden`.
